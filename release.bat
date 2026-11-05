@@ -6,7 +6,7 @@ rem   release.bat status
 rem   release.bat check
 rem   release.bat prepare
 rem   release.bat tag --push
-rem   release.bat upload --tag v0.1.4 --dry-run
+rem   release.bat upload --tag v0.1.5 --dry-run
 setlocal
 chcp 65001 >nul 2>&1
 pushd "%~dp0"

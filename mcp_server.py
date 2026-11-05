@@ -585,7 +585,7 @@ def handle(req: dict) -> dict | None:
             "result": {
                 "protocolVersion": PROTOCOL,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "garmin-cn", "version": "0.1.4"},
+                "serverInfo": {"name": "garmin-cn", "version": "0.1.5"},
             },
         }
     if method in ("notifications/initialized", "initialized"):

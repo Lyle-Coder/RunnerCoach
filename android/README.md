@@ -100,7 +100,7 @@ adb install -r dist\garmin-coach-<version>-debug.apk
 数据在 `/data/data/com.garmincoach.app/files/`，卸载即清空；
 密码用 Android Keystore 加密存在 SharedPreferences，Python 侧不落密码。
 
-### 界面交互（0.1.3 起，0.1.4 补分享脱敏）
+### 界面交互（0.1.3 起，0.1.4 补分享脱敏，0.1.5 修出图缩放）
 
 - **同步没有按钮**：页面滚到顶后继续下拉 →「↓ 下拉同步 / ↑ 松开立即同步」→ 松手执行
   `sync(30 天) + 重出看板 + 自动刷新`；指示器依次显示「正在同步… / √ 已更新」并回弹。
@@ -117,13 +117,20 @@ adb install -r dist\garmin-coach-<version>-debug.apk
   桌面版看板里这个属性不绑事件，完全无副作用。
 - 两种出图都走同一条链路：`appapi` 生成 HTML → 离屏 WebView 画成 PNG →
   存到 `相册/GarminCoach/` → 弹系统分享（可直接发微信）。
-- 两种**成品**都统一为 1080×1920（9:16）。活动图 HTML 的布局基准仍是
-  1080×2250，App 截完会按底色找内容底边裁掉空白，再等比收进 9:16
+- 两种**成品**都统一为 1080×1920（9:16），四周留一圈与卡片同色的安全带，
+  系统分享面板按自己的预览框 centerCrop 也切不到内容。活动图 HTML 的布局
+  基准仍是 1080×2250，App 截完按底色找内容底边裁掉空白，再等比收进 9:16
   （只缩不裁），与桌面 `pngutil.fit_to_frame()` 同一套规则。没有高德底图时
   用纯 SVG 矢量轨迹回落，所以断网也能出图。首次出某条活动需要联网抓一次
   明细，之后明细落库就一直离线可用。
-- 系统分享面板的**缩略图预览**由系统按预览框 centerCrop，可能仍看着像被切；
-  存进相册的原图是完整的，从相册选这张图发送即可。
+- **0.1.5 修复「分享预览只剩放大一角」**：HTML 写死
+  `width=1080,initial-scale=1`，布局视口是 1080 CSS px，而离屏控件只有
+  1080 物理像素（≈360dp），页面按屏幕密度被放大到画布之外，`draw(Canvas)`
+  只截到左上角。现在 App 先用 `setInitialScale(100/density)` 争取 1:1，
+  再由 HTML 探针读 `visualViewport.width` 实测「能看见多少 CSS px」，给版心
+  套 `transform: scale(f)`（f = 可视 CSS 宽 / 画布 CSS 宽）后等一帧再截。
+  出图时会 toast 一次「已校正手机端出图缩放 ×0.xx」，日志在
+  `adb logcat -s GarminCoach`，可据此确认新包是否生效。
 - **点活动出图会先弹「分享前脱敏」（0.1.4 起）**：原图（含完整 GPS 轨迹）/
   裁首尾各 200 m（默认）/ 完全隐藏轨迹与起跑时间。选择存在 `gc_prefs`，下次沿用。
   这一问同时是「分享前确认」，点「生成并分享」才会出图并弹系统分享。
@@ -192,14 +199,19 @@ WebView 自己就能 `draw(Canvas)` 出 PNG——这条比 Termux 强。
 截图前会 `translationY = 8000f` 挪到屏幕外：必须挂进窗口才会真正布局渲染，
 但 `draw(canvas)` 画的是它自己的内容，不受位移影响。
 
-离屏 WebView 仍开 `useWideViewPort` + `loadWithOverviewMode`（HTML 写死
-`width=1080`，不开 overview 会只截到左上角），但**不再靠猜 density 定画布**：
-HTML 末尾的只读探针 `window.__gcExportInfo()` 回报 layout 视口宽度与画布
-CSS 高度，App 据此反推缩放系数，必要时先把 View 加高，再按 View 的实际
-像素尺寸 `draw(Canvas)`，最后按底色找内容底边裁空白、contain 收进 9:16。
+离屏 WebView 只开 `useWideViewPort`，**关掉 `loadWithOverviewMode`**：HTML
+写死 `width=1080,initial-scale=1`，布局视口恒为 1080 CSS px，而控件只有
+1080 物理像素（≈360dp），overview 认为「内容没比视口宽」反而不缩，页面就按
+`density` 倍画到画布外，只截到左上角。现在先 `setInitialScale(100/density)`
+争取 1 CSS px = 1 物理 px，再由 HTML 末尾的只读探针
+`window.__gcExportInfo()` 回报 `visualViewport.width`（可视视口 CSS 宽，
+不是 `innerWidth` 那个布局视口），App 按 `f = 可视宽 / 画布宽` 调
+`window.__gcFit(f)` 给版心套 `transform: scale(f)`，等一帧重绘后才截。
+最后按底色找内容底边裁空白、contain 收进 9:16 并留同色安全带。
 另外设 `textZoom=100`（挡系统字体缩放）和 `LAYER_TYPE_SOFTWARE`（硬件加速下
 离屏 WebView 常画不进 Canvas）。真机对账看 `adb logcat -s GarminCoach` 的
-`render probe=...` 与 `render view=... crop=... out=...` 两行。
+`render probe=...`（含 `visibleCss` / `f`）与 `render view=... out=...` 两行；
+发生校正时还会 toast 一次「已校正手机端出图缩放 ×0.xx」。
 
 **密码为什么能存**：佳明的 JWT 只有 2 小时，想"点一下就同步"就必须能自动续期，
 也就必须留密码。这里用 Android Keystore 里的 AES-GCM，密钥不出 TEE，
@@ -207,10 +219,11 @@ CSS 高度，App 据此反推缩放系数，必要时先把 View 加高，再按
 
 ## 已知限制（按优先级）
 
-1. **9:16 自校正已实现，仍缺一张真机产物复核**：0.1.1 起 Python 启动、
-   登录、同步、看板已在真机跑通。早期版本把 API 的 `height` 直接当位图高度，
-   在手机上出现过分享预览四边被裁（日期缺字、轨迹只剩一角）；现在改成探针
-   实测 + 画幅归一，逻辑上不再依赖 density，但尚未看实机产物。若仍异常，
+1. **仍需一张真机产物复核**：0.1.1 起 Python 启动、登录、同步、看板已在真机
+   跑通。分享预览曾出现「只剩放大一角」（日期缺字、轨迹只剩一角），0.1.3
+   统一 9:16 后仍复现，0.1.5 才定位到是 `initial-scale=1` 与控件物理像素
+   宽度不匹配导致的 WebView CSS 缩放错位，改成 `visualViewport.width` 自校正。
+   本机 Chromium 已用窄视口 + 高 dpr 复现并验证修复前后差异；真机若仍异常，
    把 `adb logcat -s GarminCoach` 的 `render probe=` / `render view=` 发出来定位。
 2. **后台同步不可靠**：现在同步跑在普通线程里，切后台可能被系统掐。
    要稳得上前台服务 + 常驻通知，或 WorkManager 定时。

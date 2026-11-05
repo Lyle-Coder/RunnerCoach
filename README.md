@@ -46,6 +46,10 @@ RunnerCoach 把 Garmin Connect **中国区**（`connect.garmin.cn`）的数据�
 
 完整清单与口径见 [`docs/交付形态调研.md`](docs/交付形态调研.md) 与 [`docs/使用手册.md`](docs/使用手册.md)。
 
+手机端（APK）出图不走无头浏览器，而是离屏 WebView 自绘；
+[`garmin_cn/exportspec.py`](garmin_cn/exportspec.py) 统一了两端的 1080×1920 画幅，
+并按 `visualViewport.width` 校正 WebView 的 CSS 缩放，避免分享预览只剩放大后的一角。
+
 ---
 
 ## 快速开始

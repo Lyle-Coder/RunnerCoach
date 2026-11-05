@@ -1918,6 +1918,16 @@ def cmd_selftest(args) -> int:
               ACTCARD.build_html({}, {}, None, None, "自检")):
         assert EX.CANVAS_ATTR in h and "__gcExportInfo" in h, "HTML 缺导出探针"
         assert h.count("__gcExportInfo") == 1, "探针重复注入"
+        assert "__gcFit" in h and "visualViewport" in h, "HTML 缺缩放校正探针"
+
+    # 手机端 WebView 的缩放自校正：density=3 时布局视口 1080 CSS px 只露出
+    # 360 CSS px，必须把画布缩到 1/3；归一后内容高度与 density 无关。
+    # 少了这一步，draw(Canvas) 只截到左上角，分享预览会「只剩一个角」。
+    assert abs(EX.fit_scale(1080, 360) - 1 / 3) < 1e-9
+    assert EX.fit_scale(1080, 1080) == 1.0
+    assert EX.fit_scale(1080, 0) == 1.0
+    assert EX.content_height(1080, 1080, 2250) == 2250
+    assert EX.content_height(1080, 1080, 1920) == 1920
 
     # 分享前轨迹脱敏：档位口径 + 「脱敏版绝不泄漏轨迹」的硬约束。
     # 用合成轨迹（约 1.1 km 直线），不碰任何真实活动 ID / 坐标 / 日期。

@@ -53,7 +53,7 @@
 | `android/` 工程骨架 | Gradle + Manifest + Kotlin（MainActivity / Secrets）+ 图标 | ✅ **已编译出 APK** |
 | `android/build.bat` | 一键构建（便携 JDK 17 + Gradle 8.7 + SDK 34） | ✅ 实测，增量 16 秒 |
 | `android/sync_python(.sh/.bat)` | 把 `garmin_cn` 同步进 source set | ✅ 34 个 .py（含 `privacy.py`） |
-| `dist/garmin-coach-0.1.4-debug.apk` | 成品 | ✅ debug 签名，arm64-v8a |
+| `dist/garmin-coach-0.1.5-debug.apk` | 成品 | ✅ debug 签名，arm64-v8a |
 
 构建环境（便携、免管理员，工具链路径通过环境变量配置）：
 JDK 17（清华镜像）+ Gradle 8.7（华为镜像）+ SDK 34。
@@ -62,21 +62,29 @@ JDK 17（清华镜像）+ Gradle 8.7（华为镜像）+ SDK 34。
 APK 实测结构：
 
 ```
-package: com.garmincoach.app  versionName 0.1.4  versionCode 5  minSdk 29  targetSdk 34
+package: com.garmincoach.app  versionName 0.1.5  versionCode 6  minSdk 29  targetSdk 34
 launchable-activity: com.garmincoach.app.MainActivity
 python_version: 3.13   abi: arm64-v8a
-assets/chaquopy/app.imy  →  35 个 garmin_cn/*.pyc（含 privacy / exportspec / appapi）
+assets/chaquopy/app.imy  →  34 个 garmin_cn/*.pyc（含 privacy / exportspec / appapi）
 签名：Android Debug（APK Signature Scheme v2）
 ```
 
 **真机进度**：0.1.0 首次实装时 Python 返回值转换崩了（dict → java.util.Map），
 0.1.1 改成 JSON 字符串桥后启动、登录、同步、看板已在真机跑通。
 0.1.2 去掉常驻悬浮按钮、加了活动图导出；PNG 出图的密度自适应尚未看实机产物。
-后来在手机上撞到「分享预览四边被裁」：App 把 API 的 `height=2250` 直接当
-位图高度，输出非 9:16 长图，系统分享面板又按预览框 centerCrop 补了一刀。
-修复见 `garmin_cn/exportspec.py`：HTML 注入只读尺寸探针，App 实测缩放系数后
-按内容裁空白、contain 收进 1080×1920；桌面 `actcard.shoot()` 同步改用
-`pngutil.fit_to_frame()`，两端同一套口径。
+后来在手机上撞到「分享预览只剩正常图的一个角、数字特别大」：先以为是
+非 9:16 长图被分享面板 centerCrop，0.1.3 统一成 1080×1920 后真机仍复现，
+才定位到真正的根因在 **WebView 的 CSS 缩放**——HTML 写死了
+`width=1080,initial-scale=1` 的 viewport，布局视口恒为 1080 CSS px，
+可离屏控件只有 1080 **物理像素**（≈360dp）；`initial-scale=1` 让 1 CSS px
+摊到 density 个物理像素，整页按 2~4 倍画到画布之外，`draw(Canvas)` 只截到
+左上角一块，再 contain 进 9:16 就成了「放大一角」。旧自校正拿
+`window.innerWidth`（布局视口）当可视宽度，完全没发现缩放错位。
+修复见 `garmin_cn/exportspec.py`：探针改读 `window.visualViewport.width`，
+App 按 `f = 可视 CSS 宽 / 画布 CSS 宽` 给版心套 `transform: scale(f)`，
+再按内容真实高度加高 View、裁空白、contain 收进 1080×1920，并留一圈同色
+安全带防分享面板 centerCrop；桌面 `actcard.shoot()` 同步用
+`pngutil.fit_to_frame()`，两端同一套画幅口径。
 
 0.1.2 的界面调整：两个常驻右下角按钮改成顶部独立占位的工具栏 + ⋮ 菜单，
 WebView 不再被任何控件盖住；看板活动行写入 `data-aid`，点一下直接出该活动图。
@@ -91,6 +99,14 @@ WebView 不再被任何控件盖住；看板活动行写入 `data-aid`，点一�
 有默认值，**旧 APK 传 4 个参数时行为不变**。脱敏由 `garmin_cn/privacy.py` 在生成
 HTML 之前完成，产物不含原始折线、底图或精确起跑时间；`hide` 档用同尺寸占位块
 顶住轨迹卡，避免 `.mid` 的 flex 塌版。内核与 APK 版本同步对齐到 0.1.4 (code 5)。
+
+0.1.5 (code 6) 专修手机端出图缩放，详见上面「真机进度」：`exportspec.py`
+探针新增 `visualViewport.width` 与 `__gcFit(f)`，`MainActivity.renderToPng()`
+按实测可视宽度给版心套 `transform: scale(f)`、关掉 overview、先设
+`100/density` 的初始缩放；`fitToFrame` 四周留 3% 同色安全带防 centerCrop。
+本机 Chromium 用窄视口 + 高 dpr 复现过「放大一角」并验证校正后整卡入画，
+`selftest` 里锁死了 `fit_scale()` / `content_height()` 两个纯函数的口径。
+版本同步：内核 `0.1.5`、APK `0.1.5 (code 6)`。
 
 `appapi.py` 的接口面：
 

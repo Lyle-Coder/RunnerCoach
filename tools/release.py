@@ -8,7 +8,7 @@
     py -3 tools/release.py check
     py -3 tools/release.py prepare
     py -3 tools/release.py tag --push
-    py -3 tools/release.py upload --tag v0.1.4 [--dry-run]
+    py -3 tools/release.py upload --tag v0.1.5 [--dry-run]
     py -3 tools/release.py selftest
 """
 from __future__ import annotations
@@ -493,7 +493,7 @@ def main() -> int:
     q.add_argument("--push", action="store_true", help="同时把标签推到 origin")
     q.set_defaults(func=cmd_tag)
     q = sub.add_parser("upload", help="创建 Gitee Release 并上传附件")
-    q.add_argument("--tag", required=True, help="如 v0.1.4，必须与 __version__ 一致")
+    q.add_argument("--tag", required=True, help="如 v0.1.5，必须与 __version__ 一致")
     q.add_argument("--dry-run", action="store_true", help="只打印计划，不联网")
     q.set_defaults(func=cmd_upload)
     q = sub.add_parser("selftest", help="脚本自身离线自检")

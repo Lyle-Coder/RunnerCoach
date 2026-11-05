@@ -520,11 +520,20 @@ class MainActivity : Activity() {
      * overview 缩放和父容器重测量一叠加，页面会被放大后按固定画布裁掉四边；
      * 而 1080×2250 这种非 9:16 长图又会被系统分享面板二次 centerCrop。
      *
-     * 现在改成三段自校正：
-     *   1) HTML 探针回报真实 CSS 尺寸 → 反推缩放系数，必要时先加高 View；
-     *   2) draw(Canvas) 到 View 的实际像素尺寸，按底色找内容底边裁掉空白；
-     *   3) contain 等比收进 9:16 画幅，短了补底色，绝不裁内容。
-     * 于是无论 density / 屏幕尺寸 / 父容器怎么变，成品恒为 exportW×exportH。
+     * 更隐蔽的一层：HTML 写死了 `width=1080,initial-scale=1` 的 viewport，
+     * `useWideViewPort` 于是把布局视口设成 1080 CSS px，可控件本身只有
+     * 1080 **物理像素**（≈360dp）。`initial-scale=1` 让 1 CSS px 摊到
+     * density 个物理像素，整页按 2~4 倍画到画布之外，`draw(Canvas)` 只截到
+     * 左上角一块——分享预览里就成了「只剩一角、数字特别大」。旧自校正拿
+     * `window.innerWidth`（布局视口）当可视宽度，所以完全没发现这件事。
+     *
+     * 现在改成三段自校正，不再猜 density：
+     *   1) load 前给 100/density 的初始缩放，尽量让 1 CSS px = 1 物理 px；
+     *   2) 探针读 `visualViewport.width`，算出该给画布套的 transform scale(f)，
+     *      把 1080 CSS px 的版心恰好铺满控件宽度（f = 可视 CSS 宽 / 画布宽）；
+     *   3) 按内容真实高度加高 View，draw(Canvas) 后裁掉空白，再 contain
+     *      收进 9:16，四周留同色安全带，防分享面板再做一次 centerCrop。
+     * 成品恒为 exportW×exportH，且内容永远完整。
      */
     private fun renderToPng(
         url: String, w: Int, h: Int, prefix: String, shareTitle: String,
@@ -535,14 +544,19 @@ class MainActivity : Activity() {
         } catch (t: Throwable) {
             0xFF12161B.toInt()
         }
+        val density = resources.displayMetrics.density.coerceAtLeast(1f)
         val view = WebView(this).apply {
             settings.javaScriptEnabled = true
-            // HTML 写死 width=1080，View 的 1080px 在不同 density 上等于不同的 dp。
-            // overview 仍负责把整页按宽度铺满；真正的缩放系数由探针实测，不再猜。
+            // 布局视口必须是 HTML 写死的 1080 CSS px，否则固定版心会重排。
             settings.useWideViewPort = true
-            settings.loadWithOverviewMode = true
+            // overview 只在「内容比控件宽」时生效；这里布局视口宽恰好等于
+            // 内容宽，它反而不缩，还会和下面的 initialScale 抢控制权。
+            settings.loadWithOverviewMode = false
             // 系统字体缩放会撑破固定版心（主 WebView 也是这么设的）。
             settings.textZoom = 100
+            // 100% 时 1 CSS px = 1dp = density 个物理像素；降到 100/density
+            // 就约等于 1 CSS px = 1 物理像素。探针还会实测并二次校正。
+            setInitialScale((100.0 / density).roundToInt().coerceIn(10, 100))
             // 硬件加速下离屏 WebView 的 RenderNode 常画不进 Canvas，
             // 软件层才能让 draw(Canvas) 拿到完整内容，代价只是出图慢一点。
             setLayerType(View.LAYER_TYPE_SOFTWARE, null)
@@ -557,6 +571,8 @@ class MainActivity : Activity() {
         var done = false
         var measured = false
         var probed = false
+        // 父容器每次重测量都可能把高度改回去，截图前统一按这个值再钉一次。
+        var targetH = h
 
         fun cleanup(v: WebView) {
             busy(false)
@@ -572,10 +588,10 @@ class MainActivity : Activity() {
             if (done) return
             done = true
             try {
-                // 父容器可能重新测量过：一切以 View 当下的实际像素尺寸为准。
+                // 父容器可能重新测量过：截图前按自校正后的高度再钉一次尺寸。
+                forceSize(v, v.width.coerceAtLeast(1), targetH)
                 val vw = v.width.coerceAtLeast(1)
                 val vh = v.height.coerceAtLeast(1)
-                forceSize(v, vw, vh)
                 val raw = Bitmap.createBitmap(vw, vh, Bitmap.Config.ARGB_8888)
                 v.draw(Canvas(raw))
                 val bottom = contentBottom(raw, bg)
@@ -588,10 +604,10 @@ class MainActivity : Activity() {
                 val cropped = Bitmap.createBitmap(raw, 0, 0, vw, cropH)
                 val out = fitToFrame(cropped, exportW, exportH, bg)
                 Log.d(TAG, "render view=${vw}x${vh} crop=${vw}x${cropH} " +
-                    "out=${out.width}x${out.height} bg=$bgHex")
+                    "out=${out.width}x${out.height} bg=$bgHex targetH=$targetH")
                 val uri = saveToGallery(out, prefix)
                 shareImage(uri, shareTitle)
-                toast("原图已存相册/GarminCoach；分享预览的裁切不影响原图")
+                toast("原图已存相册/GarminCoach")
             } catch (t: Throwable) {
                 fatal("截图失败", t)
             } finally {
@@ -604,23 +620,53 @@ class MainActivity : Activity() {
             probed = true
             val raw = (value ?: "").trim().trim('"')
             val parts = raw.split("|")
+            val cssW = parts.getOrNull(0)?.toIntOrNull() ?: 0
             val cssH = parts.getOrNull(1)?.toIntOrNull() ?: 0
             val innerW = parts.getOrNull(2)?.toIntOrNull() ?: 0
+            val vvW = parts.getOrNull(4)?.toIntOrNull() ?: 0
+            val dpr = parts.getOrNull(5)?.toDoubleOrNull() ?: 0.0
             val vw = v.width.coerceAtLeast(1)
-            // 页面 1080 CSS px 铺满 View 宽度，k = 每个 CSS px 对应几个物理像素。
-            val k = if (innerW > 0) vw.toDouble() / innerW else 1.0
-            val expected = if (cssH > 0) ceil(cssH * k).toInt() else 0
-            Log.d(TAG, "render probe='$raw' view=${vw}x${v.height} k=$k expected=$expected")
-            if (expected > v.height + 2) {
-                // View 太矮，内容会被切：按实测高度加高，等一帧重排后再截。
-                val target = expected + 32
-                val lp = v.layoutParams ?: FrameLayout.LayoutParams(vw, target)
-                lp.height = target
+
+            // innerWidth 是布局视口，不是「屏幕上能看见多少 CSS px」。
+            // visualViewport.width 才和 draw(Canvas) 的真实缩放一一对应：
+            // density=3 且 initial-scale=1 时它只有 360，而画布是 1080。
+            val visibleCss = when {
+                vvW > 0 -> vvW
+                innerW > 0 -> innerW          // 旧探针：保守不缩放
+                else -> (vw / density).roundToInt()
+            }
+            val f = if (cssW > 0 && visibleCss > 0)
+                (visibleCss.toDouble() / cssW).coerceIn(0.1, 4.0) else 1.0
+            // 归一之后内容高度 = cssH * vw / cssW，与 density、页面缩放无关。
+            val needed = if (cssW > 0)
+                ceil(cssH * vw.toDouble() / cssW).toInt() + 32 else 0
+            if (needed > targetH) targetH = needed
+            Log.d(TAG, "render probe='$raw' view=${vw}x${v.height} " +
+                "visibleCss=$visibleCss f=$f needed=$needed dpr=$dpr")
+
+            if (targetH > v.height + 2) {
+                val lp = v.layoutParams ?: FrameLayout.LayoutParams(vw, targetH)
+                lp.height = targetH
                 v.layoutParams = lp
-                forceSize(v, vw, target)
-                v.post { capture(v) }
+                forceSize(v, vw, targetH)
+            }
+            if (abs(f - 1.0) > 0.02) {
+                // 画布比可视视口宽：套 transform 把版心缩进控件，等一帧再截。
+                // 这一步是修复「分享预览只剩一角」的关键，绝不靠裁图补救。
+                val js = "window.__gcFit ? window.__gcFit($f) : ''"
+                toast("已校正手机端出图缩放 ×" + String.format(Locale.US, "%.2f", f))
+                v.evaluateJavascript(js) { _ ->
+                    v.postVisualStateCallback(
+                        EXPORT_FIT_FRAME_ID,
+                        object : WebView.VisualStateCallback() {
+                            override fun onComplete(requestId: Long) { capture(v) }
+                        },
+                    )
+                    // 离屏 WebView 某些版本不回调 VisualStateCallback，定时兜底。
+                    v.postDelayed({ capture(v) }, 700)
+                }
             } else {
-                capture(v)
+                v.post { capture(v) }
             }
         }
 
@@ -662,7 +708,7 @@ class MainActivity : Activity() {
                 toast("出图超时，请重试")
                 cleanup(view)
             }
-        }, 8000)
+        }, 10000)
         view.loadUrl(url)
     }
 
@@ -695,16 +741,23 @@ class MainActivity : Activity() {
         return 0
     }
 
-    /** contain 缩放进标准 9:16：只缩不裁，短了在底部补底色。 */
+    /**
+     * contain 收进标准 9:16：只缩不裁。四周再留一圈与卡片同色的安全带，
+     * 因为各家分享面板的预览框未必是 9:16，centerCrop 时会先切掉边框，
+     * 不会碰到日期、轨迹和表格。安全带与底色同色，肉眼看不出来。
+     */
     private fun fitToFrame(src: Bitmap, dw: Int, dh: Int, bg: Int): Bitmap {
-        val s = min(dw.toDouble() / src.width, dh.toDouble() / src.height)
+        val pad = max(16, (dh * 0.03).roundToInt())
+        val boxW = (dw - 2 * pad).coerceAtLeast(1)
+        val boxH = (dh - 2 * pad).coerceAtLeast(1)
+        val s = min(boxW.toDouble() / src.width, boxH.toDouble() / src.height)
         val tw = max(1, (src.width * s).roundToInt())
         val th = max(1, (src.height * s).roundToInt())
         val scaled = if (tw == src.width && th == src.height) src
         else Bitmap.createScaledBitmap(src, tw, th, true)
         val out = Bitmap.createBitmap(dw, dh, Bitmap.Config.ARGB_8888)
         out.eraseColor(bg)
-        Canvas(out).drawBitmap(scaled, (dw - scaled.width) / 2f, 0f, null)
+        Canvas(out).drawBitmap(scaled, (dw - tw) / 2f, (dh - th) / 2f, null)
         return out
     }
 
@@ -794,10 +847,14 @@ class MainActivity : Activity() {
             "完全隐藏轨迹与起跑时间",
         )
 
-        /** postVisualStateCallback 的请求号，非零即可。 */
+        /** postVisualStateCallback 的请求号，非零即可，两个阶段各用一个。 */
         const val EXPORT_FRAME_ID = 77L
+        const val EXPORT_FIT_FRAME_ID = 78L
 
-        /** 读 HTML 里的导出探针；旧版 Python 没有探针时返回空串，走尺寸兜底。 */
+        /**
+         * 读 HTML 里的导出探针；旧版 Python 没有探针时返回空串，走尺寸兜底。
+         * 返回 "画布CSS宽|画布CSS高|innerWidth|scrollHeight|visualViewport.width|dpr"。
+         */
         const val EXPORT_PROBE_JS =
             "window.__gcExportInfo ? window.__gcExportInfo() : ''"
 
