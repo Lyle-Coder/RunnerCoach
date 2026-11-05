@@ -129,8 +129,8 @@ adb install -r dist\garmin-coach-<version>-debug.apk
   只截到左上角。现在 App 先用 `setInitialScale(100/density)` 争取 1:1，
   再由 HTML 探针读 `visualViewport.width` 实测「能看见多少 CSS px」，给版心
   套 `transform: scale(f)`（f = 可视 CSS 宽 / 画布 CSS 宽）后等一帧再截。
-  出图时会 toast 一次「已校正手机端出图缩放 ×0.xx」，日志在
-  `adb logcat -s GarminCoach`，可据此确认新包是否生效。
+  发生校正时会套 `transform` 并按上面的公式出图；出图时会 toast 一次
+  「0.1.5 出图缩放 ×0.xx」，可据此确认新包是否生效。
 - **点活动出图会先弹「分享前脱敏」（0.1.4 起）**：原图（含完整 GPS 轨迹）/
   裁首尾各 200 m（默认）/ 完全隐藏轨迹与起跑时间。选择存在 `gc_prefs`，下次沿用。
   这一问同时是「分享前确认」，点「生成并分享」才会出图并弹系统分享。
@@ -211,7 +211,7 @@ WebView 自己就能 `draw(Canvas)` 出 PNG——这条比 Termux 强。
 另外设 `textZoom=100`（挡系统字体缩放）和 `LAYER_TYPE_SOFTWARE`（硬件加速下
 离屏 WebView 常画不进 Canvas）。真机对账看 `adb logcat -s GarminCoach` 的
 `render probe=...`（含 `visibleCss` / `f`）与 `render view=... out=...` 两行；
-发生校正时还会 toast 一次「已校正手机端出图缩放 ×0.xx」。
+出图时还会 toast 一次「0.1.5 出图缩放 ×0.xx」。
 
 **密码为什么能存**：佳明的 JWT 只有 2 小时，想"点一下就同步"就必须能自动续期，
 也就必须留密码。这里用 Android Keystore 里的 AES-GCM，密钥不出 TEE，

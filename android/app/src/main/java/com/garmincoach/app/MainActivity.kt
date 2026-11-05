@@ -650,11 +650,18 @@ class MainActivity : Activity() {
                 v.layoutParams = lp
                 forceSize(v, vw, targetH)
             }
+            // 把版本号和实测缩放系数显示出来：真机测试时一眼能确认装的是新包，
+            // 也能把 ×0.xx 直接报回来对账，不用插 adb。
+            val ver = try {
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+            } catch (t: Throwable) {
+                "?"
+            }
+            toast("$ver 出图缩放 ×" + String.format(Locale.US, "%.2f", f))
             if (abs(f - 1.0) > 0.02) {
                 // 画布比可视视口宽：套 transform 把版心缩进控件，等一帧再截。
                 // 这一步是修复「分享预览只剩一角」的关键，绝不靠裁图补救。
                 val js = "window.__gcFit ? window.__gcFit($f) : ''"
-                toast("已校正手机端出图缩放 ×" + String.format(Locale.US, "%.2f", f))
                 v.evaluateJavascript(js) { _ ->
                     v.postVisualStateCallback(
                         EXPORT_FIT_FRAME_ID,
