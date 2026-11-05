@@ -72,6 +72,11 @@ assets/chaquopy/app.imy  →  33 个 garmin_cn/*.pyc（含 appapi）
 **真机进度**：0.1.0 首次实装时 Python 返回值转换崩了（dict → java.util.Map），
 0.1.1 改成 JSON 字符串桥后启动、登录、同步、看板已在真机跑通。
 0.1.2 去掉常驻悬浮按钮、加了活动图导出；PNG 出图的密度自适应尚未看实机产物。
+后来在手机上撞到「分享预览四边被裁」：App 把 API 的 `height=2250` 直接当
+位图高度，输出非 9:16 长图，系统分享面板又按预览框 centerCrop 补了一刀。
+修复见 `garmin_cn/exportspec.py`：HTML 注入只读尺寸探针，App 实测缩放系数后
+按内容裁空白、contain 收进 1080×1920；桌面 `actcard.shoot()` 同步改用
+`pngutil.fit_to_frame()`，两端同一套口径。
 
 0.1.2 的界面调整：两个常驻右下角按钮改成顶部独立占位的工具栏 + ⋮ 菜单，
 WebView 不再被任何控件盖住；看板活动行写入 `data-aid`，点一下直接出该活动图。
@@ -90,7 +95,7 @@ submit_mfa(code)                # 验证码是一次性的，内部持有同一�
 sync(days, email, password)     # 会话过期自动续一次；email/password 不落盘
 dashboard(date)                 # 出网页看板
 card_html(date)                 # 出一图流 HTML（PNG 交给 WebView）
-act_card_html(id)               # 单次活动图 HTML 1080×2250，离线矢量轨迹
+act_card_html(id)               # 活动图 HTML：画布 1080×2250，成品 1080×1920
 runs(limit)                     # 最近跑步活动清单（选一条出图用）
 start_server(port=0)            # 127.0.0.1 只读服务，返回实际端口
 recent(limit)                   # 产物清单
@@ -105,7 +110,7 @@ status   → logged_in true, 数据天数 / 活动条数 / 今日恢复度与等
 dashboard→ ok, 33 KB HTML
 card     → ok, 1080×1920 HTML
 runs     → ok, 最近 5 条跑步（含 activity_id）
-act_card → ok, 1080×2250 HTML，无底图时矢量轨迹正常（Chrome 截图复核过）
+act_card → ok, 1080×2250 HTML（成品 1080×1920），无底图时矢量轨迹正常
 server   → 随机端口起来，首页可访问（6613 字节）
 read_html→ 越界读 config.json 被拒（False）
 ```

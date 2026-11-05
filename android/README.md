@@ -117,9 +117,13 @@ adb install -r dist\garmin-coach-<version>-debug.apk
   桌面版看板里这个属性不绑事件，完全无副作用。
 - 两种出图都走同一条链路：`appapi` 生成 HTML → 离屏 WebView 画成 PNG →
   存到 `相册/GarminCoach/` → 弹系统分享（可直接发微信）。
-- 活动图是 **1080×2250**（一图流是 1080×1920），没有高德底图时用纯 SVG
-  矢量轨迹回落，所以断网也能出图。首次出某条活动需要联网抓一次明细，
-  之后明细落库就一直离线可用。
+- 两种**成品**都统一为 1080×1920（9:16）。活动图 HTML 的布局基准仍是
+  1080×2250，App 截完会按底色找内容底边裁掉空白，再等比收进 9:16
+  （只缩不裁），与桌面 `pngutil.fit_to_frame()` 同一套规则。没有高德底图时
+  用纯 SVG 矢量轨迹回落，所以断网也能出图。首次出某条活动需要联网抓一次
+  明细，之后明细落库就一直离线可用。
+- 系统分享面板的**缩略图预览**由系统按预览框 centerCrop，可能仍看着像被切；
+  存进相册的原图是完整的，从相册选这张图发送即可。
 - 外链不会留在 WebView 里打开，统一交给系统浏览器——JS 桥只暴露给
   `127.0.0.1` 的本机页面。
 
@@ -182,10 +186,14 @@ WebView 自己就能 `draw(Canvas)` 出 PNG——这条比 Termux 强。
 截图前会 `translationY = 8000f` 挪到屏幕外：必须挂进窗口才会真正布局渲染，
 但 `draw(canvas)` 画的是它自己的内容，不受位移影响。
 
-离屏 WebView 必须开 `useWideViewPort` + `loadWithOverviewMode`：HTML 里写死
-`width=1080`，而 View 的 1080px 在 2x/3x 屏上等于 540/360dp，不开 overview
-会只截到左上角。开完不管 density 多少，整页都按宽度铺满，输出仍是 1080×H 像素。
-比例万一不对，`adb logcat -s GarminCoach` 里有 `render viewport=...` 可对照。
+离屏 WebView 仍开 `useWideViewPort` + `loadWithOverviewMode`（HTML 写死
+`width=1080`，不开 overview 会只截到左上角），但**不再靠猜 density 定画布**：
+HTML 末尾的只读探针 `window.__gcExportInfo()` 回报 layout 视口宽度与画布
+CSS 高度，App 据此反推缩放系数，必要时先把 View 加高，再按 View 的实际
+像素尺寸 `draw(Canvas)`，最后按底色找内容底边裁空白、contain 收进 9:16。
+另外设 `textZoom=100`（挡系统字体缩放）和 `LAYER_TYPE_SOFTWARE`（硬件加速下
+离屏 WebView 常画不进 Canvas）。真机对账看 `adb logcat -s GarminCoach` 的
+`render probe=...` 与 `render view=... crop=... out=...` 两行。
 
 **密码为什么能存**：佳明的 JWT 只有 2 小时，想"点一下就同步"就必须能自动续期，
 也就必须留密码。这里用 Android Keystore 里的 AES-GCM，密钥不出 TEE，
@@ -193,10 +201,11 @@ WebView 自己就能 `draw(Canvas)` 出 PNG——这条比 Termux 强。
 
 ## 已知限制（按优先级）
 
-1. **出图比例未在真机复核**：0.1.1 起 Python 启动、登录、同步、看板已在真机跑通；
-   PNG 出图的密度自适应是按 WebView 视口规则推的，还没看到实机产物。
-   若图片发虚或只有左上角，把 `adb logcat -s GarminCoach` 的
-   `render viewport=` 一行发出来即可定位。
+1. **9:16 自校正已实现，仍缺一张真机产物复核**：0.1.1 起 Python 启动、
+   登录、同步、看板已在真机跑通。早期版本把 API 的 `height` 直接当位图高度，
+   在手机上出现过分享预览四边被裁（日期缺字、轨迹只剩一角）；现在改成探针
+   实测 + 画幅归一，逻辑上不再依赖 density，但尚未看实机产物。若仍异常，
+   把 `adb logcat -s GarminCoach` 的 `render probe=` / `render view=` 发出来定位。
 2. **后台同步不可靠**：现在同步跑在普通线程里，切后台可能被系统掐。
    要稳得上前台服务 + 常驻通知，或 WorkManager 定时。
 3. **没有每日自动同步**：`WorkManager` 还没接，得手动下拉一次。

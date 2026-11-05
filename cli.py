@@ -1894,6 +1894,25 @@ def cmd_selftest(args) -> int:
     assert res["readiness"]["score"] is not None
     assert res["load"]["ctl"] >= 0
 
+    # 手机端出图画幅契约：成品必须 9:16，且 HTML 带尺寸探针。
+    # 少了任一项，App 导出的长图就会被系统分享面板二次裁切。
+    from garmin_cn import actcard as ACTCARD
+    from garmin_cn import card as CARD
+    from garmin_cn import exportspec as EX
+    EX.check()
+    for bg in (EX.BG_CARD, EX.BG_ACT):
+        sp = EX.spec(bg)
+        assert (sp["export_width"], sp["export_height"]) == (1080, 1920), sp
+        assert sp["export_width"] * 16 == sp["export_height"] * 9, sp
+        assert sp["export_mode"] == "contain", sp
+    for mod in (CARD, ACTCARD):
+        assert mod._EXPORT_PROBE == EX.probe()
+        assert EX.CANVAS_ATTR in mod._EXPORT_PROBE
+    for h in (CARD.build_html(res),
+              ACTCARD.build_html({}, {}, None, None, "自检")):
+        assert EX.CANVAS_ATTR in h and "__gcExportInfo" in h, "HTML 缺导出探针"
+        assert h.count("__gcExportInfo") == 1, "探针重复注入"
+
     # 营养目标：三大营养素的 kcal 之和必须回到目标摄入（差几 kcal 是四舍五入），
     # 且目标摄入不能低于 BMR——这条被改坏等于鼓励长期吃不够。
     from garmin_cn import nutrition as NU

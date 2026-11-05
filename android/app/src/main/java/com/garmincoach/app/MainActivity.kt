@@ -6,6 +6,7 @@ import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -37,6 +38,11 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.concurrent.thread
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * 界面：顶部一条不遮挡内容的工具栏 + 一整块 WebView（指向本机 Python 起的只读服务）。
@@ -407,6 +413,8 @@ class MainActivity : Activity() {
                     fileUrl(r.optString("html")),
                     r.optInt("width", 1080), r.optInt("height", 1920),
                     "garmin", "分享一图流",
+                    r.optInt("export_width", 1080), r.optInt("export_height", 1920),
+                    r.optString("export_bg", "#12161B"),
                 )
             }
         }
@@ -440,7 +448,7 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 单次活动图：先出 HTML，再截成 1080×2250 的 PNG 存相册并分享。 */
+    /** 单次活动图：先出 HTML（画布 1080×2250），再截成 1080×1920 的 PNG 分享。 */
     private fun exportActivity(id: String) {
         if (port == 0) {
             toast("还在启动，稍等一下")
@@ -464,6 +472,8 @@ class MainActivity : Activity() {
                     fileUrl(r.optString("html")),
                     r.optInt("width", 1080), r.optInt("height", 2250),
                     "garmin-run", "分享活动图：${r.optString("name")}",
+                    r.optInt("export_width", 1080), r.optInt("export_height", 1920),
+                    r.optString("export_bg", "#0F1319"),
                 )
             }
         }
@@ -472,51 +482,197 @@ class MainActivity : Activity() {
     private fun fileUrl(path: String): String =
         "http://127.0.0.1:$port/" + path.replace('\\', '/').substringAfterLast('/')
 
-    private fun renderToPng(url: String, w: Int, h: Int, prefix: String, shareTitle: String) {
+    /**
+     * 离屏 WebView 出图。原先直接把 API 的 height 当位图高度：density、
+     * overview 缩放和父容器重测量一叠加，页面会被放大后按固定画布裁掉四边；
+     * 而 1080×2250 这种非 9:16 长图又会被系统分享面板二次 centerCrop。
+     *
+     * 现在改成三段自校正：
+     *   1) HTML 探针回报真实 CSS 尺寸 → 反推缩放系数，必要时先加高 View；
+     *   2) draw(Canvas) 到 View 的实际像素尺寸，按底色找内容底边裁掉空白；
+     *   3) contain 等比收进 9:16 画幅，短了补底色，绝不裁内容。
+     * 于是无论 density / 屏幕尺寸 / 父容器怎么变，成品恒为 exportW×exportH。
+     */
+    private fun renderToPng(
+        url: String, w: Int, h: Int, prefix: String, shareTitle: String,
+        exportW: Int, exportH: Int, bgHex: String,
+    ) {
+        val bg = try {
+            Color.parseColor(bgHex)
+        } catch (t: Throwable) {
+            0xFF12161B.toInt()
+        }
         val view = WebView(this).apply {
             settings.javaScriptEnabled = true
-            // HTML 里写死 width=1080，但 View 的 1080px 在不同 density 上等于
-            // 不同的 dp。overview 会把整页按宽度缩到刚好铺满，最终画出来的
-            // 位图仍是 1080×H 像素，不会因为手机是 2x/3x 屏就只截到左上角。
+            // HTML 写死 width=1080，View 的 1080px 在不同 density 上等于不同的 dp。
+            // overview 仍负责把整页按宽度铺满；真正的缩放系数由探针实测，不再猜。
             settings.useWideViewPort = true
             settings.loadWithOverviewMode = true
-            // 放到屏幕外面：必须挂进窗口才会真正布局和渲染，
-            // 但直接 draw(canvas) 画的是它自己的内容，不受位移影响。
+            // 系统字体缩放会撑破固定版心（主 WebView 也是这么设的）。
+            settings.textZoom = 100
+            // 硬件加速下离屏 WebView 的 RenderNode 常画不进 Canvas，
+            // 软件层才能让 draw(Canvas) 拿到完整内容，代价只是出图慢一点。
+            setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+            setBackgroundColor(bg)
+            // 放到屏幕外：必须挂进窗口才会真正布局和渲染，
+            // 但 draw(canvas) 画的是它自己的内容，不受位移影响。
             translationY = 8000f
         }
         pull.addView(view, FrameLayout.LayoutParams(w, h))
-        view.measure(
-            View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
-            View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY),
-        )
-        view.layout(0, 0, w, h)
+        forceSize(view, w, h)
+
+        var done = false
+        var measured = false
+        var probed = false
+
+        fun cleanup(v: WebView) {
+            busy(false)
+            try {
+                pull.removeView(v)
+            } catch (t: Throwable) {
+                Log.w(TAG, "remove render view", t)
+            }
+            v.destroy()
+        }
+
+        fun capture(v: WebView) {
+            if (done) return
+            done = true
+            try {
+                // 父容器可能重新测量过：一切以 View 当下的实际像素尺寸为准。
+                val vw = v.width.coerceAtLeast(1)
+                val vh = v.height.coerceAtLeast(1)
+                forceSize(v, vw, vh)
+                val raw = Bitmap.createBitmap(vw, vh, Bitmap.Config.ARGB_8888)
+                v.draw(Canvas(raw))
+                val bottom = contentBottom(raw, bg)
+                if (bottom < 64) {
+                    // 软件层也没画出东西时别静默存一张空图，弹框比空白图好排查。
+                    throw IllegalStateException("页面没有渲染出内容（bottom=$bottom）")
+                }
+                // 底部只留 32px 呼吸，与桌面 pngutil.crop_height 口径一致。
+                val cropH = min(vh, (bottom + 32).coerceAtLeast(1))
+                val cropped = Bitmap.createBitmap(raw, 0, 0, vw, cropH)
+                val out = fitToFrame(cropped, exportW, exportH, bg)
+                Log.d(TAG, "render view=${vw}x${vh} crop=${vw}x${cropH} " +
+                    "out=${out.width}x${out.height} bg=$bgHex")
+                val uri = saveToGallery(out, prefix)
+                shareImage(uri, shareTitle)
+                toast("原图已存相册/GarminCoach；分享预览的裁切不影响原图")
+            } catch (t: Throwable) {
+                fatal("截图失败", t)
+            } finally {
+                cleanup(v)
+            }
+        }
+
+        fun handleProbe(v: WebView, value: String?) {
+            if (done || probed) return
+            probed = true
+            val raw = (value ?: "").trim().trim('"')
+            val parts = raw.split("|")
+            val cssH = parts.getOrNull(1)?.toIntOrNull() ?: 0
+            val innerW = parts.getOrNull(2)?.toIntOrNull() ?: 0
+            val vw = v.width.coerceAtLeast(1)
+            // 页面 1080 CSS px 铺满 View 宽度，k = 每个 CSS px 对应几个物理像素。
+            val k = if (innerW > 0) vw.toDouble() / innerW else 1.0
+            val expected = if (cssH > 0) ceil(cssH * k).toInt() else 0
+            Log.d(TAG, "render probe='$raw' view=${vw}x${v.height} k=$k expected=$expected")
+            if (expected > v.height + 2) {
+                // View 太矮，内容会被切：按实测高度加高，等一帧重排后再截。
+                val target = expected + 32
+                val lp = v.layoutParams ?: FrameLayout.LayoutParams(vw, target)
+                lp.height = target
+                v.layoutParams = lp
+                forceSize(v, vw, target)
+                v.post { capture(v) }
+            } else {
+                capture(v)
+            }
+        }
+
+        fun measure(v: WebView) {
+            if (done || measured) return
+            measured = true
+            var answered = false
+            try {
+                v.evaluateJavascript(EXPORT_PROBE_JS) { value ->
+                    answered = true
+                    handleProbe(v, value)
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "probe failed", t)
+                answered = true
+                handleProbe(v, null)
+            }
+            // 探针回调丢了也得出图：按兜底尺寸截，最终仍归一到 9:16。
+            v.postDelayed({ if (!answered && !done) handleProbe(v, null) }, 1500)
+        }
 
         view.webViewClient = object : WebViewClient() {
             override fun onPageFinished(v: WebView, u: String) {
-                // 出图比例不对时，adb logcat -s GarminCoach 能一眼看出视口宽度
-                v.evaluateJavascript(
-                    "(function(){return window.innerWidth+'x'+" +
-                        "document.documentElement.scrollWidth})()",
-                ) { Log.d(TAG, "render viewport=$it expect=$w x $h") }
-                // 字体和图表要一帧才稳，800ms 是实测下来不会截到半张图的余量
-                v.postDelayed({
-                    try {
-                        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                        v.draw(Canvas(bmp))
-                        val uri = saveToGallery(bmp, prefix)
-                        busy(false)
-                        shareImage(uri, shareTitle)
-                    } catch (t: Throwable) {
-                        busy(false)
-                        fatal("截图失败", t)
-                    } finally {
-                        pull.removeView(v)
-                        v.destroy()
-                    }
-                }, 800)
+                // 首帧真正画完再量，autofit 脚本和字体此时才生效。
+                v.postVisualStateCallback(
+                    EXPORT_FRAME_ID,
+                    object : WebView.VisualStateCallback() {
+                        override fun onComplete(requestId: Long) { measure(v) }
+                    },
+                )
+                // 离屏 WebView 某些版本不回调 VisualStateCallback，定时兜底。
+                v.postDelayed({ measure(v) }, 900)
             }
         }
+        // 页面加载不出来时别让进度圈一直转。
+        view.postDelayed({
+            if (!done) {
+                done = true
+                toast("出图超时，请重试")
+                cleanup(view)
+            }
+        }, 8000)
         view.loadUrl(url)
+    }
+
+    /** 手工 measure/layout：addView 之后父容器会再测一次，截图前再钉一次尺寸。 */
+    private fun forceSize(v: View, w: Int, h: Int) {
+        v.measure(
+            View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY),
+        )
+        v.layout(0, 0, w, h)
+    }
+
+    /** 从下往上找最后一行非底色像素，等价桌面 pngutil.content_height()。 */
+    private fun contentBottom(bmp: Bitmap, bg: Int): Int {
+        val w = bmp.width
+        val row = IntArray(w)
+        val br = Color.red(bg)
+        val bgc = Color.green(bg)
+        val bb = Color.blue(bg)
+        for (y in bmp.height - 1 downTo 0) {
+            bmp.getPixels(row, 0, w, 0, y, w, 1)
+            var x = 0
+            while (x < w) {
+                val c = row[x]
+                if (abs(Color.red(c) - br) > 6 || abs(Color.green(c) - bgc) > 6 ||
+                    abs(Color.blue(c) - bb) > 6) return y + 1
+                x += 4
+            }
+        }
+        return 0
+    }
+
+    /** contain 缩放进标准 9:16：只缩不裁，短了在底部补底色。 */
+    private fun fitToFrame(src: Bitmap, dw: Int, dh: Int, bg: Int): Bitmap {
+        val s = min(dw.toDouble() / src.width, dh.toDouble() / src.height)
+        val tw = max(1, (src.width * s).roundToInt())
+        val th = max(1, (src.height * s).roundToInt())
+        val scaled = if (tw == src.width && th == src.height) src
+        else Bitmap.createScaledBitmap(src, tw, th, true)
+        val out = Bitmap.createBitmap(dw, dh, Bitmap.Config.ARGB_8888)
+        out.eraseColor(bg)
+        Canvas(out).drawBitmap(scaled, (dw - scaled.width) / 2f, 0f, null)
+        return out
     }
 
     private fun saveToGallery(bmp: Bitmap, prefix: String): Uri {
@@ -596,6 +752,13 @@ class MainActivity : Activity() {
 
     private companion object {
         const val TAG = "GarminCoach"
+
+        /** postVisualStateCallback 的请求号，非零即可。 */
+        const val EXPORT_FRAME_ID = 77L
+
+        /** 读 HTML 里的导出探针；旧版 Python 没有探针时返回空串，走尺寸兜底。 */
+        const val EXPORT_PROBE_JS =
+            "window.__gcExportInfo ? window.__gcExportInfo() : ''"
 
         /** 注入到本机看板：给活动行加可点反馈，并把点击交给原生出图。 */
         const val BIND_JS = """

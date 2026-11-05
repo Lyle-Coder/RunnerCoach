@@ -14,11 +14,13 @@ import tempfile
 from pathlib import Path
 
 from .coach import brief
+from .exportspec import probe as _export_probe
 from .metrics import num
 from .plan import item_line
 
 W = 1080
 H = 1920          # 图区压缩后总高跟着收，避免两列对齐后底部空出一大块
+_EXPORT_PROBE = _export_probe()   # 手机端导出探针，桌面无头截图不调用
 CHROME_CANDIDATES = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
@@ -738,7 +740,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .aact-v small{{font-size:15px;font-weight:400;color:#9AA5B1;letter-spacing:0}}
 .aact-m{{font-size:15px;color:#7F8A97;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
 
-</style></head><body><div class="wrap">
+</style></head><body><div class="wrap" data-gc-canvas>
 <div class="top">
   <div class="date">{d.strftime("%m月%d日")}<small>{DOW[d.weekday()]}</small></div>
   <div class="meta">恢复度 {_f(r.get("score"))} / 100<br>佳明国区 · 已同步 {esc((sync_at or "")[:16]) or esc(res["date"])}</div>
@@ -809,7 +811,8 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 </div>
 
 <div class="foot"><span>数据来源：Garmin Connect（国区）</span><span>生成于 {dt.datetime.now().strftime("%m-%d %H:%M")}</span></div>
-</div></body></html>"""
+</div>
+{_EXPORT_PROBE}</body></html>"""
 
 
 def shoot(html_path: Path, png_path: Path, browser: str | None = None) -> Path:

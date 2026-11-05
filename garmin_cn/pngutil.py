@@ -117,13 +117,14 @@ def pad_to_9x16(path: Path, bg=(15, 19, 25), max_pad: int = 240) -> Path:
     target = round(w * 16 / 9)
     if h >= target or target - h > max_pad:
         return path
-    pad = bytearray(bytes(bg) * w)
+    pad = bytearray(bytes(_rgb(bg)) * w)
     write_png(path, w, target, rows + [bytearray(pad) for _ in range(target - h)])
     return path
 
 
 def content_height(path: Path, bg=(15, 19, 25), tol: int = 6) -> int:
     """从下往上找最后一行非背景像素，返回内容底边（用于诊断留白）。"""
+    bg = _rgb(bg)
     w, h, rows = read_png(path)
     for y in range(h - 1, -1, -1):
         row = rows[y]
@@ -133,3 +134,52 @@ def content_height(path: Path, bg=(15, 19, 25), tol: int = 6) -> int:
                     or abs(row[i + 2] - bg[2]) > tol):
                 return y + 1
     return 0
+
+
+def _rgb(bg) -> tuple[int, int, int]:
+    """底色既接受 '#0F1319'（导出契约里的写法），也接受 (15, 19, 25)。"""
+    if isinstance(bg, str):
+        s = bg.lstrip("#")
+        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+    return (int(bg[0]), int(bg[1]), int(bg[2]))
+
+
+def _resize(rows: list[bytearray], w: int, h: int,
+            nw: int, nh: int) -> list[bytearray]:
+    """最近邻缩放。只在内容超出画幅时触发，缩放比接近 1，够用且零依赖。"""
+    xs = [min(w - 1, x * w // nw) for x in range(nw)]
+    out: list[bytearray] = []
+    for y in range(nh):
+        src = rows[min(h - 1, y * h // nh)]
+        line = bytearray(nw * 3)
+        for x, sx in enumerate(xs):
+            i, j = sx * 3, x * 3
+            line[j:j + 3] = src[i:i + 3]
+        out.append(line)
+    return out
+
+
+def fit_to_frame(path: Path, w: int = 1080, h: int = 1920,
+                 bg=(15, 19, 25)) -> Path:
+    """把成品统一收进标准 9:16 画幅：只缩不裁，短了在底部补底色。
+
+    与安卓端 `MainActivity.fitToFrame()` 是同一套规则。手机相册、系统分享
+    面板、微信预览对非 9:16 竖图会按预览框 centerCrop，统一画幅后不会再
+    出现「日期缺头少尾、轨迹只剩一角」；内容超高时整体等比缩小，绝不切。
+    """
+    assert w > 0 and h > 0 and w * 16 == h * 9, (w, h)
+    sw, sh, rows = read_png(path)
+    s = min(w / sw, h / sh)
+    nw, nh = max(1, round(sw * s)), max(1, round(sh * s))
+    if (nw, nh) != (sw, sh):
+        rows = _resize(rows, sw, sh, nw, nh)
+    blank = bytearray(bytes(_rgb(bg)) * w)
+    left = max(0, (w - nw) // 2)
+    canvas: list[bytearray] = []
+    for r in rows[:h]:
+        line = bytearray(blank)
+        line[left * 3:left * 3 + nw * 3] = r[:nw * 3]
+        canvas.append(line)
+    canvas.extend(bytearray(blank) for _ in range(h - len(canvas)))
+    write_png(path, w, h, canvas)
+    return path

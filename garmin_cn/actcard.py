@@ -49,9 +49,11 @@ from pathlib import Path
 
 from .activity import project
 from .card import _find_browser
+from .exportspec import probe as _export_probe
 from .metrics import num
 
 W, H = 1080, 2250
+_EXPORT_PROBE = _export_probe()   # 手机端导出探针，桌面无头截图不调用
 
 # ---- 几何常量：卡片内容宽度 = 版心 - 边框(2) - 左右内边距 ------------------
 PAD = 36                       # 页面左右留白
@@ -910,7 +912,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
 <meta name="viewport" content="width={W},initial-scale=1,viewport-fit=cover">
 <style>{css}</style></head>
 <body>
-<div class="page">
+<div class="page" data-gc-canvas>
 
   <div class="head">
     <div class="hleft">
@@ -1002,6 +1004,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
   }}
 }})();
 </script>
+{_EXPORT_PROBE}
 </body></html>"""
 
 
@@ -1155,11 +1158,12 @@ def shoot(html_path: Path, png_path: Path, w: int = W, h: int = H) -> Path:
     if not png_path.exists():
         raise RuntimeError("浏览器没有产出图片：" +
                            (proc.stderr or b"").decode("utf-8", "ignore")[:300])
-    from .pngutil import content_height, crop_height, pad_to_9x16
+    from .exportspec import BG_ACT
+    from .pngutil import content_height, crop_height, fit_to_frame
     # 底部只留 32px 呼吸空间，短距离活动就不会拖着一大块空白
-    crop_height(png_path, content_height(png_path) + 32)
-    # 再补到 1080×1920：和每日看板同画幅，手机各处的缩略图不再二次裁切
-    pad_to_9x16(png_path)
+    crop_height(png_path, content_height(png_path, bg=BG_ACT) + 32)
+    # 统一收进 1080×1920：与 App 端同一套 contain 规则，分享预览不再二次裁切
+    fit_to_frame(png_path, bg=BG_ACT)
     return png_path
 
 

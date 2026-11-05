@@ -13,6 +13,8 @@ Android 里既看不到 stdout、也不该靠退出码判断成功。这里把�
    App 那边把密码存进 Android Keystore，每次启动时传进来续期——Python 侧不留。
 2. **不做交互**。需要邮箱验证码时返回 `need_mfa`，由界面再调 `submit_mfa()`。
 3. **不假设有浏览器**。`card_html()` 只出 HTML，PNG 由 WebView 自己截。
+   返回的 `width/height` 是 HTML 布局基准，`export_*` 是成品 9:16 画幅契约
+   （见 `exportspec.py`）：旧 APK 只读前者，新 APK 两个都用。
 
 命令行用法（调试用）：
     py -3 -m garmin_cn.appapi status
@@ -29,6 +31,7 @@ from pathlib import Path
 
 from .auth import AuthError, GarminCNAuth, MfaRequired
 from .client import GarminCNClient, SessionExpired
+from .exportspec import BG_ACT, BG_CARD, spec as export_spec
 from .metrics import derive
 from .store import Store
 from .sync import SyncService
@@ -335,7 +338,10 @@ def card_html(date: str | None = None) -> dict:
     out = OUT / f"card-{d}.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
-    return {"ok": True, "html": str(out), "date": d, "width": 1080, "height": 1920}
+    # width/height 是 HTML 的布局基准，旧 APK 仍按它建 View；export_* 是
+    # 新 APK 用的成品画幅契约（9:16），两者含义不同，别混用。
+    return {"ok": True, "html": str(out), "date": d, "width": 1080, "height": 1920,
+            **export_spec(BG_CARD)}
 
 
 def runs(limit: int = 30) -> dict:
@@ -372,7 +378,10 @@ def runs(limit: int = 30) -> dict:
 
 def act_card_html(activity_id: str, title: str | None = None,
                   email: str | None = None, password: str | None = None) -> dict:
-    """单次活动图的 HTML（1080×2250），PNG 交给 WebView 截。
+    """单次活动图的 HTML（布局基准 1080×2250，成品统一 1080×1920），PNG 交给 WebView 截。
+
+    `height=2250` 只表示 HTML 需要多高的画布，不是成品尺寸；App 会按
+    `export_*` 把内容等比收进 9:16，避免分享面板对超长图二次裁切。
 
     与 `cli.py act --card` 的区别：直接调 `actcard.build_html`，不碰 `shoot()`
     （那要无头 Chrome），也不取高德底图（`file://` 图片在 http 页面里加载不了，
@@ -409,7 +418,8 @@ def act_card_html(activity_id: str, title: str | None = None,
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(html, encoding="utf-8")
         return {"ok": True, "html": str(out), "name": row.get("name") or "活动",
-                "date": row.get("date"), "width": W, "height": H}
+                "date": row.get("date"), "width": W, "height": H,
+                **export_spec(BG_ACT)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
