@@ -486,10 +486,16 @@ def cmd_act(args) -> int:
     print(f"  分圈 {len(detail['laps'])}｜轨迹点 {len(detail['track'])}｜时序点 {len(detail['series']['points'])}")
 
     if args.card:
+        from garmin_cn import privacy as PV
         from garmin_cn.actcard import render as render_act
-        out = OUT / f"act-{row['date']}-{row['activity_id']}.png"
+        mode = PV.normalize(args.privacy)
+        suffix = "" if mode == PV.MODE_NONE else f"-{mode}"
+        out = OUT / f"act-{row['date']}-{row['activity_id']}{suffix}.png"
         try:
-            path, is_png = _shot(render_act, out, row, detail, title=args.title)
+            path, is_png = _shot(render_act, out, row, detail,
+                                 title=args.title, privacy=mode)
+            if mode != PV.MODE_NONE:
+                print(f"√ 分享脱敏：{PV.note(mode)}")
         except Exception as e:
             print(f"× 出图失败：{type(e).__name__}: {e}")
             return 4
@@ -1913,6 +1919,32 @@ def cmd_selftest(args) -> int:
         assert EX.CANVAS_ATTR in h and "__gcExportInfo" in h, "HTML 缺导出探针"
         assert h.count("__gcExportInfo") == 1, "探针重复注入"
 
+    # 分享前轨迹脱敏：档位口径 + 「脱敏版绝不泄漏轨迹」的硬约束。
+    # 用合成轨迹（约 1.1 km 直线），不碰任何真实活动 ID / 坐标 / 日期。
+    from garmin_cn import privacy as PV
+    assert PV.MODES == ("none", "trim", "hide")
+    synth = [[30.0 + i * 0.0001, 120.0] for i in range(100)]
+    _, ti = PV.mask_track(synth, "trim")
+    assert 0 < ti["kept"] < 100 and ti["cut_head_m"] >= 200 and ti["cut_tail_m"] >= 200
+    assert PV.mask_track(synth, "none")[1]["kept"] == 100
+    assert PV.mask_track(synth, "hide")[0] == []
+    assert PV.normalize("bogus") == "trim" and PV.normalize(None) == "none"
+    priv_row = {"name": "自检活动", "date": "2026-11-05",
+                "start_ts": "2026-11-05T17:46:00", "distance_m": 6200,
+                "duration_s": 2100, "type": "running", "raw": "{}"}
+    priv_detail = {"track": synth, "summary": {}, "laps": [],
+                   "series": {"points": []}}
+    h_none = ACTCARD.build_html(priv_row, priv_detail, privacy="none")
+    h_trim = ACTCARD.build_html(priv_row, priv_detail, privacy="trim")
+    h_hide = ACTCARD.build_html(priv_row, priv_detail, privacy="hide")
+    assert '<path d="M' in h_none and 'data-gc-privacy="none"' in h_none
+    assert "已脱敏" in h_trim and 'data-gc-privacy="trim"' in h_trim
+    assert '<path d="M' not in h_hide and 'data-gc-private="hide"' in h_hide
+    assert "轨迹已隐藏" in h_hide and "时间已隐藏" in h_hide
+    assert "17:46" not in h_hide and "30.000" not in h_hide
+    # 旧调用方不传档位时必须与 none 逐字节一致（兼容老 APK / 老 CLI）
+    assert ACTCARD.build_html(priv_row, priv_detail) == h_none
+
     # 营养目标：三大营养素的 kcal 之和必须回到目标摄入（差几 kcal 是四舍五入），
     # 且目标摄入不能低于 BMR——这条被改坏等于鼓励长期吃不够。
     from garmin_cn import nutrition as NU
@@ -2115,6 +2147,8 @@ def main() -> int:
     q.add_argument("--force", action="store_true", help="忽略缓存重新抓取")
     q.add_argument("--card", action="store_true", help="同时生成活动图 PNG")
     q.add_argument("--title", help="覆盖活动图标题（如赛事名）")
+    q.add_argument("--privacy", choices=("none", "trim", "hide"), default="none",
+                   help="分享脱敏：none 原图 / trim 首尾各裁 200m / hide 完全隐藏轨迹")
     q.add_argument("--open", action="store_true")
     q.set_defaults(func=cmd_act)
 

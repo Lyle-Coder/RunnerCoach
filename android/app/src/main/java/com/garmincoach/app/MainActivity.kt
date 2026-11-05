@@ -199,7 +199,7 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun activity(id: String) {
             if (id.isBlank()) return
-            ui { exportActivity(id) }
+            ui { askPrivacy(id) }
         }
     }
 
@@ -440,7 +440,7 @@ class MainActivity : Activity() {
                 AlertDialog.Builder(this)
                     .setTitle("选一条跑步出图（点看板里的活动名也行）")
                     .setItems(labels) { _, which ->
-                        exportActivity(items.getJSONObject(which).optString("id"))
+                        askPrivacy(items.getJSONObject(which).optString("id"))
                     }
                     .setNegativeButton("取消", null)
                     .show()
@@ -448,15 +448,45 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * 分享前脱敏：轨迹起终点能反推住址，所以出图前先问一次档位。
+     * 这一步同时充当「分享前确认」——点「生成并分享」才会真的出图并弹分享面板。
+     * 选择存在 gc_prefs（与存密码的 gc_secrets 分开），默认 trim。
+     */
+    private fun askPrivacy(id: String) {
+        val prefs = getSharedPreferences("gc_prefs", MODE_PRIVATE)
+        val saved = prefs.getString("share_privacy", "trim") ?: "trim"
+        val found = PRIVACY_MODES.indexOf(saved)
+        var checked = if (found >= 0) found else 1
+        AlertDialog.Builder(this)
+            .setTitle("分享前脱敏")
+            .setMessage(
+                "这张活动图含你的 GPS 轨迹，起终点可能暴露住址或常跑路线。\n" +
+                    "选好档位后才会生成图片并分享；原图会先存进相册。"
+            )
+            .setSingleChoiceItems(PRIVACY_LABELS, checked) { _, which -> checked = which }
+            .setNegativeButton("取消", null)
+            .setPositiveButton("生成并分享") { _, _ ->
+                val mode = PRIVACY_MODES[checked]
+                prefs.edit().putString("share_privacy", mode).apply()
+                Log.d(TAG, "share privacy=$mode")
+                exportActivity(id, mode)
+            }
+            .show()
+    }
+
     /** 单次活动图：先出 HTML（画布 1080×2250），再截成 1080×1920 的 PNG 分享。 */
-    private fun exportActivity(id: String) {
+    private fun exportActivity(id: String, privacy: String = "trim") {
         if (port == 0) {
             toast("还在启动，稍等一下")
             return
         }
         busy(true)
         thread {
-            val r = apiCall("act_card_html", id, null, secrets.email(), secrets.password())
+            // 第 5 个参数是分享脱敏档位；旧内核只有 4 个形参，
+            // 所以这个 APK 必须与新 Python 内核一起打包（sync_python.bat）。
+            val r = apiCall("act_card_html", id, null, secrets.email(),
+                            secrets.password(), privacy)
             ui {
                 if (!r.optBoolean("ok")) {
                     busy(false)
@@ -468,10 +498,13 @@ class MainActivity : Activity() {
                     }
                     return@ui
                 }
+                val mode = r.optString("privacy", "none")
+                val tag = if (mode == "none") "" else "（已脱敏）"
+                if (mode != "none") toast(r.optString("privacy_note"))
                 renderToPng(
                     fileUrl(r.optString("html")),
                     r.optInt("width", 1080), r.optInt("height", 2250),
-                    "garmin-run", "分享活动图：${r.optString("name")}",
+                    "garmin-run", "分享活动图$tag：${r.optString("name")}",
                     r.optInt("export_width", 1080), r.optInt("export_height", 1920),
                     r.optString("export_bg", "#0F1319"),
                 )
@@ -752,6 +785,14 @@ class MainActivity : Activity() {
 
     private companion object {
         const val TAG = "GarminCoach"
+
+        /** 与 garmin_cn/privacy.py 的 MODES 一一对应，顺序不能改。 */
+        val PRIVACY_MODES = arrayOf("none", "trim", "hide")
+        val PRIVACY_LABELS = arrayOf<CharSequence>(
+            "原图（含完整 GPS 轨迹）",
+            "裁首尾各 200 m（推荐）",
+            "完全隐藏轨迹与起跑时间",
+        )
 
         /** postVisualStateCallback 的请求号，非零即可。 */
         const val EXPORT_FRAME_ID = 77L

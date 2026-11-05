@@ -52,8 +52,8 @@
 | `garmin_cn/appapi.py` | App ↔ Python 的唯一接口面，12 个函数全返回 JSON 化 dict | ✅ 本地实测 |
 | `android/` 工程骨架 | Gradle + Manifest + Kotlin（MainActivity / Secrets）+ 图标 | ✅ **已编译出 APK** |
 | `android/build.bat` | 一键构建（便携 JDK 17 + Gradle 8.7 + SDK 34） | ✅ 实测，增量 16 秒 |
-| `android/sync_python(.sh/.bat)` | 把 `garmin_cn` 同步进 source set | ✅ 32 个 .py / 593 KB |
-| `dist/garmin-coach-0.1.3-debug.apk` | 成品 | ✅ 23 MB，debug 签名，arm64-v8a |
+| `android/sync_python(.sh/.bat)` | 把 `garmin_cn` 同步进 source set | ✅ 34 个 .py（含 `privacy.py`） |
+| `dist/garmin-coach-0.1.4-debug.apk` | 成品 | ✅ debug 签名，arm64-v8a |
 
 构建环境（便携、免管理员，工具链路径通过环境变量配置）：
 JDK 17（清华镜像）+ Gradle 8.7（华为镜像）+ SDK 34。
@@ -62,11 +62,11 @@ JDK 17（清华镜像）+ Gradle 8.7（华为镜像）+ SDK 34。
 APK 实测结构：
 
 ```
-package: com.garmincoach.app  versionName 0.1.3  minSdk 29  targetSdk 34
+package: com.garmincoach.app  versionName 0.1.4  versionCode 5  minSdk 29  targetSdk 34
 launchable-activity: com.garmincoach.app.MainActivity
 python_version: 3.13   abi: arm64-v8a
-assets/chaquopy/app.imy  →  33 个 garmin_cn/*.pyc（含 appapi）
-签名：Android Debug（CN=Android Debug）
+assets/chaquopy/app.imy  →  35 个 garmin_cn/*.pyc（含 privacy / exportspec / appapi）
+签名：Android Debug（APK Signature Scheme v2）
 ```
 
 **真机进度**：0.1.0 首次实装时 Python 返回值转换崩了（dict → java.util.Map），
@@ -85,6 +85,13 @@ WebView 不再被任何控件盖住；看板活动行写入 `data-aid`，点一�
 `PullRefreshLayout.kt` 手写、零 AndroidX 依赖，松手即同步 30 天 + 重出看板 + 刷新。
 ⋮ 里只剩今日一图流 / 跑步活动图 / 重新登录。
 
+0.1.4 加分享前轨迹脱敏：点看板活动行或 ⋮ 选活动后，先弹「分享前脱敏」单选
+（原图 / 裁首尾各 200 m / 完全隐藏轨迹），默认第二档，选择记在 `gc_prefs`；
+确认后才把第 5 个参数 `privacy` 传给 `act_card_html`。参数放在末尾且 Python 侧
+有默认值，**旧 APK 传 4 个参数时行为不变**。脱敏由 `garmin_cn/privacy.py` 在生成
+HTML 之前完成，产物不含原始折线、底图或精确起跑时间；`hide` 档用同尺寸占位块
+顶住轨迹卡，避免 `.mid` 的 flex 塌版。内核与 APK 版本同步对齐到 0.1.4 (code 5)。
+
 `appapi.py` 的接口面：
 
 ```python
@@ -95,7 +102,8 @@ submit_mfa(code)                # 验证码是一次性的，内部持有同一�
 sync(days, email, password)     # 会话过期自动续一次；email/password 不落盘
 dashboard(date)                 # 出网页看板
 card_html(date)                 # 出一图流 HTML（PNG 交给 WebView）
-act_card_html(id)               # 活动图 HTML：画布 1080×2250，成品 1080×1920
+act_card_html(id, privacy="none")  # 活动图 HTML：画布 1080×2250，成品 1080×1920
+                                   # privacy: none 原图 / trim 裁首尾 200m / hide 全隐藏
 runs(limit)                     # 最近跑步活动清单（选一条出图用）
 start_server(port=0)            # 127.0.0.1 只读服务，返回实际端口
 recent(limit)                   # 产物清单
@@ -160,7 +168,8 @@ Termux 版改一行 Python 就行，APK 要重新打包分发——这是壳的�
    （现在得手动下拉一次）。
 3. **更多原生入口**：轨迹回放、简报。活动图已能从看板点行或 ⋮ 菜单导出。
 4. **设置页**：体重目标（cut/maintain/gain）、高德 Key、数据目录清理。
-5. **分享脱敏**：activity 图含轨迹，分享前自动裁首尾 200 m。
+5. ~~分享脱敏~~（0.1.4 已做首尾裁剪 / 完全隐藏）：剩下「家附近 500 m 模糊化」
+   和回放 MP4 导出前复用同一档位。
 
 ---
 

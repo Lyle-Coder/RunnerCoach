@@ -377,8 +377,14 @@ def runs(limit: int = 30) -> dict:
 
 
 def act_card_html(activity_id: str, title: str | None = None,
-                  email: str | None = None, password: str | None = None) -> dict:
+                  email: str | None = None, password: str | None = None,
+                  privacy: str = "none") -> dict:
     """单次活动图的 HTML（布局基准 1080×2250，成品统一 1080×1920），PNG 交给 WebView 截。
+
+    `privacy` 是分享脱敏档位：`none` 原图 / `trim` 首尾各裁 200 m /
+    `hide` 完全隐藏轨迹。放在参数末尾且默认 `none`，**旧 APK 传 4 个参数时
+    行为完全不变**；新 APK 多传一个档位即可。脱敏在生成 HTML 前完成，
+    产物里不会有原始折线、底图或精确起跑时间。
 
     `height=2250` 只表示 HTML 需要多高的画布，不是成品尺寸；App 会按
     `export_*` 把内容等比收进 9:16，避免分享面板对超长图二次裁切。
@@ -411,14 +417,20 @@ def act_card_html(activity_id: str, title: str | None = None,
         if not detail:
             return {"ok": False, "error": "没拿到活动明细"}
 
+        from . import privacy as PV
         from .actcard import H, W, build_html
 
-        html = build_html(row, detail, None, None, title)
-        out = OUT / f"act-{row.get('date') or 'unknown'}-{aid}.html"
+        mode = PV.normalize(privacy)
+        _, mask_info = PV.mask_track(detail.get("track") or [], mode)
+        html = build_html(row, detail, None, None, title, privacy=mode)
+        # 档位不同就换文件名：别让脱敏版和原图互相覆盖，也便于事后自证
+        suffix = "" if mode == PV.MODE_NONE else f"-{mode}"
+        out = OUT / f"act-{row.get('date') or 'unknown'}-{aid}{suffix}.html"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(html, encoding="utf-8")
         return {"ok": True, "html": str(out), "name": row.get("name") or "活动",
                 "date": row.get("date"), "width": W, "height": H,
+                "privacy": mode, "privacy_note": PV.note(mode, mask_info),
                 **export_spec(BG_ACT)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}

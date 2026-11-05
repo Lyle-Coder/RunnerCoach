@@ -51,6 +51,7 @@ from .activity import project
 from .card import _find_browser
 from .exportspec import probe as _export_probe
 from .metrics import num
+from . import privacy as PV
 
 W, H = 1080, 2250
 _EXPORT_PROBE = _export_probe()   # 手机端导出探针，桌面无头截图不调用
@@ -779,7 +780,10 @@ def _mix(c1: str, c2: str, k: float) -> str:
 
 # ------------------------------------------------------------------ 组装
 def build_html(row: dict, detail: dict, photo: str | None = None,
-               basemap: dict | None = None, title: str | None = None) -> str:
+               basemap: dict | None = None, title: str | None = None,
+               privacy: str = PV.MODE_NONE) -> str:
+    """组装活动图 HTML。`privacy` 是分享脱敏档位，默认原图，绝不改旧调用方行为。"""
+    mode = PV.normalize(privacy)
     raw = row.get("raw")
     if isinstance(raw, str):
         try:
@@ -791,13 +795,19 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     w = detail.get("weather") or {}
     laps = detail.get("laps") or []
     points = ((detail.get("series") or {}).get("points")) or []
-    track = detail.get("track") or []
+    # 脱敏在组装 HTML 之前做完：底图（含真实坐标）和照片（可能带位置）也一律不叠。
+    # 出完 PNG 再打码是没用的——原始折线仍会留在 output/*.html 里。
+    track, mask_info = PV.mask_track(detail.get("track") or [], mode)
+    if mode != PV.MODE_NONE:
+        basemap = None
+        photo = None
 
     dist_km = (num(row.get("distance_m")) or 0) / 1000
     dur = num(row.get("duration_s")) or 0
     pace = (num(row.get("pace_s_km")) or (dur / dist_km if dist_km else None))
     th = theme_for(row.get("type"))
-    start = (row.get("start_ts") or "")[11:16]
+    # hide 档连精确起跑时刻也去掉：固定作息 + 日期同样能缩小常跑地点范围
+    start = "" if mode == PV.MODE_HIDE else (row.get("start_ts") or "")[11:16]
     date_txt = (row.get("date") or "")
     wd = ""
     try:
@@ -843,6 +853,18 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     # 只有真的标了橙点才写图例，否则会出现「有图例没点」的尴尬
     fix_hint = "橙点为校准点" if any(p.get("fixed") for p in points) else ""
     css = _CSS
+
+    # ---- 分享脱敏：轨迹区要么画裁过的折线，要么换成同尺寸占位块 ----------
+    time_txt = (f" · {esc(start)} {esc('起跑' if th['is_run'] else '开始')}"
+                if start else " · 时间已隐藏")
+    trk_badge = PV.badge(mode, mask_info)
+    trk_meta = trk_badge or (
+        esc((basemap or {}).get("meta", {}).get("region") or "")
+        if basemap else "无底图 · 自 GPS")
+    if mode != PV.MODE_NONE and len(track) < 2:
+        trk_body = PV.placeholder(mode, mask_info, TRK_CW, TRK_CH)
+    else:
+        trk_body = track_svg(track, TRK_CW, TRK_CH, photo, basemap, th)
 
     # ---- 主指标口径：跑步说配速，骑车说时速，游泳说每 100 米，力量课说时长 ----
     kind = th["kind"]
@@ -912,12 +934,12 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
 <meta name="viewport" content="width={W},initial-scale=1,viewport-fit=cover">
 <style>{css}</style></head>
 <body>
-<div class="page" data-gc-canvas>
+<div class="page" data-gc-canvas data-gc-privacy="{mode}">
 
   <div class="head">
     <div class="hleft">
       <div class="hname">{esc(title or row.get("name"))}</div>
-      <div class="hsub">{esc(date_txt)} {esc(wd)} · {esc(start)} {esc('起跑' if th['is_run'] else '开始')}{(' · ' + esc(weather_txt)) if weather_txt else ''}</div>
+      <div class="hsub">{esc(date_txt)} {esc(wd)}{time_txt}{(' · ' + esc(weather_txt)) if weather_txt else ''}</div>
     </div>
     <div class="htag">{esc(th['tag'])}</div>
   </div>
@@ -938,8 +960,8 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
 
   <div class="mid">
     <div class="card trk">
-      <div class="ctitle">轨迹<span>{esc((basemap or {}).get("meta", {}).get("region") or "") if basemap else '无底图 · 自 GPS'}</span></div>
-      {track_svg(track, TRK_CW, TRK_CH, photo, basemap, th)}
+      <div class="ctitle">轨迹<span>{trk_meta}</span></div>
+      {trk_body}
     </div>
     <div class="card zc">
       {zone_block(hr_z, "心率分区", "占比 / 时长")}
@@ -1076,6 +1098,11 @@ body{width:1080px;overflow:hidden;background:#0F1319;
   display:flex;justify-content:space-between;align-items:baseline}
 .ctitle span{font-size:18px;color:#76838F;font-weight:400}
 .empty{display:flex;align-items:center;justify-content:center;color:#64707E;font-size:19px}
+.gc-private{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:9px;border:1px dashed #2C3B4A;border-radius:14px;color:#8593A3;
+  font-size:18px;text-align:center;box-sizing:border-box}
+.gc-private b{color:#5CE1D0;font-size:23px;font-weight:600;letter-spacing:1px}
+.gc-private small{font-size:14px;color:#64707E;line-height:1.6}
 .src{font-size:13px;fill:#DCE6F0;opacity:0.75;paint-order:stroke;
   stroke:#101A26;stroke-width:1.2}
 .pin{font-size:19px;font-weight:700;paint-order:stroke;
@@ -1168,17 +1195,23 @@ def shoot(html_path: Path, png_path: Path, w: int = W, h: int = H) -> Path:
 
 
 def render(row: dict, detail: dict, out_png: Path, photo: Path | None = None,
-           use_map: bool = True, title: str | None = None) -> Path:
+           use_map: bool = True, title: str | None = None,
+           privacy: str = PV.MODE_NONE) -> Path:
     out_png = Path(out_png)
     html_path = out_png.with_suffix(".html")
     html_path.parent.mkdir(parents=True, exist_ok=True)
-    photo_uri = photo.resolve().as_uri() if photo and Path(photo).exists() else None
+    mode = PV.normalize(privacy)
+    # 脱敏版不碰底图缓存：ensure() 会把真实坐标发给高德并落盘 PNG
+    photo_uri = None if mode != PV.MODE_NONE else (
+        photo.resolve().as_uri() if photo and Path(photo).exists() else None)
     mapinfo = None
-    if use_map and os.environ.get("GARMIN_MAP", "1") != "0":
+    if mode == PV.MODE_NONE and use_map and os.environ.get("GARMIN_MAP", "1") != "0":
         from . import basemap as _bm
         got = _bm.ensure(detail.get("track") or [], TRK_CW, TRK_CH,
                          str(row.get("activity_id") or "act"))
         if got:
             mapinfo = {"png": Path(got["png"]).resolve().as_uri(), "meta": got["meta"]}
-    html_path.write_text(build_html(row, detail, photo_uri, mapinfo, title), encoding="utf-8")
+    html_path.write_text(
+        build_html(row, detail, photo_uri, mapinfo, title, privacy=mode),
+        encoding="utf-8")
     return shoot(html_path, out_png)
