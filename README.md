@@ -209,6 +209,7 @@ RunnerCoach/
 | [`docs/activity-data-inventory.md`](docs/activity-data-inventory.md) | 国区接口分层与字段清单（已去除全部真实样本数值） |
 | [`docs/交付形态调研.md`](docs/交付形态调研.md) | 为什么选本地形态、功能清单、隐私检查项 |
 | [`docs/APP方案.md`](docs/APP方案.md) | 安卓 App 的路线取舍、接口面与踩坑记录 |
+| [`docs/发布流程.md`](docs/发布流程.md) | 版本与 Tag 规范、打包与校验、Gitee Release 上传、APK 分发与回滚 |
 | [`android/README.md`](android/README.md) | APK 构建、交互设计与已知限制 |
 
 > `tools/make_plan.py` / `make_card.py` 是个人备赛课表生成器，含真实赛事与训练史，**不在仓库中**。
