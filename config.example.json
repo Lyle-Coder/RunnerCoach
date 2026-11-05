@@ -1,0 +1,6 @@
+{
+  "_comment": "复制为 config.json 后填写；config.json 已被 .gitignore 排除，切勿提交。也可以完全不建这个文件，直接用 login 命令交互输入。",
+  "email": "your-garmin-cn-account@example.com",
+  "password": "",
+  "body_goal": "maintain"
+}

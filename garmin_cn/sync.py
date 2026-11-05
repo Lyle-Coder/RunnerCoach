@@ -1,0 +1,266 @@
+"""同步：把 /gc-api/ 原始返回解析成扁平日记录并落库。"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+from typing import Any
+
+from .client import GarminCNClient, SessionExpired
+from .metrics import daterange, num
+from .store import Store
+
+
+def _g(d: Any, *keys, default=None):
+    """安全取值，支持 a.b.c 形式的多层 key。"""
+    cur = d
+    for k in keys:
+        if isinstance(cur, dict):
+            cur = cur.get(k)
+        else:
+            return default
+        if cur is None:
+            return default
+    return cur
+
+
+def _ts_local(ms) -> str | None:
+    v = num(ms)
+    if not v:
+        return None
+    try:
+        return dt.datetime.fromtimestamp(v / 1000).strftime("%Y-%m-%d %H:%M")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def parse_sleep(payload: dict | None) -> dict:
+    dto = _g(payload, "dailySleepDTO") or payload or {}
+    scores = _g(dto, "sleepScores", "overall", "value")
+    total = num(_g(dto, "sleepTimeSeconds"))
+    # 小睡：napTimeSeconds 是当天全部小睡之和；dailyNapDTOS 是每一段的明细
+    # （起止、napFeedback 时机评价、napSource 自动/手动）。注意它**不包含**在
+    # sleepTimeSeconds 里，日间小睡要单独累加才反映真实睡眠总量。
+    nap_sec = num(_g(dto, "napTimeSeconds"))
+    naps = _g(dto, "dailyNapDTOS") or []
+    # 佳明的动态睡眠需求（分钟）：基线 480，按训练负荷/睡眠史/HRV/小睡逐日调整
+    # （actual 420~540 都出现过）。比固定 8 小时更能反映「今晚该睡多少」。
+    need = num(_g(dto, "sleepNeed", "actual"))
+    return {
+        "sleep_total_min": round(total / 60) if total else None,
+        "sleep_score": round(num(scores)) if scores is not None else None,
+        "deep_min": round(num(_g(dto, "deepSleepSeconds"), 0) / 60) or None,
+        "light_min": round(num(_g(dto, "lightSleepSeconds"), 0) / 60) or None,
+        "rem_min": round(num(_g(dto, "remSleepSeconds"), 0) / 60) or None,
+        "awake_min": round(num(_g(dto, "awakeSleepSeconds"), 0) / 60) or None,
+        "nap_min": round(nap_sec / 60) if nap_sec else None,
+        "naps": len(naps) or None,
+        "sleep_need_min": round(need) if need else None,
+        "sleep_start": _ts_local(_g(dto, "sleepStartTimestampLocal")),
+        "sleep_end": _ts_local(_g(dto, "sleepEndTimestampLocal")),
+    }
+
+
+def parse_hrv(payload: dict | None) -> dict:
+    s = _g(payload, "hrvSummary") or payload or {}
+    return {
+        "hrv_night": num(_g(s, "lastNightAvg")),
+        "hrv_weekly": num(_g(s, "weeklyAvg")),
+        "hrv_status": _g(s, "status"),
+    }
+
+
+def parse_bb(payload: Any, tz_hours: int = 8) -> dict:
+    """身体电量：从数值序列里取最高/最低/当前值，另外读 charged/drained。
+
+    `bodyBatteryValuesArray` 是 [[毫秒时间戳, 电量], ...]，按时间升序。
+    序列最后一点就是「此刻还剩多少」——这是看板最该显示的那个数，
+    daily summary 里只有全天最高/最低，看不出现在还剩多少。
+    """
+    # 日接口有时把一天的记录包成 [ {...} ]（reports/daily 那种口径），先拆开
+    if isinstance(payload, list):
+        payload = next((x for x in payload if isinstance(x, dict)), None)
+    if not isinstance(payload, dict):
+        return {}
+    vals, pts = [], []
+    arr = payload.get("bodyBatteryValuesArray") or []
+    for item in arr:
+        if isinstance(item, list) and len(item) >= 2:
+            v = num(item[1])
+            ts = num(item[0])
+            if v is not None:
+                vals.append(v)
+                if ts:
+                    pts.append([int(ts), int(v)])
+        elif isinstance(item, dict):
+            v = num(item.get("value") or item.get("bodyBatteryLevel"))
+            ts = num(item.get("timestamp") or item.get("startTimestampGMT"))
+            if v is not None:
+                vals.append(v)
+                if ts:
+                    pts.append([int(ts), int(v)])
+    if not pts and vals:
+        # 没有时间戳就只留一条，别让下游以为有曲线
+        pts = []
+    now = vals[-1] if vals else num(payload.get("bodyBatteryMostRecentValue"))
+    now_at = ""
+    if pts:
+        now_at = dt.datetime.fromtimestamp(pts[-1][0] / 1000,
+                                           dt.timezone(dt.timedelta(hours=tz_hours))
+                                           ).strftime("%H:%M")
+    out = {
+        "bb_high": round(max(vals)) if vals else num(payload.get("bodyBatteryHighestValue")),
+        "bb_low": round(min(vals)) if vals else num(payload.get("bodyBatteryLowestValue")),
+        "bb_charged": num(payload.get("charged") or payload.get("bodyBatteryChargedValue")),
+        "bb_drained": num(payload.get("drained") or payload.get("bodyBatteryDrainedValue")),
+        "bb_now": round(now) if now is not None else None,
+        "bb_now_at": now_at,
+        "bb_series": json.dumps(pts, separators=(",", ":")) if pts else None,
+    }
+    return out
+
+
+def parse_daily(payload: dict | None, date: str) -> dict:
+    p = payload or {}
+    return {
+        "date": date,
+        "steps": num(_g(p, "totalSteps")),
+        "step_goal": num(_g(p, "dailyStepGoal")),
+        "distance_m": num(_g(p, "totalDistanceMeters")),
+        "calories_total": num(_g(p, "totalKilocalories")),
+        "calories_active": num(_g(p, "activeKilocalories")),
+        "floors": num(_g(p, "floorsAscended")),
+        "resting_hr": num(_g(p, "restingHeartRate")),
+        "min_hr": num(_g(p, "minHeartRate")),
+        "max_hr": num(_g(p, "maxHeartRate")),
+        "avg_stress": num(_g(p, "averageStressLevel")),
+        "max_stress": num(_g(p, "maxStressLevel")),
+        "bb_high": num(_g(p, "bodyBatteryHighestValue")),
+        "bb_low": num(_g(p, "bodyBatteryLowestValue")),
+        "bb_charged": num(_g(p, "bodyBatteryChargedValue")),
+        "bb_drained": num(_g(p, "bodyBatteryDrainedValue")),
+        "spo2_avg": num(_g(p, "averageSpo2") or _g(p, "latestSpo2")),
+        "resp_avg": num(_g(p, "avgWakingRespirationValue")),
+        "intensity_mod": num(_g(p, "moderateIntensityMinutes")),
+        "intensity_vig": num(_g(p, "vigorousIntensityMinutes")),
+        "raw": json.dumps(p, ensure_ascii=False)[:200000] if p else None,
+    }
+
+
+def parse_activity(a: dict) -> dict:
+    dist = num(a.get("distance"))
+    dur = num(a.get("duration"))
+    pace = None
+    if dist and dur and dist > 0:
+        pace = round(dur / (dist / 1000)) if dist > 1000 else None
+    return {
+        "activity_id": a.get("activityId"),
+        "date": (a.get("startTimeLocal") or "")[:10] or None,
+        "start_ts": a.get("startTimeLocal"),
+        "type": _g(a, "activityType", "typeKey") or a.get("activityType"),
+        "name": a.get("activityName"),
+        "duration_s": dur,
+        "distance_m": dist,
+        "avg_hr": num(a.get("averageHR")),
+        "max_hr": num(a.get("maxHR")),
+        "calories": num(a.get("calories")),
+        "load": num(a.get("activityTrainingLoad")),
+        "aerobic_te": num(a.get("aerobicTrainingEffect")),
+        "anaerobic_te": num(a.get("anaerobicTrainingEffect")),
+        "pace_s_km": pace,
+        "ascent": num(a.get("elevationGain")),
+        "raw": json.dumps(a, ensure_ascii=False)[:100000],
+    }
+
+
+class SyncService:
+    def __init__(self, client: GarminCNClient, store: Store):
+        self.client = client
+        self.store = store
+        self.errors: list[str] = []
+
+    def sync_day(self, date: str, extras: bool = False) -> dict:
+        row = {"date": date, "synced_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M")}
+        bb_row: dict | None = None
+
+        try:
+            daily = self.client.daily_summary(date)
+        except SessionExpired:
+            raise
+        if daily:
+            row.update(parse_daily(daily, date))
+
+        try:
+            sleep = self.client.sleep(date)
+            if sleep:
+                row.update(parse_sleep(sleep))
+            hrv = self.client.hrv(date)
+            if hrv:
+                row.update(parse_hrv(hrv))
+            if extras:
+                stress = self.client.stress(date)
+                if isinstance(stress, dict):
+                    row["avg_stress"] = row.get("avg_stress") or num(stress.get("avgStressLevel"))
+                    row["max_stress"] = row.get("max_stress") or num(stress.get("maxStressLevel"))
+                bb = parse_bb(self.client.body_battery_day(date))
+                bb_row = bb
+                if bb.get("bb_high") and not row.get("bb_high"):
+                    row.update({k: v for k, v in bb.items() if v is not None})
+        except SessionExpired:
+            raise
+        except Exception as e:
+            self.errors.append(f"{date}: {type(e).__name__} {e}")
+
+        self.store.upsert_daily(row)
+        # bb_now / bb_series 不在 DAILY_COLS 里（upsert 会忽略），单独回写一次：
+        # 否则「此刻电量」永远只能看 daily summary 里那个早上的数。
+        if bb_row:
+            from . import live
+            live.save_bb(self.store, date, bb_row)
+        return row
+
+    def sync_activities(self, limit: int = 60) -> int:
+        try:
+            items = self.client.activities(limit=limit)
+        except SessionExpired:
+            raise
+        except Exception as e:
+            self.errors.append(f"activities: {type(e).__name__} {e}")
+            return 0
+        n = 0
+        for a in items:
+            if not isinstance(a, dict) or not a.get("activityId"):
+                continue
+            self.store.upsert_activity(parse_activity(a))
+            n += 1
+        return n
+
+    def sync(self, days: int = 30, end: str | None = None, extras: bool = False, progress=None) -> dict:
+        end = end or dt.date.today().isoformat()
+        dates = daterange(end, days)
+        ok = 0
+        for i, d in enumerate(dates, 1):
+            self.sync_day(d, extras=extras)
+            ok += 1
+            if progress:
+                progress(i, len(dates), d)
+        acts = self.sync_activities()
+        plan = self.sync_plan(end)
+        self.store.set_meta("last_sync", dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        self.store.set_meta("last_sync_end", end)
+        return {
+            "range": f"{dates[0]} ~ {dates[-1]}",
+            "days": ok,
+            "activities": acts,
+            "plan": plan,
+            "errors": self.errors[:10],
+        }
+
+    def sync_plan(self, today: str | None = None) -> dict:
+        """刷新佳明教练计划快照（2 次请求，失败不影响主流程）。"""
+        from .plan import fetch
+
+        try:
+            return fetch(self.client, today, out_path=self.store.path.parent / "plan.json")
+        except Exception as e:
+            self.errors.append(f"plan: {type(e).__name__} {e}")
+            return {"available": False, "reason": str(e)}

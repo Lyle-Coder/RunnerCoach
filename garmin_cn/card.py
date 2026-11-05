@@ -1,0 +1,848 @@
+"""一图流看板：把当日快照渲染成一张竖版 PNG（1080 宽），适合在微信里直接看。
+
+思路：先用纯字符串拼一张固定尺寸的 HTML，再调本机 Chrome/Edge 无头截图。
+不依赖 Pillow / matplotlib，Windows 上开箱可用。
+"""
+from __future__ import annotations
+
+import datetime as dt
+import html
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+from .coach import brief
+from .metrics import num
+from .plan import item_line
+
+W = 1080
+H = 1920          # 图区压缩后总高跟着收，避免两列对齐后底部空出一大块
+CHROME_CANDIDATES = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+]
+
+DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+LEVEL_COLOR = {
+    "优秀": "#2FBF8F", "良好": "#2FBF8F", "一般": "#E0A33A",
+    "偏低": "#E06A5F", "较差": "#E06A5F", "数据不足": "#7C8794",
+}
+
+
+def esc(s) -> str:
+    return html.escape(str(s if s is not None else ""), quote=True)
+
+
+def _f(v, unit="", d=0):
+    if v is None:
+        return "—"
+    return f"{v:.{d}f}{unit}" if d else f"{v:.0f}{unit}"
+
+
+def _find_browser() -> str | None:
+    # 强制不出图：Termux 上想跳过截图、或者排查「是截图慢还是别的地方慢」时用
+    if os.environ.get("GARMIN_NO_BROWSER") == "1":
+        return None
+    for p in CHROME_CANDIDATES:
+        if Path(p).exists():
+            return p
+    for name in ("chrome", "msedge"):
+        hit = shutil.which(name)
+        if hit:
+            return hit
+    return None
+
+
+def can_shot() -> bool:
+    """这台机器能不能无头截图。
+
+    Termux / 精简版 Windows 上通常是 False：PNG 出不了，但调用方可以退化成
+    同目录的 HTML（手机浏览器打开整张缩放，长按存图一样能发微信）。
+    """
+    return _find_browser() is not None
+
+
+def _level_color(score, level: str) -> str:
+    if level in LEVEL_COLOR:
+        return LEVEL_COLOR[level]
+    if score is None:
+        return "#7C8794"
+    return "#2FBF8F" if score >= 75 else ("#E0A33A" if score >= 60 else "#E06A5F")
+
+
+def _bars(parts: list[dict]) -> str:
+    out = []
+    for p in parts:
+        score = p.get("score") or 0
+        color = "#2FBF8F" if score >= 75 else ("#E0A33A" if score >= 60 else "#E06A5F")
+        out.append(
+            f'<div class="bar">'
+            f'<div class="bar-top"><span class="bar-name">{esc(p["name"])}'
+            + (f'<em>{esc(p["detail"])}</em>' if p.get("detail") else '')
+            + f'</span>'
+            f'<span class="bar-score" style="color:{color}">{score:.0f}</span></div>'
+            f'<div class="bar-track"><i style="width:{max(2, min(100, score)):.0f}%;background:{color}"></i></div>'
+            f'</div>'
+        )
+    return "".join(out)
+
+
+def _week_rows(plan: dict | None, today: str) -> str:
+    if not plan or not plan.get("available"):
+        return '<p class="empty">还没有读到佳明教练计划</p>'
+    # 整周都排休息（计划没排训练 / 恢复周）时，7 行「休息」纯属占地方——
+    # 一屏高度是固定的，这 200 多像素要从今日训练和图里挤出来。
+    if all(d.get("rest") for d in (plan.get("week") or [])):
+        return ('<p class="empty" style="padding:4px 0">'
+                '本周计划均为休息日（佳明教练未排训练）</p>')
+    rows = []
+    for d in plan.get("week") or []:
+        is_today = d["date"] == today
+        cls = "wrow today" if is_today else "wrow"
+        tag = '<b class="now">今天</b>' if is_today else ""
+        if d.get("rest"):
+            body = '<span class="rest">休息</span>'
+        else:
+            body = "".join(
+                f'<span class="wl">{esc(x.get("name") or "训练")}'
+                + (f' · {x["minutes"]}′' if x.get("minutes") else "")
+                + (f' · {esc(x["effect"])}' if x.get("effect") else "")
+                + "</span>"
+                for x in d["items"]
+            )
+        rows.append(
+            f'<div class="{cls}"><span class="wd">{esc(d["dow"])}</span>'
+            f'<span class="wbody">{body}</span>{tag}</div>'
+        )
+    return "".join(rows)
+
+
+def _race_week(day: dt.date, done: dict[str, dict] | None = None) -> str:
+    """105K 备赛计划：横排 7 格，每格「计划 + 实际」。
+
+    原来一周 7 行竖排、用 space-between 撑开，行距忽大忽小，看着松散；
+    改成日历条之后同样是 7 天，但一眼能横向比出「哪天练了、哪天漏了」。
+    """
+    from . import raceplan
+
+    rows = raceplan.week_rows(day)
+    if not rows:
+        return '<p class="empty">今天不在 105K 备赛计划区间内</p>'
+    today = day.isoformat()
+    done = done or {}
+    cells = []
+    for r in rows:
+        is_today = r["date"] == today
+        act = done.get(r["date"]) or {}
+        km, mins = act.get("km") or 0, act.get("min") or 0
+        if r["kind"] == "rest":
+            plan, sub = "休", ""
+        else:
+            plan, sub = r["main"], r["sub"]
+        # 实际完成徽标：达标绿、不足黄、已过日期未练灰；未来的日子不评价
+        badge = ""
+        if mins >= 5:
+            body = f"{km:.1f} km" if km >= 0.1 else f"{mins:.0f} 分钟"
+            tgt_km, tgt_min = r.get("km") or 0, r.get("minutes") or 0
+            hit = ((tgt_km and km >= tgt_km * 0.9)
+                   or (tgt_min and mins >= tgt_min * 0.9)
+                   or (r["kind"] == "rest" and mins >= 25))
+            badge = f'<div class="act {"ok" if hit else "part"}">{esc(body)}</div>'
+        elif r["date"] < today and r["kind"] != "rest":
+            badge = '<div class="act miss">未练</div>'
+        else:
+            badge = '<div class="act void">—</div>'
+        cells.append(
+            f'<div class="wkd{" today" if is_today else ""}">'
+            f'<div class="d">{esc(r["dow"])}</div>'
+            f'<div class="plan">{esc(plan)}</div>'
+            f'<div class="sub">{esc(sub)}</div>'
+            f'{badge}</div>'
+        )
+    return '<div class="wk">' + "".join(cells) + "</div>"
+
+
+def _race_rows(day: dt.date) -> str:
+    """105K 备赛计划：当天所在周 7 天，格式与佳明课表一致。"""
+    from . import raceplan
+
+    rows = raceplan.week_rows(day)
+    if not rows:
+        return '<p class="empty">今天不在 105K 备赛计划区间内</p>'
+    today = day.isoformat()
+    out = []
+    for r in rows:
+        is_today = r["date"] == today
+        cls = "wrow today" if is_today else "wrow"
+        tag = '<b class="now">今天</b>' if is_today else ""
+        if r["kind"] == "rest":
+            body = '<span class="rest">休</span>'
+        else:
+            body = f'<span class="wl">{esc(r["main"])}'
+            if r["sub"]:
+                body += f' · {esc(r["sub"])}'
+            body += "</span>"
+        out.append(
+            f'<div class="{cls}"><span class="wd">{esc(r["dow"])}</span>'
+            f'<span class="wbody">{body}</span>{tag}</div>'
+        )
+    return "".join(out)
+
+
+def _trend_rows(hist: list[dict]) -> str:
+    """近 7 天 vs 之前 7 天的三行对比。"""
+    if not hist or len(hist) < 8:
+        return '<p class="empty">样本还不足两周</p>'
+    cur = hist[-7:]
+    prev = hist[:-7][-7:]
+
+    def avg(rows, key):
+        vals = [num(r.get(key)) for r in rows]
+        vals = [v for v in vals if v is not None]
+        return sum(vals) / len(vals) if vals else None
+
+    specs = [
+        ("睡眠", "sleep_total_min", " min", "up"),
+        ("HRV", "hrv_night", " ms", "up"),
+        ("静息心率", "resting_hr", " bpm", "down"),
+    ]
+    out = []
+    for label, key, unit, better in specs:
+        a, b = avg(cur, key), avg(prev, key)
+        if a is None or b is None:
+            out.append(f'<div class="tline"><span>{label}</span><span class="tv">—</span></div>')
+            continue
+        delta = a - b
+        good = delta >= 0 if better == "up" else delta <= 0
+        cls = "up" if good else "down"
+        out.append(
+            f'<div class="tline"><span>{label}</span>'
+            f'<span class="tv">{a:.0f}{unit}'
+            f'<i class="delta {cls}">{delta:+.0f}</i></span></div>'
+        )
+    return "".join(out)
+
+
+def _acts_by_day(acts: list[dict], dates: set[str]) -> dict[str, dict]:
+    """按日聚合实际完成的量与时长，供备赛区做「计划 vs 实际」对照。"""
+    out: dict[str, dict] = {}
+    for a in acts or []:
+        day = (a.get("date") or "")[:10]
+        if day not in dates:
+            continue
+        b = out.setdefault(day, {"km": 0.0, "min": 0.0, "n": 0})
+        if (a.get("type") or "") == "running":
+            b["km"] += (num(a.get("distance_m")) or 0) / 1000
+        b["min"] += (num(a.get("duration_s")) or 0) / 60
+        b["n"] += 1
+    return out
+
+
+def _bars7(rows: list[tuple[str, float | None]], *, height: int = 112,
+           unit: str = "", target: float | None = None, accent: str = "#4FD6A6",
+           extra: list[float | None] | None = None,
+           extra_color: str = "#5FA8E0",
+           legend: tuple[str, str] | None = None) -> str:
+    """近 7 天柱状图（睡眠、跑量都能用）。最后一根是今天，用强调色。
+
+    extra 与 rows 等长时做双色堆叠（睡眠：主睡眠 + 小睡），柱顶数字是合计。
+    """
+    rows = rows[-7:]
+    if not rows or all(v is None for _, v in rows):
+        return '<p class="empty">数据不足</p>'
+    ext = list(extra)[-7:] if extra else []
+    vals = []
+    for i, (_, v) in enumerate(rows):
+        if v is not None:
+            vals.append(v + (ext[i] or 0 if i < len(ext) else 0))
+    top = max(vals + ([target] if target else [])) * 1.12 or 1
+    cells = []
+    for i, (label, v) in enumerate(rows):
+        is_last = i == len(rows) - 1
+        col = accent if is_last else "#3B4C5E"
+        ev = ext[i] if i < len(ext) else None
+        if v is None:
+            hgt, cap = 4, "—"
+        else:
+            hgt = max(4, v / top * 100)
+            cap = (f"{v + (ev or 0):.1f}" if ev else f"{v:.0f}")
+        # 列内 DOM 顺序 = 自上而下：小睡段放前面才叠在主睡眠上面
+        segs = (f'<i style="height:{max(3, ev / top * 100):.0f}%;background:{extra_color}"></i>'
+                if ev else "")
+        segs += f'<i style="height:{hgt:.0f}%;background:{col}"></i>'
+        cells.append(
+            f'<div class="b7{" on" if is_last else ""}">'
+            f'<b>{cap}</b><div class="b7t">{segs}</div>'
+            f'<span>{esc(label)}</span></div>'
+        )
+    goal = (f'<div class="b7goal">目标 {round(target, 1):g}{unit}</div>'
+            if target else "")
+    leg = ""
+    if legend:
+        leg = ('<div class="b7legend"><span><i style="background:#3B4C5E"></i>'
+               f'{esc(legend[0])}</span><span><i style="background:{extra_color}"></i>'
+               f'{esc(legend[1])}</span></div>')
+    return (f'<div class="bars-wrap">{goal}{leg}'
+            f'<div class="bars7" style="height:{height}px">{"".join(cells)}</div></div>')
+
+
+def _spark(points: list[tuple[float, float | None]], *, w: int = 470, h: int = 92,
+           color: str = "#4FD6A6", label: str = "", unit: str = "") -> str:
+    """SVG 折线，用来画当日身体电量 / HRV 这类连续值。点不够就老实说。"""
+    pts = [(x, y) for x, y in points if y is not None]
+    if len(pts) < 2:
+        return '<p class="empty">数据不足</p>'
+    x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
+    y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
+    if x1 == x0:
+        x1 = x0 + 1
+    if y1 == y0:
+        y1 = y0 + 1
+    pad = 8
+
+    def X(x: float) -> float:
+        return pad + (x - x0) / (x1 - x0) * (w - 2 * pad)
+
+    def Y(y: float) -> float:
+        return h - pad - (y - y0) / (y1 - y0) * (h - 2 * pad)
+
+    line = " ".join(f"{'M' if i == 0 else 'L'}{X(x):.1f},{Y(y):.1f}"
+                    for i, (x, y) in enumerate(pts))
+    area = line + f" L{X(pts[-1][0]):.1f},{h - pad} L{X(pts[0][0]):.1f},{h - pad} Z"
+    lx, ly = pts[-1]
+    head = (f'<div class="sphead"><span>{esc(label)}</span>'
+            f'<em>{ly:.0f}{unit}</em></div>') if label else ""
+    return (
+        head
+        + f'<svg class="sp" style="height:{h}px" viewBox="0 0 {w} {h}" preserveAspectRatio="none">'
+        f'<path d="{area}" fill="{color}" opacity=".14"/>'
+        f'<path d="{line}" fill="none" stroke="{color}" stroke-width="2.4" '
+        f'vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>'
+        f'<circle cx="{X(lx):.1f}" cy="{Y(ly):.1f}" r="4" fill="{color}" '
+        f'vector-effect="non-scaling-stroke"/></svg>'
+    )
+
+
+def build_html(res: dict, sync_at: str | None = None) -> str:
+    d = dt.date.fromisoformat(res["date"])
+    t = res["today"]
+    r = res["readiness"]
+    L = res["load"]
+    sl = res["sleep"]
+    b = brief(res)
+    s = b["session"]
+    plan = res.get("plan") or {}
+    color = _level_color(r.get("score"), r.get("level") or "")
+
+    # 小睡单独在 nap_min 里，不算进主睡眠时长；睡眠债是「主睡眠 + 小睡」对动态需求算的，
+    # 两个数不摆出来，看图的人会以为 7.5 h 就是全部，也看不出债务为什么被抵扣了。
+    nap_today = num(t.get("nap_min")) or 0
+    nap_note = f" + 小睡 {nap_today:.0f} 分" if nap_today else ""
+    debt_nap = "（含小睡）" if ((sl.get("debt") or {}).get("nap_min") or 0) else ""
+    # 手动矫正过的夜晚要标出来：不显示佳明评分（没有），改显示矫正时段。
+    # 文案控制在两行内——四格指标里只有这格会挤成三行，整行就被撑高了。
+    if (t.get("sleep_src") == "manual") and sl.get("start") and sl.get("end"):
+        sleep_sub = f"睡眠 · 矫正 {sl['start'][11:16]}–{sl['end'][11:16]}"
+    else:
+        sleep_sub = (f"睡眠 · 评 {_f(sl.get('score'))}"
+                     f"{('+' + f'{nap_today:.0f}′小睡') if nap_today else ''}")
+
+    flags = "".join(f'<li>{esc(f["text"])}</li>' for f in res["flags"][:3]) or "<li>没有需要提醒的异常</li>"
+
+    acts = res.get("activities") or []
+    last = ""
+    if acts:
+        a = acts[0]
+        if (a.get("date") or "")[:10] != res["date"]:      # 今天练过的去「今日训练」卡看
+            dist = (num(a.get("distance_m"), 0) or 0) / 1000
+            pace = num(a.get("pace_s_km"))
+            pace_s = f"{int(pace)//60}′{int(pace)%60:02d}″" if pace else "—"
+            last = (f'{esc((a.get("date") or "")[5:])} · {dist:.2f}km · {pace_s}'
+                    f' · HR{_f(a.get("avg_hr"))}')
+
+    # 今日训练：每条活动一个摘要块，块数和内容都会变，所以不做固定格数，
+    # 每天的活动上限按 4–5 条设计：方块网格 2 列，行高 1fr，
+    # 块数变多时自动往上长（1 条横跨两列、奇数条最后一块横跨），
+    # 全部撑满今日训练卡，不再有「文字挤在一行、底下留白」的问题。
+    today_rows = []
+    # 按时间正序排：一天里先跑后骑，读起来是时间线，不是倒序堆叠。
+    t_acts = sorted([x for x in acts if (x.get("date") or "")[:10] == res["date"]],
+                    key=lambda x: x.get("start_ts") or "")[:5]
+    n_act = len(t_acts)
+    for idx, a in enumerate(t_acts):
+        atype = (a.get("type") or "").lower()
+        dist = (num(a.get("distance_m"), 0) or 0) / 1000
+        dur_s = num(a.get("duration_s")) or 0
+        pace = num(a.get("pace_s_km"))
+        # 骑行/游泳这类用配速没意义：5′06″/km 得自己换算才知道是 11.8 km/h，
+        # 直接给均速。跑步仍然给配速，那是跑者真正在意的数字。
+        if atype.startswith(("cycl", "bik")) and dist > 0 and dur_s > 0:
+            metric = f"{dist / (dur_s / 3600):.1f} km/h"
+        elif atype.startswith("swim") and pace:
+            metric = f"{int(pace)//60 if pace >= 60 else 0}′{int(pace) % 60:02d}″/100m"
+        else:
+            metric = f"{int(pace)//60}′{int(pace)%60:02d}″" if pace else ""
+        head = (a.get("start_ts") or "")[11:16] or "今天"
+        name = (a.get("name") or "训练")
+        if len(name) > 14:
+            name = name[:13] + "…"
+        _min = int(round(dur_s / 60))
+        _dur = f"{_min // 60}:{_min % 60:02d}" if _min >= 60 else f"{_min}′"
+        # 单个方块：名称一行、距离一行、指标一行。
+        # 1 条时空间富余，指标行再加时长与卡路里；2 条以上只留指标和心率，
+        # 否则半栏宽度会被 「5′06″ · HR87 · 13′ · 133 kcal」 挤成省略号。
+        cls = "aact" + (" span2" if (n_act == 1 or (n_act % 2 == 1 and idx == n_act - 1)) else "")
+        vcls = "aact-v" if n_act <= 2 else "aact-v sm"
+        sub = " · ".join(x for x in (
+            metric,
+            f"HR{_f(a.get('avg_hr'))}",
+            _dur if n_act == 1 else "",
+            f"{num(a.get('calories')) or 0:.0f} kcal" if n_act == 1 else "",
+        ) if x)
+        today_rows.append(
+            f'<div class="{cls}"><div class="aact-h">{esc(head)} · {esc(name)}</div>'
+            f'<div class="{vcls}">{dist:.2f}<small> km</small></div>'
+            f'<div class="aact-m">{esc(sub)}</div></div>'
+        )
+
+    plan_name = plan.get("name") or "佳明教练计划"
+    phase = (plan.get("phase") or {}).get("label") or ""
+
+    # 今日营养：处方旁边给一行，训练和吃放一起看才有意义。
+    # 数字来自 nutrition.targets()，与看板 / 教练上下文同源。
+    # 每项一条进度条：达标绿、未达标黄——纯文字的 "1945 / 1879" 看不出差多少。
+    nt = res.get("nutrition") or {}
+    nutri_chips = ""
+    if nt.get("ok"):
+        eat = nt.get("intake") or {}
+
+        def _nrow(label, v, tgt, unit):
+            v, tgt = v or 0, tgt or 0
+            ratio = min(100, v / tgt * 100) if tgt else 0
+            # 达标绿、未达标黄、超出 10% 以上红——以前只要够数就是绿色，
+            # 脂肪吃到目标的 147% 也显示一片绿，看不出「这顿油太多了」。
+            if not tgt:
+                col = "#E0A33A"
+            elif v > tgt * 1.1:
+                col = "#E4574D"
+            elif v >= tgt:
+                col = "#4FD6A6"
+            else:
+                col = "#E0A33A"
+            return (f'<div class="nrow"><span class="nl">{label}</span>'
+                    f'<div class="ntrack"><i style="width:{ratio:.0f}%;background:{col}"></i></div>'
+                    f'<span class="nv" style="color:{col}">{v:g} / {tgt:g}{unit}</span></div>')
+
+        # 没有饮食记录也照样画条：全 0 的黄条比纯文字好——和有记录的日子
+        # 排版一致，一眼知道「今天还没记 / 还差多少」，而不是换成另一套样子。
+        nutri_chips = (
+            '<div class="nutri">'
+            + _nrow("热量", eat.get("kcal"), nt["target_kcal"], " kcal")
+            + _nrow("蛋白", eat.get("protein_g"), nt["protein_g"], " g")
+            + _nrow("碳水", eat.get("carb_g"), nt["carb_g"], " g")
+            + _nrow("脂肪", eat.get("fat_g"), nt["fat_g"], " g")
+            + "</div>"
+        )
+
+    # 体重 / 体成分：一图流固定一行四格。数值来自小米秤（body 表），缺项留「—」，
+    # 不整块隐藏——每天都摆在那儿，才看得出「掉的是水还是脂肪」。
+    bd = res.get("body") or {}
+    body_row = ""
+    if bd.get("latest"):
+        def _delta(v, unit="kg"):
+            if v is None:
+                return ""
+            cls = "up" if v < 0 else "down"
+            return f'<i class="delta {cls}">{v:+.1f}{unit}</i>'
+
+        stale = bd.get("stale_days")
+        wsub = (f'7 天{_delta(bd.get("delta_w"))}' if bd.get("delta_w") is not None
+                else (f'{stale} 天前' if stale else "今天"))
+        fat_sub = (f'脂肪 {bd["fat_mass"]:.1f} kg' if bd.get("fat_mass") else "体脂率")
+        mus_sub = (f'瘦体重 {bd["lean_mass"]:.1f} kg' if bd.get("lean_mass") else "肌肉量")
+        wat_sub = (f'内脏 {bd["visceral"]} 级' if bd.get("visceral") is not None else "水分率")
+
+        def _cell(v, unit, label, sub, digits=1):
+            val = "—" if v is None else f"{v:.{digits}f}"
+            return (f'<div class="bkpi"><b>{val}<small>{unit}</small></b>'
+                    f'<span>{label} {sub}</span></div>')
+
+        body_row = (
+            '<div class="brow">'
+            + _cell(bd.get("latest"), "kg", "体重", wsub)
+            + _cell(bd.get("body_fat"), "%", "体脂", fat_sub)
+            + _cell(bd.get("muscle"), "kg", "肌肉", mus_sub)
+            + _cell(bd.get("water"), "%", "水分", wat_sub)
+            + "</div>"
+        )
+
+    # 105K 备赛课表（本地，与执行卡同源）；不在计划区间内则回退佳明教练计划
+    rpi = None
+    try:
+        from . import raceplan
+        if raceplan.available():
+            rpi = raceplan.day_info(d)
+    except Exception:
+        rpi = None
+
+    # 「计划 vs 实际」：把本周 7 天真正跑出来的量也摆上去，
+    # 只看计划的话，练了和没练在看板上一模一样。
+    week_dates: set[str] = set()
+    if rpi:
+        try:
+            week_dates = {x["date"] for x in raceplan.week_rows(d)}
+        except Exception:
+            week_dates = set()
+    done_by_day = _acts_by_day(acts, week_dates)
+    if not week_dates:                     # 不在课表区间：退回近 7 天滚动窗口
+        week_dates = {(d - dt.timedelta(days=i)).isoformat() for i in range(7)}
+        done_by_day = _acts_by_day(acts, week_dates)
+    week_run_km = sum(v["km"] for v in done_by_day.values())
+    week_tgt_km = rpi["week_km"] if rpi else None
+
+    # 今日训练卡：标题右侧带本周跑量（实际 / 计划），行内左右对齐
+    wk_head = ""
+    if week_tgt_km:
+        wk_head = (f'<span class="chw">本周 <b>{week_run_km:.1f}</b>'
+                   f' / {week_tgt_km:g} km</span>')
+    # 没有训练的日子也放一张卡：右列三张卡的位置是固定的，
+    # 缺一张整列就矮一截，左右不对称。占位文案垂直居中，
+    # 空卡也吃满右列高度，不塌成一小条。
+    if t_acts:
+        # 方块只占「够用」的高度：行高按条数定，剩余高度留给需要提醒的卡。
+        # 以前今日训练吃满 1fr，把提醒挤成两行省略号——提醒折叠了就没意义。
+        _rows = 1 if n_act <= 1 else (n_act + 1) // 2
+        _hh = 128 if _rows == 1 else 90
+        _minh = _rows * _hh + (_rows - 1) * 9
+        body_rows = (f'<div class="today-body" style="min-height:{_minh}px">'
+                     f'{"".join(today_rows)}</div>')
+    else:
+        body_rows = ('<div class="empty today-empty">今天还没有训练记录'
+                     '——练完同步后这里会亮起来</div>')
+    today_card = (f'<div class="card today-card">'
+                  f'<div class="chd"><h3>今日训练</h3>{wk_head}</div>'
+                  f'{body_rows}</div>')
+
+    # 身体电量：当前值 / 曲线来自 live.py 在出图前的实时拉取（bb_now / bb_series）
+    # 夜间手表掉落时这些读数是缺测残渣，manual.apply_sleep_fix 已作废——
+    # 这里老实显示「未测量」，不拿残渣冒充现状。
+    bb_now = num(t.get("bb_now"))
+    bb_now_at = t.get("bb_now_at") or ""
+    scrubbed = bool(t.get("night_scrubbed"))
+    try:
+        from . import live as livemod
+        bb_series = [] if scrubbed else livemod._load_series(t.get("bb_series"))
+    except Exception:
+        bb_series = []
+    bb_pts = [((ts / 1000 + 8 * 3600) % 86400 / 3600.0, v) for ts, v in bb_series]
+    bb_val = f"{bb_now:.0f}" if bb_now is not None else "—"
+    bb_txt = f'{bb_val}%' if bb_now is not None else "未测量"
+    bb_sub = ("手表掉落" if scrubbed else
+              (f'当前 {bb_now_at}' if bb_now_at else "未测量"))
+
+    # 图表：睡眠 7 天柱状 + 身体电量当日曲线 + HRV / 静息心率 14 天折线
+    sleep_need_h = (num(t.get("sleep_need_min")) or 0) / 60 or 7.5
+    nap_rows = {d_: v for d_, v in (res["series"].get("nap_h") or [])}
+    sleep_bars = _bars7([(d_[8:], v) for d_, v in (res["series"].get("sleep_h") or [])],
+                        height=72, unit=" h", target=sleep_need_h,
+                        extra=[nap_rows.get(d_) for d_, _ in (res["series"].get("sleep_h") or [])],
+                        extra_color="#5FA8E0", legend=("主睡眠", "小睡"))
+    bb_spark = _spark(bb_pts, h=48, color="#E0A33A", label="", unit="%")
+    hrv_pts = [(i, num(v)) for i, (_, v) in enumerate(res["series"].get("hrv") or [])]
+    rhr_pts = [(i, num(v)) for i, (_, v) in enumerate(res["series"].get("rhr") or [])]
+    hrv_spark = _spark(hrv_pts[-14:], h=42, color="#5FA8E0", label="HRV", unit=" ms")
+    rhr_spark = _spark(rhr_pts[-14:], h=42, color="#E06A5F", label="静息心率", unit=" bpm")
+
+    if rpi:
+        # 备赛卡自带「本周主题」，不再放 rp_line，避免同一句话出现两次
+        rp_line = ""
+        plan_title = (f'<b>105K 备赛 · W{rpi["week"]} {esc(rpi["phase"])}期</b>'
+                      f' · {rpi["week_km"]} km / +{rpi["week_vert"]:,} m'
+                      f'<span class="pt-focus">　本周主题 {esc(rpi["focus"])}</span>')
+        week_body = _race_week(d, done_by_day)
+    else:
+        rp_line = ""
+        plan_title = f'<b>{esc(plan_name)}</b>' + (f' · {esc(phase)}' if phase else '')
+        week_body = f'<div class="wlist">{_week_rows(plan, res["date"])}</div>'
+
+    return f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width={W},initial-scale=1,viewport-fit=cover">
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+.wrap>*{{flex:none}}
+.wrap>.dual{{flex:1 1 auto;min-height:0}}
+body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
+  font-family:"Microsoft YaHei","PingFang SC",sans-serif;color:#EDF1F5;
+  -webkit-font-smoothing:antialiased}}
+.wrap{{width:{W}px;height:{H}px;padding:34px 52px 26px;display:flex;flex-direction:column}}
+.top{{display:flex;justify-content:space-between;align-items:flex-end;
+  padding-bottom:16px;border-bottom:1px solid #232B34}}
+.date{{font-size:42px;font-weight:700;letter-spacing:1px}}
+.date small{{font-size:24px;font-weight:400;color:#8C97A4;margin-left:14px}}
+.meta{{text-align:right;font-size:21px;color:#7F8A97;line-height:1.6}}
+.hero{{display:flex;align-items:center;gap:40px;padding:14px 0 12px;height:196px;overflow:hidden}}
+.score-box{{text-align:center;min-width:250px}}
+.score{{font-size:104px;font-weight:700;line-height:.95;color:{color};letter-spacing:-4px}}
+.score small{{font-size:26px;font-weight:400;color:#6C7683}}
+.level{{margin-top:4px;font-size:26px;color:{color};font-weight:600}}
+.level span{{font-size:22px;color:#7F8A97;font-weight:400;margin-left:8px}}
+.bars{{flex:1;display:flex;flex-direction:column;gap:10px}}
+.bar-top{{display:flex;justify-content:space-between;font-size:21px;margin-bottom:4px}}
+.bar-name{{color:#9AA5B1}}
+.bar-name em{{font-style:normal;font-size:16px;color:#6C7683;margin-left:8px}}
+.bar-score{{font-weight:700}}
+.bar-track{{height:9px;background:#232B34;border-radius:5px;overflow:hidden}}
+.bar-track i{{display:block;height:100%;border-radius:5px}}
+.card{{background:#1A2027;border:1px solid #262E38;border-radius:18px;padding:18px 26px}}
+.card h3{{font-size:21px;color:#7F8A97;font-weight:400;margin-bottom:10px;letter-spacing:1px}}
+.sess{{margin-top:16px;padding:22px 28px}}
+.sess .st{{font-size:38px;font-weight:700;letter-spacing:1px}}
+.sess .chips{{margin:10px 0 10px}}
+.chip{{display:inline-block;font-size:20px;padding:4px 14px;border-radius:999px;
+  background:#232C36;color:#B6C0CB;margin-right:10px}}
+.chip.main{{background:rgba(47,191,143,.14);color:#4FD6A6}}
+.chip.gray{{background:#202932;color:#A8B4C0}}
+.sess .why{{font-size:21px;line-height:1.45;color:#B9C3CE;display:-webkit-box;
+  -webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}}
+.row4{{display:flex;gap:14px;margin-top:14px}}
+.kpi{{flex:1;background:#1A2027;border:1px solid #262E38;border-radius:16px;
+  padding:13px 8px;text-align:center}}
+.kpi b{{display:block;font-size:32px;font-weight:700;letter-spacing:-1px}}
+.kpi span{{display:block;font-size:18px;color:#7F8A97;margin-top:6px}}
+.brow{{display:flex;gap:12px;margin-top:10px}}
+.bkpi{{flex:1;background:#1A2027;border:1px solid #262E38;border-radius:14px;
+  padding:10px 10px;text-align:center}}
+.bkpi b{{display:block;font-size:27px;font-weight:700;letter-spacing:-.5px}}
+.bkpi b small{{font-size:18px;font-weight:400;color:#8C97A4;margin-left:3px}}
+.bkpi span{{display:block;font-size:16px;color:#7F8A97;margin-top:3px}}
+/* 双列用 grid 而不是两个 flex 列：行轨道由两列共享，右列三卡的总高
+   与左卡严格相等，底部永远齐平——flex 各自撑高做不到这一点。
+   1fr 那行（今日训练）吃掉剩余高度，活动方块随之撑开。 */
+/* 行权重：今日训练按内容定高（auto），多出来的高度给「需要注意」（1fr）。
+   以前 1fr 给的是今日训练，卡片一撑高就把提醒挤到只剩两行折叠——提醒被
+   折叠等于没有提醒。 */
+.dual{{display:grid;grid-template-columns:1.15fr 1fr;grid-template-rows:auto 1fr auto;
+  gap:10px 18px;margin-top:14px;align-items:stretch}}
+.lcol{{grid-column:1;grid-row:1 / span 3;display:flex;flex-direction:column;min-height:0}}
+.today-card{{grid-column:2;grid-row:1}}
+.flags{{grid-column:2;grid-row:2}}
+.tcard{{grid-column:2;grid-row:3}}
+.plan-card{{margin-top:14px}}
+.plan-title{{font-size:22px;color:#9AA5B1;margin-bottom:10px}}
+.plan-title b{{color:#EDF1F5;font-weight:600}}
+.pt-focus{{font-size:20px;color:#7F8A97;font-weight:400}}
+/* 备赛区：横排 7 格日历条，计划在上、实际完成在下 */
+.wk{{display:flex;gap:10px}}
+.wkd{{flex:1;background:#20272F;border:1px solid #262E38;border-radius:14px;
+  padding:9px 8px;text-align:center;display:flex;flex-direction:column}}
+.wkd.today{{background:rgba(47,191,143,.09);border-color:rgba(79,214,166,.4)}}
+.wkd .d{{font-size:17px;color:#7F8A97}}
+.wkd.today .d{{color:#4FD6A6;font-weight:600}}
+.wkd .plan{{font-size:18px;color:#DDE5EE;font-weight:600;margin-top:4px;line-height:1.28;
+  min-height:38px;display:flex;align-items:center;justify-content:center}}
+.wkd .sub{{font-size:14px;color:#7F8A97;line-height:1.25;min-height:17px}}
+.wkd .act{{margin-top:auto;font-size:15px;font-weight:600;border-radius:7px;
+  padding:3px 0;margin-top:7px}}
+.wkd .act.ok{{background:rgba(79,214,166,.16);color:#4FD6A6}}
+.wkd .act.part{{background:rgba(224,163,58,.16);color:#E0A33A}}
+.wkd .act.miss{{background:#1B222A;color:#6C7683}}
+.wkd .act.void{{color:#3C4650}}
+.wlist{{flex:1;display:flex;flex-direction:column;gap:4px}}
+.wrow{{display:flex;align-items:center;gap:12px;padding:7px 10px;border-radius:10px;font-size:20px}}
+.wrow.today{{background:rgba(47,191,143,.12);border:1px solid rgba(47,191,143,.3)}}
+.wd{{width:52px;color:#7F8A97;flex:none}}
+.wbody{{flex:1;color:#C9D2DC;line-height:1.4}}
+.wl{{display:block;font-size:19px}}
+.rest{{color:#6C7683}}
+.now{{font-size:17px;color:#4FD6A6;border:1px solid rgba(79,214,166,.45);
+  border-radius:6px;padding:1px 7px;flex:none}}
+/* 图表 */
+.bars-wrap{{margin-top:4px}}
+.b7goal{{font-size:17px;color:#6C7683;text-align:right;margin-bottom:2px}}
+.bars7{{display:flex;align-items:flex-end;gap:9px}}
+.b7{{flex:1;height:100%;display:flex;flex-direction:column;align-items:center;gap:5px}}
+.b7 b{{font-size:17px;color:#8C97A4;font-weight:600}}
+.b7.on b{{color:#4FD6A6}}
+.b7t{{flex:1;width:100%;display:flex;flex-direction:column;justify-content:flex-end;
+  background:#1E262E;border-radius:6px;overflow:hidden}}
+.b7t i{{display:block;width:100%;flex:none}}
+.b7legend{{display:flex;gap:18px;margin:2px 0 4px;font-size:17px;color:#8C97A4}}
+.b7legend i{{display:inline-block;width:14px;height:14px;border-radius:4px;
+  vertical-align:-2px;margin-right:6px}}
+.b7 span{{font-size:16px;color:#6C7683}}
+.b7.on span{{color:#C9D2DC}}
+.sphead{{display:flex;justify-content:space-between;align-items:baseline;
+  font-size:18px;color:#8C97A4;margin:6px 0 1px}}
+.sphead em{{font-style:normal;color:#EDF1F5;font-weight:700;font-size:21px}}
+.sp{{display:block;width:100%;height:88px}}
+.chart-h{{font-size:18px;color:#7F8A97;margin:7px 0 1px;letter-spacing:.5px}}
+.mini4{{display:flex;gap:9px;margin-bottom:2px}}
+.mini4 div{{flex:1;background:#1F262E;border:1px solid #262E38;border-radius:12px;
+  padding:6px 6px;text-align:center}}
+.mini4 b{{display:block;font-size:24px;font-weight:700;letter-spacing:-.5px}}
+.mini4 b small{{font-size:15px;font-weight:400;color:#8C97A4;margin-left:2px}}
+.mini4 span{{display:block;font-size:14px;color:#7F8A97;margin-top:2px}}
+.rplan{{display:flex;justify-content:space-between;align-items:baseline;gap:14px;
+  margin-top:16px;padding-top:14px;border-top:1px solid #2B343E;
+  font-size:23px;color:#C9D2DC}}
+.rplan em{{font-style:normal;color:#4FD6A6;font-weight:600}}
+.rplan span{{font-size:19px;color:#7F8A97;flex:none}}
+.flags{{display:flex;flex-direction:column}}
+/* 提醒卡比内容高时，把条目均匀摊开而不是挤在顶部留一块空 —— 高度是
+   从「今日训练」让过来的，留白应该在条目之间，不是在卡片底部。 */
+.flags ul{{list-style:none;flex:1;display:flex;flex-direction:column;gap:12px;justify-content:center}}
+.flags li{{font-size:20px;line-height:1.6;color:#C9D2DC;padding-left:20px;position:relative}}
+.flags li:before{{content:"";position:absolute;left:0;top:11px;width:8px;height:8px;
+  border-radius:50%;background:#E0A33A}}
+.last{{font-size:19px;color:#8C97A4;margin-top:auto;line-height:1.45;padding-top:8px}}
+.tline{{display:flex;justify-content:space-between;align-items:baseline;
+  font-size:18px;color:#C9D2DC;padding:4px 0}}
+.tv{{color:#EDF1F5;font-weight:600}}
+.delta{{font-style:normal;font-size:18px;font-weight:600;margin-left:10px}}
+.delta.up{{color:#4FD6A6}}
+.delta.down{{color:#E06A5F}}
+.foot{{display:flex;justify-content:space-between;font-size:17px;color:#5C6673;
+  margin-top:auto;padding-top:12px;border-top:1px solid #232B34}}
+.aline{{display:flex;justify-content:space-between;align-items:baseline;gap:12px;
+  padding:10px 0;border-bottom:1px solid #232B34}}
+.aline:last-child{{border-bottom:none}}
+.aline span{{font-size:20px;color:#C9D2DC;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.aline b{{font-size:19px;font-weight:600;color:#9AA5B1;white-space:nowrap;flex:none}}
+.chd{{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}}
+.chd h3{{margin-bottom:0}}
+.chw{{font-size:20px;color:#7F8A97;flex:none}}
+.chw b{{font-size:26px;color:#4FD6A6;font-weight:700;margin:0 2px}}
+.nutri{{display:flex;flex-direction:column;gap:6px;margin-top:9px}}
+.nrow{{display:flex;align-items:center;gap:12px;font-size:19px}}
+.nl{{width:48px;color:#9AA5B1;flex:none}}
+.ntrack{{flex:1;height:11px;background:#232B34;border-radius:7px;overflow:hidden}}
+.ntrack i{{display:block;height:100%;border-radius:7px}}
+.nv{{width:172px;text-align:right;font-weight:600;font-size:19px;flex:none}}
+.empty{{font-size:20px;color:#6C7683}}
+.today-card{{display:flex;flex-direction:column;min-height:min-content}}
+.today-body{{display:grid;grid-template-columns:1fr 1fr;grid-auto-rows:minmax(0,1fr);
+  gap:9px;margin-top:2px}}
+.today-empty{{flex:1;display:flex;align-items:center;justify-content:center;text-align:center;padding:0 12px}}
+.aact{{min-height:0;display:flex;flex-direction:column;justify-content:center;gap:2px;
+  background:#20272F;border:1px solid #262E38;border-radius:12px;padding:10px 14px;
+  overflow:hidden}}
+.aact.span2{{grid-column:span 2}}
+.aact-h{{font-size:16px;color:#8C97A4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.aact-v{{font-size:30px;font-weight:700;letter-spacing:-.8px;line-height:1.1}}
+.aact-v.sm{{font-size:24px}}
+.aact-v small{{font-size:15px;font-weight:400;color:#9AA5B1;letter-spacing:0}}
+.aact-m{{font-size:15px;color:#7F8A97;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+
+</style></head><body><div class="wrap">
+<div class="top">
+  <div class="date">{d.strftime("%m月%d日")}<small>{DOW[d.weekday()]}</small></div>
+  <div class="meta">恢复度 {_f(r.get("score"))} / 100<br>佳明国区 · 已同步 {esc((sync_at or "")[:16]) or esc(res["date"])}</div>
+</div>
+
+<div class="hero">
+  <div class="score-box">
+    <div class="score">{_f(r.get("score"))}<small>分</small></div>
+    <div class="level">{esc(r.get("level"))}<span>恢复度</span></div>
+  </div>
+  <div class="bars">{_bars(r.get("parts") or [])}</div>
+</div>
+
+<div class="card sess">
+  <h3>今日处方</h3>
+  <div class="st">{esc(s["type"])}</div>
+  <div class="chips"><span class="chip main">{esc(s["duration"])}</span><span class="chip">{esc(s["intensity"])}</span></div>
+  <div class="why">{esc(s["why"])}</div>
+  {nutri_chips}
+  {rp_line}
+</div>
+
+<div class="row4">
+  <div class="kpi"><b>{_f(L.get("acwr"), "", 2)}</b><span>ACWR</span></div>
+  <div class="kpi"><b>{_f(L.get("ctl"), "", 1)}</b><span>CTL 体能</span></div>
+  <div class="kpi"><b>{_f(L.get("atl"), "", 1)}</b><span>ATL 疲劳</span></div>
+  <div class="kpi"><b>{_f(L.get("tsb"), "", 1)}</b><span>TSB 余量</span></div>
+</div>
+{body_row}
+
+<div class="card plan-card">
+  <div class="plan-title">{plan_title}</div>
+  {week_body}
+  {rp_line}
+</div>
+
+<div class="dual">
+  <div class="card lcol">
+      <h3>今天的数据</h3>
+      <div class="mini4">
+        <div><b>{_f(sl.get("total_h"), "", 1)}<small>h</small></b><span>{sleep_sub}</span></div>
+        <div><b>{_f(t.get("hrv_night"), "", 0)}<small>ms</small></b><span>HRV 夜间</span></div>
+        <div><b>{_f(t.get("resting_hr"), "", 0)}<small>bpm</small></b><span>静息心率</span></div>
+        <div><b>{bb_val}<small>%</small></b><span>身体电量 · {esc(bb_sub)}</span></div>
+      </div>
+      <div class="chart-h">睡眠（近 7 天 · 柱高为小时）</div>
+      {sleep_bars}
+      <div class="chart-h">{'身体电量（今天 · 手表掉落，夜间未测量）' if scrubbed
+        else f'身体电量（今天 · 当前 {esc(bb_txt)}{("，" + esc(bb_now_at)) if bb_now_at else ""}）'}</div>
+      {bb_spark}
+      <div class="chart-h">HRV 与静息心率（近 14 天）</div>
+      {hrv_spark}
+      {rhr_spark}
+      <div class="last" style="border-top:1px solid #232B34">
+        睡眠债 {_f(sl.get("debt_h"), " h", 1)}{debt_nap} · 压力 {_f(t.get("avg_stress"))} · 步数 {_f(t.get("steps"))}
+        {("　最近一次：" + last) if last else ""}
+      </div>
+  </div>
+  {today_card}
+  <div class="card flags">
+    <h3>需要注意</h3>
+    <ul>{flags}</ul>
+  </div>
+  <div class="card tcard">
+    <h3>本周 vs 上周</h3>
+    {_trend_rows(res.get("history") or [])}
+  </div>
+</div>
+
+<div class="foot"><span>数据来源：Garmin Connect（国区）</span><span>生成于 {dt.datetime.now().strftime("%m-%d %H:%M")}</span></div>
+</div></body></html>"""
+
+
+def shoot(html_path: Path, png_path: Path, browser: str | None = None) -> Path:
+    """调浏览器无头截一张固定尺寸的 PNG。"""
+    browser = browser or _find_browser()
+    if not browser:
+        raise RuntimeError("找不到 Chrome / Edge，无法生成图片")
+    png_path.parent.mkdir(parents=True, exist_ok=True)
+    if png_path.exists():
+        png_path.unlink()
+    cmd = [
+        browser,
+        "--headless=new",
+        "--disable-gpu",
+        "--hide-scrollbars",
+        "--force-device-scale-factor=1",
+        "--default-background-color=00000000",
+        f"--window-size={W},{H}",
+        f"--screenshot={png_path}",
+        html_path.resolve().as_uri(),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, timeout=90)
+    if not png_path.exists():
+        raise RuntimeError(
+            "浏览器没有产出图片：" + (proc.stderr or b"").decode("utf-8", "ignore")[:300]
+        )
+    return png_path
+
+
+def render(res: dict, out_png: Path, sync_at: str | None = None) -> Path:
+    """生成 PNG；中间 HTML 存到 output/ 下同名的 .html，方便排查排版。"""
+    out_png = Path(out_png)
+    html_path = out_png.with_suffix(".html")
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(build_html(res, sync_at), encoding="utf-8")
+    return shoot(html_path, out_png)

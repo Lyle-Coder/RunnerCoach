@@ -1,0 +1,45 @@
+# ── 本机凭据与真实数据：任何情况下都不要提交 ──────────────────
+config.json
+mi_cookie.txt
+mi_login.json
+session.json
+mi_auth.json
+data/
+output/
+site/
+*.db
+*.db-journal
+captcha.jpg
+*.log
+
+# ── 个人开发环境 ────────────────────────────────────────────
+.idea/
+.vscode/
+.workbuddy/
+*.genie
+*.iml
+.DS_Store
+
+# ── 个人备赛课表生成器：含真实赛事、训练史与住处线索，仅本机保留 ──
+tools/make_plan.py
+tools/make_card.py
+
+# ── 构建产物与大二进制 ──────────────────────────────────────
+tools/ffmpeg.exe
+tools/ffmpeg.zip
+*.apk
+*.aab
+__pycache__/
+*.pyc
+
+# Android：python 包是 sync_python 生成的，别提交
+android/app/src/main/python/garmin_cn/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/toolchain.local.bat
+android/app/release/
+
+# 构建产物（APK 单独发，不进仓库）
+dist/

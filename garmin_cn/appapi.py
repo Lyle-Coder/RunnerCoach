@@ -1,0 +1,489 @@
+# -*- coding: utf-8 -*-
+"""给 App / 图形界面调用的接口层（不依赖终端，不打印进度条）。
+
+为什么要有这一层
+----------------
+`cli.py` 的每个 cmd_* 都是「读 argparse → print 一堆 → return 退出码」，
+Android 里既看不到 stdout、也不该靠退出码判断成功。这里把同样的流程重写成
+「进 dict、出 dict」，异常一律转成 `{"ok": false, "error": "..."}`。
+
+三条设计约定
+------------
+1. **不落密码**。`login()` 成功只保留 `data/session.json` 会话，config 里只记邮箱。
+   App 那边把密码存进 Android Keystore，每次启动时传进来续期——Python 侧不留。
+2. **不做交互**。需要邮箱验证码时返回 `need_mfa`，由界面再调 `submit_mfa()`。
+3. **不假设有浏览器**。`card_html()` 只出 HTML，PNG 由 WebView 自己截。
+
+命令行用法（调试用）：
+    py -3 -m garmin_cn.appapi status
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+import shutil
+import sys
+import threading
+from pathlib import Path
+
+from .auth import AuthError, GarminCNAuth, MfaRequired
+from .client import GarminCNClient, SessionExpired
+from .metrics import derive
+from .store import Store
+from .sync import SyncService
+
+# 数据放哪：桌面/ Termux 用项目目录；APK 里代码在只读的 assets 里，
+# 由 Kotlin 侧在启动 Python 前设 GARMIN_HOME 指到 filesDir。
+_env_home = os.environ.get("GARMIN_HOME")
+HOME = Path(_env_home).expanduser() if _env_home else Path(__file__).resolve().parent.parent
+DB = HOME / "data" / "garmin.db"
+OUT = HOME / "output"
+CONFIG = HOME / "config.json"
+
+for _d in (HOME / "data", OUT):
+    try:
+        _d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+# 验证码是一次性的，`login()` 到 `submit_mfa()` 之间必须复用同一个 auth 实例
+_pending: dict = {"auth": None}
+
+
+# ---------------------------------------------------------------- 内部
+def _cfg() -> dict:
+    try:
+        return json.loads(CONFIG.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _remember_email(email: str) -> None:
+    """只记邮箱，不记密码。"""
+    cfg = _cfg()
+    cfg["email"] = email
+    cfg.pop("password", None)          # 老版本留下的明文密码，顺手清掉
+    try:
+        CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        CONFIG.chmod(0o600)
+    except Exception:
+        pass
+
+
+def _client(email: str | None = None, password: str | None = None) -> GarminCNClient:
+    from .net import Net
+
+    auth = GarminCNAuth(HOME)
+    net = Net(auth.session_path, min_interval=1.2)
+    ok = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
+
+    if not ok and email and password:
+        auth.login(email, password)      # 可能要验证码，交给上层处理
+        net = Net(auth.session_path, min_interval=1.2)
+        ok = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
+
+    if not ok:
+        raise AuthError("还没有登录，或会话已过期")
+    return GarminCNClient(net)
+
+
+def _today(store: Store) -> dict:
+    """一眼能用的今日摘要，给 App 首页用。算不出来就返回空壳，不抛。"""
+    try:
+        from .coach import brief as _brief
+
+        res = derive(store, dt.date.today().isoformat())
+        r = res.get("readiness") or {}
+        s = (_brief(res) or {}).get("session") or {}
+        return {
+            "date": res.get("date"),
+            "readiness": r.get("score"),
+            "level": r.get("level"),
+            "session": s.get("type") or s.get("title"),
+            "flags": len(res.get("flags") or []),
+        }
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+# ---------------------------------------------------------------- 桥
+# Kotlin 侧只调这一个函数：名字 + JSON 参数数组 → JSON 字符串。
+# 为什么不直接 callAttr 再转 map：Chaquopy 不支持把 dict 转成 java.util.Map 接口，
+# 会抛 "Cannot convert dict Object to java.util.Map"；而 JSON 是字符串，
+# 两边都不用做类型映射，嵌套结构也不会丢。
+_API = {
+    "env_info", "status", "login", "submit_mfa", "sync",
+    "dashboard", "card_html", "act_card_html", "runs",
+    "start_server", "recent", "read_html",
+}
+
+_RUN_TYPES = ("running", "trail_running", "treadmill_running", "track_running",
+              "virtual_run", "indoor_running", "obstacle_run", "ultra_run")
+
+
+def call(name: str, args_json: str = "[]") -> str:
+    """按名字调用上面这些接口，参数与结果都走 JSON。
+
+    `args_json` 是 JSON 数组，例如 `[30, "a@b.com", "pwd"]`。
+    永远返回一个 JSON 对象，失败也带 ok=false，不往外抛。
+    """
+    if name not in _API:
+        return json.dumps({"ok": False, "error": f"没有这个接口：{name}"}, ensure_ascii=False)
+    try:
+        args = json.loads(args_json or "[]")
+        if not isinstance(args, list):
+            raise ValueError("args 必须是 JSON 数组")
+    except Exception as e:
+        return json.dumps({"ok": False, "error": f"参数不合法：{e}"}, ensure_ascii=False)
+    try:
+        return json.dumps(globals()[name](*args), ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"},
+                          ensure_ascii=False)
+
+
+# ---------------------------------------------------------------- 环境
+def env_info() -> dict:
+    from . import video
+    from .card import can_shot
+    from .sysopen import is_termux
+
+    return {
+        "ok": True,
+        "python": sys.version.split()[0],
+        "home": str(HOME),
+        "platform": "android" if is_termux() else sys.platform,
+        "can_shot": can_shot(),
+        "ffmpeg": bool(video.ffmpeg()),
+        "data": str(DB),
+        "output": str(OUT),
+    }
+
+
+def status() -> dict:
+    try:
+        store = Store(DB)
+        st = store.stats()
+    except Exception as e:
+        return {"ok": False, "error": f"数据库打不开：{type(e).__name__}: {e}"}
+
+    auth = GarminCNAuth(HOME)
+    session_ok = False
+    if auth.session_path.exists():
+        try:
+            from .net import Net
+
+            net = Net(auth.session_path)
+            session_ok = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
+        except Exception:
+            session_ok = False
+
+    return {
+        "ok": True,
+        "logged_in": session_ok,
+        "email": _cfg().get("email"),
+        "days": st.get("days", 0),
+        "activities": st.get("activities", 0),
+        "first": st.get("first"),
+        "last": st.get("last"),
+        "last_sync": store.get_meta("last_sync"),
+        "today": _today(store) if st.get("days") else None,
+    }
+
+
+# ---------------------------------------------------------------- 登录
+def login(email: str, password: str) -> dict:
+    if not email or not password:
+        return {"ok": False, "error": "邮箱和密码都要填"}
+
+    auth = GarminCNAuth(HOME)
+    try:
+        result = auth.login(email, password)
+    except MfaRequired:
+        _pending["auth"] = auth
+        _remember_email(email)
+        return {"ok": True, "need_mfa": True,
+                "message": "Garmin 把验证码发到了注册邮箱（也翻一下垃圾箱）"}
+    except AuthError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    _pending["auth"] = None
+    _remember_email(email)
+    p = result.get("profile") or {}
+    name = " ".join(x for x in (p.get("displayName"), p.get("fullName")) if x) or email
+    return {"ok": True, "need_mfa": False, "name": name}
+
+
+def submit_mfa(code: str) -> dict:
+    auth = _pending.get("auth")
+    if auth is None:
+        return {"ok": False, "error": "没有等待验证码的登录，请重新输入账号密码"}
+    if not code:
+        return {"ok": False, "error": "验证码不能为空"}
+    try:
+        auth.submit_mfa(code)
+    except AuthError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    _pending["auth"] = None
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- 同步
+def sync(days: int = 30, email: str | None = None, password: str | None = None,
+         with_body: bool = True, progress=None) -> dict:
+    """拉数据。`email/password` 只在会话过期时用来续一次，不会被写盘。"""
+
+    def cb(i, n, d):
+        if progress:
+            try:
+                progress(i, n, d)
+            except Exception:
+                pass
+
+    try:
+        client = _client(email, password)
+    except MfaRequired:
+        return {"ok": False, "need_mfa": True, "error": "续期需要邮箱验证码，请重新登录"}
+    except AuthError as e:
+        return {"ok": False, "need_login": True, "error": str(e)}
+
+    store = Store(DB)
+    svc = SyncService(client, store)
+    try:
+        res = svc.sync(days=days, extras=False, progress=cb)
+    except SessionExpired:
+        # 会话刚好过期：有凭据就重登一次再试，没有就让界面去登录
+        if not (email and password):
+            return {"ok": False, "need_login": True, "error": "会话已过期"}
+        try:
+            client = _client(email, password)
+            res = SyncService(client, store).sync(days=days, extras=False, progress=cb)
+        except MfaRequired:
+            return {"ok": False, "need_mfa": True, "error": "续期需要验证码"}
+        except Exception as e:
+            return {"ok": False, "need_login": True, "error": f"{type(e).__name__}: {e}"}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    out = {"ok": True, "range": res["range"], "days": res["days"],
+           "activities": res["activities"], "errors": res["errors"]}
+
+    if with_body:
+        try:
+            from . import mi as M
+
+            n, recs = M.sync(store, HOME, days=min(max(days, 7), 120))
+            out["body"] = {"count": n, "latest": recs[-1]["date"] if recs else None}
+        except Exception as e:
+            out["body"] = {"count": 0, "error": f"{type(e).__name__}: {e}"}
+
+    return out
+
+
+# ---------------------------------------------------------------- 产出
+def dashboard(date: str | None = None, live: bool = True) -> dict:
+    """出网页看板，返回文件路径（App 用 WebView 直接读它，或走 start_server）。"""
+    store = Store(DB)
+    if store.stats()["days"] == 0:
+        return {"ok": False, "error": "还没有数据，先同步一次"}
+
+    d = date or dt.date.today().isoformat()
+    if live:
+        try:
+            from . import live as L
+
+            L.body_battery(store, d, None)
+            L.scale(store, HOME)
+        except Exception:
+            pass
+
+    from .report import render
+
+    out = OUT / f"dashboard-{d}.html"
+    try:
+        path = render(derive(store, d), store, out)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    try:
+        shutil.copyfile(path, OUT / "latest.html")
+    except Exception:
+        pass
+    return {"ok": True, "html": str(path), "date": d}
+
+
+def card_html(date: str | None = None) -> dict:
+    """竖版一图流的 HTML（1080×1920）。PNG 交给 WebView 截，不依赖无头浏览器。"""
+    store = Store(DB)
+    if store.stats()["days"] == 0:
+        return {"ok": False, "error": "还没有数据，先同步一次"}
+
+    d = date or dt.date.today().isoformat()
+    from .card import build_html
+    from .plan import attach
+
+    try:
+        res = attach(derive(store, d))
+        html = build_html(res, sync_at=store.get_meta("last_sync"))
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    out = OUT / f"card-{d}.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html, encoding="utf-8")
+    return {"ok": True, "html": str(out), "date": d, "width": 1080, "height": 1920}
+
+
+def runs(limit: int = 30) -> dict:
+    """最近的跑步活动，给 App 的「选一条出图」列表用。
+
+    只查本地库，不联网。带 activity_id 才能继续出图。
+    """
+    try:
+        store = Store(DB)
+        end = dt.date.today()
+        start = end - dt.timedelta(days=180)
+        out = []
+        for r in store.activities(start.isoformat(), end.isoformat()):
+            if (r.get("type") or "") not in _RUN_TYPES:
+                continue
+            dist = (r.get("distance_m") or 0) / 1000
+            pace = r.get("pace_s_km") or 0
+            pace_s = f"{int(pace) // 60}'{int(pace) % 60:02d}\"" if pace else "—"
+            out.append({
+                "id": str(r["activity_id"]),
+                "date": r.get("date") or "",
+                "name": r.get("name") or "跑步",
+                "dist": round(dist, 2),
+                "pace": pace_s,
+                "label": f"{r.get('date') or ''}  {r.get('name') or '跑步'}  "
+                         f"{dist:.2f}km  {pace_s}",
+            })
+            if len(out) >= max(1, int(limit)):
+                break
+        return {"ok": True, "items": out}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def act_card_html(activity_id: str, title: str | None = None,
+                  email: str | None = None, password: str | None = None) -> dict:
+    """单次活动图的 HTML（1080×2250），PNG 交给 WebView 截。
+
+    与 `cli.py act --card` 的区别：直接调 `actcard.build_html`，不碰 `shoot()`
+    （那要无头 Chrome），也不取高德底图（`file://` 图片在 http 页面里加载不了，
+    而且离线优先）。轨迹回落到纯 SVG 矢量，断网也能出图。
+
+    明细优先读库里的缓存；没有才联网抓一次并落库，之后就一直离线可用。
+    """
+    try:
+        store = Store(DB)
+        row = store.get_activity(activity_id=str(activity_id))
+        if not row:
+            return {"ok": False, "error": "库里没有这条活动，先同步一次"}
+        aid = str(row["activity_id"])
+
+        detail = store.get_detail(aid)
+        if not detail:
+            try:
+                from . import activity as act
+
+                detail = act.ensure(store, _client(email, password), aid)
+            except (AuthError, SessionExpired):
+                return {"ok": False, "need_login": True,
+                        "error": "这条活动的明细还没缓存，需要联网登录后抓一次"}
+            except Exception as e:
+                return {"ok": False,
+                        "error": f"抓明细失败（需要联网）：{type(e).__name__}: {e}"}
+        if not detail:
+            return {"ok": False, "error": "没拿到活动明细"}
+
+        from .actcard import H, W, build_html
+
+        html = build_html(row, detail, None, None, title)
+        out = OUT / f"act-{row.get('date') or 'unknown'}-{aid}.html"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(html, encoding="utf-8")
+        return {"ok": True, "html": str(out), "name": row.get("name") or "活动",
+                "date": row.get("date"), "width": W, "height": H}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def read_html(path: str) -> dict:
+    """把产物原文交给 WebView（路径必须落在 output/ 里，避免被当成任意文件读取）。"""
+    p = Path(path).resolve()
+    try:
+        p.relative_to(OUT.resolve())
+    except ValueError:
+        return {"ok": False, "error": "只允许读 output/ 下的文件"}
+    if not p.is_file():
+        return {"ok": False, "error": f"文件不存在：{p.name}"}
+    return {"ok": True, "html": p.read_text(encoding="utf-8", errors="replace")}
+
+
+def start_server(port: int = 0) -> dict:
+    """在 127.0.0.1 起只读服务，返回实际端口。App 把 WebView 指过去。
+
+    只绑回环地址：手机上没有「局域网」这回事，暴露出去只有风险。
+    """
+    from functools import partial
+    from http.server import ThreadingHTTPServer
+
+    from .serve import _Handler
+
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", port),
+                                  partial(_Handler, directory=str(OUT)))
+    except OSError as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    srv.token = ""          # type: ignore[attr-defined]
+    srv.daemon_threads = True
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    return {"ok": True, "port": srv.server_address[1],
+            "url": f"http://127.0.0.1:{srv.server_address[1]}/"}
+
+
+def recent(limit: int = 20) -> dict:
+    """近期产物清单，给 App 的「历史」页用。"""
+    from .serve import _title
+
+    items = []
+    if OUT.is_dir():
+        for p in OUT.iterdir():
+            if not p.is_file() or p.suffix.lower() not in (".html", ".png", ".mp4"):
+                continue
+            if p.name.startswith("_") or p.stat().st_size == 0:
+                continue
+            title, group, kind = _title(p.name)
+            items.append({"name": p.name, "title": title, "group": group, "kind": kind,
+                          "mtime": int(p.stat().st_mtime), "size": p.stat().st_size})
+    items.sort(key=lambda x: -x["mtime"])
+    return {"ok": True, "items": items[:limit]}
+
+
+# ---------------------------------------------------------------- 自测
+def _main(argv: list[str]) -> int:
+    cmd = argv[1] if len(argv) > 1 else "status"
+    call = {
+        "env": env_info,
+        "status": status,
+        "dashboard": dashboard,
+        "card": card_html,
+        "recent": recent,
+    }.get(cmd)
+    if not call:
+        print(f"用法：python -m garmin_cn.appapi [{'|'.join(['env', 'status', 'dashboard', 'card', 'recent'])}]")
+        return 2
+    print(json.dumps(call(), ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main(sys.argv))
