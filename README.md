@@ -58,7 +58,7 @@ RunnerCoach 把 Garmin Connect **中国区**（`connect.garmin.cn`）的数据�
 - 仅适用于**佳明国区账号**，国际区接口不同。
 
 ```bash
-git clone https://github.com/Lyle-Coder/RunnerCoach.git
+git clone https://gitee.com/liyufei-lyle/RunnerCoach.git
 cd RunnerCoach
 ```
 

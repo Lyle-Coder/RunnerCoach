@@ -1,5 +1,6 @@
 # ── 本机凭据与真实数据：任何情况下都不要提交 ──────────────────
 config.json
+.github_token
 mi_cookie.txt
 mi_login.json
 session.json
