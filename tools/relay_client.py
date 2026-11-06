@@ -9,18 +9,48 @@
 
 职责：长轮询云端中转站取活 → 打到本机 Docker 网关 → 回传响应。
 3 个工作线程并发；App 端只需填中转站 URL，本机地址不出网。
+
+隧道密钥注入（代码里没有任何默认值，缺省即报错退出）：
+  1) 环境变量 TUNNEL_KEY
+  2) 环境变量 RELAY_SECRETS 指向的 JSON 文件
+  3) server/relay/secrets.json（已被 .gitignore 忽略）
+密钥不得写进源码——远端仓库是公开的。
 """
 import json
+import os
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 
-TUNNEL_KEY = "IXuZvrG1s49zzjOM8DY2-cJJ"       # 与 server/relay/app.py 保持一致
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHARE_CODE = ""                               # 中转站分享码（从链接 ?sharecode= 自动提取）
 HOP_HEADERS = {"connection", "content-length", "transfer-encoding",
                "keep-alive", "host", "accept-encoding"}
+MIN_KEY_LEN = 16
+
+
+def load_tunnel_key() -> str:
+    """按优先级取隧道密钥；取不到返回空串（由调用方报错，不回落内置值）。"""
+    key = (os.environ.get("TUNNEL_KEY") or "").strip()
+    if key:
+        return key
+    for path in (os.environ.get("RELAY_SECRETS") or "",
+                 os.path.join(_ROOT, "server", "relay", "secrets.json")):
+        if not path:
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                key = str(json.load(f).get("tunnel_key") or "").strip()
+        except (OSError, ValueError):
+            continue
+        if key:
+            return key
+    return ""
+
+
+TUNNEL_KEY = load_tunnel_key()
 
 
 def tunnel_post(base: str, path: str, payload: dict, timeout: int):
@@ -95,7 +125,19 @@ def main() -> int:
                 SHARE_CODE = v
         base = head
     gateway = sys.argv[2] if len(sys.argv) > 2 else "http://127.0.0.1:8300"
-    print(f"√ 隧道客户端启动\n  中转站 {base}\n  网关   {gateway}\n  密钥   已配置", flush=True)
+    if not TUNNEL_KEY:
+        print("✗ 未找到隧道密钥，无法连接中转站。\n"
+              "  任选其一：\n"
+              "    1) 设置环境变量 TUNNEL_KEY=<密钥>\n"
+              "    2) 把 {\"tunnel_key\": \"<密钥>\"} 写到 server/relay/secrets.json\n"
+              "  密钥必须与中转站（云端 relay/app.py）配置的一致。", file=sys.stderr)
+        return 2
+    if len(TUNNEL_KEY) < MIN_KEY_LEN:
+        print(f"✗ 隧道密钥过短（{len(TUNNEL_KEY)} < {MIN_KEY_LEN}），请重新生成。",
+              file=sys.stderr)
+        return 2
+    print(f"√ 隧道客户端启动\n  中转站 {base}\n  网关   {gateway}\n"
+          f"  密钥   {TUNNEL_KEY[:4]}***（长度 {len(TUNNEL_KEY)}）", flush=True)
     threads = [threading.Thread(target=worker, args=(base, gateway, i), daemon=True)
                for i in range(3)]
     for t in threads:

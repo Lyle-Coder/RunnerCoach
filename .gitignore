@@ -6,6 +6,7 @@ mi_login.json
 session.json
 mi_auth.json
 server/.env
+server/relay/secrets.json
 data/
 output/
 site/

@@ -12,19 +12,63 @@
   FREE_GRANT，管理接口更不该出内网；
 - 请求体上限 2MB，超时不收。
 
+隧道密钥注入（代码里没有任何默认值，缺省即拒绝启动）：
+  1) 环境变量 TUNNEL_KEY
+  2) 环境变量 RELAY_SECRETS 指向的 JSON 文件
+  3) 与本文件同目录的 secrets.json（已被 .gitignore 忽略，见 secrets.example.json）
+密钥不得写进源码——远端仓库是公开的。
+
 单请求等待上限 120s（AI 对话较慢），取活长轮询 45s。
 """
 import json
+import os
 import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-TUNNEL_KEY = "IXuZvrG1s49zzjOM8DY2-cJJ"      # 与本机 tools/relay_client.py 保持一致
+_HERE = os.path.dirname(os.path.abspath(__file__))
+MIN_KEY_LEN = 16
+
+
+def load_tunnel_key() -> str:
+    """按优先级取隧道密钥；取不到就退出，绝不回落到内置值。"""
+    key = (os.environ.get("TUNNEL_KEY") or "").strip()
+    if key:
+        source = "环境变量 TUNNEL_KEY"
+    else:
+        key, source = "", ""
+        for path in (os.environ.get("RELAY_SECRETS") or "",
+                     os.path.join(_HERE, "secrets.json")):
+            if not path:
+                continue
+            try:
+                with open(path, encoding="utf-8") as f:
+                    key = str(json.load(f).get("tunnel_key") or "").strip()
+            except (OSError, ValueError):
+                continue
+            if key:
+                source = path
+                break
+    if not key:
+        raise SystemExit(
+            "✗ 未配置隧道密钥，拒绝启动。\n"
+            "  任选其一：\n"
+            "    1) 设置环境变量 TUNNEL_KEY=<密钥>\n"
+            "    2) 把 {\"tunnel_key\": \"<密钥>\"} 写到本目录 secrets.json\n"
+            "  参考同目录 secrets.example.json；可用 "
+            "python -c \"import secrets;print(secrets.token_urlsafe(24))\" 生成。")
+    if len(key) < MIN_KEY_LEN:
+        raise SystemExit(f"✗ 隧道密钥过短（{len(key)} < {MIN_KEY_LEN}），请重新生成。")
+    return key
+
+
+TUNNEL_KEY = load_tunnel_key()
 MAX_BODY = 2 * 1024 * 1024
 JOB_WAIT = 45                                 # 客户端长轮询等待（秒）
 RESP_WAIT = 120                               # 公网请求等响应上限（秒）
-BLOCKED = ("/admin", "/v1/device")            # 不允许经公网访问的网关路径
+BLOCKED = ("/admin", "/v1/device",              # 不允许经公网访问的网关路径
+           "/secrets", "/.env", "/app.py")       # 本机文件，绝不外泄
 HOP_HEADERS = {"connection", "content-length", "transfer-encoding",
                "keep-alive", "host", "accept-encoding"}
 
@@ -157,11 +201,11 @@ class RelayHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    import os
     port = int(os.environ.get("PORT", "8400"))
     srv = ThreadingHTTPServer(("0.0.0.0", port), RelayHandler)
     srv.daemon_threads = True
-    print(f"√ RunnerCoach 中转站 :{port}（隧道密钥已内置）", flush=True)
+    print(f"√ RunnerCoach 中转站 :{port}（隧道密钥已从外部注入，长度 {len(TUNNEL_KEY)}）",
+          flush=True)
     srv.serve_forever()
 
 

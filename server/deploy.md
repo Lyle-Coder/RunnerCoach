@@ -153,19 +153,38 @@ SMS_TEMPLATE_CODE=SMS_xxxxxxxx
 App ──HTTPS──▶ 公网中转站 ◀──长轮询取活── 本机隧道客户端 ──▶ 本机网关 :8300
 ```
 
-1. 把 `server/relay/` 目录发布为在线应用（WorkBuddy「发布为应用」），得到分享链接；
-2. 本机保持网关容器运行（`docker compose up -d`），再启动隧道客户端：
+1. **先配隧道密钥**（源码里不含任何密钥，缺省拒绝启动）：
+
+```
+# 生成一把（同一把要同时给中转站和客户端用）
+python -c "import secrets;print(secrets.token_urlsafe(24))"
+
+# 方式一：写文件（推荐，随目录上传到云端沙箱；secrets.json 已被 .gitignore 忽略）
+cp server/relay/secrets.example.json server/relay/secrets.json
+#   编辑 secrets.json 填 "tunnel_key": "<刚才生成的值>"
+
+# 方式二：环境变量（适合 Docker / systemd 等托管环境）
+TUNNEL_KEY=<刚才生成的值>
+```
+
+2. 把 `server/relay/` 目录发布为在线应用（WorkBuddy「发布为应用」），得到分享链接；
+3. 本机保持网关容器运行（`docker compose up -d`），再启动隧道客户端：
 
 ```
 server\relay\start_tunnel.bat "https://xxx.workbuddy.host/?sharecode=XXXX"
 # 或： python tools/relay_client.py "https://xxx.workbuddy.host/?sharecode=XXXX"
 ```
 
-3. App 的「平台地址」直接粘**整条分享链接**——客户端会自动拆出
+客户端按「环境变量 `TUNNEL_KEY` → `RELAY_SECRETS` 指向的 JSON → `server/relay/secrets.json`」
+顺序取密钥，与云端中转站用同一把即可。
+
+4. App 的「平台地址」直接粘**整条分享链接**——客户端会自动拆出
    `?sharecode=` 存为分享码，并在每个请求上带 `X-Share-Code` 头。
 
 安全设计：
-- 中转站只认 `X-Tunnel-Key`（内置共享密钥），别人拿不到你的取活通道；
+- 中转站只认 `X-Tunnel-Key`，密钥从外部注入（环境变量或 `secrets.json`），
+  **绝不写进源码**——仓库是公开的，任何硬编码的密钥都等于没有密钥；
+- 密钥泄露后的处置：重新生成一把 → 更新中转站与客户端 → 旧钥立即失效；
 - `/admin/*`、`/v1/device` 在中转站直接 403——公网上没法白嫖赠送额度、看不到管理接口；
 - 家里 IP 和 8300 端口全程不出网，App 只见到中转站域名；
 - 网关自身的令牌鉴权、余额校验、发码限频照常生效。
