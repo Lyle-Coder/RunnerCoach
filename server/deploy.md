@@ -197,7 +197,49 @@ server\relay\start_tunnel.bat "https://xxx.workbuddy.host/?sharecode=XXXX"
 server/relay/` 刷新快照，并保持隧道客户端在跑——云端探活打根路径。二进制
 （图片）经 base64 过隧道，文本照旧，中转站按 `b64` 标记还原。
 
-## 七、App 端接入
+## 七、在线支付（微信 Native，可选）
+
+充值三条通道并存，兑换码永远可用兜底：
+
+| 通道 | 配置 | 用途 |
+|---|---|---|
+| 兑换码 | 无需配置 | 人工发码，永远可用 |
+| demo | `PAY_PROVIDER=demo` | 全链路联调：下单→admin/orders/pay 模拟到账→扣费 |
+| wechat_native | 见下 | 正式：用户下单拉起微信支付，回调自动到账 |
+
+开通微信 Native 支付需要：微信支付商户号（mchid）、关联的公众号/开放平台
+appid、APIv3 密钥、商户 API 证书（序列号 + apiclient_key.pem）。`.env` 配置：
+
+```
+PAY_PROVIDER=wechat_native
+WXPAY_MCHID=16xxxxxxxx
+WXPAY_APPID=wxxxxxxxxxxxxxxxxx
+WXPAY_APIV3_KEY=32位APIv3密钥
+WXPAY_CERT_SERIAL=证书序列号
+WXPAY_PRIVATE_KEY_PATH=/app/cert/apiclient_key.pem   # 把私钥挂载进容器
+WXPAY_NOTIFY_URL=https://你的域名/v1/wechat/notify
+```
+
+compose 里加一行挂载（私钥别进仓库、别进镜像）：
+
+```yaml
+    volumes:
+      - ./cert:/app/cert:ro
+```
+
+设计要点（都在 `app.py` 的"在线支付"区块）：
+- **订单唯一入账口**是 `_order_set_paid`：状态 `created→paid` 原子翻转 +
+  写 `topup` 流水，回调重放/并发天然幂等；
+- 回调 `/v1/wechat/notify` 做完整 v3 验签（平台证书按 serial 缓存）+
+  AES-256-GCM 解密，验签不过直接 401——**没有商户资料前该接口不会开启**；
+- 金额 1~500 元整数，订单 30 分钟未付自动过期；对账看
+  `GET /admin/orders`，人工确认到账用 `POST /admin/orders/pay`；
+- 客户端 `order.create` 下单 → 轮询 `order.query` 到 `paid` 即刷新余额。
+
+App 内拉起微信的方式（扫码 / H5 / APP 支付）取决于你开通的支付产品，
+等商户资料就绪后按 `code_url`（Native 二维码）或 H5/APP 支付参数接入。
+
+## 八、App 端接入
 
 App → 菜单 → 模型服务设置 → 切「平台额度」→ 填 `https://ai.你的域名.com`
 → 输手机号或邮箱发验证码 → 登录/注册 → 完成，余额显示在面板上。
@@ -205,7 +247,7 @@ App → 菜单 → 模型服务设置 → 切「平台额度」→ 填 `https://
 会建一个 `phone=''` 的孤立账号，用户升级登录后用 `admin/topup` 把旧余额
 手工并入新账号即可。
 
-## 八、后续升级路径
+## 九、后续升级路径
 
 - **微信支付**：加 `POST /v1/orders` 创建订单 + 微信回调写流水，兑换码体系完全复用。
 - **多模型**：把 `UPSTREAM_MODEL` 变成按账号可配，`PRICE_PER_1M` 扩成表即可。

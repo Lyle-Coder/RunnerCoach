@@ -466,6 +466,50 @@ def redeem(code: str) -> dict:
     return {"ok": True, "added": data.get("added"), "balance": data.get("balance")}
 
 
+def order_create(amount_yuan: int) -> dict:
+    """创建充值订单。金额整数（元）；支付通道由网关 PAY_PROVIDER 决定。
+
+    返回 order_id / status；wechat_native 时带 code_url（二维码链接）。
+    App 拿 order_id 轮询 order_query，status 变 paid 即到账。
+    """
+    try:
+        yuan = int(amount_yuan)
+    except (TypeError, ValueError):
+        return {"ok": False, "kind": "input", "error": "金额不对"}
+    if not 1 <= yuan <= 500:
+        return {"ok": False, "kind": "input", "error": "单笔限额 1~500 元"}
+    cfg = load_config()
+    token = cfg.get("platform_token") or ""
+    if not (cfg.get("platform_base") and token):
+        return {"ok": False, "kind": "config", "error": "还没接入平台额度"}
+    try:
+        data = _platform_post("/v1/orders", {"amount": yuan}, token)
+    except LLMError as e:
+        return e.as_dict()
+    return {"ok": True, "order_id": data.get("order_id"),
+            "out_trade_no": data.get("out_trade_no"), "amount": data.get("amount"),
+            "status": data.get("status"), "channel": data.get("channel"),
+            "code_url": data.get("code_url", ""), "notice": data.get("notice", "")}
+
+
+def order_query(order_id: int) -> dict:
+    """查询充值订单状态；网关侧会把过期订单翻成 expired。"""
+    try:
+        oid = int(order_id)
+    except (TypeError, ValueError):
+        return {"ok": False, "kind": "input", "error": "order_id 不对"}
+    cfg = load_config()
+    token = cfg.get("platform_token") or ""
+    if not (cfg.get("platform_base") and token):
+        return {"ok": False, "kind": "config", "error": "还没接入平台额度"}
+    try:
+        data = _platform_post("/v1/order/query", {"order_id": oid}, token)
+    except LLMError as e:
+        return e.as_dict()
+    return {"ok": True, "order_id": oid, "status": data.get("status"),
+            "amount": data.get("amount"), "balance": data.get("balance")}
+
+
 def sms_send(account: str) -> dict:
     """请求平台发送验证码（手机号或邮箱，60 秒限频由网关把控）。"""
     account = (account or "").strip()

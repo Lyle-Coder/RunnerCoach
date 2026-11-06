@@ -129,6 +129,11 @@ input.f:focus,select.f:focus{border-color:var(--green)}
   border-radius:12px;padding:12px 14px;margin-top:10px}
 .bal .n{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
 .bal .u{font-size:12px;color:var(--muted)}
+details.adv{margin-top:14px;border-top:1px dashed var(--line);padding-top:6px}
+details.adv summary{cursor:pointer;color:var(--muted);font-size:12.5px;padding:4px 0}
+details.adv[open] summary{margin-bottom:8px}
+.step{display:inline-block;min-width:18px;height:18px;line-height:18px;text-align:center;
+  border-radius:9px;background:var(--green-soft);color:var(--green);font-size:11px;margin-right:6px}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,.4);
   border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px}
 @keyframes sp{to{transform:rotate(360deg)}}
@@ -184,39 +189,62 @@ BODY = """
     </div>
 
     <div id="platBox" style="display:none">
-      <label class="f">平台地址</label>
-      <input class="f" id="platBase" placeholder="https://ai.你的域名.com 或直接粘完整分享链接" autocapitalize="off" spellcheck="false">
-      <div class="note">余额挂在账号上：卸载重装 / 换手机后登录同一账号即可找回。粘贴带 ?sharecode= 的分享链接会自动拆出分享码。</div>
+      <!-- 状态一：未登录，三步走完 -->
+      <div id="platLogin">
+        <label class="f"><span class="step">1</span>平台地址</label>
+        <input class="f" id="platBase" placeholder="https://ai.你的域名.com 或直接粘完整分享链接" autocapitalize="off" spellcheck="false">
+        <div class="note">粘贴带 ?sharecode= 的分享链接会自动拆出分享码。</div>
 
-      <label class="f">手机号 / 邮箱</label>
-      <div class="row2">
-        <input class="f" id="phoneInput" type="text" placeholder="11 位手机号或邮箱" autocapitalize="off" autocorrect="off" spellcheck="false">
-        <button class="btn" id="smsBtn">发验证码</button>
-      </div>
-      <label class="f">验证码</label>
-      <div class="row2">
-        <input class="f" id="smsCode" inputmode="numeric" maxlength="6" placeholder="6 位数字" autocapitalize="off" spellcheck="false">
-        <button class="btn primary" id="loginBtn">登录 / 注册</button>
-      </div>
-      <div class="note" id="smsNote">邮箱登录免费直达；未注册的账号自动注册并赠送试用额度。</div>
+        <label class="f"><span class="step">2</span>手机号 / 邮箱</label>
+        <div class="row2">
+          <input class="f" id="phoneInput" type="text" placeholder="11 位手机号或邮箱" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <button class="btn" id="smsBtn">发验证码</button>
+        </div>
 
-      <label class="f">设备令牌</label>
-      <input class="f" id="platToken" type="password" placeholder="登录后自动获取，也可手动粘贴" autocapitalize="off" spellcheck="false">
-
-      <div class="act">
-        <button class="btn" id="balBtn">查余额</button>
-        <button class="btn" id="logoutBtn">退出登录</button>
-      </div>
-      <div class="bal" id="balBox" style="display:none">
-        <span class="n" id="balNum">—</span><span class="u" id="balUnit">元</span>
+        <label class="f"><span class="step">3</span>验证码</label>
+        <div class="row2">
+          <input class="f" id="smsCode" inputmode="numeric" maxlength="6" placeholder="6 位数字" autocapitalize="off" spellcheck="false">
+          <button class="btn primary" id="loginBtn">登录 / 注册</button>
+        </div>
+        <div class="note" id="smsNote">邮箱登录免费直达；未注册的账号自动注册并赠送试用额度。</div>
       </div>
 
-      <label class="f">兑换码</label>
-      <div class="row2">
-        <input class="f" id="codeInput" placeholder="RC-XXXX-XXXX" autocapitalize="characters" spellcheck="false">
-        <button class="btn" id="redeemBtn">兑换</button>
+      <!-- 状态二：已登录，账户面板 -->
+      <div id="platAcct" style="display:none">
+        <div class="bal" id="balBox" style="display:none">
+          <span class="n" id="balNum">—</span><span class="u" id="balUnit">元</span>
+        </div>
+        <div class="note" id="acctNote">余额挂在账号上：卸载重装 / 换手机后登录同一账号即可找回。</div>
+
+        <label class="f">充值 · 在线支付</label>
+        <div class="row2">
+          <button class="btn" data-pay="5">¥ 5</button>
+          <button class="btn" data-pay="10">¥ 10</button>
+        </div>
+        <div class="row2">
+          <button class="btn" data-pay="20">¥ 20</button>
+          <button class="btn" data-pay="50">¥ 50</button>
+        </div>
+        <div class="note" id="payNote">点击金额下单，支付完成后余额自动到账。</div>
+
+        <label class="f">充值 · 兑换码</label>
+        <div class="row2">
+          <input class="f" id="codeInput" placeholder="RC-XXXX-XXXX" autocapitalize="characters" spellcheck="false">
+          <button class="btn primary" id="redeemBtn">兑换</button>
+        </div>
+        <div class="note" id="redeemNote">兑换码由服务端生成，一次一用。</div>
+
+        <div class="act">
+          <button class="btn" id="balBtn">刷新余额</button>
+          <button class="btn" id="logoutBtn">退出登录</button>
+        </div>
+
+        <details class="adv">
+          <summary>高级 · 设备令牌（一般不用管）</summary>
+          <input class="f" id="platToken" type="password" placeholder="登录后自动获取，也可手动粘贴" autocapitalize="off" spellcheck="false">
+          <div class="note">令牌只是登录态，余额在账号上。换设备登录会自动覆盖。</div>
+        </details>
       </div>
-      <div class="note" id="redeemNote">兑换码由服务端批量生成，一次一用。</div>
     </div>
 
     <div class="act">
@@ -602,24 +630,33 @@ function fillSheet(c) {
   $('#keyHint').textContent = c.api_key_hint || '无';
   $('#platBase').value = c.platform_base || '';
   $('#platToken').value = '';
-  $('#logoutBtn').style.display = c.has_platform_token ? '' : 'none';
+  const logged = !!c.has_platform_token;
+  $('#platLogin').style.display = logged ? 'none' : '';
+  $('#platAcct').style.display = logged ? '' : 'none';
+  // 未登录时发码会自动存地址，测试/保存这排按钮只会添乱
+  $('#mainAct').style.display = (mode === 'platform' && !logged) ? 'none' : '';
   $('#setHint').textContent = c.mode === 'platform'
-    ? (c.has_platform_token
-        ? '平台额度：已登录，余额挂在账号上，换机重登不丢。'
-        : '平台额度：填好地址后用手机号或邮箱登录，余额挂账号不丢。')
+    ? (logged
+        ? '平台额度：已登录，每次问答按用量扣费。'
+        : '平台额度：三步登录，余额挂账号不丢。')
     : '自配 API：用你自己的 Key 直连模型服务商，数据只发给这一家。';
 
   const p = (c.providers || []).find(x => x.id === sel.value);
   if (p) $('#provNote').textContent = p.note + (p.key_url ? ' · 申请地址 ' + p.key_url : '');
 
-  if (c.platform_base) loadBalance();
+  if (mode === 'platform' && logged) loadBalance();
+  else $('#balBox').style.display = 'none';
 }
 
 async function loadBalance() {
   const j = await api('balance', {});
   const box = $('#balBox');
-  if (!j.ok) { box.style.display = 'none'; return; }
   box.style.display = '';
+  if (!j.ok) {
+    $('#balNum').textContent = '—';
+    $('#balUnit').textContent = '获取失败';
+    return;
+  }
   $('#balNum').textContent = (j.balance == null ? '—' : Number(j.balance).toFixed(2));
   $('#balUnit').textContent = (j.currency || 'CNY') + (j.name ? ' · ' + j.name : '');
 }
@@ -722,6 +759,38 @@ async function doRedeem() {
   loadBalance();
 }
 
+let PAY_TIMER = null;                    // 同一时间只轮询一个订单
+async function pay(amount) {
+  const note = $('#payNote');
+  if (PAY_TIMER) { clearInterval(PAY_TIMER); PAY_TIMER = null; }
+  note.textContent = '创建订单中…';
+  const j = await api('order.create', {amount: Number(amount)});
+  if (!j.ok) { note.textContent = j.error || '下单失败'; return; }
+  if (j.channel === 'demo') {
+    note.textContent = '【测试通道】订单 ' + j.order_id + ' 已创建，等待模拟到账…';
+  } else {
+    note.textContent = '订单 ' + j.order_id + ' 已创建（¥' + j.amount + '），请在微信中完成支付…';
+    if (j.code_url) console.log('code_url:', j.code_url);   // 后续接扫码/APP支付时用
+  }
+  const oid = j.order_id, t0 = Date.now();
+  PAY_TIMER = setInterval(async () => {
+    const q = await api('order.query', {order_id: oid});
+    if (q.ok && q.status === 'paid') {
+      clearInterval(PAY_TIMER); PAY_TIMER = null;
+      note.textContent = '支付成功，已到账 ¥' + q.amount + ' · 余额 ¥' + Number(q.balance).toFixed(2);
+      loadBalance();
+    } else if (q.ok && q.status === 'expired') {
+      clearInterval(PAY_TIMER); PAY_TIMER = null;
+      note.textContent = '订单已过期，请重新下单';
+    } else if (Date.now() - t0 > 5 * 60 * 1000) {
+      clearInterval(PAY_TIMER); PAY_TIMER = null;
+      note.textContent = '等待超时。若已支付，稍后点「刷新余额」核对';
+    } else {
+      note.textContent = '等待支付完成…（订单 ' + oid + ' · ' + Math.round((Date.now() - t0) / 1000) + 's）';
+    }
+  }, 3000);
+}
+
 /* ---------------- 壳 ---------------- */
 function refreshSub() {
   const c = STATE.config;
@@ -767,6 +836,7 @@ $('#loginBtn').onclick = doLogin;
 $('#logoutBtn').onclick = doLogout;
 $('#balBtn').onclick = loadBalance;
 $('#redeemBtn').onclick = doRedeem;
+document.querySelectorAll('[data-pay]').forEach(b => b.onclick = () => pay(b.dataset.pay));
 
 (async function boot() {
   const c = await api('config.get', {});

@@ -82,6 +82,10 @@ def dispatch(action: str, payload: dict | None = None) -> dict:
             return llm.balance()
         if action == "redeem":
             return llm.redeem(str(p.get("code") or ""))
+        if action == "order.create":
+            return llm.order_create(p.get("amount"))
+        if action == "order.query":
+            return llm.order_query(p.get("order_id"))
         if action == "device":
             # 旧版兼容：匿名设备令牌。新界面走 sms + auth（余额挂账号，不丢）
             return llm.device_login(str(p.get("name") or ""))

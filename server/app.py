@@ -49,6 +49,7 @@ App 不直接持有上游 API Key；它用手机号或邮箱验证码登录拿�
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -56,6 +57,7 @@ import os
 import re
 import secrets
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.error
@@ -84,6 +86,17 @@ SMS_KEY_ID = os.environ.get("SMS_ACCESS_KEY_ID", "")
 SMS_KEY_SECRET = os.environ.get("SMS_ACCESS_KEY_SECRET", "")
 SMS_SIGN = os.environ.get("SMS_SIGN_NAME", "")
 SMS_TEMPLATE = os.environ.get("SMS_TEMPLATE_CODE", "")
+
+# ── 在线支付（可选）：未配置时 /v1/orders 返回 503，兑换码通道不受影响 ──
+# demo 模式用于测试完整下单→到账→扣费链路，admin/orders/pay 模拟到账
+PAY_PROVIDER = os.environ.get("PAY_PROVIDER", "")            # '' / demo / wechat_native
+WXPAY_MCHID = os.environ.get("WXPAY_MCHID", "")              # 商户号
+WXPAY_APPID = os.environ.get("WXPAY_APPID", "")              # 公众号/开放平台 appid
+WXPAY_APIV3_KEY = os.environ.get("WXPAY_APIV3_KEY", "")      # APIv3 密钥（32 位）
+WXPAY_CERT_SERIAL = os.environ.get("WXPAY_CERT_SERIAL", "")  # 商户证书序列号
+WXPAY_KEY_PATH = os.environ.get("WXPAY_PRIVATE_KEY_PATH", "")  # apiclient_key.pem 路径
+WXPAY_NOTIFY_URL = os.environ.get("WXPAY_NOTIFY_URL", "")    # 回调地址，须 https
+ORDER_EXPIRE = int(os.environ.get("ORDER_EXPIRE", "1800"))   # 订单有效期（秒）
 
 # 邮箱验证码（推荐：零成本，QQ/163 开 SMTP 授权码即可）
 SMTP_HOST = os.environ.get("SMTP_HOST", "")                 # 如 smtp.qq.com
@@ -264,6 +277,20 @@ def init_db() -> None:
             prompt_tokens INTEGER, completion_tokens INTEGER,
             cost INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS orders(
+            id INTEGER PRIMARY KEY,
+            out_trade_no TEXT UNIQUE NOT NULL,   -- 商户订单号，微信侧唯一
+            user_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL,             -- 微元（实付金额）
+            status TEXT NOT NULL DEFAULT 'created',  -- created/paid/expired
+            channel TEXT DEFAULT '',             -- wechat_native / demo
+            code_url TEXT DEFAULT '',            -- Native 二维码链接
+            transaction_id TEXT DEFAULT '',      -- 微信支付单号
+            created_at INTEGER NOT NULL,
+            paid_at INTEGER,
+            ledger_id INTEGER                    -- 到账流水 id（对账用）
+        );
+        CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id, id);
         CREATE TABLE IF NOT EXISTS sms_pending(
             phone TEXT PRIMARY KEY,
             code_hash TEXT NOT NULL,
@@ -480,9 +507,14 @@ def api_device(row: sqlite3.Row | None, body: dict) -> dict:
         if row is not None:
             user_id = row["user_id"]
         else:
-            cur = c.execute("INSERT INTO users(phone,balance,created_at) VALUES('',0,?)", (now,))
-            user_id = cur.lastrowid
-            _ledger(c, user_id, "grant", FREE_GRANT, "匿名设备赠送")
+            # 匿名账号 phone='' 唯一：已存在就复用（不再重复赠送，避免撞 UNIQUE）
+            u = c.execute("SELECT id FROM users WHERE phone=''").fetchone()
+            if u:
+                user_id = u["id"]
+            else:
+                cur = c.execute("INSERT INTO users(phone,balance,created_at) VALUES('',0,?)", (now,))
+                user_id = cur.lastrowid
+                _ledger(c, user_id, "grant", FREE_GRANT, "匿名设备赠送")
         c.execute("INSERT INTO devices(user_id,name,token_hash,created_at,last_seen)"
                   " VALUES(?,?,?,?,?)", (user_id, name or "RunnerCoach", _hash(token), now, now))
         balance = c.execute("SELECT balance FROM users WHERE id=?", (user_id,)).fetchone()["balance"]
@@ -519,6 +551,253 @@ def api_redeem(row: sqlite3.Row, body: dict) -> dict:
                   (row["user_id"], int(time.time()), code))
         after = _ledger(c, row["user_id"], "redeem", cr["amount"], f"码 {code}")
     return {"ok": True, "added": cr["amount"] / 1e6, "balance": after / 1e6}
+
+
+# ---------------------------------------------------------------- 在线支付
+# 充值三通道：兑换码（人工发码）→ demo（全链路测试）→ wechat_native（正式）。
+# 订单唯一入账口是 _order_set_paid：先占位更新状态再写流水，天然防重复回调。
+def _order_no() -> str:
+    return "RC" + time.strftime("%Y%m%d%H%M%S") + secrets.token_hex(4).upper()
+
+
+def _wx_sign(message: str) -> str:
+    """SHA256withRSA（调 openssl 命令行，网关保持零第三方依赖）。"""
+    key = Path(WXPAY_KEY_PATH)
+    if not key.is_file():
+        raise Gate(503, f"微信支付私钥不存在：{key}")
+    r = subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(key)],
+                       input=message.encode(), capture_output=True)
+    if r.returncode != 0:
+        raise Gate(503, "签名失败：" + r.stderr.decode("utf-8", "replace")[:150])
+    return base64.b64encode(r.stdout).decode()
+
+
+def _wx_native_create(out_no: str, yuan: int) -> str:
+    """微信 Native 下单，返回二维码链接 code_url。"""
+    if not (WXPAY_MCHID and WXPAY_APPID and WXPAY_APIV3_KEY
+            and WXPAY_CERT_SERIAL and WXPAY_KEY_PATH):
+        raise Gate(503, "微信支付配置不完整（MCHID/APPID/APIV3_KEY/CERT_SERIAL/PRIVATE_KEY）")
+    if not WXPAY_NOTIFY_URL.startswith("https://"):
+        raise Gate(503, "WXPAY_NOTIFY_URL 必须是 https 回调地址")
+    payload = {"appid": WXPAY_APPID, "mchid": WXPAY_MCHID,
+               "description": "RunnerCoach 额度充值",
+               "out_trade_no": out_no,
+               "time_expire": time.strftime(
+                   "%Y-%m-%dT%H:%M:%S+08:00",
+                   time.gmtime(int(time.time()) + ORDER_EXPIRE + 8 * 3600)),
+               "notify_url": WXPAY_NOTIFY_URL,
+               "amount": {"total": yuan * 100, "currency": "CNY"}}
+    body = json.dumps(payload, ensure_ascii=False)
+    ts = str(int(time.time()))
+    nonce = secrets.token_hex(8)
+    sig = _wx_sign(f"POST\n/v3/pay/transactions/native\n{ts}\n{nonce}\n{body}\n")
+    req = urllib.request.Request("https://api.mch.weixin.qq.com/v3/pay/transactions/native",
+                                 data=body.encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json")
+    req.add_header("Authorization",
+                   f'WECHATPAY2-SHA256-RSA2048 mchid="{WXPAY_MCHID}",'
+                   f'nonce_str="{nonce}",signature="{sig}",'
+                   f'timestamp="{ts}",serial_no="{WXPAY_CERT_SERIAL}"')
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        raise Gate(502, "微信下单失败：" + e.read().decode("utf-8", "replace")[:200]) from None
+    except Exception as e:  # noqa: BLE001
+        raise Gate(502, f"微信下单失败：{type(e).__name__}: {e}") from None
+    if not data.get("code_url"):
+        raise Gate(502, "微信下单未返回 code_url")
+    return data["code_url"]
+
+
+def api_order_create(row: sqlite3.Row, body: dict) -> dict:
+    try:
+        yuan = int(body.get("amount"))
+    except (TypeError, ValueError):
+        raise Gate(400, "amount 必须是整数（元）") from None
+    if not 1 <= yuan <= 500:
+        raise Gate(400, "单笔限额 1~500 元")
+    no = _order_no()
+    if PAY_PROVIDER == "wechat_native":
+        code_url = _wx_native_create(no, yuan)
+    elif PAY_PROVIDER == "demo":
+        code_url = "demo://pending"              # admin/orders/pay 模拟到账
+    else:
+        raise Gate(503, "支付通道未配置（服务端 PAY_PROVIDER 未设置）")
+    with db() as c:
+        cur = c.execute("INSERT INTO orders(out_trade_no,user_id,amount,status,channel,"
+                        "code_url,created_at) VALUES(?,?,?,?,?,?,?)",
+                        (no, row["user_id"], yuan * 1_000_000, "created",
+                         PAY_PROVIDER, code_url, int(time.time())))
+        oid = cur.lastrowid
+    out = {"ok": True, "order_id": oid, "out_trade_no": no, "amount": yuan,
+           "status": "created", "channel": PAY_PROVIDER, "expire_in": ORDER_EXPIRE}
+    if code_url and PAY_PROVIDER != "demo":
+        out["code_url"] = code_url
+    if PAY_PROVIDER == "demo":
+        out["notice"] = "demo 通道：admin/orders/pay 可模拟到账"
+    return out
+
+
+def api_order_query(row: sqlite3.Row, body: dict) -> dict:
+    try:
+        oid = int(body.get("order_id") or 0)
+    except (TypeError, ValueError):
+        raise Gate(400, "order_id 不对") from None
+    now = int(time.time())
+    with db() as c:
+        o = c.execute("SELECT * FROM orders WHERE id=? AND user_id=?",
+                      (oid, row["user_id"])).fetchone()
+        if not o:
+            raise Gate(404, "订单不存在")
+        if o["status"] == "created" and o["created_at"] + ORDER_EXPIRE < now:
+            c.execute("UPDATE orders SET status='expired' WHERE id=? AND status='created'",
+                      (oid,))
+            o = c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        bal = c.execute("SELECT balance FROM users WHERE id=?",
+                        (row["user_id"],)).fetchone()["balance"]
+    out = {"ok": True, "order_id": oid, "status": o["status"],
+           "amount": o["amount"] / 1e6, "channel": o["channel"],
+           "balance": bal / 1e6}
+    if o["status"] == "paid":
+        out["paid_at"] = o["paid_at"]
+    return out
+
+
+def _order_set_paid(order_id: int, transaction_id: str) -> dict:
+    """订单唯一入账口：状态从 created 一次性翻到 paid 并写流水（幂等）。"""
+    with db() as c:
+        o = c.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        if not o:
+            raise Gate(404, "订单不存在")
+        if o["status"] == "paid":
+            return {"ok": True, "status": "paid", "duplicate": True,
+                    "balance": c.execute("SELECT balance FROM users WHERE id=?",
+                                         (o["user_id"],)).fetchone()["balance"] / 1e6}
+        cur = c.execute("UPDATE orders SET status='paid', transaction_id=?, paid_at=? "
+                        "WHERE id=? AND status='created'",
+                        (transaction_id, int(time.time()), order_id))
+        if cur.rowcount != 1:
+            raise Gate(409, "订单状态已变化（可能已过期），请联系管理员核对")
+        after = _ledger(c, o["user_id"], "topup", o["amount"],
+                        f"订单 {o['out_trade_no']} {transaction_id}".strip())
+        ledger_id = c.execute("SELECT id FROM ledger WHERE user_id=? ORDER BY id DESC LIMIT 1",
+                              (o["user_id"],)).fetchone()["id"]
+        c.execute("UPDATE orders SET ledger_id=? WHERE id=?", (ledger_id, order_id))
+    return {"ok": True, "status": "paid", "amount": o["amount"] / 1e6,
+            "balance": after / 1e6}
+
+
+def _wx_verify_and_decrypt(body: bytes, headers) -> dict:
+    """验签（平台证书）+ AES-256-GCM 解密回调报文。需要 cryptography。"""
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from cryptography.hazmat.primitives.serialization import load_pem_public_key
+        from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
+        from cryptography.hazmat.primitives.hashes import SHA256
+        from cryptography.exceptions import InvalidSignature
+    except ImportError:
+        raise Gate(503, "服务端缺少 cryptography，无法验证支付回调") from None
+    ts = headers.get("Wechatpay-Timestamp") or ""
+    nonce = headers.get("Wechatpay-Nonce") or ""
+    serial = headers.get("Wechatpay-Serial") or ""
+    sig = headers.get("Wechatpay-Signature") or ""
+    if not (ts and nonce and serial and sig):
+        raise Gate(400, "回调缺少微信签名头")
+    if abs(time.time() - int(ts or 0)) > 300:
+        raise Gate(400, "回调时间戳过期")
+    cert_pem = _wx_platform_cert(serial)                    # bytes (PEM)
+    pub = load_pem_public_key(cert_pem)
+    try:
+        pub.verify(base64.b64decode(sig),
+                   f"{ts}\n{nonce}\n".encode() + body + b"\n",
+                   PKCS1v15(), SHA256())
+    except InvalidSignature:
+        raise Gate(401, "回调验签失败") from None
+    res = body and json.loads(body.decode("utf-8", "replace")).get("resource") or {}
+    plain = AESGCM(WXPAY_APIV3_KEY.encode()).decrypt(
+        res.get("nonce", "").encode(),
+        base64.b64decode(res.get("ciphertext") or ""),
+        (res.get("associated_data") or "").encode())
+    return json.loads(plain.decode("utf-8"))                # {"out_trade_no","transaction_id","trade_state",…}
+
+
+_WX_CERTS: dict[str, bytes] = {}                             # serial -> PEM
+
+
+def _wx_platform_cert(serial: str) -> bytes:
+    """拉取并解密微信平台证书（按 serial 缓存）。"""
+    if serial in _WX_CERTS:
+        return _WX_CERTS[serial]
+    ts = str(int(time.time()))
+    nonce = secrets.token_hex(8)
+    sig = _wx_sign(f"GET\n/v3/certificates\n{ts}\n{nonce}\n\n")
+    req = urllib.request.Request("https://api.mch.weixin.qq.com/v3/certificates", method="GET")
+    req.add_header("Authorization",
+                   f'WECHATPAY2-SHA256-RSA2048 mchid="{WXPAY_MCHID}",'
+                   f'nonce_str="{nonce}",signature="{sig}",'
+                   f'timestamp="{ts}",serial_no="{WXPAY_CERT_SERIAL}"')
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode())
+    except Exception as e:  # noqa: BLE001
+        raise Gate(502, f"拉取微信平台证书失败：{type(e).__name__}: {e}") from None
+    for item in data.get("data", []):
+        res = item.get("encrypt_certificate", {})
+        pem = AESGCM(WXPAY_APIV3_KEY.encode()).decrypt(
+            res.get("nonce", "").encode(),
+            base64.b64decode(res.get("ciphertext") or ""),
+            (res.get("associated_data") or "").encode())
+        _WX_CERTS[item.get("serial_no", "")] = pem
+    if serial not in _WX_CERTS:
+        raise Gate(400, f"平台证书 {serial} 不在列表中")
+    return _WX_CERTS[serial]
+
+
+def api_wechat_notify(body: bytes, headers) -> dict:
+    if PAY_PROVIDER != "wechat_native":
+        raise Gate(503, "支付通道未启用")
+    res = _wx_verify_and_decrypt(body, headers)
+    if res.get("trade_state") != "SUCCESS":
+        return {"code": "SUCCESS", "message": f"忽略 {res.get('trade_state')}"}
+    with db() as c:
+        o = c.execute("SELECT id FROM orders WHERE out_trade_no=?",
+                      (res.get("out_trade_no", ""),)).fetchone()
+    if not o:
+        raise Gate(404, "回调订单不存在")
+    _order_set_paid(o["id"], res.get("transaction_id", ""))
+    return {"code": "SUCCESS", "message": "OK"}
+
+
+def admin_orders(body: dict) -> dict:
+    limit = min(int(body.get("limit") or 50), 200)
+    with db() as c:
+        rows = c.execute("SELECT o.id,o.out_trade_no,o.amount,o.status,o.channel,"
+                         "o.transaction_id,o.created_at,o.paid_at,u.phone "
+                         "FROM orders o LEFT JOIN users u ON u.id=o.user_id "
+                         "ORDER BY o.id DESC LIMIT ?", (limit,)).fetchall()
+    return {"ok": True, "pay_provider": PAY_PROVIDER or "（未配置）",
+            "orders": [{"id": r["id"], "no": r["out_trade_no"],
+                        "amount": r["amount"] / 1e6, "status": r["status"],
+                        "channel": r["channel"], "account": _mask(r["phone"]),
+                        "transaction_id": r["transaction_id"],
+                        "created_at": r["created_at"], "paid_at": r["paid_at"]}
+                       for r in rows]}
+
+
+def admin_order_pay(body: dict) -> dict:
+    """人工确认到账：收款码收款的兜底通道，也是 demo 模式的模拟到账。"""
+    try:
+        oid = int(body.get("order_id") or 0)
+    except (TypeError, ValueError):
+        raise Gate(400, "order_id 不对") from None
+    with db() as c:
+        o = c.execute("SELECT id,status FROM orders WHERE id=?", (oid,)).fetchone()
+    if not o:
+        raise Gate(404, "订单不存在")
+    return _order_set_paid(oid, "MANUAL")
 
 
 def _upstream_call(upstream_body: dict):
@@ -817,6 +1096,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(api_device(row, body))
             if self.path == "/v1/redeem":
                 return self._json(api_redeem(_auth(self.headers), body))
+            if self.path == "/v1/orders":
+                return self._json(api_order_create(_auth(self.headers), body))
+            if self.path == "/v1/order/query":
+                return self._json(api_order_query(_auth(self.headers), body))
+            if self.path == "/v1/wechat/notify":
+                return self._json(api_wechat_notify(body, self.headers))
             if self.path == "/v1/chat/completions":
                 row = _auth(self.headers)
                 return api_chat(row, body, self)   # 流式时直接写完响应
@@ -835,6 +1120,12 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/admin/revoke":
                 _admin(self.headers)
                 return self._json(admin_revoke(body))
+            if self.path == "/admin/orders":
+                _admin(self.headers)
+                return self._json(admin_orders(body))
+            if self.path == "/admin/orders/pay":
+                _admin(self.headers)
+                return self._json(admin_order_pay(body))
             raise Gate(404, "没有这个接口")
         except Gate as e:
             if not self.headers_sent():
