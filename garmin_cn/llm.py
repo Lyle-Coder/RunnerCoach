@@ -28,6 +28,7 @@ APK 里是 Chaquopy，每加一个三方包就打进去几 MB，还要处理 ABI
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -427,9 +428,10 @@ def balance() -> dict:
     return {"ok": True,
             "balance": data.get("balance"),
             "currency": data.get("currency") or "CNY",
-            "used_today": data.get("used_today"),
             "used_month": data.get("used_month"),
-            "name": data.get("name") or ""}
+            "phone_masked": data.get("phone_masked") or "",
+            "devices": data.get("devices") or [],
+            "name": data.get("phone_masked") or data.get("name") or ""}
 
 
 def redeem(code: str) -> dict:
@@ -448,11 +450,52 @@ def redeem(code: str) -> dict:
     return {"ok": True, "added": data.get("added"), "balance": data.get("balance")}
 
 
-def device_login(device_name: str = "") -> dict:
-    """向平台换一个匿名设备令牌（首次接入时用，不强制注册账号）。
+def sms_send(phone: str) -> dict:
+    """请求平台发送短信验证码（60 秒限频由网关把控）。"""
+    phone = (phone or "").strip()
+    if not re.fullmatch(r"1\d{10}", phone):
+        return {"ok": False, "kind": "input", "error": "手机号格式不对（大陆 11 位）"}
+    cfg = load_config()
+    if not cfg.get("platform_base"):
+        return {"ok": False, "kind": "config", "error": "先填平台服务地址"}
+    try:
+        return _platform_post("/v1/sms/send", {"phone": phone}, "")
+    except LLMError as e:
+        return e.as_dict()
 
-    服务端按设备指纹发号，令牌可随时在后台吊销。这样「充值」不必先做注册登录，
-    但每个令牌对应一份余额，换手机就得重新绑。
+
+def auth_login(phone: str, code: str, device_name: str = "") -> dict:
+    """验证码登录：新号自动注册并领赠送额度，老号直接登录。
+
+    令牌只是登录态，余额挂在手机号账号上——卸载重装 / 换手机后
+    重新登录即可找回，这是「充值不丢」的关键。
+    """
+    phone = (phone or "").strip()
+    code = (code or "").strip()
+    if not re.fullmatch(r"1\d{10}", phone):
+        return {"ok": False, "kind": "input", "error": "手机号格式不对"}
+    if not code:
+        return {"ok": False, "kind": "input", "error": "请输入验证码"}
+    cfg = load_config()
+    base = (cfg.get("platform_base") or "").rstrip("/")
+    if not base:
+        return {"ok": False, "kind": "config", "error": "先填平台服务地址"}
+    try:
+        data = _platform_post("/v1/auth", {"phone": phone, "code": code,
+                                           "device_name": device_name or "RunnerCoach"}, "")
+    except LLMError as e:
+        return e.as_dict()
+    if data.get("token"):
+        save_config(platform_token=data["token"])
+    return {"ok": True, "created": bool(data.get("created")),
+            "phone_masked": data.get("phone_masked") or "", "balance": data.get("balance")}
+
+
+def device_login(device_name: str = "") -> dict:
+    """（旧版兼容）匿名设备令牌。新界面请用 sms_send + auth_login。
+
+    匿名设备的余额没有账号兜底，卸载即失——网关保留此接口只为
+    已发布的 v0.4.0 还能连上；后台可把匿名账号并入手机号账号。
     """
     cfg = load_config()
     base = (cfg.get("platform_base") or "").rstrip("/")

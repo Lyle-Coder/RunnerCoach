@@ -83,7 +83,16 @@ def dispatch(action: str, payload: dict | None = None) -> dict:
         if action == "redeem":
             return llm.redeem(str(p.get("code") or ""))
         if action == "device":
+            # 旧版兼容：匿名设备令牌。新界面走 sms + auth（余额挂账号，不丢）
             return llm.device_login(str(p.get("name") or ""))
+        if action == "sms":
+            return llm.sms_send(str(p.get("phone") or ""))
+        if action == "auth":
+            return llm.auth_login(str(p.get("phone") or ""), str(p.get("code") or ""),
+                                  str(p.get("device_name") or ""))
+        if action == "logout":
+            llm.save_config(platform_token="")
+            return {"ok": True}
 
         if action == "clear_cache":
             n = 0

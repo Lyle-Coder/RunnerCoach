@@ -186,14 +186,26 @@ BODY = """
     <div id="platBox" style="display:none">
       <label class="f">平台地址</label>
       <input class="f" id="platBase" placeholder="https://ai.你的域名.com" autocapitalize="off" spellcheck="false">
-      <div class="note">第一步先存地址，再点下面「绑定本机」换一个设备令牌。</div>
+      <div class="note">余额挂在手机号账号上：卸载重装 / 换手机后登录同一号码即可找回。</div>
+
+      <label class="f">手机号</label>
+      <div class="row2">
+        <input class="f" id="phoneInput" type="tel" inputmode="numeric" maxlength="11" placeholder="13 开头的 11 位号码" autocapitalize="off" spellcheck="false">
+        <button class="btn" id="smsBtn">发验证码</button>
+      </div>
+      <label class="f">验证码</label>
+      <div class="row2">
+        <input class="f" id="smsCode" inputmode="numeric" maxlength="6" placeholder="6 位数字" autocapitalize="off" spellcheck="false">
+        <button class="btn primary" id="loginBtn">登录 / 注册</button>
+      </div>
+      <div class="note" id="smsNote">未注册的号码自动注册并赠送试用额度。</div>
 
       <label class="f">设备令牌</label>
-      <input class="f" id="platToken" type="password" placeholder="自动获取，也可手动粘贴" autocapitalize="off" spellcheck="false">
+      <input class="f" id="platToken" type="password" placeholder="登录后自动获取，也可手动粘贴" autocapitalize="off" spellcheck="false">
 
       <div class="act">
-        <button class="btn" id="bindBtn">绑定本机</button>
         <button class="btn" id="balBtn">查余额</button>
+        <button class="btn" id="logoutBtn">退出登录</button>
       </div>
       <div class="bal" id="balBox" style="display:none">
         <span class="n" id="balNum">—</span><span class="u" id="balUnit">元</span>
@@ -590,8 +602,11 @@ function fillSheet(c) {
   $('#keyHint').textContent = c.api_key_hint || '无';
   $('#platBase').value = c.platform_base || '';
   $('#platToken').value = '';
+  $('#logoutBtn').style.display = c.has_platform_token ? '' : 'none';
   $('#setHint').textContent = c.mode === 'platform'
-    ? '平台额度：请求走你自己的网关，网关持有上游 Key，按 token 扣余额。'
+    ? (c.has_platform_token
+        ? '平台额度：已登录，余额挂在手机号账号上，换机重登不丢。'
+        : '平台额度：填好地址后用手机号登录，余额挂账号不丢。')
     : '自配 API：用你自己的 Key 直连模型服务商，数据只发给这一家。';
 
   const p = (c.providers || []).find(x => x.id === sel.value);
@@ -651,16 +666,47 @@ async function test() {
   }
 }
 
-async function bindDevice() {
+async function sendSms() {
+  const msg = $('#setMsg'), note = $('#smsNote'), btn = $('#smsBtn');
+  await api('config.set', collect());       // 先存地址，验证码请求才知道打到哪
+  note.textContent = '发送中…';
+  const j = await api('sms', {phone: $('#phoneInput').value.trim()});
+  if (!j.ok) { note.textContent = j.error || '发送失败'; return; }
+  if (j.dev_code) note.textContent = '【开发模式】验证码 ' + j.dev_code;
+  else note.textContent = '验证码已发送，5 分钟内有效';
+  let left = 60;
+  btn.disabled = true;
+  const t = setInterval(() => {
+    btn.textContent = left > 0 ? left + 's' : '发验证码';
+    if (left-- <= 0) { clearInterval(t); btn.disabled = false; }
+  }, 1000);
+}
+
+async function doLogin() {
   const msg = $('#setMsg');
-  msg.textContent = '正在绑定…';
-  await api('config.set', collect());
-  const j = await api('device', {name: 'RunnerCoach'});
-  if (!j.ok) { msg.textContent = j.error || '绑定失败'; return; }
-  msg.textContent = '已绑定 · 令牌 ' + (j.token_hint || '');
+  msg.textContent = '登录中…';
+  const j = await api('auth', {phone: $('#phoneInput').value.trim(),
+                               code: $('#smsCode').value.trim(),
+                               device_name: 'RunnerCoach'});
+  if (!j.ok) { msg.textContent = j.error || '登录失败'; return; }
+  msg.textContent = (j.created ? '注册成功，已赠送试用额度' : '欢迎回来') +
+                    ' · ' + (j.phone_masked || '');
+  $('#smsCode').value = '';
   const c = await api('config.get', {});
   if (c.ok) { STATE.config = c; fillSheet(c); }
   loadBalance();
+}
+
+async function doLogout() {
+  const msg = $('#setMsg');
+  const j = await api('logout', {});
+  if (j.ok) {
+    msg.textContent = '已退出登录（余额还在账号上，下次登录找回）';
+    $('#platToken').value = '';
+    const c = await api('config.get', {});
+    if (c.ok) { STATE.config = c; fillSheet(c); }
+    $('#balBox').style.display = 'none';
+  } else msg.textContent = j.error || '操作失败';
 }
 
 async function doRedeem() {
@@ -715,7 +761,9 @@ $('#provider').onchange = () => {
 };
 $('#saveBtn').onclick = save;
 $('#testBtn').onclick = test;
-$('#bindBtn').onclick = bindDevice;
+$('#smsBtn').onclick = sendSms;
+$('#loginBtn').onclick = doLogin;
+$('#logoutBtn').onclick = doLogout;
 $('#balBtn').onclick = loadBalance;
 $('#redeemBtn').onclick = doRedeem;
 

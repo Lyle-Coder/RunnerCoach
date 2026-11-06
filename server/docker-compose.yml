@@ -1,0 +1,22 @@
+# RunnerCoach 网关 · Docker Compose
+#
+# 用法（服务器上）：
+#   cp .env.example .env   # 填好 Key / 管理令牌 / 短信配置
+#   docker compose up -d --build
+#   curl http://127.0.0.1:8300/health
+#
+# 数据持久化：./data 卷挂到容器内 /app/data——SQLite 账本在这里，
+# 升级镜像 / 重启容器都不会丢。记得把整个 data/ 目录纳入你的备份计划
+# （或定期调 /admin/export、/admin/db 做异地备份）。
+services:
+  gateway:
+    build: .
+    container_name: runnercoach-gateway
+    restart: unless-stopped
+    ports:
+      - "8300:8300"
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    environment:
+      DB_PATH: /app/data/data.db
