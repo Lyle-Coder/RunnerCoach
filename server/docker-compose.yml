@@ -18,5 +18,9 @@ services:
     env_file: .env
     volumes:
       - ./data:/app/data
+      # 每日看板静态页（只读挂载）：/ 与 /card.png 直接展示最新生成结果；
+      # 本机 daily.bat 重新生成后立即生效，无需重启容器
+      - ../site:/app/site:ro
     environment:
       DB_PATH: /app/data/data.db
+      RC_SITE_DIR: /app/site

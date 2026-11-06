@@ -190,6 +190,13 @@ server\relay\start_tunnel.bat "https://xxx.workbuddy.host/?sharecode=XXXX"
 - 网关自身的令牌鉴权、余额校验、发码限频照常生效。
 - 中转站是测试通道，长期用仍建议自有域名 + HTTPS 直连。
 
+**兼任每日看板**：中转站的 `/`、`/index.html`、`/card.png` 优先穿隧道取
+本机 `site/` 里最新的看板（daily.bat 跑完即更新，无需重新发布），约 5 秒
+拿不到就回落云端内置快照（`server/relay/index.html`、`card.png`，随发布
+更新，已 gitignore）。重新发布前先 `cp site/index.html site/card.png
+server/relay/` 刷新快照，并保持隧道客户端在跑——云端探活打根路径。二进制
+（图片）经 base64 过隧道，文本照旧，中转站按 `b64` 标记还原。
+
 ## 七、App 端接入
 
 App → 菜单 → 模型服务设置 → 切「平台额度」→ 填 `https://ai.你的域名.com`

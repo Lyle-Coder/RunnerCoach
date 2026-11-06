@@ -16,6 +16,7 @@
   3) server/relay/secrets.json（已被 .gitignore 忽略）
 密钥不得写进源码——远端仓库是公开的。
 """
+import base64
 import json
 import os
 import sys
@@ -64,6 +65,19 @@ def tunnel_post(base: str, path: str, payload: dict, timeout: int):
         return json.loads(r.read().decode("utf-8"))
 
 
+def _is_text_like(headers: dict) -> bool:
+    """按 Content-Type 判断响应体是否文本；无类型时保守按文本处理。"""
+    mime = ""
+    for k, v in headers.items():
+        if k.lower() == "content-type":
+            mime = (v or "").strip().lower()
+            break
+    if not mime:
+        return True
+    return mime.startswith(("text/", "application/json", "application/javascript",
+                            "application/xml", "image/svg"))
+
+
 def run_job(base: str, gateway: str, job: dict) -> None:
     rid = job["id"]
     if not rid:
@@ -78,18 +92,24 @@ def run_job(base: str, gateway: str, job: dict) -> None:
         with urllib.request.urlopen(req, body if body else None, timeout=300) as r:
             status = r.status
             headers = dict(r.headers.items())
-            text = r.read().decode("utf-8", "replace")
+            raw = r.read()
     except urllib.error.HTTPError as e:
         status = e.code
         headers = dict(e.headers.items())
-        text = e.read().decode("utf-8", "replace")
+        raw = e.read()
     except Exception as e:  # noqa: BLE001
-        status, headers, text = 502, {"Content-Type": "application/json; charset=utf-8"}, \
-            json.dumps({"ok": False, "error": f"本机转发失败：{type(e).__name__}: {e}"},
-                       ensure_ascii=False)
-    tunnel_post(base, "/tunnel/response",
-                {"id": rid, "status": status, "headers": headers, "body": text},
-                timeout=30)
+        status = 502
+        headers = {"Content-Type": "application/json; charset=utf-8"}
+        raw = json.dumps({"ok": False, "error": f"本机转发失败：{type(e).__name__}: {e}"},
+                         ensure_ascii=False).encode("utf-8")
+    if _is_text_like(headers):
+        payload = {"id": rid, "status": status, "headers": headers,
+                   "body": raw.decode("utf-8", "replace")}
+    else:
+        # 二进制（图片等）经 base64 过隧道，中转站见 b64 标记还原
+        payload = {"id": rid, "status": status, "headers": headers,
+                   "body": base64.b64encode(raw).decode("ascii"), "b64": True}
+    tunnel_post(base, "/tunnel/response", payload, timeout=30)
     print(f"  {job['method']} {job['path']} -> {status}", flush=True)
 
 

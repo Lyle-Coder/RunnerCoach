@@ -75,6 +75,9 @@ MARGIN = float(os.environ.get("MARGIN", "1.15"))            # 平台加价倍率
 FREE_GRANT = int(os.environ.get("FREE_GRANT", "2_000_000")) # 新用户赠送（微元，默认 2 元）
 HOST = os.environ.get("BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8300"))
+# 每日看板静态目录（site/index.html、site/card.png，由 daily.bat 生成）
+SITE_DIR = Path(os.environ.get("RC_SITE_DIR",
+                               str(Path(__file__).resolve().parent.parent / "site")))
 
 SMS_PROVIDER = os.environ.get("SMS_PROVIDER", "dev")        # dev / aliyun
 SMS_KEY_ID = os.environ.get("SMS_ACCESS_KEY_ID", "")
@@ -728,6 +731,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
         self.close_connection = True
 
+    def _static(self, data: bytes, ctype: str) -> None:
+        """内联展示（无附件头）：每日看板经公网中转站转发时用。"""
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        self.close_connection = True
+
     def _read_body(self) -> dict:
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -771,6 +783,18 @@ class Handler(BaseHTTPRequestHandler):
                     c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 return self._file(Path(DB_PATH).read_bytes(), "gateway-snapshot.db",
                                   "application/x-sqlite3")
+            # 每日看板（公网中转站的 / 与 /card.png 会转发到这里，取最新生成结果）
+            key = self.path.split("?")[0]
+            if key in ("/", "/index.html", "/dashboard"):
+                page = SITE_DIR / "index.html"
+                if page.is_file():
+                    return self._static(page.read_bytes(), "text/html; charset=utf-8")
+                raise Gate(404, "看板尚未生成：先在本机运行 daily.bat")
+            if key == "/card.png":
+                card = SITE_DIR / "card.png"
+                if card.is_file():
+                    return self._static(card.read_bytes(), "image/png")
+                raise Gate(404, "一图流尚未生成：先在本机运行 daily.bat")
             raise Gate(404, "没有这个接口")
         except Gate as e:
             self._json({"ok": False, "error": e.message}, e.code)

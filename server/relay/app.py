@@ -4,7 +4,9 @@
 纯标准库。部署在公网（WorkBuddy sites 沙箱），职责：
 - 接收 App 的 HTTPS 请求，挂入待办队列；
 - 用户电脑上的隧道客户端用共享密钥长轮询取活，回传网关的响应；
-- App 只见到这个公网地址，家里电脑的 IP / 端口完全不暴露。
+- App 只见到这个公网地址，家里电脑的 IP / 端口完全不暴露；
+- 兼任「每日看板」入口：/ 与 /card.png 优先穿隧道取本机最新生成结果，
+  拿不到时回落云端内置快照（index.html / card.png，随发布更新）。
 
 安全边界：
 - /tunnel/* 必须带 X-Tunnel-Key（只有本人电脑能取活/回传）；
@@ -20,6 +22,7 @@
 
 单请求等待上限 120s（AI 对话较慢），取活长轮询 45s。
 """
+import base64
 import json
 import os
 import threading
@@ -67,6 +70,10 @@ TUNNEL_KEY = load_tunnel_key()
 MAX_BODY = 2 * 1024 * 1024
 JOB_WAIT = 45                                 # 客户端长轮询等待（秒）
 RESP_WAIT = 120                               # 公网请求等响应上限（秒）
+FRESH_WAIT = 5                                # 看板等本机最新结果的秒数，超时用快照
+STATIC_MAP = {"/": "index.html",              # 看板路径 -> 云端快照文件名
+              "/index.html": "index.html",
+              "/card.png": "card.png"}
 BLOCKED = ("/admin", "/v1/device",              # 不允许经公网访问的网关路径
            "/secrets", "/.env", "/app.py")       # 本机文件，绝不外泄
 HOP_HEADERS = {"connection", "content-length", "transfer-encoding",
@@ -136,9 +143,15 @@ class RelayHandler(BaseHTTPRequestHandler):
         try:
             data = json.loads(body.decode("utf-8"))
             rid = data["id"]
+            raw = data.get("body") or ""
+            if data.get("b64"):                 # 二进制响应（图片等）经 base64 传输
+                body_bytes = base64.b64decode(raw)
+            else:
+                body_bytes = str(raw).encode("utf-8", "replace")
             _responses[rid] = (int(data.get("status") or 502),
-                               data.get("headers") or {},
-                               data.get("body") or "")
+                               data.get("headers") or {}, body_bytes)
+            while len(_responses) > 256:        # 兜底后迟到的孤儿响应，防堆积
+                _responses.pop(next(iter(_responses)))
         except Exception:
             return self._send_json({"error": "bad response payload"}, 400)
         with _cv:
@@ -146,12 +159,49 @@ class RelayHandler(BaseHTTPRequestHandler):
         self._send_json({"ok": True})
 
     # ---------- 公网侧 ----------
+    def _serve_snapshot(self, name: str) -> bool:
+        """回云端内置的看板快照；文件不存在返回 False。"""
+        p = os.path.join(_HERE, name)
+        if not os.path.isfile(p):
+            return False
+        with open(p, "rb") as f:
+            body = f.read()
+        ctype = "image/png" if name.endswith(".png") else "text/html; charset=utf-8"
+        self._send(200, {"Content-Type": ctype}, body)
+        return True
+
+    def _dashboard(self, path: str, snapshot: str) -> None:
+        """看板：优先穿隧道取本机最新生成的结果（daily.bat 跑完即更新），
+        FRESH_WAIT 秒内拿不到就回落云端快照——电脑关机也能看昨天的。"""
+        rid = uuid.uuid4().hex
+        with _cv:
+            _pending.append((rid, {"id": rid, "method": "GET", "path": path,
+                                   "headers": {}, "body": ""}))
+            _cv.notify_all()
+        deadline = time.time() + FRESH_WAIT
+        while time.time() < deadline:
+            with _cv:
+                if rid in _responses:
+                    status, rhdrs, rbody = _responses.pop(rid)
+                    if status == 200 and rbody:
+                        ctype = (rhdrs.get("Content-Type")
+                                 or rhdrs.get("content-type")
+                                 or ("image/png" if snapshot.endswith(".png")
+                                     else "text/html; charset=utf-8"))
+                        return self._send(200, {"Content-Type": ctype}, rbody)
+                    break                       # 网关明确报错（如还没生成），走快照
+                _cv.wait(0.3)
+        if self._serve_snapshot(snapshot):
+            return
+        self._send_json({"ok": False, "error": "看板快照缺失且隧道未连通"}, 503)
+
     def forward(self, method: str) -> None:
         path = self.path
-        if method == "GET" and path.split("?")[0] in ("", "/"):
-            # 探活/浏览器直接访问根路径：快速返回，不进转发队列
-            return self._send_json({"ok": True, "role": "relay",
-                                    "hint": "RunnerCoach 网关中转站，App 里填本地址即可"})
+        if method == "GET":
+            key = path.split("?")[0]
+            if key in STATIC_MAP:
+                # 看板 / 探活：优先最新、快照兜底，不进 120s 长等队列
+                return self._dashboard(key, STATIC_MAP[key])
         if any(path.startswith(p) for p in BLOCKED):
             return self._send_json({"ok": False,
                                     "error": "该接口仅限内网使用"}, 403)
@@ -171,7 +221,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             with _cv:
                 if rid in _responses:
                     status, rhdrs, rbody = _responses.pop(rid)
-                    return self._send(status, rhdrs, rbody.encode("utf-8"))
+                    return self._send(status, rhdrs, rbody)
                 _cv.wait(1)
         self._send_json({"ok": False, "error": "网关响应超时（隧道未连通或网关过慢）"}, 504)
 
