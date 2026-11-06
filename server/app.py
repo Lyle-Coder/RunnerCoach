@@ -94,6 +94,15 @@ SMS_TEMPLATE = os.environ.get("SMS_TEMPLATE_CODE", "")
 CLIENT_PLATFORM_BASE = os.environ.get("RC_PUBLIC_BASE", "").strip().rstrip("/")
 CLIENT_SHARE_CODE = os.environ.get("RC_SHARE_CODE", "").strip()
 
+# ── 临时关闭（维护态）：RC_SERVICE_CLOSED=1 时认证/问答/支付一律快速拒绝 ──
+# 容器停掉后，公网隧道由 tools/maintenance_server.py 顶在 8300；两边文案必须逐字一致。
+# 这个开关保证即使容器被误启动，也不会重新开放邮箱发信或上游模型调用。
+SERVICE_CLOSED = os.environ.get("RC_SERVICE_CLOSED", "").strip().lower() \
+    in ("1", "true", "yes", "on")
+SERVICE_CLOSED_MESSAGE = "平台服务已关闭（维护中）：邮箱认证、大模型问答与在线充值均已停用"
+CLOSED_OPEN_PATHS = ("/health", "/v1/client/config", "/", "/index.html",
+                     "/dashboard", "/card.png")
+
 # ── 在线支付（可选）：未配置时 /v1/orders 返回 503，兑换码通道不受影响 ──
 # demo 模式用于测试完整下单→到账→扣费链路，admin/orders/pay 模拟到账
 PAY_PROVIDER = os.environ.get("PAY_PROVIDER", "")            # '' / demo / wechat_native
@@ -1008,6 +1017,26 @@ def admin_revoke(body: dict) -> dict:
 class Handler(BaseHTTPRequestHandler):
     server_version = "rc-gateway/0.2"
 
+    def _service_closed(self) -> bool:
+        """维护态守卫：探活/配置下发/看板静态仍可访问，业务接口一律快速拒绝。
+
+        放在所有业务逻辑之前，保证关闭期间不读数据库、不发 SMTP、不调上游模型。
+        """
+        if not SERVICE_CLOSED:
+            return False
+        if self.path.split("?")[0] in CLOSED_OPEN_PATHS:
+            return False
+        # 把请求体读干净再回绝，否则隧道客户端可能撞上 BrokenPipe 收不到响应
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if 0 < n <= 2 * 1024 * 1024:
+                self.rfile.read(n)
+        except (ValueError, OSError):
+            pass
+        self._json({"ok": False, "service": "closed",
+                    "error": SERVICE_CLOSED_MESSAGE}, 400)
+        return True
+
     def _json(self, obj, code: int = 200) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -1060,18 +1089,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         try:
+            if self._service_closed():
+                return
             if self.path == "/health":
+                if SERVICE_CLOSED:
+                    return self._json({"ok": False, "service": "closed",
+                                       "model": UPSTREAM_MODEL, "email": False,
+                                       "chat": False, "sms": False, "pay": False,
+                                       "message": SERVICE_CLOSED_MESSAGE})
                 channel = "email" + ("" if smtp_ready() else "（开发模式）")
                 if not smtp_ready():
                     channel = "email(dev)/sms:" + SMS_PROVIDER
                 return self._json({"ok": True, "model": UPSTREAM_MODEL,
                                    "sms": SMS_PROVIDER, "email": smtp_ready(),
-                                   "channel": channel})
+                                   "channel": channel, "service": "open"})
             if self.path == "/v1/client/config":
                 # 公开接口：只回「App 该连哪」，不含任何密钥。App 校验为 https 后才采用。
                 return self._json({"ok": True,
                                    "platform_base": CLIENT_PLATFORM_BASE,
                                    "platform_share_code": CLIENT_SHARE_CODE,
+                                   "service": "closed" if SERVICE_CLOSED else "open",
                                    "source": ("server" if CLIENT_PLATFORM_BASE
                                               else "builtin")})
             if self.path == "/v1/me":
@@ -1108,6 +1145,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         try:
+            if self._service_closed():
+                return
             body = self._read_body()
             ip = self.headers.get("X-Forwarded-For", "").split(",")[0].strip() \
                 or self.client_address[0]

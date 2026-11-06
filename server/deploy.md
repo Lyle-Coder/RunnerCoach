@@ -145,6 +145,30 @@ SMS_TEMPLATE_CODE=SMS_xxxxxxxx
 
 所有管理接口都要带 `X-Admin-Token` 头。
 
+### 临时关闭平台服务（不删数据）
+
+手机端联调结束、或想暂时停掉邮箱发信与模型扣费时：
+
+```bat
+python tools\service_switch.py off     :: 停容器 + 8300 顶维护态
+python tools\service_switch.py status  :: 看当前状态
+python tools\service_switch.py on      :: 撤维护态 + 起容器
+```
+
+- `off` 执行 `docker compose stop`（容器与 `data/` 卷保留），并在 8300 启动
+  `tools/maintenance_server.py`：所有 `/v1/*`、`/admin/*` 立即返回 400
+  「平台服务已关闭（维护中）…」；`/health` 返回 `ok=false, service=closed`
+  并逐项标出 `email/chat/sms/pay=false`；`/v1/client/config` 仍可下发，
+  不改变 App 内置地址；看板 `/`、`/card.png` 照常可读，顶部加关闭横幅。
+- 公网中转站与隧道客户端**不用改、不用重新发布**，分享码不变。隧道继续
+  指向 8300，只是拿到的永远是维护态响应——不会出现「请求挂满 120 秒才
+  报 504」「看板每次白等 5 秒才回落快照」。
+- `off` 同时把 `.env` 的 `RC_SERVICE_CLOSED` 置 1：即使容器被误启动，网关
+  也会在所有业务逻辑之前拒绝请求，不读库、不发 SMTP、不调上游。
+  `on` 会置回 0 并 `docker compose start`（容器已不存在时自动 `up -d --build`）。
+- 维护态进程日志与 PID 在 `server/data/maintenance.log`、`maintenance.pid`。
+- 回归：`python tools/test_service_closed.py`（本机随机端口真打，无需 Docker）。
+
 ## 六、公网测试：反向隧道中转（不暴露家庭 IP）
 
 没有公网服务器、又想让手机在 4G 下测试时，用 `server/relay/` 这套反向隧道：

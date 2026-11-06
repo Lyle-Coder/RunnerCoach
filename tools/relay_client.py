@@ -29,6 +29,10 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHARE_CODE = ""                               # 中转站分享码（从链接 ?sharecode= 自动提取）
 HOP_HEADERS = {"connection", "content-length", "transfer-encoding",
                "keep-alive", "host", "accept-encoding"}
+# 本机网关请求必须直连：某些会话会注入 HTTP_PROXY，导致 127.0.0.1:8300
+# 被代理转发，返回 502「upstream connect failed」而拿不到网关/维护态响应。
+# 云端 /tunnel/* 仍走默认 opener（可能需要系统代理出网）。
+_LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 MIN_KEY_LEN = 16
 
 
@@ -89,7 +93,7 @@ def run_job(base: str, gateway: str, job: dict) -> None:
             req.add_header(k, v)
     body = (job.get("body") or "").encode("utf-8")
     try:
-        with urllib.request.urlopen(req, body if body else None, timeout=300) as r:
+        with _LOCAL_OPENER.open(req, body if body else None, timeout=300) as r:
             status = r.status
             headers = dict(r.headers.items())
             raw = r.read()
