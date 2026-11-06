@@ -22,7 +22,8 @@ from . import aicoach, llm
 
 # 界面能改的配置字段（白名单）。故意不含 updated_at 之类内部字段。
 _WRITABLE = ("mode", "provider", "base_url", "model", "api_key",
-             "platform_base", "platform_token", "temperature", "auto_advice")
+             "platform_base", "platform_auto", "platform_token",
+             "temperature", "auto_advice")
 
 
 def _truthy(v) -> bool:
@@ -48,6 +49,8 @@ def dispatch(action: str, payload: dict | None = None) -> dict:
                     patch.pop("temperature")
             if "auto_advice" in patch:
                 patch["auto_advice"] = _truthy(patch["auto_advice"])
+            if "platform_auto" in patch:
+                patch["platform_auto"] = _truthy(patch["platform_auto"])
             # 切换供应商时清掉手填的地址/模型，否则会继续用上一家的
             if p.get("reset_provider"):
                 patch["base_url"] = ""

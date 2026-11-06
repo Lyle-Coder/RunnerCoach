@@ -54,10 +54,21 @@ def static_checks(body: str, js: str) -> list[str]:
     if body_of.index("classList.add('on')") > body_of.index("fillSheet"):
         raise AssertionError("openSheet 里 fillSheet 必须排在显示抽屉之后")
 
+    # v0.4.5：平台地址不该再出现在主界面，只能藏在默认隐藏的「自定义」容器里
+    if 'id="platBase"' in body and 'id="platCustomBox" style="display:none"' not in body:
+        raise AssertionError("平台地址输入框必须放在默认隐藏的自定义容器里")
+    m_api = re.search(r"async function api\(.*?\n\}", js, re.S)
+    if not m_api or "kind: 'net'" not in m_api.group(0):
+        raise AssertionError("api() 必须把 fetch 网络异常翻译成 net 错误，不能静默卡住")
+    if "platform_auto" not in js:
+        raise AssertionError("collect() 必须提交 platform_auto，否则切不回官方服务")
+
     return [
         f"√ BODY {len(known)} 个 id，无重复",
         f"√ JS 引用的 {len(used)} 个 id 全部存在",
         "√ openSheet 先显示抽屉再填内容",
+        "√ 平台地址只存在于默认隐藏的自定义容器",
+        "√ api() 捕获网络异常、collect() 带 platform_auto",
     ]
 
 
@@ -98,13 +109,22 @@ const box = {
   isNaN, parseInt, parseFloat
 };
 box.globalThis = box;
-vm.runInNewContext(src + '\n;globalThis.__T={openSheet,fillSheet,STATE};', box);
+vm.runInNewContext(src + '\n;globalThis.__T={openSheet,fillSheet,collect,STATE};', box);
 const T = box.__T, sheet = doc.querySelector('#sheet'), main = doc.querySelector('#mainAct');
 
 T.STATE.config = Object.assign({}, cfg, {mode:'platform', has_platform_token:false});
 T.openSheet();
 if (!sheet.classList.contains('on')) throw new Error('平台未登录：抽屉没有打开');
 if (main.style.display !== 'none') throw new Error('平台未登录：测试/保存行应隐藏');
+if (doc.querySelector('#platCustomBox').style.display !== 'none')
+  throw new Error('官方服务：自定义地址框默认应隐藏');
+if (doc.querySelector('#platCustom').checked !== false)
+  throw new Error('官方服务：自定义开关默认应关闭');
+if (!/无需填写地址/.test(doc.querySelector('#platService').textContent))
+  throw new Error('官方服务：应明确提示无需填写地址');
+const p1 = T.collect();
+if (p1.platform_auto !== true || 'platform_base' in p1)
+  throw new Error('官方服务：collect 不应提交平台地址，且 platform_auto 应为 true');
 
 T.STATE.config = Object.assign({}, cfg, {mode:'own', has_platform_token:false});
 T.openSheet();
@@ -119,6 +139,14 @@ if (doc.querySelector('#platLogin').style.display !== 'none')
 if (doc.querySelector('#platAcct').style.display === 'none')
   throw new Error('已登录：账户面板应显示');
 if (main.style.display === 'none') throw new Error('已登录：测试/保存行应显示');
+
+/* 自定义地址：勾上开关后 collect 才提交地址，且 platform_auto=false */
+const cb = doc.querySelector('#platCustom');
+cb.checked = true;
+doc.querySelector('#platBase').value = 'https://self.example.com';
+const p2 = T.collect();
+if (p2.platform_auto !== false || p2.platform_base !== 'https://self.example.com')
+  throw new Error('自定义模式：collect 应提交自定义地址并关闭自动模式');
 console.log('RUNTIME_OK');
 """
 

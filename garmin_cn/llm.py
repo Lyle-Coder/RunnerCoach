@@ -31,6 +31,7 @@ import json
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -82,15 +83,37 @@ PROVIDERS = {
 }
 DEFAULT_PROVIDER = "deepseek"
 
+# ---------------------------------------------------------------- 官方平台入口
+# 「平台地址」不该让用户填：它由部署方决定，出厂即预置。
+# 但平台层的分享门禁要求每个请求（实测连 GET /health 也一样）都带 X-Share-Code，
+# 首次请求没法凭空变出凭证，所以 App 必须内置一个引导入口。
+#
+# 注意区分：分享码不是密钥，它本来就要发给每一位用户（写在公开仓库里没有
+# 额外风险）；真正的密钥——上游 API Key、隧道共享密钥、SMTP 授权码——
+# 只存在于服务端 .env / secrets，既不进仓库也不进 APK。
+#
+# 业务地址优先由服务端 GET /v1/client/config 下发（见 sync_platform_config），
+# 值写在网关的 .env：RC_PUBLIC_BASE / RC_SHARE_CODE。换域名、轮换分享码
+# 只改服务端并重启容器即可，不必重新发版。
+BUILTIN_PLATFORM_BASE = "https://garmin-daily-dashboard.app.workbuddy.host"
+BUILTIN_PLATFORM_SHARE_CODE = "ORT7NXCECR"
+CLIENT_CONFIG_PATH = "/v1/client/config"
+CLIENT_CONFIG_TTL = 6 * 3600    # 下发结果的缓存时长（秒）
+
 DEFAULTS = {
     "mode": "own",              # own=自配 API / platform=平台额度
     "provider": DEFAULT_PROVIDER,
     "base_url": "",             # 留空则用预设
     "model": "",                # 留空则用预设
     "api_key": "",
-    "platform_base": "",        # 平台网关地址，如 https://ai.example.com
-    "platform_share_code": "",  # 中转站分享码（分享链接里的 ?sharecode=），内网直连留空
+    "platform_auto": True,      # True=用官方服务（内置/服务端下发）；False=自定义地址
+    "platform_base": "",        # 当前生效的平台地址（由 _resolve_platform 计算）
+    "platform_share_code": "",  # 当前生效的分享码
     "platform_token": "",
+    # 服务端下发结果（内部字段，界面白名单不含，防止被 config.set 篡改）
+    "platform_served_base": "",
+    "platform_served_share_code": "",
+    "platform_sync_at": 0,      # 上次尝试下发的时刻（成功失败都记，避免反复等超时）
     "temperature": 0.6,
     "auto_advice": True,        # 打开看板时自动生成今日建议
 }
@@ -114,6 +137,24 @@ class LLMError(RuntimeError):
 
 
 # ---------------------------------------------------------------- 配置读写
+def _resolve_platform(cfg: dict) -> dict:
+    """决定当前生效的平台地址。
+
+    优先级：用户在「高级」里手填的自定义地址 > 服务端下发的地址 > 出厂内置地址。
+    老配置文件没有 platform_auto 字段，默认 True——升级后会自动从「之前填错
+    的地址」切回官方入口，这正是 v0.4.5 修掉收不到验证码的关键。
+    """
+    if not cfg.get("platform_auto", True):
+        cfg["platform_base"] = (cfg.get("platform_base") or "").rstrip("/")
+        return cfg
+    served = (cfg.get("platform_served_base") or "").rstrip("/")
+    cfg["platform_base"] = served or BUILTIN_PLATFORM_BASE
+    cfg["platform_share_code"] = (
+        (cfg.get("platform_served_share_code") or "") if served
+        else BUILTIN_PLATFORM_SHARE_CODE)
+    return cfg
+
+
 def load_config() -> dict:
     """读配置，缺项用默认值补齐（老配置文件不会因为新增字段就读不出来）。"""
     cfg = dict(DEFAULTS)
@@ -129,7 +170,7 @@ def load_config() -> dict:
     # 平台额度模式的地址兼容字段名
     if not cfg.get("platform_base") and cfg.get("gateway"):
         cfg["platform_base"] = cfg["gateway"]
-    return cfg
+    return _resolve_platform(cfg)
 
 
 def save_config(**patch) -> dict:
@@ -138,17 +179,19 @@ def save_config(**patch) -> dict:
     for k, v in patch.items():
         if k in DEFAULTS:
             cfg[k] = v
-    # 允许直接粘贴带 ?sharecode= 的分享链接：拆出分享码，地址只留域名
-    # （中转站门禁要求请求头 X-Share-Code，App 拼路径时没法带查询串）
-    base = cfg.get("platform_base") or ""
-    if "?" in base:
-        head, _, query = base.partition("?")
-        for seg in query.split("&"):
-            k, _, v = seg.partition("=")
-            if k.lower() == "sharecode" and v:
-                cfg["platform_share_code"] = v
-        cfg["platform_base"] = head
-    cfg["platform_base"] = (cfg.get("platform_base") or "").rstrip("/")
+    # 自定义地址允许直接粘贴带 ?sharecode= 的分享链接：拆出分享码，地址只留域名
+    # （门禁要求 X-Share-Code 请求头，App 拼路径时没法带查询串）。
+    # 官方模式下忽略界面传来的 base，避免旧版前端或手滑把内置值覆盖掉。
+    if not cfg.get("platform_auto", True):
+        base = cfg.get("platform_base") or ""
+        if "?" in base:
+            head, _, query = base.partition("?")
+            for seg in query.split("&"):
+                k, _, v = seg.partition("=")
+                if k.lower() == "sharecode" and v:
+                    cfg["platform_share_code"] = v
+            cfg["platform_base"] = head
+    _resolve_platform(cfg)
     cfg["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -177,6 +220,10 @@ def public_config() -> dict:
         "api_key_hint": (key[:4] + "…（" + str(len(key)) + " 位）") if key else "",
         "has_key": bool(key),
         "platform_base": cfg["platform_base"],
+        "platform_auto": bool(cfg.get("platform_auto", True)),
+        "platform_source": ("custom" if not cfg.get("platform_auto", True)
+                            else ("server" if cfg.get("platform_served_base")
+                                  else "builtin")),
         "platform_hint": (token[:4] + "…（" + str(len(token)) + " 位）") if token else "",
         "has_platform_token": bool(token),
         "temperature": cfg["temperature"],
@@ -260,6 +307,10 @@ def _http_error(e: urllib.error.HTTPError) -> LLMError:
 
     code = e.code
     if code in (401, 403):
+        # 平台分享门禁返回的是 HTML「链接不完整」，不是 JSON——这和 key 无效
+        # 完全是两回事，别再让用户去检查 API Key。
+        if "<html" in raw.lower() or "链接不完整" in raw or "share" in raw.lower():
+            return LLMError("auth", "平台访问凭证无效（分享链接不完整），请升级到最新版 App", raw)
         return LLMError("auth", "密钥无效或没有权限，检查 API Key / 平台令牌", raw)
     if code == 402:
         return LLMError("quota", "额度不足，充值或换一个 key", raw)
@@ -268,6 +319,9 @@ def _http_error(e: urllib.error.HTTPError) -> LLMError:
     if code in (400, 422):
         return LLMError("request", f"请求被拒绝：{str(msg)[:160]}", raw)
     if code >= 500:
+        # 中转站 504 表示本机隧道没应答，不是上游模型故障——提示要指向「电脑没开」
+        if code == 504 or "隧道未连通" in raw or "网关响应超时" in raw:
+            return LLMError("net", "平台服务暂时连不上（电脑离线或隧道客户端没启动），稍后再试", raw)
         return LLMError("upstream", "模型服务暂时不可用，稍后再试", raw)
     return LLMError("http", f"HTTP {code}：{str(msg)[:160]}", raw)
 
@@ -391,8 +445,52 @@ def ping() -> dict:
 
 
 # ---------------------------------------------------------------- 平台额度
-def _platform_get(path: str, token: str) -> dict:
+def _valid_public_base(url: str) -> bool:
+    """服务端下发的地址只接受 https 且不带查询串，避免被脏配置带到别处。"""
+    try:
+        p = urllib.parse.urlparse(url)
+        return (p.scheme == "https" and bool(p.netloc)
+                and not p.query and not p.fragment
+                and not any(c.isspace() for c in url))
+    except Exception:
+        return False
+
+
+def sync_platform_config(force: bool = False) -> dict:
+    """向网关问一次「现在该连哪个地址」，结果缓存 6 小时。
+
+    引导请求固定走出厂内置入口（带内置分享码）；整个同步失败静默——
+    隧道没开、断网、网关升级中都不影响用内置值继续登录。
+    """
     cfg = load_config()
+    if not cfg.get("platform_auto", True):
+        return cfg
+    now = time.time()
+    if not force and now - float(cfg.get("platform_sync_at") or 0) < CLIENT_CONFIG_TTL:
+        return cfg
+    patch: dict = {"platform_sync_at": int(now)}
+    try:
+        req = urllib.request.Request(
+            BUILTIN_PLATFORM_BASE + CLIENT_CONFIG_PATH, method="GET")
+        req.add_header("X-Share-Code", BUILTIN_PLATFORM_SHARE_CODE)
+        with urllib.request.urlopen(req, timeout=3) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        base = str(data.get("platform_base") or "").strip().rstrip("/")
+        code = str(data.get("platform_share_code") or "").strip()
+        if (_valid_public_base(base)
+                and (not code or re.fullmatch(r"[A-Za-z0-9_-]{4,64}", code))):
+            patch.update(platform_served_base=base,
+                         platform_served_share_code=code)
+        else:
+            # 服务端没配（或配错）：清掉旧下发值，回落出厂内置
+            patch.update(platform_served_base="", platform_served_share_code="")
+    except Exception:
+        pass
+    return save_config(**patch)
+
+
+def _platform_get(path: str, token: str) -> dict:
+    cfg = sync_platform_config()
     base = (cfg.get("platform_base") or "").rstrip("/")
     if not base:
         raise LLMError("config", "还没填平台服务地址", "")
@@ -411,7 +509,7 @@ def _platform_get(path: str, token: str) -> dict:
 
 
 def _platform_post(path: str, body: dict, token: str) -> dict:
-    cfg = load_config()
+    cfg = sync_platform_config()
     base = (cfg.get("platform_base") or "").rstrip("/")
     if not base:
         raise LLMError("config", "还没填平台服务地址", "")

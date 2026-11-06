@@ -191,17 +191,15 @@ BODY = """
     <div id="platBox" style="display:none">
       <!-- 状态一：未登录，三步走完 -->
       <div id="platLogin">
-        <label class="f"><span class="step">1</span>平台地址</label>
-        <input class="f" id="platBase" placeholder="https://ai.你的域名.com 或直接粘完整分享链接" autocapitalize="off" spellcheck="false">
-        <div class="note">粘贴带 ?sharecode= 的分享链接会自动拆出分享码。</div>
+        <div class="note" id="platService">官方服务已内置，无需填写地址。</div>
 
-        <label class="f"><span class="step">2</span>手机号 / 邮箱</label>
+        <label class="f"><span class="step">1</span>手机号 / 邮箱</label>
         <div class="row2">
           <input class="f" id="phoneInput" type="text" placeholder="11 位手机号或邮箱" autocapitalize="off" autocorrect="off" spellcheck="false">
           <button class="btn" id="smsBtn">发验证码</button>
         </div>
 
-        <label class="f"><span class="step">3</span>验证码</label>
+        <label class="f"><span class="step">2</span>验证码</label>
         <div class="row2">
           <input class="f" id="smsCode" inputmode="numeric" maxlength="6" placeholder="6 位数字" autocapitalize="off" spellcheck="false">
           <button class="btn primary" id="loginBtn">登录 / 注册</button>
@@ -239,12 +237,18 @@ BODY = """
           <button class="btn" id="logoutBtn">退出登录</button>
         </div>
 
-        <details class="adv">
-          <summary>高级 · 设备令牌（一般不用管）</summary>
-          <input class="f" id="platToken" type="password" placeholder="登录后自动获取，也可手动粘贴" autocapitalize="off" spellcheck="false">
-          <div class="note">令牌只是登录态，余额在账号上。换设备登录会自动覆盖。</div>
-        </details>
       </div>
+
+      <details class="adv">
+        <summary>高级 · 服务地址与设备令牌（一般不用管）</summary>
+        <div class="note"><label><input type="checkbox" id="platCustom" style="vertical-align:middle"> 使用自定义服务地址（自建网关 / 内网直连）</label></div>
+        <div id="platCustomBox" style="display:none">
+          <input class="f" id="platBase" placeholder="https://你的域名 或 http://内网IP:8300" autocapitalize="off" spellcheck="false">
+          <div class="note">可粘贴带 ?sharecode= 的完整分享链接；取消勾选即恢复官方服务。</div>
+        </div>
+        <input class="f" id="platToken" type="password" placeholder="登录后自动获取，也可手动粘贴" autocapitalize="off" spellcheck="false">
+        <div class="note">令牌只是登录态，余额在账号上。换设备登录会自动覆盖。</div>
+      </details>
     </div>
 
     <div class="act" id="mainAct">
@@ -269,12 +273,25 @@ let CHAT = [];              // {role, content}
 const cache = {};           // 每个 tab 的渲染结果，切回来不用重新请求
 
 async function api(action, body) {
-  const r = await fetch('/ai/' + action, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body || {})
-  });
+  let r;
+  try {
+    r = await fetch('/ai/' + action, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body || {})
+    });
+  } catch (e) {
+    /* 旧版这里直接抛异常，按钮会永远停在「发送中…」且没有任何提示 */
+    return {ok: false, kind: 'net',
+            error: '连不上本机服务（App 内部桥接未就绪或网络异常）', detail: String(e)};
+  }
   let j;
-  try { j = await r.json(); } catch (e) { j = {ok: false, error: '返回的不是 JSON（HTTP ' + r.status + '）'}; }
+  try { j = await r.json(); }
+  catch (e) {
+    const denied = r.status === 403;
+    j = {ok: false, kind: denied ? 'auth' : 'error',
+         error: denied ? '平台访问凭证无效（分享链接不完整），请升级到最新版 App'
+                       : '服务返回的不是 JSON（HTTP ' + r.status + '）'};
+  }
   if (!j.ok && !j.kind) j.kind = 'error';
   return j;
 }
@@ -286,7 +303,7 @@ function errBox(j, retry) {
     auth:   ['密钥无效', '检查 API Key 是否复制完整、有没有多余空格；平台令牌可能已吊销。', 'gap'],
     quota:  ['额度不足', '上游账户余额用完了。去供应商后台充值，或用兑换码加平台额度。', 'gap'],
     rate:   ['请求太频繁', '等 30 秒再试。连续失败先确认账户额度。', 'retry'],
-    net:    ['网络到不了', '检查网络；自配地址要能被手机访问（iOS 需 HTTPS）。', 'retry'],
+    net:    ['网络到不了', '检查手机网络；平台额度还需要电脑开机且隧道客户端在运行。', 'retry'],
     data:   ['数据读不到', '先在 App 里同步一次，或确认今天有数据。', 'gap'],
     upstream: ['模型服务报错', '这多半是上游临时故障，稍后重试。', 'retry'],
     request: ['请求被拒绝', '换一个模型试试，或检查模型名是否写错。', 'retry']
@@ -638,17 +655,28 @@ function fillSheet(c) {
   $('#model').placeholder = c.model || '';
   $('#apiKey').value = '';
   $('#keyHint').textContent = c.api_key_hint || '无';
-  $('#platBase').value = c.platform_base || '';
+  /* 官方服务地址出厂内置，界面上不再让用户填；只有勾了「自定义」才显示输入框 */
+  const auto = c.platform_auto !== false;
+  const cb = $('#platCustom');
+  if (cb) cb.checked = !auto;
+  shown('#platCustomBox', !auto);
+  $('#platBase').value = auto ? '' : (c.platform_base || '');
+  const svc = $('#platService');
+  if (svc) svc.textContent = auto
+    ? (c.platform_source === 'server'
+        ? '官方服务已内置并已连接，无需填写地址。'
+        : '官方服务已内置，无需填写地址。')
+    : ('自定义服务地址：' + (c.platform_base || '未填写'));
   $('#platToken').value = '';
   const logged = !!c.has_platform_token;
   shown('#platLogin', !logged);
   shown('#platAcct', logged);
-  // 未登录时发码会自动存地址，测试/保存这排按钮只会添乱
+  // 未登录时发码会自动存配置，测试/保存这排按钮只会添乱
   shown('#mainAct', !(mode === 'platform' && !logged));
   $('#setHint').textContent = c.mode === 'platform'
     ? (logged
         ? '平台额度：已登录，每次问答按用量扣费。'
-        : '平台额度：三步登录，余额挂账号不丢。')
+        : '平台额度：服务地址已内置，邮箱 / 手机号登录即可。')
     : '自配 API：用你自己的 Key 直连模型服务商，数据只发给这一家。';
 
   const p = (c.providers || []).find(x => x.id === sel.value);
@@ -673,13 +701,15 @@ async function loadBalance() {
 
 function collect() {
   const mode = (document.querySelector('#modeSeg button.on') || {}).dataset?.m || 'own';
+  const custom = !!($('#platCustom') && $('#platCustom').checked);
   const p = {
     mode,
     provider: $('#provider').value,
     base_url: $('#baseUrl').value.trim(),
     model: $('#model').value.trim(),
-    platform_base: $('#platBase').value.trim()
+    platform_auto: !custom
   };
+  if (custom) p.platform_base = $('#platBase').value.trim();
   const k = $('#apiKey').value.trim();
   if (k) p.api_key = k;
   const t = $('#platToken').value.trim();
@@ -715,7 +745,7 @@ async function test() {
 
 async function sendSms() {
   const msg = $('#setMsg'), note = $('#smsNote'), btn = $('#smsBtn');
-  await api('config.set', collect());       // 先存地址，验证码请求才知道打到哪
+  await api('config.set', collect());       // 先存配置（含平台模式/自定义开关），再发码
   note.textContent = '发送中…';
   const j = await api('sms', {account: $('#phoneInput').value.trim()});
   if (!j.ok) { note.textContent = j.error || '发送失败'; return; }
@@ -841,6 +871,8 @@ $('#provider').onchange = () => {
     $('#model').placeholder = p.model || '';
   }
 };
+const platCustom = $('#platCustom');
+if (platCustom) platCustom.onchange = () => shown('#platCustomBox', platCustom.checked);
 $('#saveBtn').onclick = save;
 $('#testBtn').onclick = test;
 $('#smsBtn').onclick = sendSms;

@@ -87,6 +87,13 @@ SMS_KEY_SECRET = os.environ.get("SMS_ACCESS_KEY_SECRET", "")
 SMS_SIGN = os.environ.get("SMS_SIGN_NAME", "")
 SMS_TEMPLATE = os.environ.get("SMS_TEMPLATE_CODE", "")
 
+# ── 客户端平台入口（可选）：由服务端统一决定 App 该连哪个地址 ──
+# App 出厂内置了一个引导入口，但业务地址每次启动前后会来问一次
+# GET /v1/client/config。换域名、轮换分享码只改这两个值并重启容器，
+# 不必重新发版；留空则客户端继续用出厂内置值。
+CLIENT_PLATFORM_BASE = os.environ.get("RC_PUBLIC_BASE", "").strip().rstrip("/")
+CLIENT_SHARE_CODE = os.environ.get("RC_SHARE_CODE", "").strip()
+
 # ── 在线支付（可选）：未配置时 /v1/orders 返回 503，兑换码通道不受影响 ──
 # demo 模式用于测试完整下单→到账→扣费链路，admin/orders/pay 模拟到账
 PAY_PROVIDER = os.environ.get("PAY_PROVIDER", "")            # '' / demo / wechat_native
@@ -1046,6 +1053,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "model": UPSTREAM_MODEL,
                                    "sms": SMS_PROVIDER, "email": smtp_ready(),
                                    "channel": channel})
+            if self.path == "/v1/client/config":
+                # 公开接口：只回「App 该连哪」，不含任何密钥。App 校验为 https 后才采用。
+                return self._json({"ok": True,
+                                   "platform_base": CLIENT_PLATFORM_BASE,
+                                   "platform_share_code": CLIENT_SHARE_CODE,
+                                   "source": ("server" if CLIENT_PLATFORM_BASE
+                                              else "builtin")})
             if self.path == "/v1/me":
                 return self._json(api_me(_auth(self.headers)))
             if self.path == "/admin/accounts":
