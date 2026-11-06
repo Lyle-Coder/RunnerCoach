@@ -680,7 +680,11 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .sphead{{display:flex;justify-content:space-between;align-items:baseline;
   font-size:18px;color:#8C97A4;margin:6px 0 1px}}
 .sphead em{{font-style:normal;color:#EDF1F5;font-weight:700;font-size:21px}}
-.sp{{display:block;width:100%;height:88px}}
+/* 折线是 lcol 里唯一的弹性块：天数内容少（没训练、提醒少、没体重行）时，
+   弹性空间原本全堆在图表和 .last 之间，形成 10~15% 的整段空洞；
+   flex:1 让三段折线按 grow 摊掉富余高度，行高变高而不是留白。
+   内容多时 shrink 到 min-height 兜底，不会把底部挤出画幅。 */
+.sp{{display:block;width:100%;height:88px;flex:1 1 auto;min-height:42px}}
 .chart-h{{font-size:18px;color:#7F8A97;margin:7px 0 1px;letter-spacing:.5px}}
 .mini4{{display:flex;gap:9px;margin-bottom:2px}}
 .mini4 div{{flex:1;background:#1F262E;border:1px solid #262E38;border-radius:12px;

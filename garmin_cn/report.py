@@ -71,6 +71,11 @@ th{text-align:left;font-weight:500;color:var(--muted);font-size:11.5px;padding:0
 td{padding:9px 8px;border-bottom:1px solid var(--line-2);color:var(--ink-2);font-variant-numeric:tabular-nums}
 tr:last-child td{border-bottom:none}
 td.name{color:var(--ink);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 活动表 8 列，窄屏放不下：外层容器负责横向滚动，页面本身永不横向偏移。
+   之前长活动名会把后面的列推出表格、整页跟着歪——根因是溢出发生在
+   body 层；现在溢出被锁在 .tbl-scroll 里。 */
+.tbl-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tbl-scroll table{min-width:620px}
 .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:5px;background:var(--blue-soft);color:var(--blue)}
 .note{font-size:13.5px;line-height:1.8;color:var(--ink-2);white-space:pre-wrap}
 .note-meta{font-size:11.5px;color:var(--faint);margin-top:12px}
@@ -120,6 +125,8 @@ td.name{color:var(--ink);max-width:220px;overflow:hidden;text-overflow:ellipsis;
   .top h1{font-size:19px}
   .m-val{font-size:21px}
   .ring-num{font-size:28px}
+  /* 窄屏让活动名换成两行而不是硬撑宽度：多数日子不再需要横向滚动 */
+  td.name{max-width:150px;white-space:normal;word-break:break-word;line-height:1.45}
 }
 """
 
@@ -644,10 +651,11 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
             "</tr>"
         )
     table = (
+        '<div class="tbl-scroll">'
         "<table><thead><tr><th>日期</th><th>类型</th><th>名称</th><th>时长</th>"
         "<th>距离</th><th>配速</th><th>均心率</th><th>负荷</th></tr></thead><tbody>"
         + ("".join(rows) or '<tr><td colspan="8" class="empty">近 5 周没有活动记录</td></tr>')
-        + "</tbody></table>"
+        + "</tbody></table></div>"
     )
 
     acwr_color = "#1D9E75"

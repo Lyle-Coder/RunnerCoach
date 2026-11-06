@@ -749,12 +749,17 @@ class MainActivity : Activity() {
     }
 
     /**
-     * contain 收进标准 9:16：只缩不裁。四周再留一圈与卡片同色的安全带，
+     * contain 收进标准 9:16：只缩不裁。四周留一圈与卡片同色的安全带，
      * 因为各家分享面板的预览框未必是 9:16，centerCrop 时会先切掉边框，
      * 不会碰到日期、轨迹和表格。安全带与底色同色，肉眼看不出来。
+     *
+     * 早期安全带是画幅高的 3%（1920 → 58px×2），加上 contain 在高度差
+     * 上的居中空档，9:16 的卡片四周各多出 7~10% 的底色边，整张图看起来
+     * 「缩放不对、没填满画面」。收窄到 1.2% 后，9:16 内容与画幅的误差
+     * 只剩个位数像素，内容基本顶满；安全带仍然防住近 9:16 预览框的裁边。
      */
     private fun fitToFrame(src: Bitmap, dw: Int, dh: Int, bg: Int): Bitmap {
-        val pad = max(16, (dh * 0.03).roundToInt())
+        val pad = max(12, (dh * 0.012).roundToInt())
         val boxW = (dw - 2 * pad).coerceAtLeast(1)
         val boxH = (dh - 2 * pad).coerceAtLeast(1)
         val s = min(boxW.toDouble() / src.width, boxH.toDouble() / src.height)
