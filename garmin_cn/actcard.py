@@ -53,6 +53,7 @@ from .card import _find_browser
 from .exportspec import probe as _export_probe
 from .metrics import num
 from . import privacy as PV
+from . import interval as IV
 
 # 画幅宽 1080：内容高度约 1830（桌面/手机实测一致），裁掉页面留白后
 # 比例 ≈ 1.81，与 9:16 的 1.778 只差 2%，contain 后四边几乎只剩安全带。
@@ -780,6 +781,53 @@ def lap_rows(laps: list[dict], theme: dict | None = None) -> str:
     return head + ''.join(out) + f'<div class="lnote">{note}</div>'
 
 
+def interval_columns(iv: dict, theme: dict | None = None) -> str:
+    """间歇结构双栏：左快组、右慢组；识别不出间歇时不会调到这里。"""
+    th = theme or theme_for(None)
+    speed = th["kind"] == "speed"
+
+    def main(pace: float | None) -> str:
+        if not pace:
+            return "—"
+        return f"{kmh(pace):.1f}" if speed else pace_txt(pace)
+
+    def col(side: str, color: str, label: str) -> str:
+        a = iv[side]
+        hr = f'{a["hr_avg"]:.0f}' if a["hr_avg"] else "—"
+        cad = f'{a["cad"]:.0f}' if a["cad"] else "—"
+        stats = (
+            '<div class="ivstat">'
+            f'<div><b>{main(a["pace_s"])}</b>'
+            f'<span>平均{"速度" if speed else "配速"}</span></div>'
+            f'<div><b>{hr}</b><span>平均心率</span></div>'
+            f'<div><b>{cad}</b><span>平均步频</span></div>'
+            '</div>')
+        paces = [s["pace_s"] for s in a["segs"] if s["pace_s"]]
+        lo, hi = (min(paces), max(paces)) if paces else (0.0, 1.0)
+        rows = []
+        for i, s in enumerate(a["segs"], 1):
+            p = s["pace_s"] or lo
+            k = 0.5 if hi - lo < 1e-6 else (p - lo) / (hi - lo)
+            w = 30 + (1 - k) * 70          # 配速越快（数值越小）条越长
+            rows.append(
+                f'<div class="ivrow"><span>{i}</span>'
+                f'<span class="ivbar"><i style="width:{w:.0f}%;'
+                f'background:{color}"></i></span>'
+                f'<b>{main(s["pace_s"])}</b>'
+                f'<em>{s["dist_m"] / 1000:.2f} km</em></div>')
+        if a["omitted"]:
+            rows.append(f'<div class="ivmore">其余 {a["omitted"]} 组未列出</div>')
+        sub = f'{a["sets"]} 组 · {a["dist_m"] / 1000:.2f} km'
+        return (f'<div class="ivcol {side}">'
+                f'<div class="ivhead"><b>{label}</b><span>{sub}</span></div>'
+                f'{stats}<div class="ivlist">{"".join(rows)}</div></div>')
+
+    return ('<div class="iv">'
+            + col("fast", "#5CE1D0", "快组")
+            + col("slow", "#E8843A", "慢组 / 恢复")
+            + '</div>')
+
+
 def _mix(c1: str, c2: str, k: float) -> str:
     a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
     b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
@@ -846,13 +894,22 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     gct = num(raw.get("avgGroundContactTime"))
     vo = num(raw.get("avgVerticalOscillation"))
     n_real = len([l for l in laps if (l.get("pace_s") or 0) > 0])
-    if n_real > 10:
-        lap_title, lap_sub = "分段", f"每 {math.ceil(n_real / 10)} 圈合并"
-    elif n_real <= 1:
-        # 单圈活动（骑行代步、短距离）按「每公里」标题会显得莫名其妙
-        lap_title, lap_sub = "全程", "未分段"
+    # 间歇训练（快慢交替）自动切到「底部分双栏」：左快组、右慢组。
+    # 识别不出就完全走原来的分圈表，非间歇活动的版式零影响。
+    iv = IV.detect(detail)
+    if iv:
+        lap_title = "间歇结构"
+        lap_sub = f'{iv["sets"]} 组快慢交替 · 速度差 {iv["ratio"]:.2f}×'
+        lap_html = interval_columns(iv, th)
     else:
-        lap_title, lap_sub = "每公里", f"{n_real} 圈"
+        if n_real > 10:
+            lap_title, lap_sub = "分段", f"每 {math.ceil(n_real / 10)} 圈合并"
+        elif n_real <= 1:
+            # 单圈活动（骑行代步、短距离）按「每公里」标题会显得莫名其妙
+            lap_title, lap_sub = "全程", "未分段"
+        else:
+            lap_title, lap_sub = "每公里", f"{n_real} 圈"
+        lap_html = lap_rows(laps, th)
     # 图上只用橙点标出被校准过的采样点，不再在页脚写「修正了多少点」——
     # 那是数据处理的中间量，看板上不需要（问起来反而要解释）。
     cad_avg = s.get("cad_avg")
@@ -1006,7 +1063,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
 
   <div class="card lp">
     <div class="ctitle">{lap_title}<span>{lap_sub}</span></div>
-    {lap_rows(laps, th)}
+    {lap_html}
   </div>
 
   <div class="foot">数据 Garmin</div>
@@ -1176,6 +1233,30 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
   vertical-align:middle}
 .lg.pace{background:var(--acc)}
 .lg.hr{background:#E8843A}
+/* 间歇结构：底部整块切成左右双栏，左快组右慢组。
+   两栏等高、每栏最多 8 行，和原分圈表高度量级一致，不会把长图撑爆。 */
+.iv{display:flex;gap:16px;align-items:stretch}
+.ivcol{flex:1;min-width:0;background:#10161C;border:1px solid #242D38;
+  border-radius:14px;padding:16px 18px}
+.ivcol.fast{border-color:#2A5149}
+.ivcol.slow{border-color:#4A3827}
+.ivhead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px}
+.ivhead b{font-size:27px;font-weight:700}
+.ivhead span{font-size:17px;color:#76838F}
+.ivcol.fast .ivhead b{color:#5CE1D0}
+.ivcol.slow .ivhead b{color:#E8843A}
+.ivstat{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;
+  padding-bottom:12px;border-bottom:1px solid #242D38}
+.ivstat b{display:block;font-size:31px;font-weight:700;line-height:1.15;letter-spacing:-.5px}
+.ivstat span{font-size:15px;color:#939FAD}
+.ivlist{margin-top:8px}
+.ivrow{display:flex;align-items:center;gap:10px;padding:5px 0;font-size:18px}
+.ivrow>span:first-child{width:26px;text-align:right;color:#76838F;flex:none}
+.ivbar{flex:1;height:10px;background:#1B2530;border-radius:5px;overflow:hidden}
+.ivbar i{display:block;height:100%;border-radius:5px}
+.ivrow b{width:74px;text-align:right;font-size:21px;flex:none}
+.ivrow em{width:80px;text-align:right;font-style:normal;color:#939FAD;flex:none}
+.ivmore{font-size:16px;color:#64707E;text-align:center;padding-top:8px}
 """
 
 
@@ -1192,7 +1273,7 @@ def shoot(html_path: Path, png_path: Path, w: int = W, h: int = H) -> Path:
         "--force-device-scale-factor=1", "--default-background-color=00000000",
         # 页面高度随内容自适应，这里给足画布，事后按实际内容高度裁掉底部空白。
         # （Windows 上无头窗口的视口比 --window-size 少 95px，所以多给一些）
-        f"--window-size={w},{h + 420}", f"--screenshot={png_path}",
+        f"--window-size={w},{h + 420}", f"--screenshot={png_path.resolve()}",
         html_path.resolve().as_uri(),
     ]
     proc = subprocess.run(cmd, capture_output=True, timeout=90)

@@ -1998,6 +1998,27 @@ def cmd_selftest(args) -> int:
         assert h.count("__gcExportInfo") == 1, "探针重复注入"
         assert "__gcFit" in h and "visualViewport" in h, "HTML 缺缩放校正探针"
 
+    # 间歇训练（快慢交替）自动切底部双栏：左快组、右慢组；
+    # 匀速跑 / 单调加速不能误报，非间歇活动的分圈表必须原样保留。
+    from garmin_cn import interval as IV
+
+    IV.check()
+    iv_pts: list[dict] = []
+    t, dist = 0.0, 0.0
+    for _ in range(6):
+        for spd, secs in ((4.2, 95.0), (2.6, 77.0)):
+            for _ in range(int(secs / 5)):
+                iv_pts.append({"t": t, "spd": spd, "hr": 165, "cad": 180,
+                               "dist": dist})
+                t += 5.0
+                dist += spd * 5.0
+    iv_html = ACTCARD.build_html({}, {"series": {"points": iv_pts}},
+                                 None, None, "间歇自检")
+    assert 'class="iv"' in iv_html and "快组" in iv_html
+    assert "慢组 / 恢复" in iv_html and "间歇结构" in iv_html
+    assert '<div class="lhead">' not in iv_html, "间歇版不该再渲染原分圈表"
+    assert 'class="iv"' not in ACTCARD.build_html({}, {}, None, None, "自检")
+
     # 手机端 WebView 的缩放自校正：density=3 时布局视口 1080 CSS px 只露出
     # 360 CSS px，必须把画布缩到 1/3；归一后内容高度与 density 无关。
     # 少了这一步，draw(Canvas) 只截到左上角，分享预览会「只剩一个角」。
