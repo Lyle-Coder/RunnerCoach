@@ -32,6 +32,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from . import history, ui
+
 SERVE_EXT = {".html", ".htm", ".png", ".jpg", ".jpeg", ".mp4", ".json", ".csv"}
 LIST_EXT = {".html", ".htm", ".png", ".mp4"}   # 手机上值得点开的；json/csv 只服务不列
 
@@ -85,71 +87,9 @@ def _title(name: str) -> tuple[str, str, str]:
     return name, "其它", kind
 
 
-def _index_html(root: Path) -> str:
-    files = []
-    for p in root.iterdir():
-        if not p.is_file() or p.suffix.lower() not in LIST_EXT:
-            continue
-        if p.name.startswith("_") or p.stat().st_size == 0:
-            continue
-        files.append(p)
-    files.sort(key=lambda x: (x.name != "latest.html", -x.stat().st_mtime))
-
-    order = {"今日": 0, "看板": 1, "图": 2, "活动": 3, "计划": 4, "其它": 5}
-    groups: dict[str, list] = {}
-    for p in files[:60]:
-        title, g, kind = _title(p.name)
-        bucket = groups.setdefault(g, [])
-        if len(bucket) < 12:
-            bucket.append((title, p, kind))
-
-    blocks = []
-    for g in sorted(groups, key=lambda k: order.get(k, 9)):
-        rows = []
-        for title, p, kind in groups[g]:
-            st = p.stat()
-            when = dt.datetime.fromtimestamp(st.st_mtime).strftime("%m-%d %H:%M")
-            rows.append(
-                f'<a class="row" href="{p.name}">'
-                f'<span class="n">{title}</span>'
-                f'<span class="m">{when} · {kind} · {_size(st.st_size)}</span></a>'
-            )
-        blocks.append(f'<h2>{g}</h2>{"".join(rows)}')
-
-    if not blocks:
-        blocks.append('<p class="empty">还没有生成任何产物。<br>'
-                      '跑一次同步或看板，这里就会出现文件。</p>')
-
-    return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#F4F6F2">
-<title>RunnerCoach · 手机</title>
-<style>
-:root{{--bg:#F4F6F2;--card:#fff;--line:#E3E7DF;--ink:#1B1F1A;--muted:#6E7669;--green:#1D9E75}}
-*{{box-sizing:border-box}}
-body{{margin:0;background:var(--bg);color:var(--ink);
-  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
-  -webkit-text-size-adjust:100%;padding:20px 14px 40px;max-width:560px;margin:0 auto}}
-h1{{font-size:19px;font-weight:600;margin:0 0 4px}}
-.sub{{font-size:12.5px;color:var(--muted);margin-bottom:20px}}
-h2{{font-size:11.5px;font-weight:600;color:var(--muted);letter-spacing:1.1px;margin:20px 0 8px}}
-.row{{display:flex;flex-direction:column;gap:3px;background:var(--card);
-  border:1px solid var(--line);border-radius:12px;padding:13px 14px;margin-bottom:8px;
-  text-decoration:none;color:inherit;-webkit-tap-highlight-color:transparent}}
-.row:active{{background:#EDF2EA}}
-.n{{font-size:15px;font-weight:500}}
-.m{{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}}
-.empty{{font-size:13px;color:var(--muted);line-height:1.7}}
-code{{background:#E9EDE5;border-radius:4px;padding:1px 5px;font-size:12px}}
-.foot{{margin-top:26px;font-size:11.5px;color:#9AA294;line-height:1.8;
-  border-top:1px solid var(--line);padding-top:12px}}
-</style></head><body>
-<h1>RunnerCoach</h1>
-<div class="sub">只读 · 数据不出这台电脑</div>
-{"".join(blocks)}
-<div class="foot">点开即是完整看板，可左右滑动。<br>
-关掉电脑上的窗口，这些链接立刻失效。</div>
-</body></html>"""
+def _with_fix(doc: str, css: str) -> str:
+    """给已有的自包含 HTML（AI 页 / 看板）补一段统一外壳样式，不动它的 DOM。"""
+    return doc.replace("</head>", f"<style>{css}</style></head>", 1)
 
 
 class _Handler(SimpleHTTPRequestHandler):
@@ -170,10 +110,22 @@ class _Handler(SimpleHTTPRequestHandler):
                 return self._json({"ok": False, "error": "AI 页面只允许本机打开"}, 403)
             from . import aiui
 
-            return self._html(aiui.render())
+            # AI 页有自己的 CSS，只补统一外框与标题节奏，不动它的交互。
+            return self._html(_with_fix(aiui.render(), ui.AI_FIX))
         token = getattr(self.server, "token", "")
         if token and not self._gate(u, token):
             return
+        # 四个 tab 的页面：同源、只读本地库，App 的 JS 桥照常挂在上面。
+        # 放在 gate 之后，局域网带访问码的访问也受同一套保护。
+        root = Path(self.directory)
+        if u.path == "/view":
+            return self._html(history.view_page(parse_qs(u.query)))
+        if u.path in ("/history", "/history.html"):
+            return self._html(history.history_page(parse_qs(u.query)))
+        if u.path in ("/me", "/me.html"):
+            return self._html(ui.me_page())
+        if u.path in ("/files", "/files.html"):
+            return self._html(ui.files_page(root))
         if u.path in ("", "/", "/index.html"):
             return self._send_index()
         return super().do_GET()
@@ -266,13 +218,8 @@ class _Handler(SimpleHTTPRequestHandler):
         return False
 
     def _send_index(self) -> None:
-        body = _index_html(Path(self.directory)).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        # 首页不再是产物文件列表：改成「今日」概览，文件清单降级到 /files。
+        self._html(ui.home_page())
 
     def end_headers(self) -> None:
         if self.path.rsplit(".", 1)[-1].lower() in ("html", "htm"):

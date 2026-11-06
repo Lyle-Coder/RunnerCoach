@@ -132,6 +132,23 @@ recent(limit)                   # 产物清单
 read_html(path)                 # 只允许读 output/ 下的文件
 ```
 
+本地服务的页面路由（`garmin_cn/serve.py` → `ui.py` / `history.py`）：
+
+```text
+/            今日 tab   ui.home_page()      恢复度 / 负荷 / 快捷动作 / 最近活动
+/history     历史 tab   history_page()      区间 / 类型 / 分页；data-aid 点行出图
+/view?date=  历史 tab   view_page()         按需生成看板 + DASH_FIX + 日期导航
+/ai          教练 tab   aiui.render()       原样 + AI_FIX 统一外框
+/me          我的 tab   ui.me_page()        数据源 / 低频动作 / 产物 / 关于
+/files       我的 tab   ui.files_page()     原首页降级成产物清单
+```
+
+四个 tab 共用 `ui.py` 的一套 CSS tokens、`page()` 外壳与 `BRIDGE_JS`；
+页面里 `data-act` 转发到 `Bridge.action(name)`，`data-aid` 转发到
+`Bridge.activity(id)`。原生是「52dp 工具栏 + 占满中间的 WebView + 62dp 底部导航」，
+`syncTabByUrl()` 让高亮跟着页面内链接走。看板 / AI 页只注入一段适配 CSS，
+不改各自 DOM；出图用的 card / actcard 完全不碰。
+
 实测结果：
 
 ```

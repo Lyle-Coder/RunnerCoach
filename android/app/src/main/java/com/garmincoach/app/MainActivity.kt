@@ -29,7 +29,6 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
@@ -56,13 +55,13 @@ import kotlin.math.roundToInt
  * 为什么不原生画界面：看板、一图流、活动图本来就是 HTML，重画一遍等于
  * 维护两套版式，而且版式改动最频繁。WebView 直接吃现有产物。
  *
- * 为什么操作放顶栏而不是悬浮按钮：常驻 FAB 会一直压住看板右下角，
- * 表格本来就要横向滚动，遮一块特别难受。顶栏是独立的一行布局，
- * WebView 只占它下面那块，任何内容都不会被盖住。**日常**同步和刷新连菜单项
- * 都不留，统一走下拉手势；活动图直接点看板里的活动行，⋮ 里是
- * 「今日一图流」「历史数据」「AI 教练」「模型服务设置」「小米体重」和「账号登录」
- * （佳明 / 高驰双图标选择，数据源可分别登）。「历史数据」负责下拉同步覆盖不到的
- * 两件事：补拉更早的历史区间，以及按日期/按活动查已落库的数据。
+ * 为什么不要右上角 ⋮：六个动作（一图流 / 历史 / AI / 设置 / 体重 / 登录）
+ * 全塞在一个弹出菜单里，既找不到也没法体现层级。现在改成
+ * **顶部工具栏 + 底部 4 个 tab（今日 / 历史 / 教练 / 我的）+ 中间 WebView**：
+ * 高频浏览走 tab，低频动作放进「我的」页的卡片，页面里的 data-act 通过
+ * JS 桥调回原生对话框（登录、补拉历史、出图仍然用原生最可靠）。
+ * 每个 tab 对应本机服务的一个同源网页，外壳、色板、卡片统一由
+ * `garmin_cn/ui.py` 生成；看板与 AI 页只补一段适配 CSS，不动各自 DOM。
  *
  * 两个原生的地方：
  *   1) 登录 / 验证码要用系统键盘，原生对话框比 HTML 表单可靠；
@@ -78,10 +77,14 @@ class MainActivity : Activity() {
     private lateinit var bar: ProgressBar
     private lateinit var pull: PullRefreshLayout
     private lateinit var subtitle: TextView
-    private lateinit var menuBtn: TextView
     private lateinit var secrets: Secrets
 
     private var port = 0
+    private var activeTab = 0
+    private var dayCount = 0
+    private val tabRoots = mutableListOf<LinearLayout>()
+    private val tabIcons = mutableListOf<ImageView>()
+    private val tabLabels = mutableListOf<TextView>()
 
     private val api: PyObject by lazy { Python.getInstance().getModule("garmin_cn.appapi") }
 
@@ -124,20 +127,21 @@ class MainActivity : Activity() {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         subtitle = TextView(this).apply {
-            text = "下拉同步 · 点活动名出图"
+            text = "今日 · 下拉同步"
             textSize = 11f
             setTextColor(0xFF8A8F87.toInt())
         }
         titles.addView(subtitle)
         toolbar.addView(titles, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        menuBtn = TextView(this).apply {
-            text = "⋮"
-            textSize = 26f
+        // 右上角不再挂菜单：只留一个刷新，浏览与动作分别交给底部 tab 和页面卡片。
+        val refreshBtn = TextView(this).apply {
+            text = "⟳"
+            textSize = 21f
             setTextColor(0xFF4A5750.toInt())
             setPadding(dp(16), dp(4), dp(16), dp(4))
-            setOnClickListener { showMenu() }
+            setOnClickListener { reload() }
         }
-        toolbar.addView(menuBtn, LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT))
+        toolbar.addView(refreshBtn, LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT))
         shell.addView(toolbar, LinearLayout.LayoutParams(MATCH_PARENT, toolH))
 
         // 一条极细的分割线，比阴影轻，看板滚到底时也不会糊成一片
@@ -157,7 +161,12 @@ class MainActivity : Activity() {
             addJavascriptInterface(Bridge(), "GC")
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(v: WebView, u: String) {
-                    if (u.startsWith("http://127.0.0.1:$port/")) v.evaluateJavascript(BIND_JS, null)
+                    if (u.startsWith("http://127.0.0.1:$port/")) {
+                        v.evaluateJavascript(BIND_JS, null)
+                        // 页面内的链接也会切分区（如首页点「历史活动」），
+                        // 底部导航的高亮要跟着 URL 走，不能只认点击。
+                        syncTabByUrl(u)
+                    }
                 }
 
                 override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean {
@@ -187,6 +196,9 @@ class MainActivity : Activity() {
         bar.visibility = View.GONE
 
         shell.addView(pull, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        shell.addView(View(this).apply { setBackgroundColor(0xFFE3E8DF.toInt()) },
+            LinearLayout.LayoutParams(MATCH_PARENT, 1))
+        shell.addView(buildTabBar(), LinearLayout.LayoutParams(MATCH_PARENT, dp(62)))
         setContentView(shell)
 
         thread { bootServer() }
@@ -202,71 +214,126 @@ class MainActivity : Activity() {
         if (this::web.isInitialized && web.canGoBack()) web.goBack() else super.onBackPressed()
     }
 
-    /** 只暴露一个方法给本机页面：点活动行 → 出那一条的图。 */
+    /** 本机页面只有两个入口：点活动行出图、点卡片触发原生动作。
+     *  动作名由 `garmin_cn/ui.py` 的 data-act 统一下发，加动作不用改 JS。 */
     private inner class Bridge {
         @JavascriptInterface
         fun activity(id: String) {
             if (id.isBlank()) return
             ui { askPrivacy(id) }
         }
-    }
 
-    // ------------------------------------------------------------ 菜单
-    private fun showMenu() {
-        val pm = PopupMenu(this, menuBtn)
-        val m = pm.menu
-        // 日常同步与刷新都交给下拉手势；活动图直接点看板里的活动行出，
-        // 菜单里不再重复这两个入口。其余是一次性/低频动作。
-        m.add(0, 1, 0, "今日一图流")
-        m.add(0, 6, 1, "历史数据")
-        m.add(0, 5, 2, "AI 教练")
-        m.add(0, 2, 3, "模型服务设置")
-        m.add(0, 3, 4, "小米体重")
-        m.add(0, 4, 5, "账号登录")
-        pm.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                1 -> exportCard()
-                6 -> showHistoryMenu()
-                // AI 教练与设置都在本机服务的另一个页面里：同源，桥的规则不变
-                5 -> if (port != 0) web.loadUrl("http://127.0.0.1:$port/ai")
-                2 -> if (port != 0) web.loadUrl("http://127.0.0.1:$port/ai#settings")
-                3 -> showMiPanel()
-                4 -> showLoginPicker()
-            }
-            true
-        }
-        pm.show()
-    }
-
-    // ------------------------------------------------------------ 历史数据
-    /**
-     * 下拉刷新只同步最近 30 天，补历史 / 查历史都从这个入口进。
-     * 覆盖范围从 `days_index()` 读（只查本地库，不联网），先告诉用户
-     * 「已经同步到哪天」，免得对着空白日期瞎选或重复补拉。
-     */
-    private fun showHistoryMenu() {
-        val s = apiCall("days_index", 1)
-        val cover = if (s.optBoolean("ok") && s.optInt("count") > 0)
-            "已覆盖 ${s.optString("first")} ~ ${s.optString("last")}\n" +
-                "${s.optInt("count")} 天日汇总 · ${s.optInt("activities")} 条活动"
-        else "本地库还是空的，先下拉同步一次"
-        AlertDialog.Builder(this)
-            .setTitle("历史数据")
-            .setMessage(cover)
-            .setItems(arrayOf<CharSequence>(
-                "拉取更多历史数据", "按日期查看看板",
-                "历史活动列表", "返回今日看板")) { _, which ->
-                when (which) {
-                    0 -> showSyncRangeDialog()
-                    1 -> showDateDashboard()
-                    2 -> showHistoryActivities(null, null, 0, null)
-                    3 -> reload()
+        @JavascriptInterface
+        fun action(name: String) {
+            ui {
+                when (name) {
+                    "export" -> exportCard()
+                    "historySync" -> showSyncRangeDialog()
+                    "login" -> showLoginPicker()
+                    "mi" -> showMiPanel()
+                    "settings" -> if (port != 0)
+                        web.loadUrl("http://127.0.0.1:$port/ai#settings")
+                    "refresh" -> reload()
+                    "tab0" -> goTab(0)
+                    "tab1" -> goTab(1)
+                    "tab2" -> goTab(2)
+                    "tab3" -> goTab(3)
+                    else -> toast("未知操作：$name")
                 }
             }
-            .setNegativeButton("取消", null)
-            .show()
+        }
     }
 
+    // ------------------------------------------------------------ 底部导航
+    private val TAB_NAMES = arrayOf("今日", "历史", "教练", "我的")
+    private val TAB_URLS = arrayOf("/", "/history", "/ai", "/me")
+    private val TAB_ICONS = intArrayOf(
+        R.drawable.ic_tab_today, R.drawable.ic_tab_history,
+        R.drawable.ic_tab_coach, R.drawable.ic_tab_me)
+
+    private fun buildTabBar(): LinearLayout {
+        val nav = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(0xFFFAFBF8.toInt())
+            setPadding(dp(4), dp(6), dp(4), dp(6))
+        }
+        for (i in TAB_NAMES.indices) {
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(2), dp(2), dp(2), dp(2))
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { goTab(i) }
+            }
+            val icon = ImageView(this).apply {
+                setImageResource(TAB_ICONS[i])
+                adjustViewBounds = true
+            }
+            val label = TextView(this).apply {
+                text = TAB_NAMES[i]
+                textSize = 11f
+                gravity = Gravity.CENTER
+            }
+            item.addView(icon, LinearLayout.LayoutParams(dp(22), dp(22)))
+            item.addView(label, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+            nav.addView(item, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
+            tabRoots.add(item)
+            tabIcons.add(icon)
+            tabLabels.add(label)
+        }
+        updateTabs()
+        return nav
+    }
+
+    private fun updateTabs() {
+        for (i in tabRoots.indices) {
+            val on = i == activeTab
+            val c = if (on) 0xFF1D9E75.toInt() else 0xFF8A8F87.toInt()
+            tabIcons[i].setColorFilter(c)
+            tabLabels[i].setTextColor(c)
+            tabLabels[i].setTypeface(
+                android.graphics.Typeface.DEFAULT,
+                if (on) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+            tabRoots[i].setBackgroundColor(if (on) 0xFFE4F3EC.toInt() else 0x00000000)
+        }
+        if (this::subtitle.isInitialized) updateSubtitle()
+    }
+
+    /** 顶栏副标题统一显示「当前分区 · 数据天数」，切 tab 和同步后都走这里。 */
+    private fun updateSubtitle() {
+        val d = if (dayCount > 0) "$dayCount 天数据" else "下拉同步"
+        subtitle.text = "${TAB_NAMES[activeTab]} · $d"
+    }
+
+    private fun goTab(i: Int) {
+        if (i !in TAB_NAMES.indices) return
+        activeTab = i
+        updateTabs()
+        if (port == 0) {
+            toast("还在启动，稍等一下")
+            return
+        }
+        web.loadUrl("http://127.0.0.1:$port${TAB_URLS[i]}")
+    }
+
+    /** 页面内链接也会切分区，底部高亮跟着 URL 走，不能只认 tab 点击。 */
+    private fun syncTabByUrl(url: String) {
+        val path = url.substringAfter(":$port", url)
+        val t = when {
+            path.startsWith("/ai") -> 2
+            path.startsWith("/me") || path.startsWith("/files") -> 3
+            path.startsWith("/history") || path.startsWith("/view") -> 1
+            else -> 0
+        }
+        if (t != activeTab) {
+            activeTab = t
+            updateTabs()
+        }
+    }
+
+    // ------------------------------------------------------------ 历史补拉
+    /** 只有「补拉」需要联网和账号，仍走原生对话框；查询历史已经全部网页化。 */
     private fun showSyncRangeDialog() {
         val end = todayISO()
         AlertDialog.Builder(this)
@@ -324,96 +391,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showDateDashboard() {
-        if (port == 0) {
-            toast("还在启动，稍等一下")
-            return
-        }
-        val s = apiCall("days_index", 1)
-        val last = s.optString("last").ifBlank { todayISO() }
-        val first = s.optString("first").ifBlank { shiftISO(last, -365) }
-        pickDate("查看哪一天的看板？", last) { date ->
-            if (date < first || date > last) {
-                toast("这天还没同步数据（已覆盖 $first ~ $last）")
-                return@pickDate
-            }
-            busy(true)
-            thread {
-                // live=false：历史日期不联网刷身体电量，直接出本地看板
-                val r = apiCall("dashboard", date, false)
-                ui {
-                    busy(false)
-                    if (!r.optBoolean("ok")) {
-                        toast("看板生成失败：${r.optString("error")}")
-                        return@ui
-                    }
-                    web.loadUrl(fileUrl(r.optString("html")))
-                    toast("已打开 $date 的看板 · 菜单「历史数据 → 返回今日看板」可回去")
-                }
-            }
-        }
-    }
-
-    /** 本地历史活动列表：按日期筛选、只看跑步、分页加载更早，点一条即出活动图。 */
-    private fun showHistoryActivities(
-        start: String?, end: String?, offset: Int, types: String?
-    ) {
-        busy(true)
-        thread {
-            val r = apiCall("activities", start, end, types, 60, offset)
-            ui {
-                busy(false)
-                if (!r.optBoolean("ok")) {
-                    toast("查询失败：${r.optString("error")}")
-                    return@ui
-                }
-                val arr = r.optJSONArray("items") ?: JSONArray()
-                val labels = mutableListOf<String>()
-                val ids = mutableListOf<String>()
-                for (i in 0 until arr.length()) {
-                    val it = arr.optJSONObject(i) ?: continue
-                    labels.add(it.optString("label"))
-                    ids.add(it.optString("id"))
-                }
-                if (r.optBoolean("has_more")) {
-                    labels.add("↓ 加载更早的活动")
-                    ids.add("")
-                }
-                if (labels.isEmpty()) {
-                    toast("这个区间没有活动")
-                    return@ui
-                }
-                val scope = if (start.isNullOrBlank() && end.isNullOrBlank())
-                    "全部" else "${start ?: "最早"} ~ ${end ?: "今天"}"
-                val kind = if (types == "run") "只看跑步" else "全部类型"
-                val items = Array<CharSequence>(labels.size) { i -> labels[i] }
-                val dlg = AlertDialog.Builder(this)
-                    .setTitle("历史活动 · ${r.optInt("total")} 条 · $scope · $kind")
-                    .setItems(items) { _, which ->
-                        val id = ids[which]
-                        if (id.isEmpty())
-                            showHistoryActivities(start, end, offset + 60, types)
-                        else
-                            askPrivacy(id)   // 复用「分享前脱敏」三档，再出活动图
-                    }
-                    .setNeutralButton("按日期筛选") { _, _ ->
-                        pickDateRange { a, b -> showHistoryActivities(a, b, 0, types) }
-                    }
-                    .setNegativeButton("关闭", null)
-                if (types == "run") {
-                    dlg.setPositiveButton("显示全部") { _, _ ->
-                        showHistoryActivities(start, end, 0, null)
-                    }
-                } else {
-                    dlg.setPositiveButton("只看跑步") { _, _ ->
-                        showHistoryActivities(start, end, 0, "run")
-                    }
-                }
-                dlg.show()
-            }
-        }
-    }
-
     // DatePicker 的月份是 0-based；统一转成 YYYY-MM-DD 再传给 Python 侧校验。
     private fun isoOf(y: Int, m: Int, d: Int): String =
         String.format(Locale.US, "%04d-%02d-%02d", y, m + 1, d)
@@ -461,7 +438,7 @@ class MainActivity : Activity() {
             return
         }
         port = r.optInt("port")
-        ui { web.loadUrl("http://127.0.0.1:$port/") }
+        ui { goTab(0) }
 
         // 首次装完是空库，直接把登录框弹出来，别让人对着一页「还没有东西」猜
         val s = apiCall("status")
@@ -474,12 +451,15 @@ class MainActivity : Activity() {
 
     private fun setStatus(s: JSONObject) {
         val days = s.optInt("days")
-        val hint = if (days > 0) "$days 天数据 · 下拉同步" else "下拉同步数据"
-        ui { subtitle.text = hint }
+        ui {
+            dayCount = days
+            updateSubtitle()
+        }
     }
 
+    /** 刷新当前页，不再无条件跳回首页；同步完停在用户原来所在的分区。 */
     private fun reload() {
-        if (port != 0) web.loadUrl("http://127.0.0.1:$port/") else web.reload()
+        ui { web.reload() }
     }
 
     // ------------------------------------------------------------ 同步

@@ -124,7 +124,7 @@ POSIX 把 `run.bat` 换成 `./run.sh`。`daily.bat` / `daily.sh` 把「同步 + 
 | 形态 | 适合谁 | 出 PNG | 门槛 |
 |---|---|:---:|---|
 | **桌面 CLI + 本地网页** | 有电脑、想自己改代码 | ✅ | 装 Python，敲命令 |
-| **安卓 APK**（[`android/`](android/)） | 只用手机、不想碰命令行 | ✅ WebView 截图 | 装 APK，下拉同步最近 30 天；⋮ →「历史数据」补拉更早区间 / 按日期看板 / 查历史活动 |
+| **安卓 APK**（[`android/`](android/)） | 只用手机、不想碰命令行 | ✅ WebView 截图 | 装 APK，下拉同步；底部 4 个 tab：今日 / 历史 / 教练 / 我的，右上角只留刷新 |
 | **Termux / 局域网只读** | 愿意折腾 / 只想看结果 | HTML 版 | `setup-termux.sh` 或 `serve --lan` |
 
 `serve` 默认只监听 `127.0.0.1`；加 `--lan` 才暴露到局域网，并自动生成访问码，

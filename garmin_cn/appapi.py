@@ -608,7 +608,10 @@ def dashboard(date: str | None = None, live: bool = True) -> dict:
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     try:
-        shutil.copyfile(path, OUT / "latest.html")
+        # latest.html 代表「今天的看板」。查历史日期时不能覆盖它，否则
+        # 首页第一项会悄悄变成刚看过的那天，返回今日也回不去。
+        if d == dt.date.today().isoformat():
+            shutil.copyfile(path, OUT / "latest.html")
     except Exception:
         pass
     return {"ok": True, "html": str(path), "date": d}

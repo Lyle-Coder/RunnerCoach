@@ -2095,6 +2095,26 @@ def cmd_selftest(args) -> int:
     q = _json.loads(AP.call("activities", _json.dumps([None, None, None, 5, 0])))
     assert q["ok"] and all(k in q for k in ("items", "total", "has_more", "offset"))
 
+    # 网页外壳与历史入口：首页不再堆文件列表，四个 tab 共用一套 ui.page，
+    # 卡片动作走 data-act，活动行走 data-aid。只测不写文件的分支。
+    from garmin_cn import history as HW
+    from garmin_cn import ui as U
+
+    idx = HW.index_section(U.coverage())
+    assert "/view?date=" in idx and "日汇总覆盖" in idx
+    hp = HW.history_page({"type": ["run"]})
+    assert "page-head" in hp and 'name="start"' in hp
+    assert "data-aid=" in hp and "GC.activity" in hp
+    home = U.home_page()
+    assert "page-head" in home and 'data-act="export"' in home and "data-aid=" in home
+    assert "page-head" in U.me_page() and 'data-act="historySync"' in U.me_page()
+    nav = U.nav_html("2026-10-21",
+                     {"first": "2026-10-01", "last": "2026-11-06"})
+    assert "gc-nav" in nav
+    assert "/view?date=2026-10-20" in nav and "/view?date=2026-10-22" in nav
+    assert "max-width:820px" in U.DASH_FIX and "max-width:820px" in U.AI_FIX
+    assert HW._date({"date": ["not-a-date"]}, "date", "2026-11-06") == "2026-11-06"
+
     class _FakeClient:
         def __init__(self, items):
             self.items = items
