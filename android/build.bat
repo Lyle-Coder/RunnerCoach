@@ -40,9 +40,25 @@ if errorlevel 1 exit /b 1
 set "TASK=%~1"
 if "%TASK%"=="" set "TASK=assembleDebug"
 
+rem Chaquopy compiles app sources to .pyc with buildPython. The Windows Store
+rem python3.exe is usually a stub returning 9009, which makes Chaquopy warn and
+rem silently ship plain .py instead. Resolve a real 3.13 via the py launcher.
+set "BUILDPY="
+if defined BUILD_PYTHON set "BUILDPY=%BUILD_PYTHON%"
+if defined BUILDPY goto :pyready
+for /f "delims=" %%P in ('py -3.13 -c "import sys;print(sys.executable)" 2^>nul') do set "BUILDPY=%%P"
+:pyready
+
 echo [2/2] building %TASK% ...
+if not defined BUILDPY goto :gradle_plain
+echo   buildPython: %BUILDPY%
+call "%GRADLE%" --no-daemon --console=plain %TASK% "-PbuildPython=%BUILDPY%"
+if errorlevel 1 exit /b 1
+goto :gradle_done
+:gradle_plain
 call "%GRADLE%" --no-daemon --console=plain %TASK%
 if errorlevel 1 exit /b 1
+:gradle_done
 
 echo.
 echo APK:

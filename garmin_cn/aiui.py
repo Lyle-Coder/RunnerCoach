@@ -247,7 +247,7 @@ BODY = """
       </div>
     </div>
 
-    <div class="act">
+    <div class="act" id="mainAct">
       <button class="btn" id="testBtn">测试连接</button>
       <button class="btn primary" id="saveBtn">保存</button>
     </div>
@@ -260,6 +260,9 @@ JS = r"""
 const $ = s => document.querySelector(s);
 const el = (t, c, h) => { const n = document.createElement(t); if (c) n.className = c; if (h != null) n.innerHTML = h; return n; };
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+/* 切显示状态一律走这里：某个节点哪天被删了，也只是少一处变化，
+   不会抛 TypeError 把后面的整个抽屉打开流程打断。 */
+const shown = (sel, on) => { const n = $(sel); if (n) n.style.display = on ? '' : 'none'; };
 
 let STATE = { config: null, tab: 'today', busy: false };
 let CHAT = [];              // {role, content}
@@ -600,9 +603,16 @@ async function send(text) {
 
 /* ---------------- 设置 ---------------- */
 function openSheet() {
-  const c = STATE.config;
-  if (c) fillSheet(c);
+  /* 先把抽屉亮出来再填内容：填表万一出错，用户至少还能看到面板，
+     错误信息落在 setMsg 里，而不是「点了没反应」。 */
   $('#sheet').classList.add('on');
+  try {
+    if (STATE.config) fillSheet(STATE.config);
+  } catch (e) {
+    const m = $('#setMsg');
+    if (m) m.textContent = '设置界面加载异常：' + (e && e.message ? e.message : e);
+    console.error('fillSheet failed', e);
+  }
 }
 function closeSheet() { $('#sheet').classList.remove('on'); }
 
@@ -610,8 +620,8 @@ function fillSheet(c) {
   const mode = c.mode || 'own';
   document.querySelectorAll('#modeSeg button').forEach(b =>
     b.classList.toggle('on', b.dataset.m === mode));
-  $('#ownBox').style.display = mode === 'own' ? '' : 'none';
-  $('#platBox').style.display = mode === 'platform' ? '' : 'none';
+  shown('#ownBox', mode === 'own');
+  shown('#platBox', mode === 'platform');
 
   const sel = $('#provider');
   if (!sel.options.length) {
@@ -631,10 +641,10 @@ function fillSheet(c) {
   $('#platBase').value = c.platform_base || '';
   $('#platToken').value = '';
   const logged = !!c.has_platform_token;
-  $('#platLogin').style.display = logged ? 'none' : '';
-  $('#platAcct').style.display = logged ? '' : 'none';
+  shown('#platLogin', !logged);
+  shown('#platAcct', logged);
   // 未登录时发码会自动存地址，测试/保存这排按钮只会添乱
-  $('#mainAct').style.display = (mode === 'platform' && !logged) ? 'none' : '';
+  shown('#mainAct', !(mode === 'platform' && !logged));
   $('#setHint').textContent = c.mode === 'platform'
     ? (logged
         ? '平台额度：已登录，每次问答按用量扣费。'
@@ -645,7 +655,7 @@ function fillSheet(c) {
   if (p) $('#provNote').textContent = p.note + (p.key_url ? ' · 申请地址 ' + p.key_url : '');
 
   if (mode === 'platform' && logged) loadBalance();
-  else $('#balBox').style.display = 'none';
+  else shown('#balBox', false);
 }
 
 async function loadBalance() {
@@ -816,8 +826,10 @@ $('#sheet').onclick = e => { if (e.target.id === 'sheet') closeSheet(); };
 document.querySelectorAll('#modeSeg button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#modeSeg button').forEach(x => x.classList.remove('on'));
   b.classList.add('on');
-  $('#ownBox').style.display = b.dataset.m === 'own' ? '' : 'none';
-  $('#platBox').style.display = b.dataset.m === 'platform' ? '' : 'none';
+  shown('#ownBox', b.dataset.m === 'own');
+  shown('#platBox', b.dataset.m === 'platform');
+  shown('#mainAct', !(b.dataset.m === 'platform' &&
+                      STATE.config && !STATE.config.has_platform_token));
 });
 $('#provider').onchange = () => {
   const c = STATE.config;
