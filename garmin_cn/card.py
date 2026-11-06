@@ -95,12 +95,12 @@ def _bars(parts: list[dict]) -> str:
 
 def _week_rows(plan: dict | None, today: str) -> str:
     if not plan or not plan.get("available"):
-        return '<p class="empty">还没有读到佳明教练计划</p>'
+        return '<p class="empty">还没有读到教练计划</p>'
     # 整周都排休息（计划没排训练 / 恢复周）时，7 行「休息」纯属占地方——
     # 一屏高度是固定的，这 200 多像素要从今日训练和图里挤出来。
     if all(d.get("rest") for d in (plan.get("week") or [])):
         return ('<p class="empty" style="padding:4px 0">'
-                '本周计划均为休息日（佳明教练未排训练）</p>')
+                '本周计划均为休息日（教练未排训练）</p>')
     rows = []
     for d in plan.get("week") or []:
         is_today = d["date"] == today
@@ -411,7 +411,7 @@ def build_html(res: dict, sync_at: str | None = None) -> str:
             f'<div class="aact-m">{esc(sub)}</div></div>'
         )
 
-    plan_name = plan.get("name") or "佳明教练计划"
+    plan_name = plan.get("name") or "教练计划"
     phase = (plan.get("phase") or {}).get("label") or ""
 
     # 今日营养：处方旁边给一行，训练和吃放一起看才有意义。

@@ -122,7 +122,7 @@ def _index_html(root: Path) -> str:
     return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#F4F6F2">
-<title>佳明看板 · 手机</title>
+<title>RunnerCoach · 手机</title>
 <style>
 :root{{--bg:#F4F6F2;--card:#fff;--line:#E3E7DF;--ink:#1B1F1A;--muted:#6E7669;--green:#1D9E75}}
 *{{box-sizing:border-box}}
@@ -143,7 +143,7 @@ code{{background:#E9EDE5;border-radius:4px;padding:1px 5px;font-size:12px}}
 .foot{{margin-top:26px;font-size:11.5px;color:#9AA294;line-height:1.8;
   border-top:1px solid var(--line);padding-top:12px}}
 </style></head><body>
-<h1>佳明看板</h1>
+<h1>RunnerCoach</h1>
 <div class="sub">只读 · 数据不出这台电脑</div>
 {"".join(blocks)}
 <div class="foot">点开即是完整看板，可左右滑动。<br>

@@ -543,9 +543,9 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     _rc = race_card(d)
     race_sec = ('<h2 class="sec">105K 备赛 · 本周课表</h2>' + _rc) if _rc else ""
     if _rc:
-        plan_sec = ('<h2 class="sec">佳明教练 · 本周课表（参考）</h2>' + _pc) if _pc else ""
+        plan_sec = ('<h2 class="sec">RunnerCoach 教练 · 本周课表（参考）</h2>' + _pc) if _pc else ""
     else:
-        plan_sec = ('<h2 class="sec">佳明教练 · 本周课表</h2>' + _pc) if _pc else ""
+        plan_sec = ('<h2 class="sec">RunnerCoach 教练 · 本周课表</h2>' + _pc) if _pc else ""
 
     tot_sleep = sum(num(sl.get(k), 0) or 0 for k in ("deep_min", "light_min", "rem_min", "awake_min"))
     if tot_sleep:
@@ -677,7 +677,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     html_doc = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>佳明每日看板 · {esc(d)}</title>
+<title>RunnerCoach 每日看板 · {esc(d)}</title>
 <style>{CSS}</style></head><body><div class="wrap">
 
 <div class="top">

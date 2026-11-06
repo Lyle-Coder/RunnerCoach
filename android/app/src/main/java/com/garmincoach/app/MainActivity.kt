@@ -115,7 +115,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
         }
         titles.addView(TextView(this).apply {
-            text = "Garmin Coach"
+            text = "RunnerCoach"
             textSize = 16f
             setTextColor(0xFF1D2A22.toInt())
             setTypeface(typeface, android.graphics.Typeface.BOLD)
