@@ -145,7 +145,33 @@ SMS_TEMPLATE_CODE=SMS_xxxxxxxx
 
 所有管理接口都要带 `X-Admin-Token` 头。
 
-## 六、App 端接入
+## 六、公网测试：反向隧道中转（不暴露家庭 IP）
+
+没有公网服务器、又想让手机在 4G 下测试时，用 `server/relay/` 这套反向隧道：
+
+```
+App ──HTTPS──▶ 公网中转站 ◀──长轮询取活── 本机隧道客户端 ──▶ 本机网关 :8300
+```
+
+1. 把 `server/relay/` 目录发布为在线应用（WorkBuddy「发布为应用」），得到分享链接；
+2. 本机保持网关容器运行（`docker compose up -d`），再启动隧道客户端：
+
+```
+server\relay\start_tunnel.bat "https://xxx.workbuddy.host/?sharecode=XXXX"
+# 或： python tools/relay_client.py "https://xxx.workbuddy.host/?sharecode=XXXX"
+```
+
+3. App 的「平台地址」直接粘**整条分享链接**——客户端会自动拆出
+   `?sharecode=` 存为分享码，并在每个请求上带 `X-Share-Code` 头。
+
+安全设计：
+- 中转站只认 `X-Tunnel-Key`（内置共享密钥），别人拿不到你的取活通道；
+- `/admin/*`、`/v1/device` 在中转站直接 403——公网上没法白嫖赠送额度、看不到管理接口；
+- 家里 IP 和 8300 端口全程不出网，App 只见到中转站域名；
+- 网关自身的令牌鉴权、余额校验、发码限频照常生效。
+- 中转站是测试通道，长期用仍建议自有域名 + HTTPS 直连。
+
+## 七、App 端接入
 
 App → 菜单 → 模型服务设置 → 切「平台额度」→ 填 `https://ai.你的域名.com`
 → 输手机号或邮箱发验证码 → 登录/注册 → 完成，余额显示在面板上。
@@ -153,7 +179,7 @@ App → 菜单 → 模型服务设置 → 切「平台额度」→ 填 `https://
 会建一个 `phone=''` 的孤立账号，用户升级登录后用 `admin/topup` 把旧余额
 手工并入新账号即可。
 
-## 七、后续升级路径
+## 八、后续升级路径
 
 - **微信支付**：加 `POST /v1/orders` 创建订单 + 微信回调写流水，兑换码体系完全复用。
 - **多模型**：把 `UPSTREAM_MODEL` 变成按账号可配，`PRICE_PER_1M` 扩成表即可。

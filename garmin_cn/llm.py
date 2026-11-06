@@ -89,6 +89,7 @@ DEFAULTS = {
     "model": "",                # 留空则用预设
     "api_key": "",
     "platform_base": "",        # 平台网关地址，如 https://ai.example.com
+    "platform_share_code": "",  # 中转站分享码（分享链接里的 ?sharecode=），内网直连留空
     "platform_token": "",
     "temperature": 0.6,
     "auto_advice": True,        # 打开看板时自动生成今日建议
@@ -137,6 +138,17 @@ def save_config(**patch) -> dict:
     for k, v in patch.items():
         if k in DEFAULTS:
             cfg[k] = v
+    # 允许直接粘贴带 ?sharecode= 的分享链接：拆出分享码，地址只留域名
+    # （中转站门禁要求请求头 X-Share-Code，App 拼路径时没法带查询串）
+    base = cfg.get("platform_base") or ""
+    if "?" in base:
+        head, _, query = base.partition("?")
+        for seg in query.split("&"):
+            k, _, v = seg.partition("=")
+            if k.lower() == "sharecode" and v:
+                cfg["platform_share_code"] = v
+        cfg["platform_base"] = head
+    cfg["platform_base"] = (cfg.get("platform_base") or "").rstrip("/")
     cfg["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -385,6 +397,8 @@ def _platform_get(path: str, token: str) -> dict:
     if not base:
         raise LLMError("config", "还没填平台服务地址", "")
     req = urllib.request.Request(base + path, method="GET")
+    if cfg.get("platform_share_code"):
+        req.add_header("X-Share-Code", cfg["platform_share_code"])
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
@@ -404,6 +418,8 @@ def _platform_post(path: str, body: dict, token: str) -> dict:
     req = urllib.request.Request(base + path, method="POST",
                                  data=json.dumps(body).encode("utf-8"))
     req.add_header("Content-Type", "application/json")
+    if cfg.get("platform_share_code"):
+        req.add_header("X-Share-Code", cfg["platform_share_code"])
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:

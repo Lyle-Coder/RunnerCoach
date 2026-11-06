@@ -185,8 +185,8 @@ BODY = """
 
     <div id="platBox" style="display:none">
       <label class="f">平台地址</label>
-      <input class="f" id="platBase" placeholder="https://ai.你的域名.com" autocapitalize="off" spellcheck="false">
-      <div class="note">余额挂在账号上：卸载重装 / 换手机后登录同一账号即可找回。</div>
+      <input class="f" id="platBase" placeholder="https://ai.你的域名.com 或直接粘完整分享链接" autocapitalize="off" spellcheck="false">
+      <div class="note">余额挂在账号上：卸载重装 / 换手机后登录同一账号即可找回。粘贴带 ?sharecode= 的分享链接会自动拆出分享码。</div>
 
       <label class="f">手机号 / 邮箱</label>
       <div class="row2">
