@@ -1,0 +1,18 @@
+# 行尾统一：仓库内存 LF，检出一律 LF；Windows 批处理必须 CRLF
+# （cmd 对只有 LF 的 .bat 在 goto/if 块里会出问题）。
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制：不要做行尾转换，也不要尝试 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.apk binary
+*.exe binary
+*.db binary
+*.zip binary
+*.mp4 binary
+*.imy binary
+*.ics text
