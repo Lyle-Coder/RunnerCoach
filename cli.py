@@ -2019,6 +2019,23 @@ def cmd_selftest(args) -> int:
     assert '<div class="lhead">' not in iv_html, "间歇版不该再渲染原分圈表"
     assert 'class="iv"' not in ACTCARD.build_html({}, {}, None, None, "自检")
 
+    # 原地休息型间歇（真实 15×400 m 样本形态）：静止点不能被过滤掉，
+    # 右栏要写「平均恢复 1:xx」而不是几十分钟每公里的假配速，15 组逐组列全。
+    rest_pts: list[dict] = []
+    t = 0.0
+    for _ in range(15):
+        for spd, secs in ((4.6, 86.0), (0.0, 90.0)):
+            for _ in range(int(secs / 4)):
+                rest_pts.append({"t": t, "spd": spd, "hr": 160, "cad": 200,
+                                 "dist": 0.0})
+                t += 4.0
+    rest_html = ACTCARD.build_html({}, {"series": {"points": rest_pts}},
+                                   None, None, "间歇自检（原地恢复）")
+    assert 'class="iv"' in rest_html and "平均恢复" in rest_html
+    assert "组间恢复" in rest_html and "速度差" not in rest_html
+    assert 'class="ivmore"' not in rest_html, "15 组应逐组列全"
+    assert rest_html.count('class="ivrow"') == 30, "左右各 15 行"
+
     # 手机端 WebView 的缩放自校正：density=3 时布局视口 1080 CSS px 只露出
     # 360 CSS px，必须把画布缩到 1/3；归一后内容高度与 density 无关。
     # 少了这一步，draw(Canvas) 只截到左上角，分享预览会「只剩一个角」。

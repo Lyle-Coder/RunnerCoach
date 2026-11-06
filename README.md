@@ -106,7 +106,7 @@ POSIX 把 `run.bat` 换成 `./run.sh`。`daily.bat` / `daily.sh` 把「同步 + 
 | `doctor` / `status` / `selftest` | 环境自检 / 数据状态 / 离线回归 |
 | `sync --days N` / `backfill` | 增量同步 / 补齐历史明细 |
 | `report` / `card` / `brief` | 看板 / 一图流 / 可发微信的纯文本简报 |
-| `act --id <activity_id> --card` | 单次活动明细与活动图（分圈、曲线、轨迹）；间歇训练自动改底部双栏（左快组 / 右慢组） |
+| `act --id <activity_id> --card` | 单次活动明细与活动图（分圈、曲线、轨迹）；间歇训练自动改底部双栏（左快组 / 右慢组，原地休息型改显示组间恢复时长） |
 | `today` / `plan` / `push` / `note` | 今日处方 / 佳明计划 / 推送课表 / 写点评 |
 | `body` / `nutri` / `meal` / `nap` / `sleepfix` | 体成分 / 营养目标 / 饮食 / 小睡 / 睡眠矫正 |
 | `motion` / `ingest` / `photo` | 轨迹回放 / 素材归组 / EXIF 检查 |

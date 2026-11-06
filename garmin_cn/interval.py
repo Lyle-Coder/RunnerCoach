@@ -26,8 +26,9 @@ MIN_SEG_M = 80.0
 MIN_RATIO = 1.15
 MIN_SETS = 2
 MIN_SWITCHES = 3
-# 每栏最多列几行，多了合并成「其余 N 组」
-MAX_GROUPS = 8
+# 每栏最多列几行（常见的 400 m 间歇是 12~15 组，行距压紧后能全部列全），
+# 再多才折叠成「其余 N 组」。
+MAX_GROUPS = 16
 
 
 def _split(values: list[float]) -> tuple[float, float, float]:
@@ -108,11 +109,18 @@ def _agg(segs: list[dict], fast: bool) -> dict:
     picked = [s for s in segs if s["fast"] is fast]
     dist = sum(s["dist_m"] for s in picked)
     dur = sum(s["dur_s"] for s in picked)
+    avg_spd = dist / dur if dur > 0 else 0.0
+    pace = round(dur / (dist / 1000)) if dist > 50 else None
     return {
         "sets": len(picked),
         "dist_m": round(dist, 1),
         "dur_s": round(dur, 1),
-        "pace_s": round(dur / (dist / 1000)) if dist > 50 else None,
+        "pace_s": pace,
+        "spd": round(avg_spd, 2),
+        # 组间是原地站立/走动的恢复时，配速会变成几十分钟每公里，
+        # 这个数字没有意义；展示层应改用「平均恢复时长」。
+        "rest": bool(avg_spd < 1.2 or (pace or 0) > 600),
+        "recover_s": round(dur / len(picked)) if picked else None,
         "hr_avg": _wmean([s["hr_avg"] or 0 for s in picked],
                          [s["dur_s"] for s in picked]),
         "cad": _wmean([s["cad"] or 0 for s in picked],
@@ -146,9 +154,14 @@ def _finish(segs: list[dict], source: str) -> dict | None:
 
 
 def from_series(points: list[dict] | None) -> dict | None:
-    """逐点速度识别。点已由 `activity._thin()` 抽稀，量级几百个，O(n log n) 足够。"""
-    pts = [p for p in (points or [])
-           if (p.get("spd") or 0) > 0.5 and (p.get("t") or 0) > 0]
+    """逐点速度识别。点已由 `activity._thin()` 抽稀，量级几百个，O(n log n) 足够。
+
+    **不能丢掉低速/静止点**：间歇的组间恢复常常是原地站立（spd≈0），
+    过滤掉它们会让时间轴出现几十秒的空洞，`_seg()` 的梯形积分把这段按
+    两端速度算成几百米，于是快组距离虚高、慢组凭空多出「1 km 慢跑」。
+    真实样本里 600 个点有 242 个是静止点，正是这个坑。
+    """
+    pts = [p for p in (points or []) if isinstance(p.get("t"), (int, float))]
     if len(pts) < 8:
         return None
     pts.sort(key=lambda p: p["t"])
@@ -177,14 +190,18 @@ def from_series(points: list[dict] | None) -> dict | None:
 
 
 def from_laps(laps: list[dict] | None) -> dict | None:
-    """分圈配速识别。配速越小越快，方向与速度序列相反。"""
+    """分圈兜底：用「距离 / 时长」算速度，不依赖 `pace_s`。
+
+    佳明对极短的休息圈（原地站立 90 秒只挪 30~60 m）经常不给 `pace_s`，
+    按配速字段过滤会把所有慢圈丢掉、只剩一串快圈，自然认不出交替。
+    """
     real = [l for l in (laps or [])
-            if (l.get("pace_s") or 0) > 0 and (l.get("dist_m") or 0) >= 50]
+            if (l.get("dist_m") or 0) >= 20 and (l.get("dur_s") or 0) > 5]
     if len(real) < 4:
         return None
-    paces = [l["pace_s"] for l in real]
-    thr, _, _ = _split(paces)
-    kinds = [p <= thr for p in paces]           # True = 快
+    spds = [l["dist_m"] / l["dur_s"] for l in real]
+    thr, _, _ = _split(spds)
+    kinds = [v >= thr for v in spds]           # True = 快
     switches = sum(1 for i in range(1, len(kinds)) if kinds[i] != kinds[i - 1])
     if switches < MIN_SWITCHES or sum(kinds) < MIN_SETS:
         return None
@@ -194,9 +211,9 @@ def from_laps(laps: list[dict] | None) -> dict | None:
         chunk = real[a:b]
         dist = sum(l["dist_m"] for l in chunk)
         dur = sum(l.get("dur_s") or 0 for l in chunk)
-        if not dur:
-            dur = sum(l["pace_s"] * l["dist_m"] / 1000 for l in chunk)
-        spd = (dist / dur) if dur > 0 else 0
+        if dur <= 0:
+            continue
+        spd = dist / dur
         hrs = [l["hr_avg"] for l in chunk if l.get("hr_avg")]
         cads = [l["cad"] for l in chunk if l.get("cad")]
         segs.append({
@@ -259,3 +276,34 @@ def check() -> None:
     assert iv2["fast"]["pace_s"] < iv2["slow"]["pace_s"]
     assert from_laps([]) is None
     assert detect({}) is None
+
+    # 真实样本形态（2026-10-21 21:06，15×400 m + 90 s 原地休息）：
+    # 约四成采样点 spd=0，绝不能因过滤低速点打断时间轴、把距离算虚高。
+    rest_pts: list[dict] = []
+    t = 0.0
+    for _ in range(15):
+        for spd, secs in ((4.6, 86.0), (0.0, 90.0)):
+            for _ in range(int(secs / 4)):
+                rest_pts.append({"t": t, "spd": spd,
+                                 "hr": 165 if spd else 150,
+                                 "cad": 200 if spd else 0, "dist": 0.0})
+                t += 4.0
+    riv = from_series(rest_pts)
+    assert riv and riv["sets"] == 15, riv
+    assert riv["slow"]["rest"] and riv["slow"]["dist_m"] < 500, riv["slow"]
+    # 两组距离相加不得超过全程（旧实现会算出 8 km > 实际 6.6 km）
+    assert riv["fast"]["dist_m"] + riv["slow"]["dist_m"] < 6500, riv
+    assert riv["slow"]["recover_s"] and riv["slow"]["recover_s"] > 60
+
+    # 分圈兜底：极短休息圈常常没有 pace_s，也要认出交替
+    rest_laps = []
+    for i in range(30):
+        fast = i % 2 == 0
+        rest_laps.append({
+            "idx": i + 1, "dist_m": 400.0 if fast else 40.0,
+            "dur_s": 86.0 if fast else 90.0,
+            "pace_s": 215 if fast else None,
+            "hr_avg": 165 if fast else 190, "cad": 200 if fast else 0,
+        })
+    liv = from_laps(rest_laps)
+    assert liv and liv["sets"] == 15 and liv["slow"]["rest"], liv

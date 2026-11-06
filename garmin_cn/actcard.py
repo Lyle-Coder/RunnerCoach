@@ -793,31 +793,50 @@ def interval_columns(iv: dict, theme: dict | None = None) -> str:
 
     def col(side: str, color: str, label: str) -> str:
         a = iv[side]
+        rest = bool(a.get("rest"))
         hr = f'{a["hr_avg"]:.0f}' if a["hr_avg"] else "—"
         cad = f'{a["cad"]:.0f}' if a["cad"] else "—"
+        # 原地站立/走动的恢复段没有「配速」可言：主指标换成平均恢复时长，
+        # 逐组行也按时长排条、按米数标注，不再写「11'04" / 0.13 km」这种假配速。
+        first = dur_txt(a.get("recover_s")) if rest else main(a["pace_s"])
+        first_lab = "平均恢复" if rest else f'平均{"速度" if speed else "配速"}'
         stats = (
             '<div class="ivstat">'
-            f'<div><b>{main(a["pace_s"])}</b>'
-            f'<span>平均{"速度" if speed else "配速"}</span></div>'
+            f'<div><b>{first}</b>'
+            f'<span>{first_lab}</span></div>'
             f'<div><b>{hr}</b><span>平均心率</span></div>'
             f'<div><b>{cad}</b><span>平均步频</span></div>'
             '</div>')
-        paces = [s["pace_s"] for s in a["segs"] if s["pace_s"]]
-        lo, hi = (min(paces), max(paces)) if paces else (0.0, 1.0)
-        rows = []
-        for i, s in enumerate(a["segs"], 1):
-            p = s["pace_s"] or lo
-            k = 0.5 if hi - lo < 1e-6 else (p - lo) / (hi - lo)
-            w = 30 + (1 - k) * 70          # 配速越快（数值越小）条越长
-            rows.append(
-                f'<div class="ivrow"><span>{i}</span>'
-                f'<span class="ivbar"><i style="width:{w:.0f}%;'
-                f'background:{color}"></i></span>'
-                f'<b>{main(s["pace_s"])}</b>'
-                f'<em>{s["dist_m"] / 1000:.2f} km</em></div>')
+        rows: list[str] = []
+        if rest:
+            durs = [s["dur_s"] for s in a["segs"]]
+            lo, hi = (min(durs), max(durs)) if durs else (0.0, 1.0)
+            for i, s in enumerate(a["segs"], 1):
+                k = 0.5 if hi - lo < 1e-6 else (s["dur_s"] - lo) / (hi - lo)
+                w = 30 + k * 70            # 恢复越久条越长
+                rows.append(
+                    f'<div class="ivrow"><span>{i}</span>'
+                    f'<span class="ivbar"><i style="width:{w:.0f}%;'
+                    f'background:{color}"></i></span>'
+                    f'<b>{dur_txt(s["dur_s"])}</b>'
+                    f'<em>{s["dist_m"]:.0f} m</em></div>')
+            sub = f'{a["sets"]} 组 · {dur_txt(a["dur_s"])} 恢复'
+        else:
+            paces = [s["pace_s"] for s in a["segs"] if s["pace_s"]]
+            lo, hi = (min(paces), max(paces)) if paces else (0.0, 1.0)
+            for i, s in enumerate(a["segs"], 1):
+                p = s["pace_s"] or lo
+                k = 0.5 if hi - lo < 1e-6 else (p - lo) / (hi - lo)
+                w = 30 + (1 - k) * 70      # 配速越快（数值越小）条越长
+                rows.append(
+                    f'<div class="ivrow"><span>{i}</span>'
+                    f'<span class="ivbar"><i style="width:{w:.0f}%;'
+                    f'background:{color}"></i></span>'
+                    f'<b>{main(s["pace_s"])}</b>'
+                    f'<em>{s["dist_m"] / 1000:.2f} km</em></div>')
+            sub = f'{a["sets"]} 组 · {a["dist_m"] / 1000:.2f} km'
         if a["omitted"]:
             rows.append(f'<div class="ivmore">其余 {a["omitted"]} 组未列出</div>')
-        sub = f'{a["sets"]} 组 · {a["dist_m"] / 1000:.2f} km'
         return (f'<div class="ivcol {side}">'
                 f'<div class="ivhead"><b>{label}</b><span>{sub}</span></div>'
                 f'{stats}<div class="ivlist">{"".join(rows)}</div></div>')
@@ -899,7 +918,14 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     iv = IV.detect(detail)
     if iv:
         lap_title = "间歇结构"
-        lap_sub = f'{iv["sets"]} 组快慢交替 · 速度差 {iv["ratio"]:.2f}×'
+        if iv["slow"].get("rest"):
+            # 原地恢复型间歇：速度差会算到 10× 以上却毫无意义，
+            # 改成「几组 × 每组多少米 / 组间恢复多久」这种能读懂的说法。
+            per = iv["fast"]["dist_m"] / max(1, iv["sets"])
+            lap_sub = (f'{iv["sets"]} 组 × {per:.0f} m · 组间恢复 '
+                       f'{dur_txt(iv["slow"].get("recover_s"))}')
+        else:
+            lap_sub = f'{iv["sets"]} 组快慢交替 · 速度差 {iv["ratio"]:.2f}×'
         lap_html = interval_columns(iv, th)
     else:
         if n_real > 10:
@@ -1234,13 +1260,13 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .lg.pace{background:var(--acc)}
 .lg.hr{background:#E8843A}
 /* 间歇结构：底部整块切成左右双栏，左快组右慢组。
-   两栏等高、每栏最多 8 行，和原分圈表高度量级一致，不会把长图撑爆。 */
+   两栏等高；15 组以内的常见间歇逐组列全，行距压紧，不让长图撑爆。 */
 .iv{display:flex;gap:16px;align-items:stretch}
 .ivcol{flex:1;min-width:0;background:#10161C;border:1px solid #242D38;
-  border-radius:14px;padding:16px 18px}
+  border-radius:14px;padding:14px 18px}
 .ivcol.fast{border-color:#2A5149}
 .ivcol.slow{border-color:#4A3827}
-.ivhead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px}
+.ivhead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
 .ivhead b{font-size:27px;font-weight:700}
 .ivhead span{font-size:17px;color:#76838F}
 .ivcol.fast .ivhead b{color:#5CE1D0}
@@ -1249,8 +1275,8 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
   padding-bottom:12px;border-bottom:1px solid #242D38}
 .ivstat b{display:block;font-size:31px;font-weight:700;line-height:1.15;letter-spacing:-.5px}
 .ivstat span{font-size:15px;color:#939FAD}
-.ivlist{margin-top:8px}
-.ivrow{display:flex;align-items:center;gap:10px;padding:5px 0;font-size:18px}
+.ivlist{margin-top:6px}
+.ivrow{display:flex;align-items:center;gap:10px;padding:2px 0;font-size:17px}
 .ivrow>span:first-child{width:26px;text-align:right;color:#76838F;flex:none}
 .ivbar{flex:1;height:10px;background:#1B2530;border-radius:5px;overflow:hidden}
 .ivbar i{display:block;height:100%;border-radius:5px}
