@@ -21,7 +21,7 @@ DAILY_COLS = [
 ACT_COLS = [
     "activity_id", "date", "start_ts", "type", "name", "duration_s", "distance_m",
     "avg_hr", "max_hr", "calories", "load", "aerobic_te", "anaerobic_te",
-    "pace_s_km", "ascent", "raw",
+    "pace_s_km", "ascent", "source", "raw",
 ]
 
 SCHEMA = """
@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS activities (
     date TEXT, start_ts TEXT, type TEXT, name TEXT,
     duration_s REAL, distance_m REAL, avg_hr REAL, max_hr REAL,
     calories REAL, load REAL, aerobic_te REAL, anaerobic_te REAL,
-    pace_s_km REAL, ascent REAL, raw TEXT
+    pace_s_km REAL, ascent REAL, source TEXT, raw TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_act_date ON activities(date);
 CREATE TABLE IF NOT EXISTS coach_notes (
@@ -94,6 +94,11 @@ class Store:
             self.conn.execute("ALTER TABLE daily ADD COLUMN bb_now_at TEXT")
         if "bb_series" not in have:
             self.conn.execute("ALTER TABLE daily ADD COLUMN bb_series TEXT")
+        # 活动数据源（garmin/coros）：出图时按它决定抓哪家的明细，别弹错登录框。
+        # 旧库行保持 NULL，读取端按 garmin 处理（那些行本来就是佳明同步下来的）。
+        have_act = {r[1] for r in self.conn.execute("PRAGMA table_info(activities)")}
+        if "source" not in have_act:
+            self.conn.execute("ALTER TABLE activities ADD COLUMN source TEXT")
         self.conn.commit()
 
     # ---------- 写入 ----------

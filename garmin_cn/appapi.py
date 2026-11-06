@@ -588,7 +588,12 @@ def card_html(date: str | None = None) -> dict:
 
     try:
         res = attach(derive(store, d))
-        html = build_html(res, sync_at=store.get_meta("last_sync"))
+        from .report import source_badge
+
+        _label, _ts = source_badge(store)
+        html = build_html(res,
+                          sync_at=store.get_meta("last_sync") or store.get_meta("last_sync_coros"),
+                          src=_label)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -635,13 +640,18 @@ def runs(limit: int = 30) -> dict:
 
 def act_card_html(activity_id: str, title: str | None = None,
                   email: str | None = None, password: str | None = None,
-                  privacy: str = "none") -> dict:
+                  privacy: str = "none",
+                  coros_email: str = "", coros_password: str = "") -> dict:
     """单次活动图的 HTML（布局基准 1160×2250，成品统一 1080×1920），PNG 交给 WebView 截。
 
     `privacy` 是分享脱敏档位：`none` 原图 / `trim` 首尾各裁 200 m /
     `hide` 完全隐藏轨迹。放在参数末尾且默认 `none`，**旧 APK 传 4 个参数时
     行为完全不变**；新 APK 多传一个档位即可。脱敏在生成 HTML 前完成，
     产物里不会有原始折线、底图或精确起跑时间。
+
+    `coros_email/coros_password` 是高驰凭据：活动行带 source=coros 时走高驰
+    明细接口（GPX 轨迹 + frequencyList/lapList），绝不弹佳明登录框；token
+    过期就用它们静默重登一次。旧 APK 不传也兼容（届时提示登录高驰）。
 
     `height=2250` 只表示 HTML 需要多高的画布，不是成品尺寸；App 会按
     `export_*` 把内容等比收进 9:16，避免分享面板对超长图二次裁切。
@@ -658,15 +668,29 @@ def act_card_html(activity_id: str, title: str | None = None,
         if not row:
             return {"ok": False, "error": "库里没有这条活动，先同步一次"}
         aid = str(row["activity_id"])
+        src = (row.get("source") or "garmin")
 
         detail = store.get_detail(aid)
-        if not detail:
+        if not detail and src == "coros":
+            from . import coros as C
+
+            try:
+                detail = C.fetch_detail(store, HOME, row,
+                                        coros_email or None, coros_password or None)
+                store.save_detail(aid, detail)
+            except C.CorosAuthError as e:
+                return {"ok": False, "need_login": True, "source": "coros",
+                        "error": f"{e}（高驰明细需联网抓一次）"}
+            except Exception as e:
+                return {"ok": False,
+                        "error": f"抓高驰明细失败（需要联网）：{type(e).__name__}: {e}"}
+        elif not detail:
             try:
                 from . import activity as act
 
                 detail = act.ensure(store, _client(email, password), aid)
             except (AuthError, SessionExpired):
-                return {"ok": False, "need_login": True,
+                return {"ok": False, "need_login": True, "source": "garmin",
                         "error": "这条活动的明细还没缓存，需要联网登录后抓一次"}
             except Exception as e:
                 return {"ok": False,

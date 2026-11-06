@@ -343,6 +343,7 @@ def derive(store, date: str, window: int = 30) -> dict:
             "sleep": trend(today, history, "sleep_total_min"),
             "bb": trend(today, history, "bb_high"),
             "stress": trend(today, history, "avg_stress"),
+            "vo2max": trend(today, history, "vo2max"),
         },
         "week": {
             "sleep_h": week_compare(history, "sleep_total_min"),
@@ -356,6 +357,9 @@ def derive(store, date: str, window: int = 30) -> dict:
             "nap_h": [(d, round(v / 60, 2)) for d, v in _series(history, "nap_min")],
             "steps": _series(history, "steps"),
             "bb": _series(history, "bb_high"),
+            "vo2": _series(history, "vo2max"),
+            "hrv_base": _series(history, "hrv_weekly"),
+            "dist_km": [(d, round((v or 0) / 1000, 2)) for d, v in _series(history, "distance_m")],
         },
     }
 

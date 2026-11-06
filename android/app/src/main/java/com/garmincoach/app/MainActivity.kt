@@ -903,16 +903,18 @@ class MainActivity : Activity() {
         }
         busy(true)
         thread {
-            // 第 5 个参数是分享脱敏档位；旧内核只有 4 个形参，
-            // 所以这个 APK 必须与新 Python 内核一起打包（sync_python.bat）。
+            // 第 5 个参数是分享脱敏档位；第 6/7 个是高驰凭据——高驰活动的明细
+            // 走高驰接口抓，绝不能弹佳明登录框（旧内核只有 4 个形参，
+            // 所以这个 APK 必须与新 Python 内核一起打包：sync_python.bat）。
             val r = apiCall("act_card_html", id, null, secrets.email(),
-                            secrets.password(), privacy)
+                            secrets.password(), privacy,
+                            secrets.corosEmail() ?: "", secrets.corosPassword() ?: "")
             ui {
                 if (!r.optBoolean("ok")) {
                     busy(false)
                     if (r.optBoolean("need_login")) {
                         toast("这条活动的明细需要先联网登录抓一次")
-                        askGarminLogin()
+                        if (r.optString("source") == "coros") askCorosLogin() else askGarminLogin()
                     } else {
                         toast("活动图失败：${r.optString("error")}")
                     }

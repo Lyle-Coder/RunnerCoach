@@ -168,6 +168,7 @@ def parse_activity(a: dict) -> dict:
         "anaerobic_te": num(a.get("anaerobicTrainingEffect")),
         "pace_s_km": pace,
         "ascent": num(a.get("elevationGain")),
+        "source": "garmin",
         "raw": json.dumps(a, ensure_ascii=False)[:100000],
     }
 

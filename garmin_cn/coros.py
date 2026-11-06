@@ -116,6 +116,28 @@ def _num(v) -> float | None:
         return None
 
 
+def _tsec(v) -> float | None:
+    """时间戳统一到 epoch 秒。
+
+    高驰不同接口单位不一：活动列表是毫秒，明细（summary/lapList/frequencyList）
+    是**厘秒**（社区解析器对 startTimestamp 做 value/100 换算证实），个别接口
+    又给秒。按数量级区分，别把 2026 年解析成 2528 年。
+    """
+    if v in (None, ""):
+        return None
+    try:
+        t = float(v)
+    except (TypeError, ValueError):
+        return None
+    if t > 1e12:                  # 毫秒
+        t /= 1000
+    elif t > 1e10:                # 厘秒
+        t /= 100
+    if t < 1e8:                   # 不是时间戳
+        return None
+    return t
+
+
 class CorosCloud:
     """一个高驰账号的会话。与 mi.MiCloud 同一持有方式：登录 → 存 cookie/token。"""
 
@@ -239,8 +261,9 @@ class CorosCloud:
         """每日健康指标：dayDetail 区间 + analyse 摘要合并。
 
         拿到 resting_hr / hrv_night / hrv_weekly / vo2max / distance_m。
-        没有的字段（步数、睡眠分期、压力）保持 None——upsert merge 模式
-        不会用 None 抹掉别的数据源写过的值。
+        已知 dayDetail 不给步数/睡眠分期/压力（那些在移动端 API，见模块头），
+        但键名万一在改版里加了就顺手吃进——upsert merge 模式不会用 None
+        抹掉别的数据源写过的值。
         """
         out = self._req("GET", "/analyse/dayDetail/query",
                         params={"startDay": _day_key(start), "endDay": _day_key(end)})
@@ -262,6 +285,10 @@ class CorosCloud:
             if not d:
                 continue
             m = extra.get(d) or {}
+            # 睡眠/步数：官方文档口径没有，但不同版本 dayList 出现过
+            # sleepTime/totalSleepTime/steps 这类键，见到了就收
+            sl_min = _num(it.get("totalSleepTime") or it.get("sleepTime")
+                          or it.get("sleepDuration") or m.get("totalSleepTime"))
             rows.append({
                 "date": d,
                 "resting_hr": _num(it.get("rhr")),
@@ -269,6 +296,8 @@ class CorosCloud:
                 "hrv_weekly": _num(it.get("sleepHrvBase")),
                 "vo2max": _num(m.get("vo2max") or it.get("vo2max")),
                 "distance_m": _num(it.get("distance")),
+                "sleep_total_min": sl_min,
+                "steps": _num(it.get("steps") or it.get("step") or m.get("steps")),
                 "synced_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "raw": json.dumps(it, ensure_ascii=False)[:20000],
             })
@@ -319,16 +348,208 @@ class CorosCloud:
             "pace_s_km": pace,
             "ascent": _num(a.get("ascent") or a.get("totalAscent")
                           or a.get("elevationGain")),
+            "source": "coros",
             "raw": json.dumps(a, ensure_ascii=False)[:100000],
         }
 
     def activity_detail(self, activity_id: str, sport_type: int | None = None) -> dict:
-        """单条活动详情（laps / 心率区间等）。时序大数组原样留在 payload。"""
+        """单条活动详情（laps / 心率区间等）。时序大数组原样留在 payload。
+
+        响应 data 的关键键（两个独立社区项目交叉证实）：
+          summary          汇总（时间戳是厘秒，见 _tsec）
+          frequencyList    时序数组 [{timestamp, heart, cadence, distance, heartLevel}]
+          lapList          [{type, lapItemList: [...]}]，lap 含 avgHr/avgCadence/
+                           avgStrideLength/distance/startTimestamp/endTimestamp
+          graphList        更大的时序数组（含 GPS 等），本项目用 GPX 拿轨迹，不解析它
+        """
         form = {"labelId": str(activity_id), "userId": self.user_id}
         if sport_type is not None:
             form["sportType"] = str(sport_type)
         out = self._req("POST", "/activity/detail/query", form=form)
         return out.get("data") or {}
+
+    def download_file(self, activity_id: str, sport_type: int | None = None,
+                      file_type: int = 1) -> bytes:
+        """下载活动文件（0=CSV 1=GPX 2=KML 3=TCX 4=FIT）。
+
+        先 POST /activity/detail/download 换临时 fileUrl，再 GET 文件本体。
+        室内活动（跑步机等）没有位置数据，高驰不给 GPX——调用方自行降级。
+        """
+        form = {"labelId": str(activity_id), "fileType": str(file_type),
+                "sportType": str(sport_type or 0)}
+        out = self._req("POST", "/activity/detail/download", form=form)
+        url = ((out.get("data") or {}).get("fileUrl")) or ""
+        if not url:
+            raise CorosError("高驰没给下载链接（该活动类型可能不支持这种文件）")
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        try:
+            with urllib.request.urlopen(req, timeout=40) as r:
+                return r.read()
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise CorosError(f"下载活动文件失败：{type(e).__name__}: {e}") from None
+
+
+# ---------------------------------------------------------------- 明细 → 出图契约
+def _gpx_track(gpx_bytes: bytes) -> list[list[float]]:
+    """GPX → [[lat, lon], ...]。命名空间不敏感，GPX 1.1 都认。"""
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(gpx_bytes)
+    except ET.ParseError:
+        return []
+    pts: list[list[float]] = []
+    for el in root.iter():
+        if el.tag.rsplit("}", 1)[-1] != "trkpt":
+            continue
+        try:
+            pts.append([float(el.get("lat")), float(el.get("lon"))])
+        except (TypeError, ValueError):
+            continue
+    return pts
+
+
+def detail_to_payload(data: dict, track: list[list[float]], row: dict) -> dict:
+    """高驰明细 → actcard 的明细契约（与 garmin activity.fetch 同构）。
+
+    产物键：summary / laps / series.points / track / route / weather。
+    时序从 frequencyList 派生：速度由相邻距离差分，步幅 = 速度/步频换算，
+    步频沿用佳明侧的「单侧值翻倍」修正。分圈直接映射 lapList（时间是厘秒）。
+    """
+    from .activity import CAD_HI, CAD_LO, STRIDE_HI, STRIDE_LO, _thin, aggregate
+
+    raw_sum = data.get("summary") or {}
+    freq = data.get("frequencyList") or []
+    lap_list = data.get("lapList") or []
+
+    total_dist = (_num(raw_sum.get("distance")) or _num(row.get("distance_m")) or 0)
+
+    # ---------- 时序 ----------
+    # distance 列表到底是累计还是增量：总量能对上活动距离就是累计，否则增量求和
+    dists = [_num(it.get("distance")) for it in freq]
+    known = [d for d in dists if d is not None]
+    cumulative = bool(known) and max(known) >= total_dist * 0.5 and \
+        all((a or 0) <= (b or 0) + 1 for a, b in zip(known, known[1:]))
+
+    rows: list[dict] = []
+    run_cum = 0.0
+    prev_t = prev_d = None
+    for it, d_raw in zip(freq, dists):
+        t = _tsec(it.get("timestamp"))
+        hr = _num(it.get("heart"))
+        cad = _num(it.get("cadence"))
+        if cumulative:
+            d = d_raw
+        else:
+            run_cum += (d_raw or 0)
+            d = run_cum
+        # 速度（m/s）：相邻点距离差 / 时间差，起停段噪声交给后面的离群修正
+        spd = None
+        if t and prev_t and d is not None and prev_d is not None and t > prev_t:
+            v = (d - prev_d) / (t - prev_t)
+            if 0.2 <= v <= 12:            # 0.7~43 km/h，超出当漂移丢掉
+                spd = round(v, 3)
+        if d is not None:
+            prev_d = d
+        if t:
+            prev_t = t
+        # 步频修正：高驰给的是总步频，但个别固件也出单侧值——沿用佳明侧双保险
+        fixed = False
+        if cad is not None and cad < CAD_LO and (spd or 0) >= 2.5:
+            cad, fixed = cad * 2, True
+        if cad is not None and not (CAD_LO <= cad <= CAD_HI):
+            cad = None
+        stride = None
+        if spd and cad:
+            stride = spd * 60.0 / cad * 100.0
+            if not (STRIDE_LO <= stride <= STRIDE_HI):
+                stride = None
+        rows.append({"t": t, "spd": spd, "hr": hr, "cad": cad, "stride": stride,
+                     "ele": None, "dist": d, "pwr": _num(it.get("power")),
+                     "bb": None, "gap": None, **({"fixed": True} if fixed else {})})
+
+    summary = aggregate(rows) if rows else {}
+    summary["repaired"] = 0
+    summary["rescaled"] = 0
+
+    # ---------- 分圈 ----------
+    laps: list[dict] = []
+    for grp in lap_list or []:
+        for lap in (grp.get("lapItemList") or []):
+            t0, t1 = _tsec(lap.get("startTimestamp")), _tsec(lap.get("endTimestamp"))
+            dur = round(t1 - t0, 1) if (t0 and t1 and t1 > t0) else None
+            d = _num(lap.get("distance")) or 0
+            cad = _num(lap.get("avgCadence"))
+            if cad is not None and cad < CAD_LO:
+                cad *= 2
+            st = _num(lap.get("avgStrideLength"))
+            if st is not None and st > STRIDE_HI:     # 毫米口径 → 厘米
+                st = st / 10
+            laps.append({
+                "idx": lap.get("lapIndex") or (len(laps) + 1),
+                "dist_m": round(d, 1),
+                "dur_s": dur,
+                "pace_s": round(dur / (d / 1000)) if (dur and d > 50) else None,
+                "hr_avg": _num(lap.get("avgHr")),
+                "hr_max": _num(lap.get("maxHr")),
+                "cad": round(cad, 1) if cad else None,
+                "stride": round(st, 1) if st else None,
+                "ele_gain": _num(lap.get("ascent") or lap.get("elevationGain")),
+                "cad_server": _num(lap.get("avgCadence")),
+                "stride_server": _num(lap.get("avgStrideLength")),
+                "is_partial": d < 100,
+            })
+
+    if len(track) > 420:
+        step = len(track) / 420
+        track = [track[min(int(i * step), len(track) - 1)] for i in range(420)]
+
+    return {
+        "activity_id": str(row.get("activity_id") or ""),
+        "fetched_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "source": "coros",
+        "summary": summary,
+        "laps": laps,
+        "series": {"points": _thin(rows, 600)},
+        "track": track,
+        "route": {},
+        "weather": None,
+    }
+
+
+def fetch_detail(store, home: Path, row: dict,
+                 email: str | None = None, password: str | None = None) -> dict:
+    """高驰活动明细 → actcard 契约。token 过期且带了凭据就静默重登一次。
+
+    轨迹走 GPX 下载（frequencyList 没有经纬度）；室内活动拿不到 GPX
+    就出无轨迹版图，不报错。
+    """
+    cloud = CorosCloud(home)
+    if not cloud.load():
+        raise CorosAuthError("还没登录高驰账号 → 菜单「账号登录」选高驰")
+    try:
+        raw = json.loads(row.get("raw") or "{}")
+    except (TypeError, ValueError):
+        raw = {}
+    sport = raw.get("sportType")
+    sport = sport if isinstance(sport, int) else None
+
+    def _run() -> dict:
+        data = cloud.activity_detail(row["activity_id"], sport)
+        track: list[list[float]] = []
+        try:
+            track = _gpx_track(cloud.download_file(row["activity_id"], sport, file_type=1))
+        except CorosError:
+            pass                  # 跑步机/室内没有位置数据：出无轨迹版
+        return detail_to_payload(data, track, row)
+
+    try:
+        return _run()
+    except CorosAuthError:
+        if not (email and password):
+            raise
+        cloud.login(email, password, cloud.region)   # 24h token 过期：静默重登
+        return _run()
 
 
 # ---------------------------------------------------------------- 便捷入口
@@ -351,6 +572,8 @@ def sync(store, home: Path, days: int = 30,
         acts = cloud.activities(start.isoformat(), end.isoformat())
         for a in acts:
             store.upsert_activity(a)
+        store.set_meta("last_sync_coros",
+                       dt.datetime.now().strftime("%Y-%m-%d %H:%M"))
         return {"daily": len(daily), "activities": len(acts),
                 "range": f"{start}~{end}"}
 

@@ -329,7 +329,8 @@ def _spark(points: list[tuple[float, float | None]], *, w: int = 470, h: int = 9
     )
 
 
-def build_html(res: dict, sync_at: str | None = None) -> str:
+def build_html(res: dict, sync_at: str | None = None,
+               src: str = "Garmin 国区") -> str:
     d = dt.date.fromisoformat(res["date"])
     t = res["today"]
     r = res["readiness"]
@@ -748,7 +749,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 </style></head><body><div class="wrap" data-gc-canvas>
 <div class="top">
   <div class="date">{d.strftime("%m月%d日")}<small>{DOW[d.weekday()]}</small></div>
-  <div class="meta">恢复度 {_f(r.get("score"))} / 100<br>佳明国区 · 已同步 {esc((sync_at or "")[:16]) or esc(res["date"])}</div>
+  <div class="meta">恢复度 {_f(r.get("score"))} / 100<br>{esc(src)} · 已同步 {esc((sync_at or "")[:16]) or esc(res["date"])}</div>
 </div>
 
 <div class="hero">

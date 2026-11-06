@@ -150,6 +150,36 @@ def fmt(v, unit="", d=0) -> str:
     return f"{v:,.{d}f}{unit}"
 
 
+def source_badge(store, sync_at: str | None = None) -> tuple[str, str]:
+    """徽标文案 (数据源, 上次同步时间)，按库里实际同步过的来源标注。
+
+    双源都同步过就并排写两个；只接了高驰就别再写 Garmin 国区——
+    那是 0.3.0 之前写死的文案，真机会误导人。
+    """
+    g = store.get_meta("last_sync")
+    c = store.get_meta("last_sync_coros")
+    names = []
+    if g:
+        names.append("Garmin 国区")
+    if c:
+        names.append("COROS 高驰")
+    label = " + ".join(names) if names else "未连接数据源"
+    ts = sync_at or max([x for x in (g, c) if x], default=None) or "尚未同步"
+    return label, ts
+
+
+def source_foot(store) -> str:
+    """页脚「数据来源」行：同样按实际数据源列。"""
+    g = store.get_meta("last_sync")
+    c = store.get_meta("last_sync_coros")
+    names = []
+    if g:
+        names.append("Garmin Connect 国区（connect.garmin.cn /gc-api）")
+    if c:
+        names.append("COROS 训练平台（Training Hub Web API）")
+    return "；".join(names) if names else "本地库"
+
+
 def spark(points: list[tuple[str, float]], color="#1D9E75", w=150, h=34) -> str:
     if len(points) < 2:
         return f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}"></svg>'
@@ -565,22 +595,52 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
 
     tr = res["trends"]
     sleep_label = "睡眠" + (f" · 评分 {fmt(sl['score'])}" if sl["score"] else "")
-    cards = [
-        metric_card(sleep_label, fmt(sl["total_h"], d=1), "小时", tr["sleep"]["delta"], "up",
-                    res["series"]["sleep_h"], "#3A6EA5", delta_unit=" 分"),
-        metric_card("HRV", fmt(t.get("hrv_night")), "ms", tr["hrv"]["delta"], "up",
-                    res["series"]["hrv"], "#1D9E75"),
-        metric_card("静息心率", fmt(t.get("resting_hr")), "bpm", tr["rhr"]["delta"], "down",
-                    res["series"]["rhr"], "#C2453F"),
-        metric_card("身体电量", fmt(t.get("bb_high")), "", tr["bb"]["delta"], "up",
-                    res["series"]["bb"], "#7A6AC4"),
-        metric_card("压力", fmt(t.get("avg_stress")), "", tr["stress"]["delta"], "down",
-                    [(x["date"], num(x.get("avg_stress")) or 0) for x in hist if num(x.get("avg_stress")) is not None],
-                    "#C08A16"),
-        metric_card("步数", fmt(t.get("steps")), "", None, "up",
-                    res["series"]["steps"], "#6B7268",
-                    extra=f"目标 {fmt(t.get('step_goal'))}"),
-    ]
+    # 指标卡按数据可用性出：佳明六件套（睡眠/HRV/静息心率/电量/压力/步数）
+    # 有数据就保持原样；高驰没有的（睡眠分期、电量、压力、步数）自动让位给
+    # 高驰真有的指标（VO2max/今日负荷/HRV 基线/今日距离），不留「—」空卡。
+    has_sleep = sl["total_min"] is not None or any(
+        x.get("sleep_total_min") is not None for x in hist)
+    today_load = L["loads"].get(res["date"])
+    cand = []          # (有数据?, metric_card 结果)
+
+    def _cand(ok, *a, **k):
+        cand.append((ok, metric_card(*a, **k) if ok else None))
+
+    _cand(has_sleep, sleep_label,
+          fmt(sl["total_min"] / 60, d=1) if sl["total_min"] is not None else "—",
+          "小时", tr["sleep"]["delta"], "up",
+          res["series"]["sleep_h"], "#3A6EA5", delta_unit=" 分")
+    _cand(t.get("hrv_night") is not None,
+          "HRV", fmt(t.get("hrv_night")), "ms", tr["hrv"]["delta"], "up",
+          res["series"]["hrv"], "#1D9E75")
+    _cand(t.get("resting_hr") is not None,
+          "静息心率", fmt(t.get("resting_hr")), "bpm", tr["rhr"]["delta"], "down",
+          res["series"]["rhr"], "#C2453F")
+    _cand(t.get("bb_high") is not None,
+          "身体电量", fmt(t.get("bb_high")), "", tr["bb"]["delta"], "up",
+          res["series"]["bb"], "#7A6AC4")
+    _cand(t.get("avg_stress") is not None,
+          "压力", fmt(t.get("avg_stress")), "", tr["stress"]["delta"], "down",
+          [(x["date"], num(x.get("avg_stress")) or 0) for x in hist
+           if num(x.get("avg_stress")) is not None],
+          "#C08A16")
+    _cand(t.get("steps") is not None,
+          "步数", fmt(t.get("steps")), "", None, "up",
+          res["series"]["steps"], "#6B7268",
+          extra=f"目标 {fmt(t.get('step_goal'))}")
+    _cand(t.get("vo2max") is not None,
+          "VO2max", fmt(t.get("vo2max"), d=1), "", tr["vo2max"]["delta"], "up",
+          res["series"]["vo2"], "#2F7D4F")
+    _cand(today_load is not None,
+          "今日负荷", fmt(today_load), "", None, "up",
+          [(x, L["loads"].get(x) or 0) for x in dates], "#B26A2F")
+    _cand(t.get("hrv_weekly") is not None,
+          "HRV 基线", fmt(t.get("hrv_weekly")), "ms", None, "up",
+          res["series"]["hrv_base"], "#5B7DB1")
+    _cand(t.get("distance_m") is not None,
+          "今日距离", fmt((num(t.get("distance_m")) or 0) / 1000, d=1), "km",
+          None, "up", res["series"]["dist_km"], "#3E8E7E")
+    cards = [c for ok, c in cand if ok][:6]
 
     # 体重 / 体成分单独成一块（见 body_block）：塞进 6 列指标格里放不下 8 个字段
     bd = res.get("body") or {}
@@ -674,6 +734,54 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     if (sl.get("debt") or {}).get("nap_min"):
         nap_note = "（含小睡）"
 
+    src_label, src_ts = source_badge(store, sync_at)
+
+    # 训练负荷区右侧卡片：有睡眠数据（佳明）出睡眠结构；纯高驰没有睡眠分期，
+    # 换成体能面板，别拿「昨晚没有睡眠记录」糊弄人。
+    if has_sleep:
+        right_panel = f"""<div class="card">
+    <h3>昨晚睡眠结构</h3>
+    {sleep_bar(sl['deep_min'], sl['light_min'], sl['rem_min'], sl['awake_min'])}
+    <div class="legend">
+      <span><i style="background:#2F4B7C"></i>深睡 {fmt(sl['deep_min'])} 分</span>
+      <span><i style="background:#4E7FB8"></i>浅睡 {fmt(sl['light_min'])} 分</span>
+      <span><i style="background:#7FB2D9"></i>REM {fmt(sl['rem_min'])} 分</span>
+      <span><i style="background:#D9DED4"></i>清醒 {fmt(sl['awake_min'])} 分</span>
+    </div>
+    <div class="kv" style="grid-template-columns:1fr 1fr 1fr">
+      <div><b>{fmt(sl['total_h'], ' h', 1)}</b><span>总睡眠</span></div>
+      <div><b>{fmt(sl['debt_h'], ' h', 1)}</b><span>近 7 天睡眠债{nap_note}</span></div>
+      <div><b>{fmt(sl['nap_min'])} 分</b><span>昨日小睡</span></div>
+    </div>
+    <p class="sess-why" style="margin-top:12px;font-size:12.5px">
+      {esc((sl['start'] or '—')[11:])} 入睡 · {esc((sl['end'] or '—')[11:])} 起床
+      {'· 睡眠评分 ' + fmt(sl['score']) if sl['score'] else ''}
+      {f"· 佳明动态需求 {fmt(round(sl['debt']['need_avg_min'] / 60, 1), ' h', 1)}/晚" if (sl.get('debt') or {}).get('need_avg_min') else ''}
+    </p>
+    <p class="m-delta" style="margin-top:6px">{sleep_ratio}</p>
+  </div>"""
+    else:
+        vo_v, vo_l = _cmp(num(t.get("vo2max")), baseline(hist, "vo2max"), "", digits=1)
+        right_panel = f"""<div class="card">
+    <h3>体能与恢复</h3>
+    <div class="ring-wrap" style="align-items:center">
+      <div>
+        <div class="ring-num" style="color:#2F7D4F">{fmt(t.get('vo2max'), d=1)}</div>
+        <div class="m-delta">VO2max · 最大摄氧量</div>
+      </div>
+    </div>
+    <div class="kv" style="grid-template-columns:1fr 1fr 1fr">
+      <div><b>{fmt(t.get('hrv_weekly'), ' ms')}</b><span>HRV 基线</span></div>
+      <div><b>{fmt(t.get('resting_hr'), ' bpm')}</b><span>静息心率</span></div>
+      <div><b>{fmt(today_load)}</b><span>今日负荷</span></div>
+    </div>
+    <p class="sess-why" style="margin-top:12px;font-size:12.5px">
+      {vo_v}<span style="font-size:10.5px"> {vo_l}</span> ·
+      当前 HRV {fmt(t.get('hrv_night'), ' ms')}，基线 {fmt(t.get('hrv_weekly'), ' ms')}。
+    </p>
+    <p class="m-delta" style="margin-top:6px">当前数据源未提供睡眠分期，此栏显示体能指标</p>
+  </div>"""
+
     html_doc = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -687,7 +795,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
   </div>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <a class="badge" href="ai" style="text-decoration:none">AI 教练 · 今日建议</a>
-    <div class="badge"><i class="dot"></i>Garmin 国区 · 上次同步 {esc(sync_at or store.get_meta('last_sync') or '尚未同步')}</div>
+    <div class="badge"><i class="dot"></i>{esc(src_label)} · 上次同步 {esc(src_ts)}</div>
   </div>
 </div>
 
@@ -699,7 +807,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
       <div>
         <div class="ring-num" style="color:{r['color']}">{r['score'] if r['score'] is not None else '—'}</div>
         <div class="ring-lv" style="color:{r['color']}">{esc(r['level'])}</div>
-        <div class="m-delta" style="margin-top:6px">综合睡眠 / HRV / 静息心率 / 电量</div>
+        <div class="m-delta" style="margin-top:6px">综合{esc(' / '.join(p['name'] for p in r['parts']) or '可用指标')}</div>
       </div>
     </div>
     <div class="parts">{part_html}</div>
@@ -751,27 +859,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     </div>
   </div>
 
-  <div class="card">
-    <h3>昨晚睡眠结构</h3>
-    {sleep_bar(sl['deep_min'], sl['light_min'], sl['rem_min'], sl['awake_min'])}
-    <div class="legend">
-      <span><i style="background:#2F4B7C"></i>深睡 {fmt(sl['deep_min'])} 分</span>
-      <span><i style="background:#4E7FB8"></i>浅睡 {fmt(sl['light_min'])} 分</span>
-      <span><i style="background:#7FB2D9"></i>REM {fmt(sl['rem_min'])} 分</span>
-      <span><i style="background:#D9DED4"></i>清醒 {fmt(sl['awake_min'])} 分</span>
-    </div>
-    <div class="kv" style="grid-template-columns:1fr 1fr 1fr">
-      <div><b>{fmt(sl['total_h'], ' h', 1)}</b><span>总睡眠</span></div>
-      <div><b>{fmt(sl['debt_h'], ' h', 1)}</b><span>近 7 天睡眠债{nap_note}</span></div>
-      <div><b>{fmt(sl['nap_min'])} 分</b><span>昨日小睡</span></div>
-    </div>
-    <p class="sess-why" style="margin-top:12px;font-size:12.5px">
-      {esc((sl['start'] or '—')[11:])} 入睡 · {esc((sl['end'] or '—')[11:])} 起床
-      {'· 睡眠评分 ' + fmt(sl['score']) if sl['score'] else ''}
-      {f"· 佳明动态需求 {fmt(round(sl['debt']['need_avg_min'] / 60, 1), ' h', 1)}/晚" if (sl.get('debt') or {}).get('need_avg_min') else ''}
-    </p>
-    <p class="m-delta" style="margin-top:6px">{sleep_ratio}</p>
-  </div>
+  {right_panel}
 </div>
 
 <h2 class="sec">教练点评</h2>
@@ -784,7 +872,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
 恢复度 = 睡眠 35% + HRV 30% + 静息心率 20% + 身体电量 15%。睡眠与身体电量直接用 Garmin 原始 0–100 分；
 HRV 与静息心率以 28 天中位数为基线，持平或更好记满分，HRV 每低 30% 扣满、静息心率每高 6 bpm 扣满。<br>
 ACWR = 近 7 天负荷 ÷（近 28 天负荷 ÷ 4）；CTL/ATL 为 42 天与 7 天指数移动平均，TSB = CTL − ATL。<br>
-数据来源：Garmin Connect 国区（connect.garmin.cn /gc-api）。本页为本地生成，不上传任何数据。
+数据来源：{esc(source_foot(store))}。本页为本地生成，不上传任何数据。
 </div>
 </div></body></html>"""
     out_path.parent.mkdir(parents=True, exist_ok=True)
