@@ -26,9 +26,31 @@ class Secrets(ctx: Context) {
 
     fun email(): String? = prefs.getString("email", null)
 
-    fun password(): String? {
-        val iv64 = prefs.getString("iv", null) ?: return null
-        val ct64 = prefs.getString("pwd", null) ?: return null
+    fun password(): String? = decrypt("iv", "pwd")
+
+    fun save(email: String, password: String) = saveTo("email", "iv", "pwd", email, password)
+
+    // 高驰：与佳明同一套 Keystore 加密，键名前缀区分，互不清空
+    fun corosEmail(): String? = prefs.getString("coros_email", null)
+
+    fun corosPassword(): String? = decrypt("coros_iv", "coros_pwd")
+
+    fun saveCoros(email: String, password: String) =
+        saveTo("coros_email", "coros_iv", "coros_pwd", email, password)
+
+    fun clearCoros() {
+        prefs.edit()
+            .remove("coros_email").remove("coros_iv").remove("coros_pwd")
+            .apply()
+    }
+
+    fun clear() {
+        prefs.edit().clear().apply()
+    }
+
+    private fun decrypt(ivKey: String, ctKey: String): String? {
+        val iv64 = prefs.getString(ivKey, null) ?: return null
+        val ct64 = prefs.getString(ctKey, null) ?: return null
         return try {
             val cipher = Cipher.getInstance(TRANSFORM)
             cipher.init(
@@ -42,24 +64,21 @@ class Secrets(ctx: Context) {
         }
     }
 
-    fun save(email: String, password: String) {
+    private fun saveTo(emailKey: String, ivKey: String, ctKey: String,
+                       email: String, password: String) {
         try {
             val cipher = Cipher.getInstance(TRANSFORM)
             cipher.init(Cipher.ENCRYPT_MODE, key())
             val ct = cipher.doFinal(password.toByteArray(Charsets.UTF_8))
             prefs.edit()
-                .putString("email", email)
-                .putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
-                .putString("pwd", Base64.encodeToString(ct, Base64.NO_WRAP))
+                .putString(emailKey, email)
+                .putString(ivKey, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+                .putString(ctKey, Base64.encodeToString(ct, Base64.NO_WRAP))
                 .apply()
         } catch (t: Throwable) {
             // 存不了就只存邮箱：下次同步会要求重新输入密码，功能不中断
-            prefs.edit().putString("email", email).apply()
+            prefs.edit().putString(emailKey, email).apply()
         }
-    }
-
-    fun clear() {
-        prefs.edit().clear().apply()
     }
 
     private fun key(): SecretKey {

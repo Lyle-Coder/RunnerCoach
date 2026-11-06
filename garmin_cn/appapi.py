@@ -122,6 +122,7 @@ _API = {
     "set_llm_config", "get_llm_config",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
+    "coros_status", "coros_login", "coros_logout", "coros_sync",
 }
 
 # 模型接口配置（App「设置」写入）：未来的 AI 点评等功能从这里读。
@@ -285,7 +286,7 @@ def submit_mfa(code: str) -> dict:
 _MI: dict = {"cloud": None, "lock": threading.Lock()}
 
 
-def _mi_mask(uid: str) -> str:
+def _mask_uid(uid: str) -> str:
     s = str(uid or "")
     return (s[:3] + "****" + s[-2:]) if len(s) > 7 else (s or "未知")
 
@@ -298,7 +299,7 @@ def mi_status() -> dict:
         cloud = M.MiCloud(HOME)
         loaded = cloud.load()
         return {"ok": True, "logged_in": bool(loaded),
-                "user_id": _mi_mask(cloud.user_id) if loaded else ""}
+                "user_id": _mask_uid(cloud.user_id) if loaded else ""}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -332,7 +333,7 @@ def mi_login(user: str, password: str) -> dict:
             _MI["cloud"] = None
             return {"ok": False, "error": f"连不上小米服务器：{e}"}
         _MI["cloud"] = None
-    return {"ok": True, "logged_in": True, "user_id": _mi_mask(cloud.user_id)}
+    return {"ok": True, "logged_in": True, "user_id": _mask_uid(cloud.user_id)}
 
 
 def mi_captcha() -> dict:
@@ -390,7 +391,7 @@ def mi_verify_code(code: str) -> dict:
             return {"ok": False, "error": f"连不上小米服务器：{e}"}
         _MI["cloud"] = None
         cloud._cred = ("", "")            # 登录链路走完，内存里的账号密码不再需要
-    return {"ok": True, "user_id": _mi_mask(r.get("userId") or cloud.user_id),
+    return {"ok": True, "user_id": _mask_uid(r.get("userId") or cloud.user_id),
             "relogged": bool(r.get("relogged")), "partial": bool(r.get("partial"))}
 
 
@@ -421,6 +422,68 @@ def mi_sync(days: int = 30) -> dict:
     return {"ok": True, "count": n,
             "latest": recs[-1]["date"] if recs else None,
             "weight": recs[-1].get("weight_kg") if recs else None}
+
+
+# ---------------------------------------------------------------- 高驰
+def coros_status() -> dict:
+    """高驰登录态（只看凭据文件，不联网）。"""
+    try:
+        from . import coros as C
+
+        cloud = C.CorosCloud(HOME)
+        ok = cloud.load()
+        return {"ok": True, "logged_in": ok,
+                "user_id": _mask_uid(cloud.user_id) if ok else "",
+                "region": cloud.region if ok else "",
+                "region_cn": C.REGION_CN.get(cloud.region, cloud.region) if ok else ""}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def coros_login(email: str, password: str, region: str = "asia") -> dict:
+    """账号密码登录高驰（Training Hub）。密码不落盘，token 存 0600。"""
+    if not email or not password:
+        return {"ok": False, "error": "账号和密码都要填"}
+    from . import coros as C
+
+    cloud = C.CorosCloud(HOME)
+    try:
+        r = cloud.login(email, password, region or "asia")
+    except C.CorosError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "user_id": _mask_uid(r.get("user_id")),
+            "region": r.get("region"),
+            "region_cn": C.REGION_CN.get(r.get("region"), r.get("region"))}
+
+
+def coros_logout() -> dict:
+    try:
+        from . import coros as C
+
+        C.CorosCloud(HOME).clear()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def coros_sync(days: int = 30, email: str = "", password: str = "") -> dict:
+    """拉高驰每日指标 + 活动入库。token 24h 过期，带凭据就静默重登一次。"""
+    from . import coros as C
+
+    store = Store(DB)
+    try:
+        r = C.sync(store, HOME, days=days,
+                   email=email or None, password=password or None)
+    except C.CorosAuthError as e:
+        return {"ok": False, "need_login": True, "error": str(e)}
+    except C.CorosError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "daily": r.get("daily", 0), "activities": r.get("activities", 0),
+            "range": r.get("range"), "relogged": r.get("relogged", False)}
 
 
 # ---------------------------------------------------------------- 同步

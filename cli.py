@@ -1276,6 +1276,50 @@ def cmd_mi(args) -> int:
     return 0
 
 
+def cmd_coros(args) -> int:
+    """高驰：登录 / 状态 / 同步（Training Hub Web API 数据源）。"""
+    from garmin_cn import coros as C
+
+    act = (args.action or "status").lower()
+    cloud = C.CorosCloud(HOME)
+
+    if act == "logout":
+        cloud.clear()
+        print("√ 已删除 data/coros_auth.json")
+        return 0
+
+    if act == "login":
+        user = args.user or _prompt("高驰账号邮箱: ")
+        pwd = args.password or _prompt("密码（输入时不显示）: ", secret=True)
+        region = args.region or "asia"
+        print(f"→ 登录高驰（{C.REGION_CN.get(region, region)}）…", flush=True)
+        try:
+            r = cloud.login(user, pwd, region)
+        except C.CorosError as e:
+            print(f"× {e}")
+            return 2
+        print(f"√ 登录成功（userId={r['user_id']}），凭据存 data/coros_auth.json（不含密码）")
+        return 0
+
+    if not cloud.load():
+        print("× 还没登录高驰账号 → run.bat coros login")
+        return 2
+    print(f"√ 已登录（userId={cloud.user_id}，{C.REGION_CN.get(cloud.region)}）")
+
+    if act == "sync":
+        from garmin_cn.store import Store
+        store = Store(DB)
+        try:
+            r = C.sync(store, HOME, days=args.days,
+                       email=args.user, password=args.password)
+        except C.CorosError as e:
+            print(f"× 同步失败：{e}")
+            return 2
+        tail = "（已静默重登）" if r.get("relogged") else ""
+        print(f"√ {r['range']}：每日指标 {r['daily']} 天，活动 {r['activities']} 条{tail}")
+    return 0
+
+
 def cmd_body(args) -> int:
     """体重 / 体成分：导入、查看趋势、与训练负荷的联合判断。"""
     from garmin_cn import body as B
@@ -2267,6 +2311,16 @@ def main() -> int:
     q.add_argument("--json-text", help="同 --json-file，直接给 JSON 文本")
     q.add_argument("--raw", action="store_true", help="打印云端原始字段")
     q.set_defaults(func=cmd_mi)
+
+    q = sub.add_parser("coros", help="高驰：登录 / 状态 / 同步（数据源）")
+    q.add_argument("action", nargs="?", default="status",
+                   choices=["login", "status", "sync", "logout"])
+    q.add_argument("--user", help="高驰账号邮箱（sync 时带上可自动重登）")
+    q.add_argument("--password", help="密码（不推荐写在命令行历史里）")
+    q.add_argument("--region", choices=["asia", "eu", "us"], default="asia",
+                   help="账号所在区，默认 asia（国内）")
+    q.add_argument("--days", type=int, default=30, help="同步回溯天数，默认 30")
+    q.set_defaults(func=cmd_coros)
 
     q = sub.add_parser("nutri", help="今天吃多少：热量与三大营养素目标（减脂/维持/增重）")
     q.add_argument("--date")

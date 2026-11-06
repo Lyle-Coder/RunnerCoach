@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 高驰数据源图标：墨黑圆角方 + 白色 C 弧 + 品牌红短杠（意象化，非官方标识）。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:fillColor="#14161A"
+        android:pathData="M10,2 h28 a8,8 0 0 1 8,8 v28 a8,8 0 0 1 -8,8 h-28 a8,8 0 0 1 -8,-8 v-28 a8,8 0 0 1 8,-8 z" />
+    <path
+        android:pathData="M30,16.5 A10.5,10.5 0 1 0 30,31.5"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:fillColor="#E23A2E"
+        android:pathData="M32.5,20 h3.5 a2.5,2.5 0 0 1 0,8 h-3.5 a2.5,2.5 0 0 1 0,-8 z" />
+</vector>

@@ -57,8 +57,9 @@ import kotlin.math.roundToInt
  * 为什么操作放顶栏而不是悬浮按钮：常驻 FAB 会一直压住看板右下角，
  * 表格本来就要横向滚动，遮一块特别难受。顶栏是独立的一行布局，
  * WebView 只占它下面那块，任何内容都不会被盖住。同步和刷新连菜单项
- * 都不留，统一走下拉手势；活动图直接点看板里的活动行，⋮ 里只剩
- * 「今日一图流」「设置」（预留模型接口配置）和「重新登录」。
+ * 都不留，统一走下拉手势；活动图直接点看板里的活动行，⋮ 里是
+ * 「今日一图流」「设置」（预留模型接口配置）「小米体重」和「账号登录」
+ * （佳明 / 高驰双图标选择，数据源可分别登）。
  *
  * 两个原生的地方：
  *   1) 登录 / 验证码要用系统键盘，原生对话框比 HTML 表单可靠；
@@ -216,13 +217,13 @@ class MainActivity : Activity() {
         m.add(0, 1, 0, "今日一图流")
         m.add(0, 2, 1, "设置")
         m.add(0, 3, 2, "小米体重")
-        m.add(0, 4, 3, "重新登录")
+        m.add(0, 4, 3, "账号登录")
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> exportCard()
                 2 -> showSettings()
                 3 -> showMiPanel()
-                4 -> askLogin()
+                4 -> showLoginPicker()
             }
             true
         }
@@ -300,7 +301,10 @@ class MainActivity : Activity() {
         // 首次装完是空库，直接把登录框弹出来，别让人对着一页「还没有东西」猜
         val s = apiCall("status")
         setStatus(s)
-        if (!s.optBoolean("logged_in")) ui { askLogin() }
+        val c = apiCall("coros_status")
+        if (!s.optBoolean("logged_in") && !c.optBoolean("logged_in")) {
+            ui { showLoginPicker() }
+        }
     }
 
     private fun setStatus(s: JSONObject) {
@@ -314,59 +318,103 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------ 同步
-    /** 下拉刷新的唯一落点：同步 + 重出看板 + 回到页面顶部。 */
+    /**
+     * 下拉刷新的唯一落点：同步 + 重出看板 + 回到页面顶部。
+     * 两个数据源独立拉取（佳明 session / 高驰 token 各过各的），
+     * 只要有一个成功就算成功；两边都没配就弹账号选择。
+     */
     private fun onSync() {
-        val email = secrets.email()
-        val pwd = secrets.password()
-        if (email.isNullOrBlank() || pwd.isNullOrBlank()) {
+        val gEmail = secrets.email()
+        val gPwd = secrets.password()
+        val cEmail = secrets.corosEmail()
+        val hasG = !gEmail.isNullOrBlank() && !gPwd.isNullOrBlank()
+        val hasC = !cEmail.isNullOrBlank()
+        if (!hasG && !hasC) {
             // 手势已经拉开，但这次只是要去登录，先把指示器收回去
             pull.cancel()
-            askLogin()
+            showLoginPicker()
             return
         }
-        doSync(email, pwd)
+        doSync()
     }
 
-    private fun doSync(email: String, pwd: String) {
+    private fun doSync() {
+        val gEmail = secrets.email()
+        val gPwd = secrets.password()
+        val cEmail = secrets.corosEmail()
+        val cPwd = secrets.corosPassword() ?: ""
         ui {
             pull.setRefreshing(true)
             subtitle.text = "正在同步…"
         }
         thread {
-            val r = apiCall("sync", 30, email, pwd)
-            ui {
+            val msgs = mutableListOf<String>()
+            var okAny = false
+            var garminDead = false
+            var corosDead = false
+            var err = ""
+
+            if (!gEmail.isNullOrBlank() && !gPwd.isNullOrBlank()) {
+                val r = apiCall("sync", 30, gEmail, gPwd)
                 when {
                     r.optBoolean("ok") -> {
                         // 增量同步：多数时候只拉今天/昨天，这里把「跳过」也报出来，
                         // 免得看到「30 天」以为是全量重拉了一遍
+                        okAny = true
                         val fetched = r.optInt("fetched", r.optInt("days"))
                         val skipped = r.optInt("skipped")
-                        val tail = if (skipped > 0) "（$skipped 天已缓存）" else ""
-                        toast("同步完成：$fetched 天$tail · ${r.optInt("activities")} 条活动")
-                        // 同步只写库，不出页面。这里补一步看板，否则刷新后还是空列表。
-                        thread {
-                            apiCall("dashboard")
-                            setStatus(apiCall("status"))
-                            ui {
-                                pull.setRefreshing(false)
-                                reload()
-                            }
+                        var m = "佳明 $fetched 天"
+                        if (skipped > 0) m += "（$skipped 已缓存）"
+                        msgs.add(m)
+                        val b = r.optJSONObject("body")
+                        if (b != null && b.optInt("count") > 0) msgs.add("体重 ${b.optInt("count")} 条")
+                    }
+                    r.optBoolean("need_mfa") || r.optBoolean("need_login") -> garminDead = true
+                    else -> err = "佳明：" + r.optString("error")
+                }
+            }
+            if (!cEmail.isNullOrBlank()) {
+                val r = apiCall("coros_sync", 30, cEmail, cPwd)
+                when {
+                    r.optBoolean("ok") -> {
+                        okAny = true
+                        msgs.add("高驰 ${r.optInt("daily")} 天 · ${r.optInt("activities")} 条活动")
+                    }
+                    r.optBoolean("need_login") -> corosDead = true
+                    else -> err = (if (err.isEmpty()) "" else "$err · ") + "高驰：" + r.optString("error")
+                }
+            }
+
+            ui {
+                pull.setRefreshing(false)
+                if (okAny) {
+                    toast("同步完成：" + msgs.joinToString(" · "))
+                    // 同步只写库，不出页面。这里补一步看板，否则刷新后还是空列表。
+                    thread {
+                        apiCall("dashboard")
+                        setStatus(apiCall("status"))
+                        ui {
+                            if (garminDead) toast("佳明登录已失效，请在「账号登录」里重登")
+                            else if (corosDead) toast("高驰登录已过期，请在「账号登录」里重登")
+                            reload()
                         }
                     }
-                    r.optBoolean("need_mfa") -> {
-                        pull.setRefreshing(false)
-                        toast("会话续期要验证码，请重新登录")
-                        askLogin()
-                    }
-                    r.optBoolean("need_login") -> {
-                        pull.setRefreshing(false)
-                        toast("登录已失效，请重新登录")
-                        askLogin()
-                    }
-                    else -> {
-                        pull.setRefreshing(false)
-                        setStatus(apiCall("status"))
-                        toast("同步失败：${r.optString("error")}")
+                } else {
+                    setStatus(apiCall("status"))
+                    when {
+                        garminDead && corosDead -> {
+                            toast("两个账号的登录都失效了，请重新登录")
+                            showLoginPicker()
+                        }
+                        garminDead -> {
+                            toast("会话续期要验证码或已失效，请重新登录")
+                            askGarminLogin()
+                        }
+                        corosDead -> {
+                            toast("高驰登录已过期，请重新登录")
+                            askCorosLogin()
+                        }
+                        else -> toast("同步失败：$err")
                     }
                 }
             }
@@ -374,7 +422,65 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------ 登录
-    private fun askLogin() {
+    /**
+     * 账号选择：两行各带数据源图标，佳明 / 高驰各走各的登录接口。
+     * 两个都能登（数据写进同一套库），按行下的小字提示当前登没登。
+     */
+    private fun showLoginPicker() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(10), dp(16), 0)
+        }
+
+        fun row(icon: Int, title: String, sub: String, onClick: () -> Unit) {
+            val r = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(8), dp(12), dp(8), dp(12))
+                setOnClickListener { onClick() }
+            }
+            r.addView(ImageView(this).apply {
+                setImageResource(icon)
+                layoutParams = LinearLayout.LayoutParams(dp(46), dp(46))
+            })
+            r.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), 0, 0, 0)
+                addView(TextView(this@MainActivity).apply {
+                    text = title
+                    textSize = 15f
+                    setTextColor(0xFF1D2A22.toInt())
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = sub
+                    textSize = 11.5f
+                    setTextColor(0xFF8A8F87.toInt())
+                })
+            }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            box.addView(r)
+        }
+
+        val g = secrets.email()
+        val c = secrets.corosEmail()
+        row(R.drawable.ic_logo_garmin, "Garmin 佳明国区",
+            if (g.isNullOrBlank()) "邮箱密码 + 邮箱验证码" else "已登录 $g · 点击可重新登录"
+        ) { askGarminLogin() }
+        box.addView(View(this).apply { setBackgroundColor(0xFFE3E8DF.toInt()) },
+            LinearLayout.LayoutParams(MATCH_PARENT, 1))
+        row(R.drawable.ic_logo_coros, "COROS 高驰",
+            if (c.isNullOrBlank()) "邮箱密码（Training Hub）· token 自动续期" else "已登录 $c · 点击可重新登录"
+        ) { askCorosLogin() }
+
+        AlertDialog.Builder(this)
+            .setTitle("账号登录")
+            .setMessage("选择手表数据来源；两个账号可以都登，数据写进同一套看板。凭据只加密存在本机。")
+            .setView(box)
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    private fun askGarminLogin() {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(56, 24, 56, 0)
@@ -422,7 +528,7 @@ class MainActivity : Activity() {
                     r.optBoolean("ok") -> {
                         secrets.save(email, pwd)
                         toast("登录成功")
-                        doSync(email, pwd)
+                        doSync()
                     }
                     else -> toast("登录失败：${r.optString("error")}")
                 }
@@ -453,11 +559,82 @@ class MainActivity : Activity() {
                 busy(false)
                 if (r.optBoolean("ok")) {
                     toast("登录成功")
-                    val e = secrets.email()
-                    val p = secrets.password()
-                    if (e != null && p != null) doSync(e, p) else reload()
+                    doSync()
                 } else {
                     toast("验证失败：${r.optString("error")}")
+                }
+            }
+        }
+    }
+
+    /**
+     * 高驰登录：账号密码直登训练平台（Training Hub）。
+     * token 约 24 小时过期，密码存 Keystore 后每次同步可静默重登；
+     * 区域要和注册账号时选的一致（国内账号走 asia），选错会被拒。
+     */
+    private fun askCorosLogin() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(56, 24, 56, 0)
+        }
+        val eEmail = EditText(this).apply {
+            hint = "高驰账号邮箱"
+            inputType = InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+            setText(secrets.corosEmail() ?: "")
+        }
+        val ePwd = EditText(this).apply {
+            hint = "密码"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        // 区域：默认国内；用单选对话框选，避免 Spinner 样式各机型不一致
+        val regions = arrayOf("国内", "欧洲", "美国")
+        val regionKeys = arrayOf("asia", "eu", "us")
+        var regionIdx = 0
+        val vRegion = TextView(this).apply {
+            text = "账号区域：国内"
+            textSize = 14f
+            setTextColor(0xFF4A5750.toInt())
+            setPadding(0, dp(14), 0, dp(6))
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("账号区域")
+                    .setSingleChoiceItems(regions, regionIdx) { _, which ->
+                        regionIdx = which
+                        text = "账号区域：" + regions[which]
+                    }
+                    .setPositiveButton("确定", null)
+                    .show()
+            }
+        }
+        box.addView(eEmail)
+        box.addView(ePwd)
+        box.addView(vRegion)
+        AlertDialog.Builder(this)
+            .setTitle("登录 COROS 高驰")
+            .setMessage("与高驰手表 App 同一个账号。凭据只加密存在本机；token 过期后自动续登。")
+            .setView(box)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("登录") { _, _ ->
+                val e = eEmail.text.toString().trim()
+                val p = ePwd.text.toString()
+                if (e.isBlank() || p.isBlank()) toast("邮箱和密码都要填")
+                else doCorosLogin(e, p, regionKeys[regionIdx])
+            }
+            .show()
+    }
+
+    private fun doCorosLogin(email: String, pwd: String, region: String) {
+        busy(true)
+        thread {
+            val r = apiCall("coros_login", email, pwd, region)
+            ui {
+                busy(false)
+                if (r.optBoolean("ok")) {
+                    secrets.saveCoros(email, pwd)
+                    toast("高驰登录成功（${r.optString("user_id")}）")
+                    doSync()
+                } else {
+                    toast("登录失败：${r.optString("error")}")
                 }
             }
         }
@@ -790,7 +967,7 @@ class MainActivity : Activity() {
                     busy(false)
                     if (r.optBoolean("need_login")) {
                         toast("这条活动的明细需要先联网登录抓一次")
-                        askLogin()
+                        askGarminLogin()
                     } else {
                         toast("活动图失败：${r.optString("error")}")
                     }

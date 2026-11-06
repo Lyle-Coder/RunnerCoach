@@ -97,10 +97,27 @@ class Store:
         self.conn.commit()
 
     # ---------- 写入 ----------
-    def upsert_daily(self, row: dict) -> None:
+    def upsert_daily(self, row: dict, merge: bool = False) -> None:
+        """`merge=True` 只更新非 None 的列（高驰/佳明双源共用 daily 表时，
+        一边缺的字段不能把另一边写过的值抹成 NULL）。Garmin 全量同步仍走
+        默认的整行覆盖，保证同源重拉时删掉的字段也会被清掉。"""
         data = {k: row.get(k) for k in DAILY_COLS}
         if isinstance(data.get("raw"), (dict, list)):
             data["raw"] = json.dumps(data["raw"], ensure_ascii=False)
+        if merge:
+            cols = [c for c in DAILY_COLS if data.get(c) is not None]
+            if not cols:
+                return
+            cols = list(dict.fromkeys(["date"] + cols))
+            sets = [f"{c}=COALESCE(excluded.{c}, {c})" for c in cols if c != "date"]
+            ph = ",".join("?" * len(cols))
+            self.conn.execute(
+                f"INSERT INTO daily ({','.join(cols)}) VALUES ({ph}) "
+                f"ON CONFLICT(date) DO UPDATE SET {','.join(sets)}",
+                [data[c] for c in cols],
+            )
+            self.conn.commit()
+            return
         cols = ",".join(DAILY_COLS)
         ph = ",".join("?" * len(DAILY_COLS))
         updates = ",".join(f"{c}=excluded.{c}" for c in DAILY_COLS if c != "date")

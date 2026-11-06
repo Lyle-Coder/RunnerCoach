@@ -1,0 +1,365 @@
+"""高驰（COROS）数据源：Training Hub Web API，活动 + 每日健康指标。
+
+为什么走这条路
+--------------
+高驰有三条取数通路（见 docs/高驰接入评估.md）：
+  ① 官方 Open API（open.coros.com，OAuth2）——正道，但要注册开发者应用、
+     等审核，朋友没法马上测试；
+  ② 官方 MCP 网关——OAuth 扫码授权，但只服务 MCP 协议，没法直接打 REST；
+  ③ Training Hub Web API（本模块）——账号密码登录训练平台，口径与网页版
+     一致，今天就能测。社区 coros-mcp 就是这条路，接口形态稳定了一年多。
+本模块做 ③：登录一次，token 存 `data/coros_auth.json`（0600），之后每次
+同步增量拉。等官方 Open API 过审后，只需替换本模块的请求层，下游不动。
+
+协议长什么样
+------------
+比小米云朴素得多：普通 JSON + 自定义头，没有加密外壳。
+    POST /account/login      {account, accountType:2, pwd: md5(密码)}
+    响应 {"result":"0000","data":{"accessToken","userId"}}   1019=token 失效
+    鉴权头  accessToken: <token>   yfheader: {"userId": ...}
+区域决定主机（token 只在本区有效）：
+    asia/cn → teamcnapi.coros.com   eu → teameuapi.coros.com   us → teamapi.coros.com
+
+凭据与过期
+----------
+Web token 服务端不给 refresh，约 24 小时过期（返回 result=1019）。
+所以界面要像佳明一样留着账号密码（Android Keystore），过期时传进来静默
+重登一次；Python 侧不存密码，只存 token / userId / region。
+
+睡眠分期不在这里
+----------------
+睡眠阶段（深/浅/REM）只在移动端 API（apieu.coros.com 一族）有，而那套登录
+是 AES 加密的私有协议，且**登录一次会把用户手机上的高驰 App 挤下线**。
+权衡后本轮不做：日间指标里的 avgSleepHrv / rhr / trainingLoad / vo2max
+已经从 Web 侧拿到，睡眠分期列为后续（见 README 限制说明）。
+
+单位陷阱
+--------
+活动列表的 calorie 是**卡（cal）**不是千卡，入库前 ÷1000；
+distance 是米、totalTime 是秒——与佳明侧口径一致，直接进表。
+"""
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
+import json
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
+
+BASE_URLS = {
+    "asia": "https://teamcnapi.coros.com",
+    "cn": "https://teamcnapi.coros.com",
+    "eu": "https://teameuapi.coros.com",
+    "us": "https://teamapi.coros.com",
+}
+REGION_CN = {"asia": "国内", "cn": "国内", "eu": "欧洲", "us": "美国"}
+
+# 高驰 sportType → 项目里的活动类型串（garmin typeKey 口径，看板/图都认它）
+SPORT_TYPE = {
+    100: "running", 102: "trail_running", 103: "track_running", 104: "hiking",
+    200: "road_biking", 201: "indoor_cycling", 203: "road_biking", 204: "mountain_biking",
+    400: "indoor_cardio", 402: "strength_training", 403: "yoga",
+    900: "walking", 9807: "road_biking",
+}
+
+
+class CorosError(Exception):
+    pass
+
+
+class CorosAuthError(CorosError):
+    pass
+
+
+def _md5(s: str) -> str:
+    return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+
+def _iso(yyyymmdd) -> str | None:
+    s = str(yyyymmdd or "").strip()
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:]}"
+    return None
+
+
+def _day_key(iso: str) -> str:
+    return iso.replace("-", "")[:8]
+
+
+def _ts(v) -> str | None:
+    """epoch 秒/毫秒 → 本地 "YYYY-MM-DDTHH:MM:SS"（与佳明 startTimeLocal 同形）。"""
+    if v in (None, ""):
+        return None
+    try:
+        t = float(v)
+    except (TypeError, ValueError):
+        return None
+    if t > 1e12:              # 毫秒
+        t /= 1000
+    if t < 1e8:               # 不是时间戳
+        return None
+    return dt.datetime.fromtimestamp(t).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _num(v) -> float | None:
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+class CorosCloud:
+    """一个高驰账号的会话。与 mi.MiCloud 同一持有方式：登录 → 存 cookie/token。"""
+
+    def __init__(self, home: Path):
+        self.home = Path(home)
+        self.auth_path = self.home / "data" / "coros_auth.json"
+        self.access_token = ""
+        self.user_id = ""
+        self.region = "asia"
+        self.email = ""
+
+    # ---------------- 凭据 ----------------
+    def load(self) -> bool:
+        try:
+            d = json.loads(self.auth_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        self.access_token = d.get("access_token") or ""
+        self.user_id = d.get("user_id") or ""
+        self.region = d.get("region") or "asia"
+        self.email = d.get("email") or ""
+        return bool(self.access_token)
+
+    def save(self) -> None:
+        self.auth_path.parent.mkdir(parents=True, exist_ok=True)
+        self.auth_path.write_text(json.dumps({
+            "access_token": self.access_token,
+            "user_id": self.user_id,
+            "region": self.region,
+            "email": self.email,
+            "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.auth_path.chmod(0o600)
+
+    def clear(self) -> None:
+        try:
+            self.auth_path.unlink()
+        except OSError:
+            pass
+
+    # ---------------- HTTP ----------------
+    def _base(self) -> str:
+        return BASE_URLS.get(self.region, BASE_URLS["asia"])
+
+    def _headers(self) -> dict:
+        return {
+            "Content-Type": "application/json",
+            "User-Agent": UA,
+            "accessToken": self.access_token,
+            "yfheader": json.dumps({"userId": self.user_id}),
+        }
+
+    def _req(self, method: str, path: str, *, params: dict | None = None,
+             body: dict | None = None, form: dict | None = None,
+             headers: dict | None = None, timeout: int = 25) -> dict:
+        url = self._base() + path
+        if params:
+            url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+        data = None
+        hs = dict(headers or self._headers())
+        if form is not None:
+            data = urllib.parse.urlencode(form).encode()
+            hs.pop("Content-Type", None)     # 让 urllib 自己带 urlencoded 头
+        elif body is not None:
+            data = json.dumps(body).encode()
+        req = urllib.request.Request(url, data=data, headers=hs, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                text = r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            snippet = e.read().decode("utf-8", "replace")[:200]
+            raise CorosError(f"高驰接口 HTTP {e.code}：{snippet}") from None
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise CorosError(f"连不上高驰服务器：{type(e).__name__}: {e}") from None
+        try:
+            out = json.loads(text)
+        except json.JSONDecodeError:
+            raise CorosError(f"高驰返回的不是 JSON（可能改版）：{text[:160]}") from None
+        code = str(out.get("result"))
+        if code == "1019":
+            raise CorosAuthError("登录已过期（token 失效），请重新登录")
+        if code != "0000":
+            msg = out.get("message") or out.get("msg") or code
+            if code in ("1002", "1003", "1004"):
+                raise CorosAuthError(f"高驰拒绝：{msg}")
+            raise CorosError(f"高驰接口报错（result={code} {msg}）")
+        return out
+
+    # ---------------- 登录 ----------------
+    def login(self, email: str, password: str, region: str = "asia") -> dict:
+        """账号密码登录。密码只在本次调用里用（md5 后发出，不落盘）。"""
+        if not email or not password:
+            raise CorosAuthError("账号和密码都要填")
+        self.region = region if region in BASE_URLS else "asia"
+        self.email = email
+        body = {
+            "account": email,
+            "accountType": 2,
+            "pwd": _md5(password),
+        }
+        headers = {"Content-Type": "application/json", "User-Agent": UA}
+        try:
+            out = self._req("POST", "/account/login", body=body, headers=headers)
+        except CorosAuthError as e:
+            raise CorosAuthError(f"{e}（也可能是账号或密码不对）") from None
+        data = out.get("data") or {}
+        self.access_token = data.get("accessToken") or ""
+        self.user_id = str(data.get("userId") or "")
+        if not self.access_token:
+            raise CorosAuthError("登录没有返回 token（高驰改版了？）")
+        # 先用一次轻接口验票，坏凭据别等到同步时才发现
+        try:
+            self._req("GET", "/dashboard/query")
+        except CorosAuthError:
+            raise CorosAuthError("登录响应拿到了 token 但验证未通过，请重试") from None
+        self.save()
+        return {"user_id": self.user_id, "region": self.region}
+
+    # ---------------- 数据 ----------------
+    def daily_records(self, start: str, end: str) -> list[dict]:
+        """每日健康指标：dayDetail 区间 + analyse 摘要合并。
+
+        拿到 resting_hr / hrv_night / hrv_weekly / vo2max / distance_m。
+        没有的字段（步数、睡眠分期、压力）保持 None——upsert merge 模式
+        不会用 None 抹掉别的数据源写过的值。
+        """
+        out = self._req("GET", "/analyse/dayDetail/query",
+                        params={"startDay": _day_key(start), "endDay": _day_key(end)})
+        day_list = ((out.get("data") or {}).get("dayList")) or []
+        # t7dayList（近 28 天）里有更权威的 vo2max / 阈值 / 耐力
+        extra: dict[str, dict] = {}
+        try:
+            ana = self._req("GET", "/analyse/query")
+            for it in ((ana.get("data") or {}).get("t7dayList")) or []:
+                d = _iso(it.get("happenDay"))
+                if d:
+                    extra[d] = it
+        except CorosError:
+            pass                      # 摘要拿不到就用 dayList 自己的字段
+
+        rows = []
+        for it in day_list:
+            d = _iso(it.get("happenDay"))
+            if not d:
+                continue
+            m = extra.get(d) or {}
+            rows.append({
+                "date": d,
+                "resting_hr": _num(it.get("rhr")),
+                "hrv_night": _num(it.get("avgSleepHrv")),
+                "hrv_weekly": _num(it.get("sleepHrvBase")),
+                "vo2max": _num(m.get("vo2max") or it.get("vo2max")),
+                "distance_m": _num(it.get("distance")),
+                "synced_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "raw": json.dumps(it, ensure_ascii=False)[:20000],
+            })
+        return rows
+
+    def activities(self, start: str, end: str, limit: int = 60) -> list[dict]:
+        """活动列表 → 项目 activities 表行（字段翻译见模块 docstring）。"""
+        items: list = []
+        page, size = 1, 30
+        while len(items) < limit:
+            out = self._req("GET", "/activity/query", params={
+                "startDay": _day_key(start), "endDay": _day_key(end),
+                "pageNumber": page, "size": size,
+            })
+            data = out.get("data") or {}
+            batch = data.get("dataList") or data.get("list") or []
+            items.extend(batch)
+            total = data.get("totalCount") or data.get("count") or len(items)
+            if not batch or len(items) >= total or len(items) >= limit:
+                break
+            page += 1
+        return [r for r in (self._parse_activity(a) for a in items[:limit]) if r]
+
+    def _parse_activity(self, a: dict) -> dict | None:
+        aid = a.get("labelId")
+        if aid in (None, ""):
+            return None
+        dist = _num(a.get("distance") or a.get("totalDistance"))
+        dur = _num(a.get("totalTime"))
+        pace = None
+        if dist and dur and dist > 1000:
+            pace = round(dur / (dist / 1000))
+        start_ts = _ts(a.get("startTime"))
+        cal = _num(a.get("calorie"))
+        return {
+            "activity_id": str(aid),
+            "date": (start_ts or "")[:10] or _iso(a.get("happenDay")),
+            "start_ts": start_ts,
+            "type": SPORT_TYPE.get(a.get("sportType"), "other"),
+            "name": a.get("name") or a.get("remark") or "高驰活动",
+            "duration_s": dur,
+            "distance_m": dist,
+            "avg_hr": _num(a.get("avgHr")),
+            "max_hr": _num(a.get("maxHr")),
+            # 高驰给的是卡（cal）：60 万 ≈ 600 kcal，入库与佳明同口径用 kcal
+            "calories": round(cal / 1000, 1) if cal else None,
+            "load": _num(a.get("trainingLoad")),
+            "pace_s_km": pace,
+            "ascent": _num(a.get("ascent") or a.get("totalAscent")
+                          or a.get("elevationGain")),
+            "raw": json.dumps(a, ensure_ascii=False)[:100000],
+        }
+
+    def activity_detail(self, activity_id: str, sport_type: int | None = None) -> dict:
+        """单条活动详情（laps / 心率区间等）。时序大数组原样留在 payload。"""
+        form = {"labelId": str(activity_id), "userId": self.user_id}
+        if sport_type is not None:
+            form["sportType"] = str(sport_type)
+        out = self._req("POST", "/activity/detail/query", form=form)
+        return out.get("data") or {}
+
+
+# ---------------------------------------------------------------- 便捷入口
+def sync(store, home: Path, days: int = 30,
+         email: str | None = None, password: str | None = None) -> dict:
+    """拉每日指标 + 活动入库。token 过期且带了凭据就静默重登一次。
+
+    返回 {"daily": n, "activities": n, "range": "..." , "relogged": bool}
+    """
+    cloud = CorosCloud(home)
+    if not cloud.load():
+        raise CorosAuthError("还没登录高驰账号 → App 里「账号登录」选高驰")
+
+    def _run() -> dict:
+        end = dt.date.today()
+        start = end - dt.timedelta(days=max(7, min(int(days), 180)))
+        daily = cloud.daily_records(start.isoformat(), end.isoformat())
+        for r in daily:
+            store.upsert_daily(r, merge=True)
+        acts = cloud.activities(start.isoformat(), end.isoformat())
+        for a in acts:
+            store.upsert_activity(a)
+        return {"daily": len(daily), "activities": len(acts),
+                "range": f"{start}~{end}"}
+
+    relogged = False
+    try:
+        return {**_run(), "relogged": False}
+    except CorosAuthError:
+        if not (email and password):
+            raise
+        cloud.login(email, password, cloud.region)   # 24h token 过期：静默重登
+        relogged = True
+        return {**_run(), "relogged": relogged}
