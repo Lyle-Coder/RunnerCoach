@@ -215,77 +215,22 @@ class MainActivity : Activity() {
         // 同步与刷新都交给下拉手势；活动图直接点看板里的活动行出，
         // 菜单里不再重复入口。一图流导出、设置、小米体重、重新登录。
         m.add(0, 1, 0, "今日一图流")
-        m.add(0, 2, 1, "设置")
-        m.add(0, 3, 2, "小米体重")
-        m.add(0, 4, 3, "账号登录")
+        m.add(0, 5, 1, "AI 教练")
+        m.add(0, 2, 2, "模型服务设置")
+        m.add(0, 3, 3, "小米体重")
+        m.add(0, 4, 4, "账号登录")
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> exportCard()
-                2 -> showSettings()
+                // AI 教练与设置都在本机服务的另一个页面里：同源，桥的规则不变
+                5 -> if (port != 0) web.loadUrl("http://127.0.0.1:$port/ai")
+                2 -> if (port != 0) web.loadUrl("http://127.0.0.1:$port/ai#settings")
                 3 -> showMiPanel()
                 4 -> showLoginPicker()
             }
             true
         }
         pm.show()
-    }
-
-    /**
-     * 设置（预留）：模型接口配置——自配 key / 服务地址 / 模型名，
-     * 未来的 AI 点评等功能从这里读；充值换额度也走这套配置。
-     * Kotlin 侧存 gc_prefs，同时推给 Python 落 data/llm_config.json
-     * （0600），两条路都能用；key 只存本机，不上传。
-     */
-    private fun showSettings() {
-        val prefs = getSharedPreferences("gc_prefs", MODE_PRIVATE)
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(56, 24, 56, 0)
-        }
-        val eUrl = EditText(this).apply {
-            hint = "API 地址（如 https://api.deepseek.com）"
-            inputType = InputType.TYPE_TEXT_VARIATION_URI
-            setText(prefs.getString("llm_base_url", "") ?: "")
-        }
-        val eKey = EditText(this).apply {
-            hint = "API Key"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setText(prefs.getString("llm_api_key", "") ?: "")
-        }
-        val eModel = EditText(this).apply {
-            hint = "模型名（如 deepseek-chat）"
-            inputType = InputType.TYPE_CLASS_TEXT
-            setText(prefs.getString("llm_model", "") ?: "")
-        }
-        box.addView(eUrl)
-        box.addView(eKey)
-        box.addView(eModel)
-        AlertDialog.Builder(this)
-            .setTitle("设置 · 模型接口")
-            .setMessage(
-                "给未来的 AI 点评等功能预留：自己配 key，或接入充值服务换额度。\n" +
-                    "配置只保存在本机，不会上传到任何服务器。"
-            )
-            .setView(box)
-            .setPositiveButton("保存") { _, _ ->
-                val url = eUrl.text.toString().trim()
-                val key = eKey.text.toString().trim()
-                val model = eModel.text.toString().trim()
-                prefs.edit()
-                    .putString("llm_base_url", url)
-                    .putString("llm_api_key", key)
-                    .putString("llm_model", model)
-                    .apply()
-                thread {
-                    val r = apiCall("set_llm_config", url, key, model)
-                    ui {
-                        if (r.optBoolean("ok")) toast("已保存（留空即清除）")
-                        else toast("本机已保存，但同步到内核失败：${r.optString("error")}")
-                    }
-                }
-            }
-            .setNegativeButton("取消", null)
-            .show()
     }
 
     // ------------------------------------------------------------ 启动

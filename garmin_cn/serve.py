@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hmac
+import json
 import os
 import secrets
 import socket
@@ -154,14 +155,82 @@ code{{background:#E9EDE5;border-radius:4px;padding:1px 5px;font-size:12px}}
 class _Handler(SimpleHTTPRequestHandler):
     server_version = "garmin-coach/0.1"
 
+    # AI 页面与接口：只有本机能调。局域网访问者即便拿到访问码，
+    # 也进不了这条通道——它会把健康数据发给模型服务商，还会花钱。
+    _AI_PAGES = ("/ai", "/ai.html")
+
+    def _is_loopback(self) -> bool:
+        ip = (self.client_address or ("",))[0]
+        return ip in ("127.0.0.1", "::1", "localhost")
+
     def do_GET(self) -> None:  # noqa: N802
         u = urlparse(self.path)
+        if u.path in self._AI_PAGES:
+            if not self._is_loopback():
+                return self._json({"ok": False, "error": "AI 页面只允许本机打开"}, 403)
+            from . import aiui
+
+            return self._html(aiui.render())
         token = getattr(self.server, "token", "")
         if token and not self._gate(u, token):
             return
         if u.path in ("", "/", "/index.html"):
             return self._send_index()
         return super().do_GET()
+
+    def do_POST(self) -> None:  # noqa: N802
+        u = urlparse(self.path)
+        if not u.path.startswith("/ai/"):
+            return self._json({"ok": False, "error": "不支持的接口"}, 404)
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "AI 接口只允许本机调用"}, 403)
+
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n > 512 * 1024:          # 对话历史再长也不该超过这个量级
+            return self._json({"ok": False, "error": "请求过大"}, 413)
+        raw = self.rfile.read(n) if n else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8") or "{}")
+            if not isinstance(payload, dict):
+                raise ValueError("body 必须是对象")
+        except Exception as e:
+            return self._json({"ok": False, "error": f"参数不合法：{e}"}, 400)
+
+        action = u.path[len("/ai/"):].strip("/") or "status"
+        from . import aiapi
+
+        try:
+            out = aiapi.dispatch(action, payload)
+        except Exception as e:      # dispatch 内部已兜底，这里只防万一
+            out = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return self._json(out, 200 if out.get("ok") else 400)
+
+    def _json(self, obj, code: int = 200) -> None:
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+
+    def _html(self, html: str, code: int = 200) -> None:
+        body = html.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
 
     def _gate(self, u, token: str) -> bool:
         """返回 True 表示放行；False 表示已经自己响应过了。"""

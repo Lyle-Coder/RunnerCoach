@@ -1862,6 +1862,36 @@ def cmd_serve(args) -> int:
                       open_=args.open, token=args.token)
 
 
+def cmd_ai(args) -> int:
+    """起本机看板服务并直接打开 AI 教练页（对话 / 今日建议 / 体重 / 配置）。
+
+    AI 接口只允许 127.0.0.1 调用，所以这里从不加 --lan：健康数据要发给模型
+    服务商的事，只在本机由本机自己决定。
+    """
+    from garmin_cn.serve import run_server
+
+    if args.model:
+        from garmin_cn import llm
+
+        cfg = llm.load_config()
+        if args.model != "mock":
+            print("× 目前 --model 只支持 mock（本地假模型，调试用）")
+            return 2
+        mock_port = args.mock_port
+        import threading
+        import sys as _sys
+        _sys.path.insert(0, str(HOME / "tools"))
+        import mock_llm
+
+        srv = ThreadingHTTPServer(("127.0.0.1", mock_port), mock_llm.H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        llm.save_config(mode="own", provider="custom",
+                        base_url=f"http://127.0.0.1:{mock_port}/v1",
+                        model="mock-1.5", api_key="mock")
+        print(f"· 已切到本地假模型 http://127.0.0.1:{mock_port}/v1（仅调试，结束即恢复）")
+    return run_server(OUT, lan=False, port=args.port, open_=True)
+
+
 def cmd_demo(args) -> int:
     from garmin_cn.demo import build
 
@@ -2364,6 +2394,12 @@ def main() -> int:
     q.add_argument("--token", help="自定义访问码（默认随机）")
     q.add_argument("--open", action="store_true", help="同时在电脑上打开")
     q.set_defaults(func=cmd_serve)
+
+    q = sub.add_parser("ai", help="AI 教练：对话 / 今日建议 / 体重分析 / 模型服务配置")
+    q.add_argument("--port", type=int, default=8765, help="端口，默认 8765（占用则自动后移）")
+    q.add_argument("--model", choices=["mock"], help="用本地假模型调试界面，不花钱")
+    q.add_argument("--mock-port", type=int, default=18099, help="mock 模型端口")
+    q.set_defaults(func=cmd_ai)
 
     q = sub.add_parser("demo", help="用仿真数据预览看板")
     q.add_argument("--open", action="store_true")

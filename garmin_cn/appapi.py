@@ -119,7 +119,7 @@ _API = {
     "env_info", "status", "login", "submit_mfa", "sync",
     "dashboard", "card_html", "act_card_html", "runs",
     "start_server", "recent", "read_html",
-    "set_llm_config", "get_llm_config",
+    "set_llm_config", "get_llm_config", "ai",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
     "coros_status", "coros_login", "coros_logout", "coros_sync",
@@ -131,38 +131,36 @@ LLM_CONFIG = HOME / "data" / "llm_config.json"
 
 
 def set_llm_config(base_url: str = "", api_key: str = "", model: str = "") -> dict:
-    """保存模型接口配置（base_url / api_key / model，均可留空表示清除）。
+    """保存模型接口配置（兼容老 APK 的三参数形式，内部转发到 llm 模块）。
 
-    写 `data/llm_config.json`（0600）。Kotlin 侧同时存了一份 gc_prefs，
-    两边以这份文件为准；充值换额度的服务地址将来也放在这里。
+    新版走「模型服务」页面（ai 页面的设置抽屉），那份配置在
+    `data/llm_config.json`（0600），字段更全（模式/供应商/平台地址/令牌）。
+    这里保留是让旧版 APK 的「设置」菜单不至于报「没有这个接口」。
     """
-    cfg = {"base_url": (base_url or "").strip(),
-           "api_key": (api_key or "").strip(),
-           "model": (model or "").strip(),
-           "updated_at": dt.datetime.now().isoformat(timespec="seconds")}
-    try:
-        LLM_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        LLM_CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
-                              encoding="utf-8")
-        LLM_CONFIG.chmod(0o600)
-    except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-    return {"ok": True, "configured": bool(cfg["base_url"] and cfg["api_key"])}
+    from . import llm as L
+
+    L.save_config(base_url=base_url.strip(), api_key=api_key.strip(), model=model.strip())
+    return {"ok": True, "configured": L.is_configured()}
 
 
 def get_llm_config() -> dict:
     """读回模型接口配置；key 只给前 4 位 + 长度，方便确认配没配对。"""
+    from . import llm as L
+
+    return L.public_config()
+
+
+def ai(action: str = "status", payload_json: str = "{}") -> dict:
+    """AI 能力的统一入口（名字 + JSON 参数），与 serve 的 /ai/* 同一套动作。"""
+    from . import aiapi
+
     try:
-        cfg = json.loads(LLM_CONFIG.read_text(encoding="utf-8"))
-    except Exception:
-        cfg = {}
-    key = cfg.get("api_key") or ""
-    return {"ok": True,
-            "base_url": cfg.get("base_url") or "",
-            "model": cfg.get("model") or "",
-            "api_key_hint": (key[:4] + "…" + str(len(key))) if key else "",
-            "configured": bool(cfg.get("base_url") and key),
-            "updated_at": cfg.get("updated_at")}
+        payload = json.loads(payload_json or "{}")
+        if not isinstance(payload, dict):
+            raise ValueError("payload 必须是 JSON 对象")
+    except Exception as e:
+        return {"ok": False, "error": f"参数不合法：{e}"}
+    return aiapi.dispatch(str(action or "status"), payload)
 
 _RUN_TYPES = ("running", "trail_running", "treadmill_running", "track_running",
               "virtual_run", "indoor_running", "obstacle_run", "ultra_run")

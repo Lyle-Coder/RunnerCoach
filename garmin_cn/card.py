@@ -422,14 +422,15 @@ def build_html(res: dict, sync_at: str | None = None) -> str:
     if nt.get("ok"):
         eat = nt.get("intake") or {}
 
-        def _nrow(label, v, tgt, unit):
+        def _nrow(label, v, tgt, unit, hard=False):
             v, tgt = v or 0, tgt or 0
             ratio = min(100, v / tgt * 100) if tgt else 0
-            # 达标绿、未达标黄、超出 10% 以上红——以前只要够数就是绿色，
-            # 脂肪吃到目标的 147% 也显示一片绿，看不出「这顿油太多了」。
+            # 达标绿、未达标黄、超出红。蛋白/碳水/热量是「下限」，略超无妨，
+            # 10% 以上才标红；脂肪是「上限」，一超就是超标——以前 59/54 还
+            # 亮着绿条，吃完黄焖鸡看着像完全没问题，其实已经顶破额度。
             if not tgt:
                 col = "#E0A33A"
-            elif v > tgt * 1.1:
+            elif v > (tgt if hard else tgt * 1.1):
                 col = "#E4574D"
             elif v >= tgt:
                 col = "#4FD6A6"
@@ -446,7 +447,7 @@ def build_html(res: dict, sync_at: str | None = None) -> str:
             + _nrow("热量", eat.get("kcal"), nt["target_kcal"], " kcal")
             + _nrow("蛋白", eat.get("protein_g"), nt["protein_g"], " g")
             + _nrow("碳水", eat.get("carb_g"), nt["carb_g"], " g")
-            + _nrow("脂肪", eat.get("fat_g"), nt["fat_g"], " g")
+            + _nrow("脂肪", eat.get("fat_g"), nt["fat_g"], " g", hard=True)
             + "</div>"
         )
 
