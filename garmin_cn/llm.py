@@ -276,14 +276,49 @@ def _endpoint(cfg: dict) -> tuple[str, str]:
 
 # ---------------------------------------------------------------- HTTP
 def _post(url: str, token: str, payload: dict, timeout: int = READ_TIMEOUT,
-          stream: bool = False):
+          stream: bool = False, extra_headers: dict | None = None):
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "text/event-stream" if stream else "application/json")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
+    for k, v in (extra_headers or {}).items():
+        req.add_header(k, v)
     return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _ready_config() -> dict:
+    """平台模式先同步一次服务端下发的地址（结果缓存 6 小时），自配模式直接读。
+
+    下发失败不能连累问答：sync_platform_config 内部已静默兜底，这里再兜一层。
+    """
+    cfg = load_config()
+    if cfg.get("mode") != "platform":
+        return cfg
+    try:
+        return sync_platform_config()
+    except Exception:
+        return cfg
+
+
+def _platform_headers(cfg: dict, token: str = "") -> dict:
+    """平台入口要带两类凭证：分享门禁码 + 设备令牌。
+
+    历史 bug 一：chat()/chat_stream() 复用 _post() 却没带 X-Share-Code，请求被
+    403 挡在中转站，网关日志里一条 /v1/chat/completions 都没有。
+    历史 bug 二：公网分享层会改写 Authorization，所有带令牌的接口都 401，
+    所以令牌另外放一份在 X-Platform-Token，由网关优先采信。
+    """
+    if cfg.get("mode") != "platform":
+        return {}
+    out: dict = {}
+    code = (cfg.get("platform_share_code") or "").strip()
+    if code:
+        out["X-Share-Code"] = code
+    if token:
+        out["X-Platform-Token"] = token
+    return out
 
 
 def _http_error(e: urllib.error.HTTPError) -> LLMError:
@@ -322,6 +357,9 @@ def _http_error(e: urllib.error.HTTPError) -> LLMError:
         # 中转站 504 表示本机隧道没应答，不是上游模型故障——提示要指向「电脑没开」
         if code == 504 or "隧道未连通" in raw or "网关响应超时" in raw:
             return LLMError("net", "平台服务暂时连不上（电脑离线或隧道客户端没启动），稍后再试", raw)
+        # 下单接口的 503 是「支付通道没开通」，不是模型故障；把服务端原话交给用户
+        if "在线支付尚未开通" in str(msg) or "PAY_PROVIDER" in str(msg):
+            return LLMError("pay_off", str(msg)[:200], raw)
         return LLMError("upstream", "模型服务暂时不可用，稍后再试", raw)
     return LLMError("http", f"HTTP {code}：{str(msg)[:160]}", raw)
 
@@ -342,10 +380,11 @@ def chat(messages: list[dict], *, temperature: float | None = None,
     `json_mode`：要求上游返回 JSON 对象（DeepSeek / OpenAI / 通义都支持）。
     不支持的服务会忽略这个字段，所以业务层仍要能容忍带 ```json 围栏的文本。
     """
-    cfg = load_config()
+    cfg = _ready_config()
     if not is_configured(cfg):
-        raise LLMError("config", "还没配置模型服务", "打开「模型服务」填自己的 API Key，或充额度")
+        raise LLMError("config", "还没配置模型服务", "打开「模型服务」填自己的 API Key，或切到平台额度")
     url, token = _endpoint(cfg)
+    extra = _platform_headers(cfg, token)
     payload = {
         "model": effective_model(cfg),
         "messages": messages,
@@ -358,7 +397,7 @@ def chat(messages: list[dict], *, temperature: float | None = None,
 
     t0 = time.time()
     try:
-        resp = _post(url, token, payload, timeout=timeout)
+        resp = _post(url, token, payload, timeout=timeout, extra_headers=extra)
         raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         raise _http_error(e) from None
@@ -395,10 +434,11 @@ def chat_stream(messages: list[dict], *, temperature: float | None = None,
     上游的 SSE 形如 `data: {"choices":[{"delta":{"content":"你"}}]}`，
     最后一行是 `data: [DONE]`。这里只取 content 增量，其余（role/usage）忽略。
     """
-    cfg = load_config()
+    cfg = _ready_config()
     if not is_configured(cfg):
-        raise LLMError("config", "还没配置模型服务", "打开「模型服务」填自己的 API Key，或充额度")
+        raise LLMError("config", "还没配置模型服务", "打开「模型服务」填自己的 API Key，或切到平台额度")
     url, token = _endpoint(cfg)
+    extra = _platform_headers(cfg, token)
     payload = {
         "model": effective_model(cfg),
         "messages": messages,
@@ -407,7 +447,7 @@ def chat_stream(messages: list[dict], *, temperature: float | None = None,
         "stream": True,
     }
     try:
-        resp = _post(url, token, payload, stream=True)
+        resp = _post(url, token, payload, stream=True, extra_headers=extra)
     except urllib.error.HTTPError as e:
         raise _http_error(e) from None
     except Exception as e:
@@ -499,6 +539,7 @@ def _platform_get(path: str, token: str) -> dict:
         req.add_header("X-Share-Code", cfg["platform_share_code"])
     if token:
         req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("X-Platform-Token", token)   # 公网分享层会改写 Authorization
     try:
         with urllib.request.urlopen(req, timeout=CONNECT_TIMEOUT + 8) as r:
             return json.loads(r.read().decode("utf-8", "replace"))
@@ -520,6 +561,7 @@ def _platform_post(path: str, body: dict, token: str) -> dict:
         req.add_header("X-Share-Code", cfg["platform_share_code"])
     if token:
         req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("X-Platform-Token", token)   # 公网分享层会改写 Authorization
     try:
         with urllib.request.urlopen(req, timeout=CONNECT_TIMEOUT + 8) as r:
             return json.loads(r.read().decode("utf-8", "replace"))

@@ -81,3 +81,10 @@ ok("不存在订单 404", not r.get("ok"))
 r = call("/admin/ledger", {"limit": 5}, headers=ADMIN)
 kinds = [x.get("kind") for x in r.get("entries", [])]
 ok("流水含 topup", "topup" in kinds)
+
+# 11 公网分享层会改写 Authorization：自定义令牌头必须优先采信
+r = call("/v1/me", headers={"Authorization": "Bearer overwritten-by-share-gateway",
+                            "X-Platform-Token": tok})
+ok("自定义令牌头优先", r.get("ok") is True)
+r = call("/v1/me", token="rc-wrong-token")
+ok("错误令牌仍拒绝", not r.get("ok"))

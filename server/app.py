@@ -74,7 +74,7 @@ UPSTREAM_MODEL = os.environ.get("UPSTREAM_MODEL", "deepseek-chat")
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
 DB_PATH = os.environ.get("DB_PATH", str(Path(__file__).resolve().parent / "data.db"))
 MARGIN = float(os.environ.get("MARGIN", "1.15"))            # 平台加价倍率
-FREE_GRANT = int(os.environ.get("FREE_GRANT", "2_000_000")) # 新用户赠送（微元，默认 2 元）
+FREE_GRANT = int(os.environ.get("FREE_GRANT", "500_000"))   # 新用户赠送（微元，默认 0.5 元）
 HOST = os.environ.get("BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8300"))
 # 每日看板静态目录（site/index.html、site/card.png，由 daily.bat 生成）
@@ -325,7 +325,13 @@ def db():
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
+        # WAL 只是并发优化。Windows Docker 的宿主机挂载卷上，宿主进程也在
+        # 写同一个库时这条 PRAGMA 会偶发 disk I/O error，结果所有接口 500。
+        # 拿不到 WAL 就退回默认 rollback journal，不能让一个优化拖垮服务。
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            pass
         yield conn
         conn.commit()
     finally:
@@ -339,9 +345,15 @@ def _hash(token: str) -> str:
 def _auth(headers) -> sqlite3.Row:
     """验证设备令牌，返回 device 行（JOIN users）。"""
     raw = headers.get("Authorization") or ""
-    if not raw.lower().startswith("bearer "):
+    token = raw[7:].strip() if raw.lower().startswith("bearer ") else ""
+    # 公网分享网关会改写 Authorization（实测 Bearer 值被替换，网关收到的是
+    # 另一个令牌，于是余额/下单/问答全部 401）。客户端因此同时带一个自定义头，
+    # 这里优先采信它；内网直连、自建网关两者一致，行为不变。
+    alt = (headers.get("X-Platform-Token") or "").strip()
+    if alt:
+        token = alt
+    if not token:
         raise Gate(401, "缺少 Bearer 令牌")
-    token = raw[7:].strip()
     with db() as c:
         row = c.execute("""
             SELECT d.id AS dev_id, d.user_id, d.name AS dev_name, d.revoked AS dev_revoked,
@@ -631,7 +643,9 @@ def api_order_create(row: sqlite3.Row, body: dict) -> dict:
     elif PAY_PROVIDER == "demo":
         code_url = "demo://pending"              # admin/orders/pay 模拟到账
     else:
-        raise Gate(503, "支付通道未配置（服务端 PAY_PROVIDER 未设置）")
+        raise Gate(503, "在线支付尚未开通：服务端未配置支付通道。"
+                        "目前可先用兑换码充值，新用户赠送额度也可直接问答；"
+                        "开通微信支付需商户资料并配置 PAY_PROVIDER")
     with db() as c:
         cur = c.execute("INSERT INTO orders(out_trade_no,user_id,amount,status,channel,"
                         "code_url,created_at) VALUES(?,?,?,?,?,?,?)",

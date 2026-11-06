@@ -204,7 +204,7 @@ BODY = """
           <input class="f" id="smsCode" inputmode="numeric" maxlength="6" placeholder="6 位数字" autocapitalize="off" spellcheck="false">
           <button class="btn primary" id="loginBtn">登录 / 注册</button>
         </div>
-        <div class="note" id="smsNote">邮箱登录免费直达；未注册的账号自动注册并赠送试用额度。</div>
+        <div class="note" id="smsNote">邮箱登录免费直达；未注册的账号自动注册并赠送试用额度，登录后就能直接问答，不用先充值。</div>
       </div>
 
       <!-- 状态二：已登录，账户面板 -->
@@ -212,7 +212,7 @@ BODY = """
         <div class="bal" id="balBox" style="display:none">
           <span class="n" id="balNum">—</span><span class="u" id="balUnit">元</span>
         </div>
-        <div class="note" id="acctNote">余额挂在账号上：卸载重装 / 换手机后登录同一账号即可找回。</div>
+        <div class="note" id="acctNote">余额挂在账号上：卸载重装 / 换手机后登录同一账号即可找回。新用户赠送额度已到账，可直接问答。</div>
 
         <label class="f">充值 · 在线支付</label>
         <div class="row2">
@@ -223,7 +223,7 @@ BODY = """
           <button class="btn" data-pay="20">¥ 20</button>
           <button class="btn" data-pay="50">¥ 50</button>
         </div>
-        <div class="note" id="payNote">点击金额下单，支付完成后余额自动到账。</div>
+        <div class="note" id="payNote">在线支付由服务端开通，未开通时点金额会明确提示；期间可先用兑换码充值。</div>
 
         <label class="f">充值 · 兑换码</label>
         <div class="row2">
@@ -306,6 +306,7 @@ function errBox(j, retry) {
     net:    ['网络到不了', '检查手机网络；平台额度还需要电脑开机且隧道客户端在运行。', 'retry'],
     data:   ['数据读不到', '先在 App 里同步一次，或确认今天有数据。', 'gap'],
     upstream: ['模型服务报错', '这多半是上游临时故障，稍后重试。', 'retry'],
+    pay_off: ['在线支付未开通', '用兑换码充值，或联系管理员开通微信支付。', 'gap'],
     request: ['请求被拒绝', '换一个模型试试，或检查模型名是否写错。', 'retry']
   };
   const m = map[j.kind] || ['出错了', '', 'retry'];

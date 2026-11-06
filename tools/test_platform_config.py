@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -184,6 +185,47 @@ def aiapi_whitelist() -> None:
     assert llm.load_config()["platform_served_base"] == ""
 
 
+def chat_carries_share_code() -> None:
+    """问答请求必须带 X-Share-Code，否则被分享门禁 403 拦在中转站。
+
+    v0.4.5 的 bug：chat() 复用 _post() 只带 Authorization，网关日志里
+    一条 /v1/chat/completions 都没有，界面误报「密钥无效」。
+    """
+    def run(raw: dict) -> tuple[dict, object]:
+        write_raw(raw)
+        seen: dict = {}
+        orig_sync, orig_open = llm.sync_platform_config, llm.urllib.request.urlopen
+        llm.sync_platform_config = lambda force=False: llm.load_config()
+
+        def fake(req, timeout=None):
+            seen["req"] = req
+            return _FakeResp({"choices": [{"message": {"content": "ok"}}],
+                              "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+
+        llm.urllib.request.urlopen = fake
+        try:
+            return llm.chat([{"role": "user", "content": "hi"}]), seen["req"]
+        finally:
+            llm.sync_platform_config, llm.urllib.request.urlopen = orig_sync, orig_open
+
+    out, req = run({"mode": "platform", "platform_token": "rc_testtoken",
+                    "platform_sync_at": int(time.time())})
+    hdr = {k.lower(): v for k, v in req.header_items()}
+    assert out["text"] == "ok"
+    assert req.full_url.endswith("/v1/chat/completions"), req.full_url
+    assert hdr.get("x-share-code") == llm.BUILTIN_PLATFORM_SHARE_CODE, hdr
+    assert hdr.get("authorization") == "Bearer rc_testtoken", hdr
+    assert hdr.get("x-platform-token") == "rc_testtoken", hdr   # 防分享层改写 Authorization
+
+    # 自配 API 直连供应商：不能把平台分享码发给第三方
+    out2, req2 = run({"mode": "own", "provider": "deepseek", "api_key": "sk-test"})
+    hdr2 = {k.lower(): v for k, v in req2.header_items()}
+    assert out2["text"] == "ok"
+    assert "x-share-code" not in hdr2, hdr2
+    assert "x-platform-token" not in hdr2, hdr2
+    assert hdr2.get("authorization") == "Bearer sk-test", hdr2
+
+
 def main() -> int:
     try:
         check("全新安装：出厂内置官方入口与分享码", fresh)
@@ -194,6 +236,7 @@ def main() -> int:
         check("下发带引导凭证、脏配置不采用", sync_honors_server_and_rejects_dirty)
         check("public_config 不回显 key / 令牌", public_config_hides_secrets)
         check("config.set 白名单与 platform_auto 布尔转换", aiapi_whitelist)
+        check("问答请求带 X-Share-Code，自配 API 不带", chat_carries_share_code)
     except Exception as e:
         print("× " + str(e), file=sys.stderr)
         return 1
