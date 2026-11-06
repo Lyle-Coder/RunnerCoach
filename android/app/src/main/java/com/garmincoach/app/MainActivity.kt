@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.net.Uri
@@ -12,6 +13,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
 import android.system.Os
+import android.util.Base64
 import android.text.InputType
 import android.util.Log
 import android.view.Gravity
@@ -24,6 +26,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ProgressBar
@@ -209,15 +212,17 @@ class MainActivity : Activity() {
         val pm = PopupMenu(this, menuBtn)
         val m = pm.menu
         // 同步与刷新都交给下拉手势；活动图直接点看板里的活动行出，
-        // 菜单里不再重复入口。只剩一图流导出、设置、重新登录。
+        // 菜单里不再重复入口。一图流导出、设置、小米体重、重新登录。
         m.add(0, 1, 0, "今日一图流")
         m.add(0, 2, 1, "设置")
-        m.add(0, 3, 2, "重新登录")
+        m.add(0, 3, 2, "小米体重")
+        m.add(0, 4, 3, "重新登录")
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> exportCard()
                 2 -> showSettings()
-                3 -> askLogin()
+                3 -> showMiPanel()
+                4 -> askLogin()
             }
             true
         }
@@ -453,6 +458,261 @@ class MainActivity : Activity() {
                     if (e != null && p != null) doSync(e, p) else reload()
                 } else {
                     toast("验证失败：${r.optString("error")}")
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 小米体重
+    /**
+     * 小米秤不走佳明云：秤只做蓝牙广播，「小米运动健康」App 把算好的体重/
+     * 体成分传到小米自己的云。小米没有给第三方任何授权接口，所以不存在
+     * 「唤醒小米运动健康做授权」这条路——这里直连小米健康云：
+     * 账号密码登录一次（新设备会要求图形验证码 + 短信验证），passToken
+     * 半年量级长效，之后每次同步/出图 Python 侧自动补拉体重，无需再进面板。
+     */
+    private fun showMiPanel() {
+        thread {
+            val s = apiCall("mi_status")
+            ui {
+                if (!s.optBoolean("ok")) {
+                    toast("状态读取失败：${s.optString("error")}")
+                    return@ui
+                }
+                val logged = s.optBoolean("logged_in")
+                val uid = s.optString("user_id")
+                val dlg = AlertDialog.Builder(this)
+                    .setTitle("小米体重")
+                    .setMessage(
+                        if (logged)
+                            "已登录小米账号（$uid）。\n\n" +
+                                "「同步体重」拉取最近的称重记录并回填看板；\n" +
+                                "日常下拉刷新也会自动带一次，一般不用手动。"
+                        else
+                            "还没登录小米账号。\n\n" +
+                                "秤的数据存在「小米运动健康」的云端，佳明云里没有；\n" +
+                                "登录一次（可能需要短信验证），之后同步全自动。\n" +
+                                "凭据只存本机（不含密码）。"
+                    )
+                    .setNegativeButton("关闭", null)
+                if (logged) {
+                    dlg.setPositiveButton("同步体重") { _, _ -> doMiSync() }
+                    dlg.setNeutralButton("退出登录") { _, _ -> doMiLogout() }
+                } else {
+                    dlg.setPositiveButton("登录小米账号") { _, _ -> askMiLogin() }
+                }
+                dlg.show()
+            }
+        }
+    }
+
+    private fun doMiLogout() {
+        thread {
+            val r = apiCall("mi_logout")
+            ui {
+                toast(if (r.optBoolean("ok")) "已退出小米账号"
+                      else "退出失败：${r.optString("error")}")
+            }
+        }
+    }
+
+    private fun askMiLogin() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(56, 24, 56, 0)
+        }
+        val eUser = EditText(this).apply {
+            hint = "小米账号（手机号 / 邮箱 / 小米 ID）"
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        val ePwd = EditText(this).apply {
+            hint = "密码"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        box.addView(eUser)
+        box.addView(ePwd)
+        AlertDialog.Builder(this)
+            .setTitle("登录小米健康云")
+            .setMessage("秤的数据在「小米运动健康」绑定的账号下；账号密码只用于这一次登录，不会保存。")
+            .setView(box)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("登录") { _, _ ->
+                val u = eUser.text.toString().trim()
+                val p = ePwd.text.toString()
+                if (u.isBlank() || p.isBlank()) toast("账号和密码都要填")
+                else doMiLogin(u, p)
+            }
+            .show()
+    }
+
+    private fun doMiLogin(user: String, pwd: String) {
+        busy(true)
+        thread {
+            val r = apiCall("mi_login", user, pwd)
+            ui {
+                busy(false)
+                when {
+                    r.optBoolean("ok") && r.optBoolean("need_verify") ->
+                        askMiCaptcha(r.optString("masked"))
+                    r.optBoolean("ok") -> {
+                        toast("小米账号登录成功")
+                        doMiSync()
+                    }
+                    else -> toast("登录失败：${r.optString("error")}")
+                }
+            }
+        }
+    }
+
+    /**
+     * 图形验证码一关：先看图认字，交上去换短信。小米这里「发送短信」必须带
+     * 图形码，而且码错一次就作废，所以发送失败时自动换一张图让用户重认，
+     * 对话框不关——整条验证链路的状态都在 Python 侧同一个实例上，关了重开
+     * 反而要重新输账号密码。
+     */
+    private fun askMiCaptcha(masked: String) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(56, 24, 56, 0)
+        }
+        val iv = ImageView(this).apply {
+            setAdjustViewBounds(true)
+            setPadding(0, dp(8), 0, dp(8))
+        }
+        val eCode = EditText(this).apply {
+            hint = "图里的字符（看不清点图片换一张）"
+            inputType = InputType.TYPE_CLASS_TEXT
+            setSingleLine()
+        }
+        box.addView(iv)
+        box.addView(eCode)
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("安全验证 · 图形验证码")
+            .setMessage("短信会发到 $masked")
+            .setView(box)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("发送短信", null)
+            .create()
+        iv.setOnClickListener { loadMiCaptcha(iv) }
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val code = eCode.text.toString().trim()
+                if (code.isBlank()) {
+                    toast("先填图里的字符")
+                    return@setOnClickListener
+                }
+                busy(true)
+                thread {
+                    val r = apiCall("mi_send_code", code)
+                    ui {
+                        busy(false)
+                        if (r.optBoolean("ok")) {
+                            dlg.dismiss()
+                            askMiSms()
+                        } else {
+                            val why = r.optString("desc").ifEmpty { r.optString("error") }
+                            toast("短信没发出去：$why，已换一张图")
+                            eCode.setText("")
+                            loadMiCaptcha(iv)
+                        }
+                    }
+                }
+            }
+        }
+        dlg.show()
+        loadMiCaptcha(iv)
+    }
+
+    private fun loadMiCaptcha(iv: ImageView) {
+        iv.setImageDrawable(null)
+        thread {
+            val r = apiCall("mi_captcha")
+            ui {
+                if (!r.optBoolean("ok")) {
+                    toast("验证码取不到：${r.optString("error")}")
+                    return@ui
+                }
+                try {
+                    val bytes = Base64.decode(r.optString("jpeg_b64"), Base64.DEFAULT)
+                    iv.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+                } catch (t: Throwable) {
+                    Log.w(TAG, "captcha decode", t)
+                    toast("验证码解码失败：${t.message}")
+                }
+            }
+        }
+    }
+
+    private fun askMiSms() {
+        val input = EditText(this).apply {
+            hint = "短信验证码"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setSingleLine()
+        }
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("安全验证 · 短信验证码")
+            .setMessage("验证码已发出，查一下手机短信（也翻一下拦截）")
+            .setView(input)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("确定", null)
+            .create()
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val code = input.text.toString().trim()
+                if (code.isBlank()) return@setOnClickListener
+                busy(true)
+                thread {
+                    val r = apiCall("mi_verify_code", code)
+                    ui {
+                        busy(false)
+                        if (r.optBoolean("ok")) {
+                            dlg.dismiss()
+                            toast(if (r.optBoolean("partial"))
+                                      "验证没走完，但凭据已可用"
+                                  else "验证通过（${r.optString("user_id")}）")
+                            doMiSync()
+                        } else if (r.optBoolean("retry")) {
+                            // 码是一次性的，错了可以重输；别让用户再等一条短信
+                            toast("验证码不对：${r.optString("error")}")
+                            input.setText("")
+                        } else {
+                            toast("验证失败：${r.optString("error")}")
+                            dlg.dismiss()
+                        }
+                    }
+                }
+            }
+        }
+        dlg.show()
+    }
+
+    /** 拉体重入库 + 回填 daily，然后重出看板让页面上能立刻看到数。 */
+    private fun doMiSync() {
+        busy(true)
+        ui { subtitle.text = "正在拉取小米体重…" }
+        thread {
+            val r = apiCall("mi_sync", 60)
+            ui {
+                busy(false)
+                subtitle.text = "下拉同步 · 点活动名出图"
+                if (r.optBoolean("ok")) {
+                    val n = r.optInt("count")
+                    val msg = if (n > 0)
+                        "体重同步完成：" +
+                            String.format(Locale.US, "%.1f", r.optDouble("weight", 0.0)) +
+                            " kg（最新 ${r.optString("latest")}，$n 条）"
+                    else
+                        "云端这段时间没有新称重记录——上秤称一次，打开「小米运动健康」让它上传后再试"
+                    toast(msg)
+                    thread {
+                        apiCall("dashboard")
+                        ui { reload() }
+                    }
+                } else if (r.optBoolean("need_login")) {
+                    toast("小米登录已失效，请重新登录")
+                    askMiLogin()
+                } else {
+                    toast("体重同步失败：${r.optString("error")}")
                 }
             }
         }

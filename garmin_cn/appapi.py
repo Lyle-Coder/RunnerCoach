@@ -120,6 +120,8 @@ _API = {
     "dashboard", "card_html", "act_card_html", "runs",
     "start_server", "recent", "read_html",
     "set_llm_config", "get_llm_config",
+    "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
+    "mi_logout", "mi_sync",
 }
 
 # 模型接口配置（App「设置」写入）：未来的 AI 点评等功能从这里读。
@@ -274,6 +276,151 @@ def submit_mfa(code: str) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     _pending["auth"] = None
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- 小米健康云
+# 与 Garmin 的 _pending 同一思路：短信验证链路上的图形验证码、identity_session
+# 都挂在 MiCloud 实例上，`mi_login()` 到 `mi_verify_code()` 之间必须复用同一个
+# 实例，否则小米会把后续请求当成新设备重新要求验证。
+_MI: dict = {"cloud": None, "lock": threading.Lock()}
+
+
+def _mi_mask(uid: str) -> str:
+    s = str(uid or "")
+    return (s[:3] + "****" + s[-2:]) if len(s) > 7 else (s or "未知")
+
+
+def mi_status() -> dict:
+    """小米登录态：只看凭据文件是否存在（不联网验证，别让面板卡住）。"""
+    try:
+        from . import mi as M
+
+        cloud = M.MiCloud(HOME)
+        loaded = cloud.load()
+        return {"ok": True, "logged_in": bool(loaded),
+                "user_id": _mi_mask(cloud.user_id) if loaded else ""}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def mi_login(user: str, password: str) -> dict:
+    """账号密码登录小米健康云。要求安全验证时返回 need_verify=True。
+
+    密码只在本次调用里用（MiCloud 也只在内存留一份用于验证后自动重登），
+    落盘的 data/mi_auth.json 只有 userId / passToken / ssecurity。
+    """
+    if not user or not password:
+        return {"ok": False, "error": "账号和密码都要填"}
+    from . import mi as M
+
+    cloud = M.MiCloud(HOME)
+    with _MI["lock"]:
+        try:
+            cloud.login(user, password)
+        except M.MiNeedVerify as e:
+            _MI["cloud"] = cloud          # 验证材料挂在这个实例上，后续步骤要用
+            info = e.info or {}
+            flag = str(info.get("flag") or "")
+            return {"ok": True, "need_verify": True,
+                    "channel": "sms" if flag == "4" else
+                               ("email" if flag == "8" else "unknown"),
+                    "masked": info.get("masked") or "绑定的手机号"}
+        except M.MiAuthError as e:
+            _MI["cloud"] = None
+            return {"ok": False, "error": str(e)}
+        except M.MiError as e:
+            _MI["cloud"] = None
+            return {"ok": False, "error": f"连不上小米服务器：{e}"}
+        _MI["cloud"] = None
+    return {"ok": True, "logged_in": True, "user_id": _mi_mask(cloud.user_id)}
+
+
+def mi_captcha() -> dict:
+    """取一张图形验证码（JPEG），base64 给界面直接显示。"""
+    cloud = _MI.get("cloud")
+    if cloud is None:
+        return {"ok": False, "error": "没有进行中的登录，请重新输入账号密码"}
+    from . import mi as M
+
+    with _MI["lock"]:
+        try:
+            img = cloud.captcha()
+        except M.MiError as e:
+            return {"ok": False, "error": str(e)}
+    import base64
+
+    return {"ok": True, "jpeg_b64": base64.b64encode(img).decode()}
+
+
+def mi_send_code(icode: str) -> dict:
+    """带图形验证码请求下发短信/邮件验证码。码不对时 need_captcha=True。"""
+    cloud = _MI.get("cloud")
+    if cloud is None:
+        return {"ok": False, "error": "没有进行中的登录，请重新输入账号密码"}
+    from . import mi as M
+
+    with _MI["lock"]:
+        try:
+            r = cloud.send_code(icode or "")
+        except M.MiError as e:
+            return {"ok": False, "error": str(e), "need_captcha": True}
+    ok = str(r.get("code")) == "0"
+    out = {"ok": ok, "code": r.get("code"),
+           "desc": str(r.get("desc") or r.get("reason") or "")}
+    if not ok:
+        out["need_captcha"] = True        # 码错/过期都要换一张图再来
+    return out
+
+
+def mi_verify_code(code: str) -> dict:
+    """提交短信/邮件验证码。`retry=True` 表示码填错，可以重输。"""
+    cloud = _MI.get("cloud")
+    if cloud is None:
+        return {"ok": False, "error": "没有进行中的登录，请重新输入账号密码"}
+    from . import mi as M
+
+    with _MI["lock"]:
+        try:
+            r = cloud.verify_code(code or "")
+        except M.MiCodeError as e:
+            return {"ok": False, "retry": True, "error": str(e)}
+        except M.MiAuthError as e:
+            return {"ok": False, "error": str(e)}
+        except M.MiError as e:
+            return {"ok": False, "error": f"连不上小米服务器：{e}"}
+        _MI["cloud"] = None
+        cloud._cred = ("", "")            # 登录链路走完，内存里的账号密码不再需要
+    return {"ok": True, "user_id": _mi_mask(r.get("userId") or cloud.user_id),
+            "relogged": bool(r.get("relogged")), "partial": bool(r.get("partial"))}
+
+
+def mi_logout() -> dict:
+    """删除 data/mi_auth.json（云端数据不受影响）。"""
+    try:
+        from . import mi as M
+
+        M.MiCloud(HOME).clear()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def mi_sync(days: int = 30) -> dict:
+    """拉一次小米秤的体重/体成分并入库（body 表 + 回填 daily）。"""
+    from . import mi as M
+
+    store = Store(DB)
+    try:
+        n, recs = M.sync(store, HOME, days=min(max(int(days), 7), 120))
+    except M.MiAuthError as e:
+        return {"ok": False, "need_login": True, "error": str(e)}
+    except M.MiError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "count": n,
+            "latest": recs[-1]["date"] if recs else None,
+            "weight": recs[-1].get("weight_kg") if recs else None}
 
 
 # ---------------------------------------------------------------- 同步
