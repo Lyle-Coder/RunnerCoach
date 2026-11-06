@@ -90,8 +90,12 @@ td.name{color:var(--ink);max-width:220px;overflow:hidden;text-overflow:ellipsis;
 .bnum small{font-size:13px;font-weight:400;color:var(--muted);margin-left:4px}
 .bdelta{font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.75;font-variant-numeric:tabular-nums}
 .bdelta b{font-weight:600}
-.bgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
-.bcell{background:#FAFBF8;border:1px solid var(--line-2);border-radius:10px;padding:8px 10px}
+.bgrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}
+/* n3=三格营养素。必须走类而不是内联样式：内联 style 的优先级高于媒体查询，
+   窄屏换列的规则会被覆盖；再配 minmax(0,1fr)+bcell min-width:0，
+   nowrap 文字才会省略号收尾而不是把格子（连带整页）撑出屏幕。 */
+.bgrid.n3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.bcell{background:#FAFBF8;border:1px solid var(--line-2);border-radius:10px;padding:8px 10px;min-width:0}
 .bcell b{display:block;font-size:16.5px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.3}
 .bcell b small{font-size:10.5px;font-weight:400;color:var(--muted);margin-left:2px}
 .bcell span{font-size:10.5px;color:var(--muted);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -104,8 +108,8 @@ td.name{color:var(--ink);max-width:220px;overflow:hidden;text-overflow:ellipsis;
   border-radius:50%;background:var(--green);flex:0 0 auto}
 .nlist li.warn:before{background:var(--amber)}
 .nlist li.alert:before{background:var(--red)}
-.kv{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
-.kv div{background:#FAFBF8;border:1px solid var(--line-2);border-radius:10px;padding:10px 12px}
+.kv{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}
+.kv div{background:#FAFBF8;border:1px solid var(--line-2);border-radius:10px;padding:10px 12px;min-width:0}
 .kv b{display:block;font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
 .kv span{font-size:11.5px;color:var(--muted)}
 .foot{margin-top:26px;font-size:11.5px;color:var(--faint);line-height:1.9;border-top:1px solid var(--line);padding-top:14px}
@@ -120,7 +124,8 @@ td.name{color:var(--ink);max-width:220px;overflow:hidden;text-overflow:ellipsis;
   .card{padding:14px;border-radius:14px}
   .hero,.two{gap:10px;margin-bottom:10px}
   .metrics{grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:10px}
-  .bgrid{grid-template-columns:repeat(2,1fr)}
+  .bgrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .bgrid.n3{grid-template-columns:repeat(2,minmax(0,1fr))}
   .kv{grid-template-columns:repeat(2,1fr);gap:10px}
   .top h1{font-size:19px}
   .m-val{font-size:21px}
@@ -416,7 +421,7 @@ def nutrition_block(nt: dict) -> str:
   <div class="card">
     <h3>三大营养素</h3>
     {bar}
-    <div class="bgrid" style="grid-template-columns:repeat(3,1fr)">{cells}</div>
+    <div class="bgrid n3">{cells}</div>
     <div class="bnote">碳水 {nt['carb_factor']} g/kg（{esc(nt['carb_reason'])}）；
       蛋白 {nt['protein_g'] / nt['weight']:.1f} g/kg；脂肪下限按 0.6 g/kg 与总热量 22% 取大。</div>
   </div>
