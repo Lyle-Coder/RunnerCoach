@@ -119,7 +119,47 @@ _API = {
     "env_info", "status", "login", "submit_mfa", "sync",
     "dashboard", "card_html", "act_card_html", "runs",
     "start_server", "recent", "read_html",
+    "set_llm_config", "get_llm_config",
 }
+
+# 模型接口配置（App「设置」写入）：未来的 AI 点评等功能从这里读。
+# key 属敏感信息：落盘 0600，get 时打码，永不整串返回。
+LLM_CONFIG = HOME / "data" / "llm_config.json"
+
+
+def set_llm_config(base_url: str = "", api_key: str = "", model: str = "") -> dict:
+    """保存模型接口配置（base_url / api_key / model，均可留空表示清除）。
+
+    写 `data/llm_config.json`（0600）。Kotlin 侧同时存了一份 gc_prefs，
+    两边以这份文件为准；充值换额度的服务地址将来也放在这里。
+    """
+    cfg = {"base_url": (base_url or "").strip(),
+           "api_key": (api_key or "").strip(),
+           "model": (model or "").strip(),
+           "updated_at": dt.datetime.now().isoformat(timespec="seconds")}
+    try:
+        LLM_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        LLM_CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                              encoding="utf-8")
+        LLM_CONFIG.chmod(0o600)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "configured": bool(cfg["base_url"] and cfg["api_key"])}
+
+
+def get_llm_config() -> dict:
+    """读回模型接口配置；key 只给前 4 位 + 长度，方便确认配没配对。"""
+    try:
+        cfg = json.loads(LLM_CONFIG.read_text(encoding="utf-8"))
+    except Exception:
+        cfg = {}
+    key = cfg.get("api_key") or ""
+    return {"ok": True,
+            "base_url": cfg.get("base_url") or "",
+            "model": cfg.get("model") or "",
+            "api_key_hint": (key[:4] + "…" + str(len(key))) if key else "",
+            "configured": bool(cfg.get("base_url") and key),
+            "updated_at": cfg.get("updated_at")}
 
 _RUN_TYPES = ("running", "trail_running", "treadmill_running", "track_running",
               "virtual_run", "indoor_running", "obstacle_run", "ultra_run")
@@ -379,7 +419,7 @@ def runs(limit: int = 30) -> dict:
 def act_card_html(activity_id: str, title: str | None = None,
                   email: str | None = None, password: str | None = None,
                   privacy: str = "none") -> dict:
-    """单次活动图的 HTML（布局基准 1080×2250，成品统一 1080×1920），PNG 交给 WebView 截。
+    """单次活动图的 HTML（布局基准 1160×2250，成品统一 1080×1920），PNG 交给 WebView 截。
 
     `privacy` 是分享脱敏档位：`none` 原图 / `trim` 首尾各裁 200 m /
     `hide` 完全隐藏轨迹。放在参数末尾且默认 `none`，**旧 APK 传 4 个参数时

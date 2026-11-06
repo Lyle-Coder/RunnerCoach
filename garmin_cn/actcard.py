@@ -11,7 +11,8 @@
 
 宽度一律从版心反推
 ------------------
-页面 1080 - 左右各 36 = 1008 的版心，卡片再扣掉边框与内边距才是内容宽度。
+页面 1160 - 左右各 36 = 1088 的版心（原 1080/1008，加宽是为让内容比例
+贴近 9:16 导出画幅），卡片再扣掉边框与内边距才是内容宽度。
 早前把曲线按 1000px 硬写，比实际内容宽 42px，右侧刻度就被裁到卡片外面了；
 现在统一用下面的常量算，SVG 不会溢出。
 
@@ -53,26 +54,32 @@ from .exportspec import probe as _export_probe
 from .metrics import num
 from . import privacy as PV
 
-W, H = 1080, 2250
+# 画幅宽为什么是 1160 而不是 1080：内容天然比 9:16「瘦高」（高度 ~2100），
+# contain 收进 1080×1920 时只能按高度缩，左右各留 ~4.3% 的底色边，怎么压
+# 安全带都到不了想要的 ~2.9%。把版心放宽（内容随之变宽、高度基本不变），
+# 内容比例降到 1.8 左右，contain 改为按宽度收——左右只剩安全带本身。
+W, H = 1160, 2250
 _EXPORT_PROBE = _export_probe()   # 手机端导出探针，桌面无头截图不调用
 
 # ---- 几何常量：卡片内容宽度 = 版心 - 边框(2) - 左右内边距 ------------------
 PAD = 36                       # 页面左右留白
-INNER = W - PAD * 2            # 1008
+INNER = W - PAD * 2            # 1088
 GAP = 16                       # 卡片间距
-TRK_W = 468                    # 轨迹卡外宽
-ZC_W = INNER - TRK_W - GAP     # 分区卡外宽 524
-TRK_CW = TRK_W - 2 - 22 * 2    # 轨迹卡内容宽 422
-ZC_CW = ZC_W - 2 - 24 * 2      # 分区卡内容宽 474
-CH_CW = INNER - 2 - 24 * 2     # 曲线卡内容宽 958
+# 轨迹卡宽度按原设计比例（468/1008）随版心走，加宽后各卡比例不变
+_TRK_RATIO = 468 / 1008
+TRK_W = round(INNER * _TRK_RATIO)   # 505
+ZC_W = INNER - TRK_W - GAP     # 分区卡外宽 567
+TRK_CW = TRK_W - 2 - 22 * 2    # 轨迹卡内容宽
+ZC_CW = ZC_W - 2 - 24 * 2      # 分区卡内容宽
+CH_CW = INNER - 2 - 24 * 2     # 曲线卡内容宽
 TRK_CH = 225                   # 轨迹画面高度（由分区卡内容反推，见 CSS .mid）
 MID_H = 310                    # 轨迹 / 分区 两卡同高（去掉功率条后可以矮一截）
-# 跑步技术 / 负荷 两卡：技术卡固定 537（1.18 份），负荷卡吃掉剩下的 455
-TECH_W = INNER - GAP           # 992
-TW_W = round(TECH_W * 1.18 / 2.18)   # 537
-LD_W = TECH_W - TW_W           # 455
-TW_CW = TW_W - 2 - 48          # 技术卡内容宽 487
-LD_CW = LD_W - 2 - 48          # 负荷卡内容宽 405
+# 跑步技术 / 负荷 两卡：技术卡固定 1.18 份，负荷卡吃掉剩下的 1 份
+TECH_W = INNER - GAP
+TW_W = round(TECH_W * 1.18 / 2.18)
+LD_W = TECH_W - TW_W
+TW_CW = TW_W - 2 - 48          # 技术卡内容宽
+LD_CW = LD_W - 2 - 48          # 负荷卡内容宽
 TECH_H = 322                   # 两卡同高
 SPK_H = 140                    # 步频 / 步幅走势高度（原 96，去掉区间条后加高）
 
@@ -1186,10 +1193,11 @@ def shoot(html_path: Path, png_path: Path, w: int = W, h: int = H) -> Path:
         raise RuntimeError("浏览器没有产出图片：" +
                            (proc.stderr or b"").decode("utf-8", "ignore")[:300])
     from .exportspec import BG_ACT
-    from .pngutil import content_height, crop_height, fit_to_frame
-    # 底部只留 32px 呼吸空间，短距离活动就不会拖着一大块空白
-    crop_height(png_path, content_height(png_path, bg=BG_ACT) + 32)
-    # 统一收进 1080×1920：与 App 端同一套 contain 规则，分享预览不再二次裁切
+    from .pngutil import fit_to_frame, trim_bg
+    # 四边裁掉页面自带的底色留白（全部贴边，不留呼吸垫），再收进 9:16：
+    # 页面 padding 经缩放后仍是成品最大的「边框」来源，先裁掉内容才能
+    # 贴着安全带排，四边只剩安全带和 contain 的微差。
+    trim_bg(png_path, bg=BG_ACT)
     fit_to_frame(png_path, bg=BG_ACT)
     return png_path
 

@@ -136,6 +136,63 @@ def content_height(path: Path, bg=(15, 19, 25), tol: int = 6) -> int:
     return 0
 
 
+def trim_bg(path: Path, bg=(15, 19, 25), tol: int = 6,
+            pad: tuple[int, int, int, int] = (0, 0, 0, 0)) -> Path:
+    """把四周的纯底色边框整圈裁掉（上、右、下、左各留 pad 像素）。
+
+    页面自带的留白（actcard 左右 36px、一图流左右 52px）经 contain 缩放
+    后仍是成品里最大的「边框」来源；收画幅、压安全带都动不了它。
+    在收进 9:16 之前先裁掉，内容贴着安全带排，四边就只剩安全带本身。
+    只裁「整行/整列都是底色」的边缘，绝不碰内容像素。
+    """
+    bg = _rgb(bg)
+    w, h, rows = read_png(path)
+    pt, pr, pb, pl = pad
+
+    def row_has(y: int) -> bool:
+        row = rows[y]
+        for x in range(0, w, 3):
+            i = x * 3
+            if (abs(row[i] - bg[0]) > tol or abs(row[i + 1] - bg[1]) > tol
+                    or abs(row[i + 2] - bg[2]) > tol):
+                return True
+        return False
+
+    def col_has(x: int) -> bool:
+        for y in range(0, h, 3):
+            row = rows[y]
+            i = x * 3
+            if (abs(row[i] - bg[0]) > tol or abs(row[i + 1] - bg[1]) > tol
+                    or abs(row[i + 2] - bg[2]) > tol):
+                return True
+        return False
+
+    top = 0
+    while top < h and not row_has(top):
+        top += 1
+    bottom = h
+    while bottom > top and not row_has(bottom - 1):
+        bottom -= 1
+    left = 0
+    while left < w and not col_has(left):
+        left += 1
+    right = w
+    while right > left and not col_has(right - 1):
+        right -= 1
+    if top == h:                       # 整张图都是底色，别裁成 0 高
+        return path
+
+    l = max(0, left - pl)
+    r = min(w, right + pr)
+    t = max(0, top - pt)
+    b = min(h, bottom + pb)
+    if (l, t, r, b) == (0, 0, w, h):
+        return path
+    out = [row[l * 3:r * 3] for row in rows[t:b]]
+    write_png(path, r - l, b - t, out)
+    return path
+
+
 def _rgb(bg) -> tuple[int, int, int]:
     """底色既接受 '#0F1319'（导出契约里的写法），也接受 (15, 19, 25)。"""
     if isinstance(bg, str):
@@ -163,20 +220,24 @@ def fit_to_frame(path: Path, w: int = 1080, h: int = 1920,
                  bg=(15, 19, 25)) -> Path:
     """把成品统一收进标准 9:16 画幅：只缩不裁，短了在底部补底色。
 
-    与安卓端 `MainActivity.fitToFrame()` 是同一套规则。手机相册、系统分享
-    面板、微信预览对非 9:16 竖图会按预览框 centerCrop，统一画幅后不会再
+    与安卓端 `MainActivity.fitToFrame()` 是同一套规则，含同宽的安全带
+    （画幅高的 1.2%，约 23px）——手机相册、系统分享面板、微信预览对
+    非 9:16 竖图会按预览框 centerCrop，统一画幅 + 同色安全带后不会再
     出现「日期缺头少尾、轨迹只剩一角」；内容超高时整体等比缩小，绝不切。
+    调用方应先用 `trim_bg()` 裁掉页面留白，内容才贴得近画幅边缘。
     """
     assert w > 0 and h > 0 and w * 16 == h * 9, (w, h)
+    pad = max(12, round(h * 0.012))
     sw, sh, rows = read_png(path)
-    s = min(w / sw, h / sh)
+    s = min((w - 2 * pad) / sw, (h - 2 * pad) / sh)
     nw, nh = max(1, round(sw * s)), max(1, round(sh * s))
     if (nw, nh) != (sw, sh):
         rows = _resize(rows, sw, sh, nw, nh)
     blank = bytearray(bytes(_rgb(bg)) * w)
     left = max(0, (w - nw) // 2)
-    canvas: list[bytearray] = []
-    for r in rows[:h]:
+    top = max(0, (h - nh) // 2)
+    canvas: list[bytearray] = [bytearray(blank) for _ in range(top)]
+    for r in rows[:nh]:
         line = bytearray(blank)
         line[left * 3:left * 3 + nw * 3] = r[:nw * 3]
         canvas.append(line)

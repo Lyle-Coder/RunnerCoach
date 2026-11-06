@@ -54,7 +54,8 @@ import kotlin.math.roundToInt
  * 为什么操作放顶栏而不是悬浮按钮：常驻 FAB 会一直压住看板右下角，
  * 表格本来就要横向滚动，遮一块特别难受。顶栏是独立的一行布局，
  * WebView 只占它下面那块，任何内容都不会被盖住。同步和刷新连菜单项
- * 都不留，统一走下拉手势；⋮ 里只剩「导出图片」和「重新登录」。
+ * 都不留，统一走下拉手势；活动图直接点看板里的活动行，⋮ 里只剩
+ * 「今日一图流」「设置」（预留模型接口配置）和「重新登录」。
  *
  * 两个原生的地方：
  *   1) 登录 / 验证码要用系统键盘，原生对话框比 HTML 表单可靠；
@@ -207,19 +208,78 @@ class MainActivity : Activity() {
     private fun showMenu() {
         val pm = PopupMenu(this, menuBtn)
         val m = pm.menu
-        // 同步与刷新都交给下拉手势，菜单里只剩无法用点按替代的几项
-        m.add(0, 1, 0, "今日一图流（导出 PNG）")
-        m.add(0, 2, 1, "跑步活动图（导出 PNG）")
+        // 同步与刷新都交给下拉手势；活动图直接点看板里的活动行出，
+        // 菜单里不再重复入口。只剩一图流导出、设置、重新登录。
+        m.add(0, 1, 0, "今日一图流")
+        m.add(0, 2, 1, "设置")
         m.add(0, 3, 2, "重新登录")
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> exportCard()
-                2 -> chooseRun()
+                2 -> showSettings()
                 3 -> askLogin()
             }
             true
         }
         pm.show()
+    }
+
+    /**
+     * 设置（预留）：模型接口配置——自配 key / 服务地址 / 模型名，
+     * 未来的 AI 点评等功能从这里读；充值换额度也走这套配置。
+     * Kotlin 侧存 gc_prefs，同时推给 Python 落 data/llm_config.json
+     * （0600），两条路都能用；key 只存本机，不上传。
+     */
+    private fun showSettings() {
+        val prefs = getSharedPreferences("gc_prefs", MODE_PRIVATE)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(56, 24, 56, 0)
+        }
+        val eUrl = EditText(this).apply {
+            hint = "API 地址（如 https://api.deepseek.com）"
+            inputType = InputType.TYPE_TEXT_VARIATION_URI
+            setText(prefs.getString("llm_base_url", "") ?: "")
+        }
+        val eKey = EditText(this).apply {
+            hint = "API Key"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(prefs.getString("llm_api_key", "") ?: "")
+        }
+        val eModel = EditText(this).apply {
+            hint = "模型名（如 deepseek-chat）"
+            inputType = InputType.TYPE_CLASS_TEXT
+            setText(prefs.getString("llm_model", "") ?: "")
+        }
+        box.addView(eUrl)
+        box.addView(eKey)
+        box.addView(eModel)
+        AlertDialog.Builder(this)
+            .setTitle("设置 · 模型接口")
+            .setMessage(
+                "给未来的 AI 点评等功能预留：自己配 key，或接入充值服务换额度。\n" +
+                    "配置只保存在本机，不会上传到任何服务器。"
+            )
+            .setView(box)
+            .setPositiveButton("保存") { _, _ ->
+                val url = eUrl.text.toString().trim()
+                val key = eKey.text.toString().trim()
+                val model = eModel.text.toString().trim()
+                prefs.edit()
+                    .putString("llm_base_url", url)
+                    .putString("llm_api_key", key)
+                    .putString("llm_model", model)
+                    .apply()
+                thread {
+                    val r = apiCall("set_llm_config", url, key, model)
+                    ui {
+                        if (r.optBoolean("ok")) toast("已保存（留空即清除）")
+                        else toast("本机已保存，但同步到内核失败：${r.optString("error")}")
+                    }
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     // ------------------------------------------------------------ 启动
@@ -420,34 +480,6 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 菜单里选一条跑步活动 → 出图。 */
-    private fun chooseRun() {
-        if (port == 0) {
-            toast("还在启动，稍等一下")
-            return
-        }
-        busy(true)
-        thread {
-            val r = apiCall("runs", 30)
-            ui {
-                busy(false)
-                val items = r.optJSONArray("items")
-                if (!r.optBoolean("ok") || items == null || items.length() == 0) {
-                    toast("还没有跑步活动，先同步一次")
-                    return@ui
-                }
-                val labels = Array(items.length()) { items.getJSONObject(it).optString("label") }
-                AlertDialog.Builder(this)
-                    .setTitle("选一条跑步出图（点看板里的活动名也行）")
-                    .setItems(labels) { _, which ->
-                        askPrivacy(items.getJSONObject(which).optString("id"))
-                    }
-                    .setNegativeButton("取消", null)
-                    .show()
-            }
-        }
-    }
-
     /**
      * 分享前脱敏：轨迹起终点能反推住址，所以出图前先问一次档位。
      * 这一步同时充当「分享前确认」——点「生成并分享」才会真的出图并弹分享面板。
@@ -594,16 +626,23 @@ class MainActivity : Activity() {
                 val vh = v.height.coerceAtLeast(1)
                 val raw = Bitmap.createBitmap(vw, vh, Bitmap.Config.ARGB_8888)
                 v.draw(Canvas(raw))
-                val bottom = contentBottom(raw, bg)
-                if (bottom < 64) {
-                    // 软件层也没画出东西时别静默存一张空图，弹框比空白图好排查。
-                    throw IllegalStateException("页面没有渲染出内容（bottom=$bottom）")
+                // 四边裁掉页面自带的底色留白（全部贴边）：页面 padding 经
+                // contain 缩放后仍是成品最大的「边框」来源，只有先裁掉，
+                // 内容才能贴着安全带排，四边只剩安全带和 contain 的微差。
+                val b = contentBounds(raw, bg)
+                    ?: throw IllegalStateException("页面没有渲染出内容（整张都是底色）")
+                val left = max(0, b[0] - 2)
+                val top = max(0, b[1] - 2)
+                val right = min(vw, b[2] + 2)
+                val bottom = min(vh, b[3] + 2)
+                if (right - left < 64 || bottom - top < 64) {
+                    throw IllegalStateException(
+                        "内容区域过小（${right - left}x${bottom - top}），疑似没渲染完整")
                 }
-                // 底部只留 32px 呼吸，与桌面 pngutil.crop_height 口径一致。
-                val cropH = min(vh, (bottom + 32).coerceAtLeast(1))
-                val cropped = Bitmap.createBitmap(raw, 0, 0, vw, cropH)
+                val cropped = Bitmap.createBitmap(raw, left, top, right - left, bottom - top)
                 val out = fitToFrame(cropped, exportW, exportH, bg)
-                Log.d(TAG, "render view=${vw}x${vh} crop=${vw}x${cropH} " +
+                Log.d(TAG, "render view=${vw}x${vh} " +
+                    "crop=[$left,$top ${right - left}x${bottom - top}] " +
                     "out=${out.width}x${out.height} bg=$bgHex targetH=$targetH")
                 val uri = saveToGallery(out, prefix)
                 shareImage(uri, shareTitle)
@@ -728,24 +767,55 @@ class MainActivity : Activity() {
         v.layout(0, 0, w, h)
     }
 
-    /** 从下往上找最后一行非底色像素，等价桌面 pngutil.content_height()。 */
-    private fun contentBottom(bmp: Bitmap, bg: Int): Int {
+    /** 四边扫描内容边界 [l, t, r, b)：整行/整列都是底色的边缘才裁，绝不碰内容像素。 */
+    private fun contentBounds(bmp: Bitmap, bg: Int): IntArray? {
         val w = bmp.width
-        val row = IntArray(w)
+        val h = bmp.height
+        val px = IntArray(w * h)
+        bmp.getPixels(px, 0, w, 0, 0, w, h)
         val br = Color.red(bg)
         val bgc = Color.green(bg)
         val bb = Color.blue(bg)
-        for (y in bmp.height - 1 downTo 0) {
-            bmp.getPixels(row, 0, w, 0, y, w, 1)
+        fun isBg(c: Int) = abs(Color.red(c) - br) <= 6 &&
+            abs(Color.green(c) - bgc) <= 6 && abs(Color.blue(c) - bb) <= 6
+        var top = 0
+        outer@ while (top < h) {
             var x = 0
             while (x < w) {
-                val c = row[x]
-                if (abs(Color.red(c) - br) > 6 || abs(Color.green(c) - bgc) > 6 ||
-                    abs(Color.blue(c) - bb) > 6) return y + 1
-                x += 4
+                if (!isBg(px[top * w + x])) break@outer
+                x += 3
             }
+            top++
         }
-        return 0
+        if (top == h) return null
+        var bottom = h
+        outerBottom@ while (bottom > top) {
+            var x = 0
+            while (x < w) {
+                if (!isBg(px[(bottom - 1) * w + x])) break@outerBottom
+                x += 3
+            }
+            bottom--
+        }
+        var left = 0
+        outerLeft@ while (left < w) {
+            var y = top
+            while (y < bottom) {
+                if (!isBg(px[y * w + left])) break@outerLeft
+                y += 3
+            }
+            left++
+        }
+        var right = w
+        outerRight@ while (right > left) {
+            var y = top
+            while (y < bottom) {
+                if (!isBg(px[y * w + right - 1])) break@outerRight
+                y += 3
+            }
+            right--
+        }
+        return intArrayOf(left, top, right, bottom)
     }
 
     /**
@@ -753,10 +823,9 @@ class MainActivity : Activity() {
      * 因为各家分享面板的预览框未必是 9:16，centerCrop 时会先切掉边框，
      * 不会碰到日期、轨迹和表格。安全带与底色同色，肉眼看不出来。
      *
-     * 早期安全带是画幅高的 3%（1920 → 58px×2），加上 contain 在高度差
-     * 上的居中空档，9:16 的卡片四周各多出 7~10% 的底色边，整张图看起来
-     * 「缩放不对、没填满画面」。收窄到 1.2% 后，9:16 内容与画幅的误差
-     * 只剩个位数像素，内容基本顶满；安全带仍然防住近 9:16 预览框的裁边。
+     * 安全带定为画幅高的 1.2%（1920 → 23px）：配合出图前的四边 trim
+     * （裁掉页面自带底色留白，Kotlin 与桌面 pngutil.trim_bg 同一套规则），
+     * 活动图与一图流的四边都只剩安全带和 contain 的微差 ≈ 2~3%。
      */
     private fun fitToFrame(src: Bitmap, dw: Int, dh: Int, bg: Int): Bitmap {
         val pad = max(12, (dh * 0.012).roundToInt())
