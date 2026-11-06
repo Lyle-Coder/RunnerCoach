@@ -186,11 +186,11 @@ BODY = """
     <div id="platBox" style="display:none">
       <label class="f">平台地址</label>
       <input class="f" id="platBase" placeholder="https://ai.你的域名.com" autocapitalize="off" spellcheck="false">
-      <div class="note">余额挂在手机号账号上：卸载重装 / 换手机后登录同一号码即可找回。</div>
+      <div class="note">余额挂在账号上：卸载重装 / 换手机后登录同一账号即可找回。</div>
 
-      <label class="f">手机号</label>
+      <label class="f">手机号 / 邮箱</label>
       <div class="row2">
-        <input class="f" id="phoneInput" type="tel" inputmode="numeric" maxlength="11" placeholder="13 开头的 11 位号码" autocapitalize="off" spellcheck="false">
+        <input class="f" id="phoneInput" type="text" placeholder="11 位手机号或邮箱" autocapitalize="off" autocorrect="off" spellcheck="false">
         <button class="btn" id="smsBtn">发验证码</button>
       </div>
       <label class="f">验证码</label>
@@ -198,7 +198,7 @@ BODY = """
         <input class="f" id="smsCode" inputmode="numeric" maxlength="6" placeholder="6 位数字" autocapitalize="off" spellcheck="false">
         <button class="btn primary" id="loginBtn">登录 / 注册</button>
       </div>
-      <div class="note" id="smsNote">未注册的号码自动注册并赠送试用额度。</div>
+      <div class="note" id="smsNote">邮箱登录免费直达；未注册的账号自动注册并赠送试用额度。</div>
 
       <label class="f">设备令牌</label>
       <input class="f" id="platToken" type="password" placeholder="登录后自动获取，也可手动粘贴" autocapitalize="off" spellcheck="false">
@@ -605,8 +605,8 @@ function fillSheet(c) {
   $('#logoutBtn').style.display = c.has_platform_token ? '' : 'none';
   $('#setHint').textContent = c.mode === 'platform'
     ? (c.has_platform_token
-        ? '平台额度：已登录，余额挂在手机号账号上，换机重登不丢。'
-        : '平台额度：填好地址后用手机号登录，余额挂账号不丢。')
+        ? '平台额度：已登录，余额挂在账号上，换机重登不丢。'
+        : '平台额度：填好地址后用手机号或邮箱登录，余额挂账号不丢。')
     : '自配 API：用你自己的 Key 直连模型服务商，数据只发给这一家。';
 
   const p = (c.providers || []).find(x => x.id === sel.value);
@@ -670,9 +670,10 @@ async function sendSms() {
   const msg = $('#setMsg'), note = $('#smsNote'), btn = $('#smsBtn');
   await api('config.set', collect());       // 先存地址，验证码请求才知道打到哪
   note.textContent = '发送中…';
-  const j = await api('sms', {phone: $('#phoneInput').value.trim()});
+  const j = await api('sms', {account: $('#phoneInput').value.trim()});
   if (!j.ok) { note.textContent = j.error || '发送失败'; return; }
   if (j.dev_code) note.textContent = '【开发模式】验证码 ' + j.dev_code;
+  else if (j.channel === 'email') note.textContent = '验证码已发到邮箱，5 分钟内有效（也看下垃圾邮件夹）';
   else note.textContent = '验证码已发送，5 分钟内有效';
   let left = 60;
   btn.disabled = true;
@@ -685,7 +686,7 @@ async function sendSms() {
 async function doLogin() {
   const msg = $('#setMsg');
   msg.textContent = '登录中…';
-  const j = await api('auth', {phone: $('#phoneInput').value.trim(),
+  const j = await api('auth', {account: $('#phoneInput').value.trim(),
                                code: $('#smsCode').value.trim(),
                                device_name: 'RunnerCoach'});
   if (!j.ok) { msg.textContent = j.error || '登录失败'; return; }

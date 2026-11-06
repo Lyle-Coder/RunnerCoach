@@ -7,13 +7,13 @@
 
 架构一句话
 ----------
-App 不直接持有上游 API Key；它用手机号验证码登录拿到设备令牌，打这台网关，
+App 不直接持有上游 API Key；它用手机号或邮箱验证码登录拿到设备令牌，打这台网关，
 网关验令牌、查余额、转发请求给真正的模型商、按 token 用量扣钱。
 充值 = 管理员生成兑换码 → 用户在 App 里输入 → 余额增加。
 
 账号与数据安全（防「充值丢失」）
 --------------------------------
-- 用户以手机号注册，设备令牌只是登录态：卸载重装 / 换手机后重新登录，
+- 用户以手机号或邮箱注册，设备令牌只是登录态：卸载重装 / 换手机后重新登录，
   余额原样找回；一个账号可绑多台设备，后台可吊销任意设备。
 - 余额不是裸数字，而是 append-only 流水（grant/redeem/consume/adjust，
   每笔带 balance_after）推导出来的，列里的 balance 只是缓存；
@@ -21,14 +21,18 @@ App 不直接持有上游 API Key；它用手机号验证码登录拿到设备�
 - /admin/export 导出全量 JSON、/admin/db 直接下载 SQLite 快照——
   定期异地备份，服务器没了也能恢复。
 
-短信验证码
-----------
-SMS_PROVIDER 三选一：
+验证码通道（手机号 / 邮箱二选一，按账号格式自动路由）
+--------------------------------------------------------
+- 邮箱（推荐，默认）：SMTP_HOST/SMTP_USER/SMTP_PASS 配好即走邮箱发信，
+  QQ/163 等个人邮箱开 SMTP 授权码即可，发信免费；不配 SMTP 时进入
+  开发模式，验证码打印到日志并随响应回显（仅内测）。
+- 手机号：SMS_PROVIDER 三选一
   dev     （默认）验证码打印到服务端日志并随响应返回，仅用于本地/内测
   aliyun  阿里云短信（需 SMS_ACCESS_KEY_ID / SMS_ACCESS_KEY_SECRET /
-          SMS_SIGN_NAME / SMS_TEMPLATE_CODE）
+          SMS_SIGN_NAME / SMS_TEMPLATE_CODE）——按条计费，仅在必须用
+          手机号注册时才开
 验证码 6 位、5 分钟有效、限尝试 5 次；发送限频：同号 60 秒 1 条、
-每天 10 条，同 IP 每天 30 条——短信是要花钱的，不能被刷。
+每天 10 条，同 IP 每天 30 条——验证码通道不能被刷。
 
 计费口径
 --------
@@ -78,6 +82,13 @@ SMS_KEY_SECRET = os.environ.get("SMS_ACCESS_KEY_SECRET", "")
 SMS_SIGN = os.environ.get("SMS_SIGN_NAME", "")
 SMS_TEMPLATE = os.environ.get("SMS_TEMPLATE_CODE", "")
 
+# 邮箱验证码（推荐：零成本，QQ/163 开 SMTP 授权码即可）
+SMTP_HOST = os.environ.get("SMTP_HOST", "")                 # 如 smtp.qq.com
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))         # 465=SSL / 587=STARTTLS
+SMTP_USER = os.environ.get("SMTP_USER", "")                 # 发件邮箱
+SMTP_PASS = os.environ.get("SMTP_PASS", "")                 # SMTP 授权码（不是登录密码）
+SMTP_FROM = os.environ.get("SMTP_FROM", "") or SMTP_USER    # 显示的发件人，默认同 SMTP_USER
+
 # 单价表：元 / 百万 token，只列平台实际会跑的模型
 # deepseek-flash 取高峰价（闲时减半），按贵的扣不会亏
 PRICE_PER_1M = {
@@ -88,6 +99,17 @@ PRICE_PER_1M = {
 DEFAULT_PRICE = (2.0, 8.0)
 
 _PHONE_RE = re.compile(r"^1\d{10}$")
+# 邮箱校验：够用即可（本地部分 @ 域名，域名至少带一个点），不做完整 RFC 解析
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+
+
+def account_kind(account: str) -> str | None:
+    """识别账号类型：phone / email / None（不认识）。"""
+    if _PHONE_RE.match(account):
+        return "phone"
+    if _EMAIL_RE.match(account) and len(account) <= 254:
+        return "email"
+    return None
 
 
 def _price(model: str) -> tuple[float, float]:
@@ -98,8 +120,14 @@ def _micro(v: float) -> int:
     return int(round(v * 1_000_000))
 
 
-def _mask(phone: str) -> str:
-    return phone[:3] + "****" + phone[7:] if len(phone) == 11 else (phone or "匿名设备")
+def _mask(account: str) -> str:
+    """脱敏显示：手机号 138****5678；邮箱 runner***@qq.com。"""
+    if len(account) == 11 and account.isdigit():
+        return account[:3] + "****" + account[7:]
+    if "@" in account:
+        local, _, domain = account.partition("@")
+        return (local[:2] if local else "*") + "***@" + domain
+    return account or "匿名设备"
 
 
 # ---------------------------------------------------------------- 短信
@@ -153,6 +181,43 @@ def send_sms(phone: str, code: str) -> None:
         print(f"  [sms:dev] {phone} 验证码 {code}", file=sys.stderr, flush=True)
 
 
+def smtp_ready() -> bool:
+    return bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
+
+
+def send_email(to: str, code: str) -> None:
+    """SMTP 发验证码邮件（纯标准库 smtplib）。未配置 SMTP 时走开发模式回显。"""
+    if not smtp_ready():
+        print(f"  [email:dev] {to} 验证码 {code}", file=sys.stderr, flush=True)
+        return
+    import smtplib
+    from email.header import Header
+    from email.mime.text import MIMEText
+    from email.utils import formataddr
+    body = (
+        f"<div style=\"font-family:-apple-system,sans-serif;max-width:420px;margin:0 auto\">"
+        f"<h2 style=\"color:#1a7f5e\">RunnerCoach</h2>"
+        f"<p>你的登录验证码：</p>"
+        f"<p style=\"font-size:30px;font-weight:700;letter-spacing:6px;color:#111\">{code}</p>"
+        f"<p style=\"color:#888\">5 分钟内有效。不是本人操作请忽略本邮件。</p></div>")
+    msg = MIMEText(body, "html", "utf-8")
+    msg["Subject"] = Header(f"RunnerCoach 验证码 {code}", "utf-8")
+    msg["From"] = formataddr((str(Header("RunnerCoach", "utf-8")), SMTP_FROM))
+    msg["To"] = to
+    try:
+        if SMTP_PORT == 465:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15) as s:
+                s.login(SMTP_USER, SMTP_PASS)
+                s.sendmail(SMTP_FROM, [to], msg.as_string())
+        else:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as s:
+                s.starttls()
+                s.login(SMTP_USER, SMTP_PASS)
+                s.sendmail(SMTP_FROM, [to], msg.as_string())
+    except Exception as e:  # noqa: BLE001
+        raise SmsError(f"邮件发送失败：{type(e).__name__}: {e}") from None
+
+
 # ---------------------------------------------------------------- 存储
 def init_db() -> None:
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
@@ -160,7 +225,7 @@ def init_db() -> None:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS users(
             id INTEGER PRIMARY KEY,
-            phone TEXT UNIQUE NOT NULL,              -- 匿名兼容账号为 ''
+            phone TEXT UNIQUE NOT NULL,              -- 账号：手机号或邮箱；匿名兼容账号为 ''
             balance INTEGER NOT NULL DEFAULT 0,      -- 微元（流水推导的缓存）
             created_at INTEGER NOT NULL,
             revoked INTEGER NOT NULL DEFAULT 0
@@ -296,36 +361,59 @@ def _balance_of(user_id: int) -> int:
         return c.execute("SELECT balance FROM users WHERE id=?", (user_id,)).fetchone()["balance"]
 
 
-# ---------------------------------------------------------------- 短信验证码
+# ---------------------------------------------------------------- 验证码（手机号 / 邮箱）
 def api_sms_send(body: dict, ip: str) -> dict:
-    phone = str(body.get("phone") or "").strip()
-    if not _PHONE_RE.match(phone):
-        raise Gate(400, "手机号格式不对（大陆 11 位）")
+    """发送验证码。account 是手机号或邮箱，按格式自动选通道。
+
+    兼容旧字段名 phone；接口路径 /v1/sms/send 沿用未改，客户端零成本升级。
+    """
+    raw = str(body.get("account") or body.get("phone") or "").strip()
+    account = raw.lower() if "@" in raw else raw
+    kind = account_kind(account)
+    if kind == "phone":
+        if not _PHONE_RE.match(account):
+            raise Gate(400, "手机号格式不对（大陆 11 位）")
+    elif kind == "email":
+        pass                                   # account_kind 已校验
+    else:
+        raise Gate(400, "请输入正确的手机号或邮箱")
     now = int(time.time())
     with db() as c:
-        last = c.execute("SELECT sent_at FROM sms_pending WHERE phone=?", (phone,)).fetchone()
-        if last and now - last["sent_at"] < 60:
+        # 60 秒限频看 sms_log（验证码登录成功会删 sms_pending，不能用它的 sent_at）
+        last = c.execute("SELECT MAX(ts) t FROM sms_log WHERE phone=?", (account,)).fetchone()["t"]
+        if last and now - last < 60:
             raise Gate(429, "发送太频繁，一分钟后再试")
         day = now - now % 86400
-        n_phone = c.execute("SELECT COUNT(*) n FROM sms_log WHERE phone=? AND ts>=?",
-                            (phone, day)).fetchone()["n"]
+        n_acc = c.execute("SELECT COUNT(*) n FROM sms_log WHERE phone=? AND ts>=?",
+                          (account, day)).fetchone()["n"]
         n_ip = c.execute("SELECT COUNT(*) n FROM sms_log WHERE ip=? AND ts>=?",
                          (ip, day)).fetchone()["n"]
-        if n_phone >= 10:
-            raise Gate(429, "该手机号今天验证码次数用完了")
+        if n_acc >= 10:
+            raise Gate(429, "该账号今天验证码次数用完了")
         if n_ip >= 30:
             raise Gate(429, "该网络今天验证码次数用完了")
         code = f"{secrets.randbelow(1_000_000):06d}"
         c.execute("INSERT INTO sms_pending(phone,code_hash,expires_at,sent_at) VALUES(?,?,?,?) "
                   "ON CONFLICT(phone) DO UPDATE SET code_hash=excluded.code_hash,"
                   " expires_at=excluded.expires_at, attempts=0, sent_at=excluded.sent_at",
-                  (phone, _hash(code), now + 300, now))
-        c.execute("INSERT INTO sms_log(phone,ip,ts) VALUES(?,?,?)", (phone, ip, now))
+                  (account, _hash(code), now + 300, now))
+        c.execute("INSERT INTO sms_log(phone,ip,ts) VALUES(?,?,?)", (account, ip, now))
+    if kind == "email":
+        try:
+            send_email(account, code)
+        except SmsError as e:
+            raise Gate(502, str(e)) from None
+        dev = not smtp_ready()
+        out = {"ok": True, "ttl": 300, "channel": "email"}
+        if dev:
+            out["dev_code"] = code
+            out["notice"] = "开发模式：服务端未配置 SMTP，验证码仅供调试，上线前配置 SMTP_HOST/USER/PASS"
+        return out
     try:
-        send_sms(phone, code)
+        send_sms(account, code)
     except SmsError as e:
         raise Gate(502, str(e)) from None
-    out = {"ok": True, "ttl": 300}
+    out = {"ok": True, "ttl": 300, "channel": "sms"}
     if SMS_PROVIDER == "dev":                    # 仅开发模式回显验证码
         out["dev_code"] = code
         out["notice"] = "开发模式：验证码仅供调试，上线前切换 SMS_PROVIDER=aliyun"
@@ -333,32 +421,34 @@ def api_sms_send(body: dict, ip: str) -> dict:
 
 
 def api_auth(body: dict, ip: str) -> dict:
-    """验证码登录：新手机号自动注册并赠送 FREE_GRANT，老号直接登录。
+    """验证码登录：新账号自动注册并赠送 FREE_GRANT，老号直接登录。
 
-    返回设备令牌——令牌只是登录态，余额在账号上，换机重登不丢。
+    账号是手机号或邮箱；返回设备令牌——令牌只是登录态，余额在账号上，
+    换机重登不丢。
     """
-    phone = str(body.get("phone") or "").strip()
+    raw = str(body.get("account") or body.get("phone") or "").strip()
+    account = raw.lower() if "@" in raw else raw
     code = str(body.get("code") or "").strip()
     dev_name = str(body.get("device_name") or "")[:40]
-    if not _PHONE_RE.match(phone):
-        raise Gate(400, "手机号格式不对")
+    if account_kind(account) is None:
+        raise Gate(400, "请输入正确的手机号或邮箱")
     if not code:
         raise Gate(400, "请输入验证码")
     now = int(time.time())
     with db() as c:
-        row = c.execute("SELECT * FROM sms_pending WHERE phone=?", (phone,)).fetchone()
+        row = c.execute("SELECT * FROM sms_pending WHERE phone=?", (account,)).fetchone()
         if not row or row["expires_at"] < now:
             raise Gate(401, "验证码已过期，请重新发送")
         if row["attempts"] >= 5:
             raise Gate(429, "尝试次数过多，请重新发送验证码")
         if not secrets.compare_digest(row["code_hash"], _hash(code)):
-            c.execute("UPDATE sms_pending SET attempts=attempts+1 WHERE phone=?", (phone,))
+            c.execute("UPDATE sms_pending SET attempts=attempts+1 WHERE phone=?", (account,))
             raise Gate(401, "验证码不对")
-        c.execute("DELETE FROM sms_pending WHERE phone=?", (phone,))
-        u = c.execute("SELECT * FROM users WHERE phone=?", (phone,)).fetchone()
+        c.execute("DELETE FROM sms_pending WHERE phone=?", (account,))
+        u = c.execute("SELECT * FROM users WHERE phone=?", (account,)).fetchone()
         if u is None:
             cur = c.execute("INSERT INTO users(phone,balance,created_at) VALUES(?,?,?)",
-                            (phone, 0, now))
+                            (account, 0, now))
             user_id = cur.lastrowid
             after = _ledger(c, user_id, "grant", FREE_GRANT, "新用户赠送")
             created = True
@@ -370,7 +460,7 @@ def api_auth(body: dict, ip: str) -> dict:
         c.execute("INSERT INTO devices(user_id,name,token_hash,created_at,last_seen)"
                   " VALUES(?,?,?,?,?)", (user_id, dev_name or "RunnerCoach", _hash(token), now, now))
     return {"ok": True, "token": token, "created": created,
-            "balance": after / 1e6, "phone_masked": _mask(phone)}
+            "balance": after / 1e6, "phone_masked": _mask(account)}
 
 
 # ---------------------------------------------------------------- 业务
@@ -659,8 +749,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         try:
             if self.path == "/health":
+                channel = "email" + ("" if smtp_ready() else "（开发模式）")
+                if not smtp_ready():
+                    channel = "email(dev)/sms:" + SMS_PROVIDER
                 return self._json({"ok": True, "model": UPSTREAM_MODEL,
-                                   "sms": SMS_PROVIDER})
+                                   "sms": SMS_PROVIDER, "email": smtp_ready(),
+                                   "channel": channel})
             if self.path == "/v1/me":
                 return self._json(api_me(_auth(self.headers)))
             if self.path == "/admin/accounts":
@@ -743,7 +837,11 @@ def main() -> int:
     srv.daemon_threads = True
     print(f"√ RunnerCoach 网关 http://{HOST}:{PORT}")
     print(f"  上游 {UPSTREAM_BASE} · 模型 {UPSTREAM_MODEL} · 加价 {MARGIN}×")
-    print(f"  短信 {SMS_PROVIDER}{'（开发模式：验证码回显，上线前务必切换）' if SMS_PROVIDER == 'dev' else ''}")
+    if smtp_ready():
+        print(f"  邮箱验证码 {SMTP_USER} → {SMTP_HOST}:{SMTP_PORT}")
+    else:
+        print("  邮箱验证码 未配置 SMTP（开发模式：验证码回显）")
+    print(f"  短信通道 {SMS_PROVIDER}{'（开发模式：验证码回显，上线前务必切换）' if SMS_PROVIDER == 'dev' else ''}")
     print(f"  管理 {'已启用（ADMIN_TOKEN 已配置）' if ADMIN_TOKEN else '未配置 ADMIN_TOKEN，管理接口关闭'}")
     print(f"  数据库 {DB_PATH}")
     try:

@@ -450,30 +450,33 @@ def redeem(code: str) -> dict:
     return {"ok": True, "added": data.get("added"), "balance": data.get("balance")}
 
 
-def sms_send(phone: str) -> dict:
-    """请求平台发送短信验证码（60 秒限频由网关把控）。"""
-    phone = (phone or "").strip()
-    if not re.fullmatch(r"1\d{10}", phone):
-        return {"ok": False, "kind": "input", "error": "手机号格式不对（大陆 11 位）"}
+def sms_send(account: str) -> dict:
+    """请求平台发送验证码（手机号或邮箱，60 秒限频由网关把控）。"""
+    account = (account or "").strip()
+    if "@" in account:
+        if not re.fullmatch(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", account):
+            return {"ok": False, "kind": "input", "error": "邮箱格式不对"}
+    elif not re.fullmatch(r"1\d{10}", account):
+        return {"ok": False, "kind": "input", "error": "请输入正确的手机号或邮箱"}
     cfg = load_config()
     if not cfg.get("platform_base"):
         return {"ok": False, "kind": "config", "error": "先填平台服务地址"}
     try:
-        return _platform_post("/v1/sms/send", {"phone": phone}, "")
+        return _platform_post("/v1/sms/send", {"account": account}, "")
     except LLMError as e:
         return e.as_dict()
 
 
-def auth_login(phone: str, code: str, device_name: str = "") -> dict:
-    """验证码登录：新号自动注册并领赠送额度，老号直接登录。
+def auth_login(account: str, code: str, device_name: str = "") -> dict:
+    """验证码登录（手机号或邮箱）：新号自动注册并领赠送额度，老号直接登录。
 
-    令牌只是登录态，余额挂在手机号账号上——卸载重装 / 换手机后
+    令牌只是登录态，余额挂在账号上——卸载重装 / 换手机后
     重新登录即可找回，这是「充值不丢」的关键。
     """
-    phone = (phone or "").strip()
+    account = (account or "").strip()
     code = (code or "").strip()
-    if not re.fullmatch(r"1\d{10}", phone):
-        return {"ok": False, "kind": "input", "error": "手机号格式不对"}
+    if "@" not in account and not re.fullmatch(r"1\d{10}", account):
+        return {"ok": False, "kind": "input", "error": "请输入正确的手机号或邮箱"}
     if not code:
         return {"ok": False, "kind": "input", "error": "请输入验证码"}
     cfg = load_config()
@@ -481,7 +484,7 @@ def auth_login(phone: str, code: str, device_name: str = "") -> dict:
     if not base:
         return {"ok": False, "kind": "config", "error": "先填平台服务地址"}
     try:
-        data = _platform_post("/v1/auth", {"phone": phone, "code": code,
+        data = _platform_post("/v1/auth", {"account": account, "code": code,
                                            "device_name": device_name or "RunnerCoach"}, "")
     except LLMError as e:
         return e.as_dict()
