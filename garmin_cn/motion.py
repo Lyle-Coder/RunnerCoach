@@ -576,11 +576,29 @@ function drawTrack(rt, hd) {
   ctx.beginPath(); ctx.moveTo(px[last], py[last]); ctx.lineTo(hd.x, hd.y);
   ctx.lineWidth = 10; ctx.stroke();
 
-  // 起点 / 终点
-  ctx.fillStyle = 'rgba(255,255,255,.92)';
-  ctx.beginPath(); ctx.arc(px[0], py[0], 11, 0, 7); ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.arc(px[N - 1], py[N - 1], 12, 0, 7); ctx.stroke();
+  // 起点 / 终点：与活动图（actcard._pins）同款——绿圆起、红方终，深色描边；
+  // 起终点几乎重合（绕圈）时并成一套：红方块罩在外面、绿点嵌在中心。
+  ctx.lineWidth = 3; ctx.strokeStyle = '#0F1319';
+  const sx0 = px[0], sy0 = py[0], ex0 = px[N - 1], ey0 = py[N - 1];
+  if (Math.hypot(ex0 - sx0, ey0 - sy0) < 26) {
+    const hf0 = 13;
+    ctx.fillStyle = '#E05555';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(ex0 - hf0, ey0 - hf0, hf0 * 2, hf0 * 2, 3);
+    else ctx.rect(ex0 - hf0, ey0 - hf0, hf0 * 2, hf0 * 2);
+    ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(ex0, ey0, 7, 0, 7);
+    ctx.fillStyle = '#2FBF8F'; ctx.fill();
+    ctx.lineWidth = 1.5; ctx.stroke();
+  } else {
+    ctx.beginPath(); ctx.arc(sx0, sy0, 11, 0, 7);
+    ctx.fillStyle = '#2FBF8F'; ctx.fill(); ctx.stroke();
+    const hf0 = 11;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(ex0 - hf0, ey0 - hf0, hf0 * 2, hf0 * 2, 2.5);
+    else ctx.rect(ex0 - hf0, ey0 - hf0, hf0 * 2, hf0 * 2);
+    ctx.fillStyle = '#E05555'; ctx.fill(); ctx.stroke();
+  }
 
   // 照片点
   for (const p of (D.photos || [])) {
