@@ -685,7 +685,10 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     <h1>每日看板</h1>
     <div class="sub">{esc(d)} {WEEK_CN[d.weekday()]} · 睡眠/恢复/负荷综合分析</div>
   </div>
-  <div class="badge"><i class="dot"></i>Garmin 国区 · 上次同步 {esc(sync_at or store.get_meta('last_sync') or '尚未同步')}</div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <a class="badge" href="ai" style="text-decoration:none">AI 教练 · 今日建议</a>
+    <div class="badge"><i class="dot"></i>Garmin 国区 · 上次同步 {esc(sync_at or store.get_meta('last_sync') or '尚未同步')}</div>
+  </div>
 </div>
 
 <div class="hero">
