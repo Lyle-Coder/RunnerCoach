@@ -100,12 +100,12 @@ def get_client(require: bool = True) -> GarminCNClient:
     from garmin_cn.net import Net
 
     auth = GarminCNAuth(HOME)
-    net = Net(auth.session_path, min_interval=1.2)
+    net = Net(auth.session_path, min_interval=0.5)
     has_session = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
     if not has_session:
         cfg = load_config()
         if _auto_login(cfg):
-            net = Net(auth.session_path, min_interval=1.2)
+            net = Net(auth.session_path, min_interval=0.5)
             has_session = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
     if not has_session:
         if require:
@@ -253,8 +253,9 @@ def cmd_sync(args) -> int:
     def progress(i, n, d):
         print(f"\r  同步 {i}/{n} {d}", end="", flush=True)
 
+    force = bool(getattr(args, "force", False))
     try:
-        res = svc.sync(days=args.days, extras=args.extras, progress=progress)
+        res = svc.sync(days=args.days, extras=args.extras, progress=progress, force=force)
     except SessionExpired:
         print("\n· 会话过期，尝试用已保存的账号自动续期…", flush=True)
         if not _auto_login(load_config()):
@@ -263,12 +264,15 @@ def cmd_sync(args) -> int:
         client = get_client()
         svc = SyncService(client, store)
         try:
-            res = svc.sync(days=args.days, extras=args.extras, progress=progress)
+            res = svc.sync(days=args.days, extras=args.extras, progress=progress, force=force)
         except SessionExpired:
             print("\n× 续期后仍然被拒绝，请重新登录：run.bat login")
             return 3
     print()
-    print(f"√ {res['range']}：{res['days']} 天，{res['activities']} 条活动")
+    skipped = res.get("skipped", 0)
+    tail = f"，跳过已缓存 {skipped} 天" if skipped else ""
+    print(f"√ {res['range']}：拉取 {res['fetched']} 天{tail}，"
+          f"{res['activities']} 条活动，共 {res.get('requests', 0)} 次请求")
     if not getattr(args, "no_cards", False):
         try:
             made = auto_cards(store, client, days=min(args.days, 7))
@@ -2113,6 +2117,8 @@ def main() -> int:
     q = sub.add_parser("sync", help="同步数据")
     q.add_argument("--days", type=int, default=30)
     q.add_argument("--extras", action="store_true", help="额外拉压力/身体电量明细（更慢）")
+    q.add_argument("--force", action="store_true",
+                   help="整段重拉（默认增量：已稳定且拉过的日子直接跳过）")
     q.add_argument("--no-cards", action="store_true", help="不为新活动生成活动图")
     q.add_argument("--no-body", dest="body", action="store_false",
                    help="跳过体重/体成分（默认会顺手拉一次小米秤）")

@@ -78,12 +78,12 @@ def _client(email: str | None = None, password: str | None = None) -> GarminCNCl
     from .net import Net
 
     auth = GarminCNAuth(HOME)
-    net = Net(auth.session_path, min_interval=1.2)
+    net = Net(auth.session_path, min_interval=0.5)
     ok = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
 
     if not ok and email and password:
         auth.login(email, password)      # 可能要验证码，交给上层处理
-        net = Net(auth.session_path, min_interval=1.2)
+        net = Net(auth.session_path, min_interval=0.5)
         ok = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
 
     if not ok:
@@ -278,8 +278,13 @@ def submit_mfa(code: str) -> dict:
 
 # ---------------------------------------------------------------- 同步
 def sync(days: int = 30, email: str | None = None, password: str | None = None,
-         with_body: bool = True, progress=None) -> dict:
-    """拉数据。`email/password` 只在会话过期时用来续一次，不会被写盘。"""
+         with_body: bool = True, progress=None, force: bool = False) -> dict:
+    """拉数据。`email/password` 只在会话过期时用来续一次，不会被写盘。
+
+    增量是默认行为：已有数据且早已过完的日子不会再请求一遍，
+    所以「下拉刷新」通常只拉今天和昨天，几秒就能结束。
+    需要整段重拉（换表盘 / 补历史字段）时传 `force=True`。
+    """
 
     def cb(i, n, d):
         if progress:
@@ -298,14 +303,15 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
     store = Store(DB)
     svc = SyncService(client, store)
     try:
-        res = svc.sync(days=days, extras=False, progress=cb)
+        res = svc.sync(days=days, extras=False, progress=cb, force=force)
     except SessionExpired:
         # 会话刚好过期：有凭据就重登一次再试，没有就让界面去登录
         if not (email and password):
             return {"ok": False, "need_login": True, "error": "会话已过期"}
         try:
             client = _client(email, password)
-            res = SyncService(client, store).sync(days=days, extras=False, progress=cb)
+            res = SyncService(client, store).sync(
+                days=days, extras=False, progress=cb, force=force)
         except MfaRequired:
             return {"ok": False, "need_mfa": True, "error": "续期需要验证码"}
         except Exception as e:
@@ -314,6 +320,9 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     out = {"ok": True, "range": res["range"], "days": res["days"],
+           "fetched": res.get("fetched", res["days"]),
+           "skipped": res.get("skipped", 0),
+           "requests": res.get("requests", 0),
            "activities": res["activities"], "errors": res["errors"]}
 
     if with_body:

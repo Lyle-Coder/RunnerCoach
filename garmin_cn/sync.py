@@ -178,7 +178,9 @@ class SyncService:
         self.store = store
         self.errors: list[str] = []
 
-    def sync_day(self, date: str, extras: bool = False) -> dict:
+    def sync_day(self, date: str, extras: bool = False,
+                 hrv: dict | None = None) -> dict:
+        """拉一天。`hrv` 可传入区间接口预取的当日 HRV，省掉每段一次请求。"""
         row = {"date": date, "synced_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M")}
         bb_row: dict | None = None
 
@@ -193,7 +195,8 @@ class SyncService:
             sleep = self.client.sleep(date)
             if sleep:
                 row.update(parse_sleep(sleep))
-            hrv = self.client.hrv(date)
+            if hrv is None:
+                hrv = self.client.hrv(date)
             if hrv:
                 row.update(parse_hrv(hrv))
             if extras:
@@ -234,26 +237,96 @@ class SyncService:
             n += 1
         return n
 
-    def sync(self, days: int = 30, end: str | None = None, extras: bool = False, progress=None) -> dict:
+    def sync(self, days: int = 30, end: str | None = None, extras: bool = False,
+             progress=None, force: bool = False) -> dict:
+        """同步最近 N 天。
+
+        增量是默认行为：**已经稳定的一天不会再拉一遍**。判定标准是
+        「库里已有这天的数据，且上次同步发生在这天之后」——过去的日汇总、
+        睡眠、HRV 不会变，重复拉只浪费时间。只有今天和数据不全的日子会重拉。
+        首装/补历史用 `force=True` 全量重拉。
+        """
         end = end or dt.date.today().isoformat()
         dates = daterange(end, days)
+        today = dt.date.today().isoformat()
+
+        if force:
+            todo = list(dates)
+        else:
+            todo = [d for d in dates if d >= today or not self._settled(d)]
+        skipped = len(dates) - len(todo)
+
+        # HRV 有区间接口：30 段逐日拉 = 30 次请求，一次区间 = 1 次。
+        # 先把整段拿下来，逐日回填时直接用；接口口径不符就回落到逐日。
+        hrv_map: dict[str, dict] = {}
+        if len(todo) >= 4:
+            try:
+                hrv_map = self._hrv_range(todo[0], todo[-1])
+            except Exception as e:
+                self.errors.append(f"hrv range: {type(e).__name__} {e}")
+
         ok = 0
-        for i, d in enumerate(dates, 1):
-            self.sync_day(d, extras=extras)
+        for i, d in enumerate(todo, 1):
+            # 区间接口拿到过数据就信它：区间里没有的日期 = 那天真的没测到，
+            # 不必再逐日补一次（只会拿到空结果，白花一次请求）。
+            # 区间整体失败（空 dict）才回落到逐日。
+            self.sync_day(d, extras=extras,
+                          hrv=hrv_map.get(d, {}) if hrv_map else None)
             ok += 1
             if progress:
-                progress(i, len(dates), d)
+                progress(i, len(todo), d)
         acts = self.sync_activities()
         plan = self.sync_plan(end)
         self.store.set_meta("last_sync", dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.store.set_meta("last_sync_end", end)
         return {
             "range": f"{dates[0]} ~ {dates[-1]}",
-            "days": ok,
+            "days": len(dates),          # 区间天数（界面口径不变）
+            "fetched": ok,               # 本次真正拉取的天数
+            "skipped": skipped,          # 命中的已有缓存
             "activities": acts,
             "plan": plan,
+            "requests": getattr(self.client.net, "count", 0),
             "errors": self.errors[:10],
         }
+
+    def _settled(self, date: str) -> bool:
+        """这一天还会不会变：库里要有数据，且上次同步是在这天结束之后做的。"""
+        try:
+            row = self.store.day(date)
+        except Exception:
+            return False
+        if not row:
+            return False
+        synced = (row.get("synced_at") or "")[:10]
+        if not synced or synced <= date:      # 当天同步的不算数：数据还没长齐
+            return False
+        return any(row.get(k) is not None
+                   for k in ("steps", "sleep_total_min", "resting_hr"))
+
+    def _hrv_range(self, start: str, end: str) -> dict[str, dict]:
+        """一次请求取整段 HRV，返回 {日期: 当日 HRV 对象}。
+
+        国区返回口径有两种（`{"hrvSummaries": [...]}` 或直接列表），
+        认不出结构就返回空 dict，调用方自动回落逐日拉，不影响正确性。
+        """
+        data = self.client.hrv_range(start, end)
+        items = None
+        if isinstance(data, dict):
+            for v in data.values():
+                if isinstance(v, list):
+                    items = v
+                    break
+        elif isinstance(data, list):
+            items = data
+        out: dict[str, dict] = {}
+        for it in items or []:
+            if not isinstance(it, dict):
+                continue
+            day = str(it.get("calendarDate") or it.get("date") or "")[:10]
+            if day:
+                out[day] = it
+        return out
 
     def sync_plan(self, today: str | None = None) -> dict:
         """刷新佳明教练计划快照（2 次请求，失败不影响主流程）。"""

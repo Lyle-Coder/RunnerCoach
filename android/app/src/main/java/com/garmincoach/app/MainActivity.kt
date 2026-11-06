@@ -332,7 +332,12 @@ class MainActivity : Activity() {
             ui {
                 when {
                     r.optBoolean("ok") -> {
-                        toast("同步完成：${r.optInt("days")} 天 · ${r.optInt("activities")} 条活动")
+                        // 增量同步：多数时候只拉今天/昨天，这里把「跳过」也报出来，
+                        // 免得看到「30 天」以为是全量重拉了一遍
+                        val fetched = r.optInt("fetched", r.optInt("days"))
+                        val skipped = r.optInt("skipped")
+                        val tail = if (skipped > 0) "（$skipped 天已缓存）" else ""
+                        toast("同步完成：$fetched 天$tail · ${r.optInt("activities")} 条活动")
                         // 同步只写库，不出页面。这里补一步看板，否则刷新后还是空列表。
                         thread {
                             apiCall("dashboard")

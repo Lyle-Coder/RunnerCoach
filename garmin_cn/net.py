@@ -81,12 +81,15 @@ class HttpError(Exception):
 class Net:
     """带 Cookie 会话的请求器。
 
-    - 所有请求间隔默认 >= 1.0s，避免触发 429
+    - 请求间隔默认 >= 0.5s（0.3 在实测中也不会触发限流，0.5 留足余量）；
+      一旦真的吃到 429，自动把间隔抬上去（×1.5，上限 3s），后续请求沿用
+      更高的节奏，不会因为一次限流把整轮同步拖垮
     - 429 / 5xx 自动退避重试
     - 会话可落盘到 data/session.json
+    - `count` 记录本实例发出的请求数，同步结果里带出来便于对账
     """
 
-    def __init__(self, session_path: Path | None = None, min_interval: float = 1.0,
+    def __init__(self, session_path: Path | None = None, min_interval: float = 0.5,
                  trace=None):
         self.jar = CookieJar()
         self.session_path = session_path
@@ -95,6 +98,7 @@ class Net:
         )
         self.min_interval = min_interval
         self._last = 0.0
+        self.count = 0
         self.trace = trace
         if session_path and session_path.exists():
             try:
@@ -194,6 +198,7 @@ class Net:
         last_err: Exception | None = None
         for attempt in range(retries):
             self._throttle()
+            self.count += 1
             req = urllib.request.Request(url, data=body, headers=hdrs, method=method)
             try:
                 with self.opener.open(req, timeout=timeout) as resp:
@@ -207,6 +212,11 @@ class Net:
                     text = e.read().decode("utf-8", "replace")
                 except Exception:
                     pass
+                if e.code == 429:
+                    # 被限流就把节奏整体放慢，后面的请求都按新间隔走
+                    self.min_interval = min(3.0, max(self.min_interval, 0.5) * 1.5)
+                    if self.trace:
+                        self.trace(f"    429 限流，间隔调到 {self.min_interval:.2f}s")
                 if e.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
                     if self.trace:
                         self.trace(f"    {e.code} {method} {_short(url)}  (重试)")

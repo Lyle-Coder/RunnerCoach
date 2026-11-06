@@ -49,7 +49,7 @@ class GarminCNAuth:
     def __init__(self, home: Path):
         self.home = home
         self.session_path = home / "data" / "session.json"
-        self.net = Net(self.session_path, min_interval=1.0)
+        self.net = Net(self.session_path, min_interval=0.5)
         self._pending_ticket_ctx: dict | None = None
 
     # ---------------- 登录 ----------------
