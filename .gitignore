@@ -5,6 +5,7 @@ mi_cookie.txt
 mi_login.json
 session.json
 mi_auth.json
+server/.env
 data/
 output/
 site/
