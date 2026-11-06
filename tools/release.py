@@ -111,6 +111,18 @@ def repo_slug() -> tuple[str, str]:
     return parse_remote(url) or FALLBACK_SLUG
 
 
+def gitee_remote() -> str:
+    """指向 Gitee 的 remote 名字；都没有就退回 origin。
+
+    同时挂着 GitHub origin 与 Gitee 备份的仓库很常见，而 Release 只发 Gitee，
+    所以校验 tag 是否存在时也得看 Gitee 那头的 remote，不能写死 origin。
+    """
+    for name in (git("remote", check=False) or "").split():
+        if parse_remote(git("remote", "get-url", name, check=False)):
+            return name
+    return "origin"
+
+
 def is_sensitive(rel: str) -> bool:
     rel = rel.replace("\\", "/").lower()
     base = rel.rsplit("/", 1)[-1]
@@ -296,7 +308,9 @@ def gitee_ensure_release(owner: str, repo: str, tag: str, notes: str, token: str
     login = json.loads(who).get("login", "?")
     print(f"√ Gitee 身份：{login}")
     try:
-        existing = json.loads(http(f"{base}/releases/tags/{tag}?access_token={q}", token=token))
+        # 没有这个 tag 的 Release 时，Gitee 返回的是 JSON null 而不是 404，
+        # json.loads 得到 None——所以这里必须兜成空字典再取 id。
+        existing = json.loads(http(f"{base}/releases/tags/{tag}?access_token={q}", token=token)) or {}
         if existing.get("id"):
             print(f"√ 复用已存在的 Release {tag}（id={existing['id']}）")
             return str(existing["id"])
@@ -406,8 +420,9 @@ def cmd_tag(args: argparse.Namespace) -> int:
     else:
         print(f"· 本地已存在 {tag}，跳过创建")
     if args.push:
-        git("push", "origin", tag)
-        print(f"√ 已推送 {tag} 到 origin")
+        remote = gitee_remote()
+        git("push", remote, tag)
+        print(f"√ 已推送 {tag} 到 {remote}")
     else:
         print(f"· 未推送。推送：py -3 tools/release.py tag --push")
     return 0
@@ -443,8 +458,10 @@ def cmd_upload(args: argparse.Namespace) -> int:
             "  cmd       : set GITEE_TOKEN=<私人令牌>\n"
             "  POSIX     : export GITEE_TOKEN=<私人令牌>"
         )
-    if not git("ls-remote", "--tags", "origin", tag, check=False):
-        raise ReleaseError(f"远端还没有 {tag}，先跑：py -3 tools/release.py tag --push")
+    remote = gitee_remote()
+    if not git("ls-remote", "--tags", remote, tag, check=False):
+        raise ReleaseError(
+            f"{remote} 远端还没有 {tag}，先跑：git push {remote} {tag}")
     release_id = gitee_ensure_release(owner, repo, tag, notes_path.read_text(encoding="utf-8"), token)
     for p in assets:
         if p.stat().st_size > MAX_ASSET:
