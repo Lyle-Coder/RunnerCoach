@@ -480,6 +480,7 @@ class MainActivity : Activity() {
                     "garmin", "分享一图流",
                     r.optInt("export_width", 1080), r.optInt("export_height", 1920),
                     r.optString("export_bg", "#12161B"),
+                    r.optBoolean("export_trim", false),
                 )
             }
         }
@@ -544,6 +545,7 @@ class MainActivity : Activity() {
                     "garmin-run", "分享活动图$tag：${r.optString("name")}",
                     r.optInt("export_width", 1080), r.optInt("export_height", 1920),
                     r.optString("export_bg", "#0F1319"),
+                    r.optBoolean("export_trim", true),
                 )
             }
         }
@@ -574,7 +576,7 @@ class MainActivity : Activity() {
      */
     private fun renderToPng(
         url: String, w: Int, h: Int, prefix: String, shareTitle: String,
-        exportW: Int, exportH: Int, bgHex: String,
+        exportW: Int, exportH: Int, bgHex: String, trimSrc: Boolean = true,
     ) {
         val bg = try {
             Color.parseColor(bgHex)
@@ -634,12 +636,16 @@ class MainActivity : Activity() {
                 // 四边裁掉页面自带的底色留白（全部贴边）：页面 padding 经
                 // contain 缩放后仍是成品最大的「边框」来源，只有先裁掉，
                 // 内容才能贴着安全带排，四边只剩安全带和 contain 的微差。
-                val b = contentBounds(raw, bg)
-                    ?: throw IllegalStateException("页面没有渲染出内容（整张都是底色）")
-                val left = max(0, b[0] - 2)
-                val top = max(0, b[1] - 2)
-                val right = min(vw, b[2] + 2)
-                val bottom = min(vh, b[3] + 2)
+                // 一图流画幅本来就是 9:16、页面 padding 就是设计留白，
+                // 裁掉反而让上下被撑大，所以由 export_trim 决定裁不裁。
+                val corners = if (trimSrc) contentBounds(raw, bg) else null
+                if (trimSrc && corners == null) {
+                    throw IllegalStateException("页面没有渲染出内容（整张都是底色）")
+                }
+                val left = if (corners != null) max(0, corners[0] - 2) else 0
+                val top = if (corners != null) max(0, corners[1] - 2) else 0
+                val right = if (corners != null) min(vw, corners[2] + 2) else vw
+                val bottom = if (corners != null) min(vh, corners[3] + 2) else vh
                 if (right - left < 64 || bottom - top < 64) {
                     throw IllegalStateException(
                         "内容区域过小（${right - left}x${bottom - top}），疑似没渲染完整")
@@ -828,12 +834,12 @@ class MainActivity : Activity() {
      * 因为各家分享面板的预览框未必是 9:16，centerCrop 时会先切掉边框，
      * 不会碰到日期、轨迹和表格。安全带与底色同色，肉眼看不出来。
      *
-     * 安全带定为画幅高的 1.2%（1920 → 23px）：配合出图前的四边 trim
+     * 安全带定为画幅高的 1.6%（1920 → 31px）：配合出图前的四边 trim
      * （裁掉页面自带底色留白，Kotlin 与桌面 pngutil.trim_bg 同一套规则），
      * 活动图与一图流的四边都只剩安全带和 contain 的微差 ≈ 2~3%。
      */
     private fun fitToFrame(src: Bitmap, dw: Int, dh: Int, bg: Int): Bitmap {
-        val pad = max(12, (dh * 0.012).roundToInt())
+        val pad = max(12, (dh * 0.016).roundToInt())
         val boxW = (dw - 2 * pad).coerceAtLeast(1)
         val boxH = (dh - 2 * pad).coerceAtLeast(1)
         val s = min(boxW.toDouble() / src.width, boxH.toDouble() / src.height)

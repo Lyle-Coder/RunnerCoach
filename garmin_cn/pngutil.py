@@ -221,13 +221,13 @@ def fit_to_frame(path: Path, w: int = 1080, h: int = 1920,
     """把成品统一收进标准 9:16 画幅：只缩不裁，短了在底部补底色。
 
     与安卓端 `MainActivity.fitToFrame()` 是同一套规则，含同宽的安全带
-    （画幅高的 1.2%，约 23px）——手机相册、系统分享面板、微信预览对
+    （画幅高的 1.6%，约 31px）——手机相册、系统分享面板、微信预览对
     非 9:16 竖图会按预览框 centerCrop，统一画幅 + 同色安全带后不会再
     出现「日期缺头少尾、轨迹只剩一角」；内容超高时整体等比缩小，绝不切。
     调用方应先用 `trim_bg()` 裁掉页面留白，内容才贴得近画幅边缘。
     """
     assert w > 0 and h > 0 and w * 16 == h * 9, (w, h)
-    pad = max(12, round(h * 0.012))
+    pad = max(12, round(h * 0.016))
     sw, sh, rows = read_png(path)
     s = min((w - 2 * pad) / sw, (h - 2 * pad) / sh)
     nw, nh = max(1, round(sw * s)), max(1, round(sh * s))

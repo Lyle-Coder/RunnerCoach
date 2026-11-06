@@ -390,7 +390,7 @@ def card_html(date: str | None = None) -> dict:
     # width/height 是 HTML 的布局基准，旧 APK 仍按它建 View；export_* 是
     # 新 APK 用的成品画幅契约（9:16），两者含义不同，别混用。
     return {"ok": True, "html": str(out), "date": d, "width": 1080, "height": 1920,
-            **export_spec(BG_CARD)}
+            **export_spec(BG_CARD, trim=False)}
 
 
 def runs(limit: int = 30) -> dict:

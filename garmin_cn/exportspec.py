@@ -116,8 +116,15 @@ def check() -> None:
     assert content_height(1080, 1080, 1920) == 1920
 
 
-def spec(bg: str) -> dict:
-    """给 appapi 的返回值用的导出契约字段（不改动原有 width/height）。"""
+def spec(bg: str, trim: bool = True) -> dict:
+    """给 appapi 的返回值用的导出契约字段（不改动原有 width/height）。
+
+    `trim` 表示出图前要不要把页面四周的底色留白裁掉：
+    * 活动图（画幅 1080 宽、真实内容比 9:16 略高）**要裁**，否则页面
+      padding 会变成成品里最粗的那圈边框；
+    * 一图流（画幅本身就是 1080×1920，比例与成品完全一致）**不要裁**，
+      它自己的 padding 就是设计留白，裁掉反而让上下被撑大。
+    """
     check()
     assert bg in (BG_CARD, BG_ACT), bg
     return {
@@ -126,6 +133,7 @@ def spec(bg: str) -> dict:
         "export_bg": bg,
         # contain = 内容超出画幅时整体等比缩小，绝不裁内容；短了就补同色底。
         "export_mode": "contain",
+        "export_trim": trim,
     }
 
 

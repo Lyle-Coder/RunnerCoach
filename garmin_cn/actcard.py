@@ -1,4 +1,4 @@
-"""单次活动图：把一次跑步渲染成一张竖版 PNG（1080 宽）。
+"""单次活动图：把一次跑步渲染成一张竖版 PNG（画幅 1160 宽，成品 1080×1920）。
 
 版式（自上而下）
 ----------------
@@ -54,28 +54,29 @@ from .exportspec import probe as _export_probe
 from .metrics import num
 from . import privacy as PV
 
-# 画幅宽为什么是 1160 而不是 1080：内容天然比 9:16「瘦高」（高度 ~2100），
-# contain 收进 1080×1920 时只能按高度缩，左右各留 ~4.3% 的底色边，怎么压
-# 安全带都到不了想要的 ~2.9%。把版心放宽（内容随之变宽、高度基本不变），
-# 内容比例降到 1.8 左右，contain 改为按宽度收——左右只剩安全带本身。
-W, H = 1160, 2250
+# 画幅宽 1080：内容高度约 1830（桌面/手机实测一致），裁掉页面留白后
+# 比例 ≈ 1.81，与 9:16 的 1.778 只差 2%，contain 后四边几乎只剩安全带。
+# 曾经试过加宽到 1160 想让比例更贴近，结果内容反而变「矮胖」（1.69），
+# 上下留白被撑到 4.5%——画幅不是越宽越好，要跟内容高度配。
+# 版心宽度必须由这里的常量驱动（见 CSS 里的 --page-w/--trk-w/--tw-w），
+# 写死旧值会让卡片撑出 body 被裁掉，看起来就像「数据溢出边框」。
+W, H = 1080, 2250
 _EXPORT_PROBE = _export_probe()   # 手机端导出探针，桌面无头截图不调用
 
 # ---- 几何常量：卡片内容宽度 = 版心 - 边框(2) - 左右内边距 ------------------
 PAD = 36                       # 页面左右留白
-INNER = W - PAD * 2            # 1088
+INNER = W - PAD * 2            # 1008
 GAP = 16                       # 卡片间距
-# 轨迹卡宽度按原设计比例（468/1008）随版心走，加宽后各卡比例不变
-_TRK_RATIO = 468 / 1008
-TRK_W = round(INNER * _TRK_RATIO)   # 505
-ZC_W = INNER - TRK_W - GAP     # 分区卡外宽 567
+TRK_W = 468                    # 轨迹卡外宽（占版心 46.4%）
+ZC_W = INNER - TRK_W - GAP     # 分区卡外宽
 TRK_CW = TRK_W - 2 - 22 * 2    # 轨迹卡内容宽
 ZC_CW = ZC_W - 2 - 24 * 2      # 分区卡内容宽
 CH_CW = INNER - 2 - 24 * 2     # 曲线卡内容宽
 TRK_CH = 225                   # 轨迹画面高度（由分区卡内容反推，见 CSS .mid）
 MID_H = 310                    # 轨迹 / 分区 两卡同高（去掉功率条后可以矮一截）
-# 跑步技术 / 负荷 两卡：技术卡固定 1.18 份，负荷卡吃掉剩下的 1 份
-TECH_W = INNER - GAP
+# 跑步技术 / 负荷 两卡：技术卡固定 1.18 份，负荷卡吃掉剩下的 1 份。
+# 两卡总宽必须等于版心，否则右缘会比上面的卡片短一截（曾多减一个 GAP）。
+TECH_W = INNER
 TW_W = round(TECH_W * 1.18 / 2.18)
 LD_W = TECH_W - TW_W
 TW_CW = TW_W - 2 - 48          # 技术卡内容宽
@@ -926,7 +927,9 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     tech_html = ''.join(f'<div class="t"><b>{v}</b><span>{u}</span></div>' for v, u in tech_cells)
     # 主题变量必须排在 _CSS 之后：两处都写 :root，靠后的一条才生效
     css = _CSS + (f":root{{--acc:{th['acc']};--acc2:{th['acc2']};--grad2:{th['grad2']};"
-                  f"--tagfg:{th['acc']};--tagbg:{th['tag_bg']};--tagbd:{th['tag_bd']}}}")
+                  f"--tagfg:{th['acc']};--tagbg:{th['tag_bg']};--tagbd:{th['tag_bd']};"
+                  # 版心几何从常量注入，CSS 里不再写死——加宽画幅时只改一处
+                  f"--page-w:{W}px;--pad:{PAD}px;--trk-w:{TRK_W}px;--tw-w:{TW_W}px}}")
 
     # 距离升成和配速同级的第二个大数字，放最左——跑者第一眼要「跑了多远 + 多快」，
     # 距离缩在右侧小格里等于没强调。室内/力量课没有距离，就只留主指标一块。
@@ -1057,12 +1060,16 @@ def _drift_txt(drift: dict, s: dict, theme: dict | None = None) -> str:
 
 _CSS = """
 *{margin:0;padding:0;box-sizing:border-box}
-/* 主题色由 build_html 按运动类型注入 :root，缺省值就是跑步那套青蓝 */
+/* 版心宽度必须跟着 Python 侧的常量走：加宽画幅时这里若是写死的旧值，
+   中间几块卡（.mid / .tech）会撑出 body 被裁掉，右侧看着就像「数据溢出边框」。
+   --page-w / --pad / --trk-w / --tw-w 由 build_html 从 W/PAD/TRK_W/TW_W 注入。 */
 :root{--acc:#5CE1D0;--acc2:#3FA9F5;--grad2:#9FD8FF;--tagfg:#5CE1D0;
-  --tagbg:#12222A;--tagbd:#2A3A44}
-body{width:1080px;overflow:hidden;background:#0F1319;
+  --tagbg:#12222A;--tagbd:#2A3A44;--page-w:1080px;--pad:36px;
+  --trk-w:468px;--tw-w:537px}
+body{width:var(--page-w);overflow:hidden;background:#0F1319;
   font-family:"Microsoft YaHei","PingFang SC",sans-serif;color:#EDF1F5}
-.page{width:1080px;padding:30px 36px 40px;display:flex;flex-direction:column;gap:16px}
+.page{width:var(--page-w);padding:30px var(--pad) 40px;
+  display:flex;flex-direction:column;gap:16px}
 /* 底部补 10px：成图正好 1080×1920，和每日看板同一个 9:16 画幅。
    之前是 1910，各家长图预览/分享缩略图对非标比例的裁切规则不一致，
    统一到标准竖屏尺寸后，微信/相册/分享面板都不会再多切一刀。 */
@@ -1099,7 +1106,7 @@ body{width:1080px;overflow:hidden;background:#0F1319;
   white-space:nowrap}
 .mid{display:flex;gap:16px;height:310px}
 .card{background:#161C24;border:1px solid #242D38;border-radius:18px;padding:20px 24px}
-.trk{width:468px;display:flex;flex-direction:column;padding:18px 22px}
+.trk{width:var(--trk-w);display:flex;flex-direction:column;padding:18px 22px}
 .zc{flex:1;display:flex;flex-direction:column;justify-content:center}
 .ctitle{font-size:24px;color:#D3DBE4;font-weight:600;margin-bottom:14px;
   display:flex;justify-content:space-between;align-items:baseline}
@@ -1117,7 +1124,7 @@ body{width:1080px;overflow:hidden;background:#0F1319;
 .ch{height:360px}
 .lp{margin-top:0}
 .tech{display:flex;gap:16px;height:322px}
-.tw{width:537px;display:flex;flex-direction:column}
+.tw{width:var(--tw-w);display:flex;flex-direction:column}
 .ld{flex:1;display:flex;flex-direction:column}
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
 .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:12px 18px}
