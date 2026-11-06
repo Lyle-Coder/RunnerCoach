@@ -2,6 +2,7 @@ package com.garmincoach.app
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.DatePickerDialog
 import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Bitmap
@@ -38,6 +39,7 @@ import com.chaquo.python.android.AndroidPlatform
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlin.concurrent.thread
@@ -56,10 +58,11 @@ import kotlin.math.roundToInt
  *
  * 为什么操作放顶栏而不是悬浮按钮：常驻 FAB 会一直压住看板右下角，
  * 表格本来就要横向滚动，遮一块特别难受。顶栏是独立的一行布局，
- * WebView 只占它下面那块，任何内容都不会被盖住。同步和刷新连菜单项
+ * WebView 只占它下面那块，任何内容都不会被盖住。**日常**同步和刷新连菜单项
  * 都不留，统一走下拉手势；活动图直接点看板里的活动行，⋮ 里是
- * 「今日一图流」「设置」（预留模型接口配置）「小米体重」和「账号登录」
- * （佳明 / 高驰双图标选择，数据源可分别登）。
+ * 「今日一图流」「历史数据」「AI 教练」「模型服务设置」「小米体重」和「账号登录」
+ * （佳明 / 高驰双图标选择，数据源可分别登）。「历史数据」负责下拉同步覆盖不到的
+ * 两件事：补拉更早的历史区间，以及按日期/按活动查已落库的数据。
  *
  * 两个原生的地方：
  *   1) 登录 / 验证码要用系统键盘，原生对话框比 HTML 表单可靠；
@@ -212,16 +215,18 @@ class MainActivity : Activity() {
     private fun showMenu() {
         val pm = PopupMenu(this, menuBtn)
         val m = pm.menu
-        // 同步与刷新都交给下拉手势；活动图直接点看板里的活动行出，
-        // 菜单里不再重复入口。一图流导出、设置、小米体重、重新登录。
+        // 日常同步与刷新都交给下拉手势；活动图直接点看板里的活动行出，
+        // 菜单里不再重复这两个入口。其余是一次性/低频动作。
         m.add(0, 1, 0, "今日一图流")
-        m.add(0, 5, 1, "AI 教练")
-        m.add(0, 2, 2, "模型服务设置")
-        m.add(0, 3, 3, "小米体重")
-        m.add(0, 4, 4, "账号登录")
+        m.add(0, 6, 1, "历史数据")
+        m.add(0, 5, 2, "AI 教练")
+        m.add(0, 2, 3, "模型服务设置")
+        m.add(0, 3, 4, "小米体重")
+        m.add(0, 4, 5, "账号登录")
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> exportCard()
+                6 -> showHistoryMenu()
                 // AI 教练与设置都在本机服务的另一个页面里：同源，桥的规则不变
                 5 -> if (port != 0) web.loadUrl("http://127.0.0.1:$port/ai")
                 2 -> if (port != 0) web.loadUrl("http://127.0.0.1:$port/ai#settings")
@@ -231,6 +236,221 @@ class MainActivity : Activity() {
             true
         }
         pm.show()
+    }
+
+    // ------------------------------------------------------------ 历史数据
+    /**
+     * 下拉刷新只同步最近 30 天，补历史 / 查历史都从这个入口进。
+     * 覆盖范围从 `days_index()` 读（只查本地库，不联网），先告诉用户
+     * 「已经同步到哪天」，免得对着空白日期瞎选或重复补拉。
+     */
+    private fun showHistoryMenu() {
+        val s = apiCall("days_index", 1)
+        val cover = if (s.optBoolean("ok") && s.optInt("count") > 0)
+            "已覆盖 ${s.optString("first")} ~ ${s.optString("last")}\n" +
+                "${s.optInt("count")} 天日汇总 · ${s.optInt("activities")} 条活动"
+        else "本地库还是空的，先下拉同步一次"
+        AlertDialog.Builder(this)
+            .setTitle("历史数据")
+            .setMessage(cover)
+            .setItems(arrayOf<CharSequence>(
+                "拉取更多历史数据", "按日期查看看板",
+                "历史活动列表", "返回今日看板")) { _, which ->
+                when (which) {
+                    0 -> showSyncRangeDialog()
+                    1 -> showDateDashboard()
+                    2 -> showHistoryActivities(null, null, 0, null)
+                    3 -> reload()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showSyncRangeDialog() {
+        val end = todayISO()
+        AlertDialog.Builder(this)
+            .setTitle("拉取更多历史数据（增量补齐）")
+            .setMessage("已有且稳定的日子会跳过，活动列表自动翻页补齐。\n" +
+                "范围越大请求越多，请保持网络畅通。")
+            .setItems(arrayOf<CharSequence>(
+                "最近 90 天", "最近 180 天", "最近 365 天",
+                "自定义日期区间…（最多 3 年）")) { _, which ->
+                if (which < 3) {
+                    val n = intArrayOf(90, 180, 365)[which]
+                    runHistorySync(shiftISO(end, -(n - 1)), end)
+                } else {
+                    pickDateRange { a, b -> runHistorySync(a, b) }
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun runHistorySync(start: String, end: String) {
+        val email = secrets.email()
+        val pwd = secrets.password()
+        if (email.isNullOrBlank() || pwd.isNullOrBlank()) {
+            toast("补历史需要佳明账号，请先在「账号登录」里登录")
+            showLoginPicker()
+            return
+        }
+        busy(true)
+        subtitle.text = "正在补历史 $start ~ $end…"
+        thread {
+            // with_body=false 不顺带拉小米秤；force=false 走增量，避免重复请求
+            val r = apiCall("sync_range", start, end, email, pwd, false, false)
+            ui {
+                busy(false)
+                if (!r.optBoolean("ok")) {
+                    setStatus(apiCall("status"))
+                    val err = r.optString("error")
+                    if (r.optBoolean("need_login") || r.optBoolean("need_mfa")) {
+                        toast("登录已失效：$err")
+                        askGarminLogin()
+                    } else {
+                        toast("补历史失败：$err")
+                    }
+                    return@ui
+                }
+                toast("已补 ${r.optString("range")}：新拉 ${r.optInt("fetched")} 天、" +
+                    "跳过 ${r.optInt("skipped")} 天缓存、活动 ${r.optInt("activities")} 条")
+                thread {
+                    apiCall("dashboard")
+                    setStatus(apiCall("status"))
+                    ui { reload() }
+                }
+            }
+        }
+    }
+
+    private fun showDateDashboard() {
+        if (port == 0) {
+            toast("还在启动，稍等一下")
+            return
+        }
+        val s = apiCall("days_index", 1)
+        val last = s.optString("last").ifBlank { todayISO() }
+        val first = s.optString("first").ifBlank { shiftISO(last, -365) }
+        pickDate("查看哪一天的看板？", last) { date ->
+            if (date < first || date > last) {
+                toast("这天还没同步数据（已覆盖 $first ~ $last）")
+                return@pickDate
+            }
+            busy(true)
+            thread {
+                // live=false：历史日期不联网刷身体电量，直接出本地看板
+                val r = apiCall("dashboard", date, false)
+                ui {
+                    busy(false)
+                    if (!r.optBoolean("ok")) {
+                        toast("看板生成失败：${r.optString("error")}")
+                        return@ui
+                    }
+                    web.loadUrl(fileUrl(r.optString("html")))
+                    toast("已打开 $date 的看板 · 菜单「历史数据 → 返回今日看板」可回去")
+                }
+            }
+        }
+    }
+
+    /** 本地历史活动列表：按日期筛选、只看跑步、分页加载更早，点一条即出活动图。 */
+    private fun showHistoryActivities(
+        start: String?, end: String?, offset: Int, types: String?
+    ) {
+        busy(true)
+        thread {
+            val r = apiCall("activities", start, end, types, 60, offset)
+            ui {
+                busy(false)
+                if (!r.optBoolean("ok")) {
+                    toast("查询失败：${r.optString("error")}")
+                    return@ui
+                }
+                val arr = r.optJSONArray("items") ?: JSONArray()
+                val labels = mutableListOf<String>()
+                val ids = mutableListOf<String>()
+                for (i in 0 until arr.length()) {
+                    val it = arr.optJSONObject(i) ?: continue
+                    labels.add(it.optString("label"))
+                    ids.add(it.optString("id"))
+                }
+                if (r.optBoolean("has_more")) {
+                    labels.add("↓ 加载更早的活动")
+                    ids.add("")
+                }
+                if (labels.isEmpty()) {
+                    toast("这个区间没有活动")
+                    return@ui
+                }
+                val scope = if (start.isNullOrBlank() && end.isNullOrBlank())
+                    "全部" else "${start ?: "最早"} ~ ${end ?: "今天"}"
+                val kind = if (types == "run") "只看跑步" else "全部类型"
+                val items = Array<CharSequence>(labels.size) { i -> labels[i] }
+                val dlg = AlertDialog.Builder(this)
+                    .setTitle("历史活动 · ${r.optInt("total")} 条 · $scope · $kind")
+                    .setItems(items) { _, which ->
+                        val id = ids[which]
+                        if (id.isEmpty())
+                            showHistoryActivities(start, end, offset + 60, types)
+                        else
+                            askPrivacy(id)   // 复用「分享前脱敏」三档，再出活动图
+                    }
+                    .setNeutralButton("按日期筛选") { _, _ ->
+                        pickDateRange { a, b -> showHistoryActivities(a, b, 0, types) }
+                    }
+                    .setNegativeButton("关闭", null)
+                if (types == "run") {
+                    dlg.setPositiveButton("显示全部") { _, _ ->
+                        showHistoryActivities(start, end, 0, null)
+                    }
+                } else {
+                    dlg.setPositiveButton("只看跑步") { _, _ ->
+                        showHistoryActivities(start, end, 0, "run")
+                    }
+                }
+                dlg.show()
+            }
+        }
+    }
+
+    // DatePicker 的月份是 0-based；统一转成 YYYY-MM-DD 再传给 Python 侧校验。
+    private fun isoOf(y: Int, m: Int, d: Int): String =
+        String.format(Locale.US, "%04d-%02d-%02d", y, m + 1, d)
+
+    private fun todayISO(): String {
+        val c = Calendar.getInstance()
+        return isoOf(c.get(Calendar.YEAR), c.get(Calendar.MONTH),
+            c.get(Calendar.DAY_OF_MONTH))
+    }
+
+    private fun shiftISO(iso: String, days: Int): String = try {
+        val p = iso.split("-")
+        val c = Calendar.getInstance()
+        c.set(p[0].toInt(), p[1].toInt() - 1, p[2].toInt())
+        c.add(Calendar.DAY_OF_MONTH, days)
+        isoOf(c.get(Calendar.YEAR), c.get(Calendar.MONTH),
+            c.get(Calendar.DAY_OF_MONTH))
+    } catch (t: Throwable) {
+        todayISO()
+    }
+
+    private fun pickDate(title: String, initial: String, done: (String) -> Unit) {
+        val p = initial.split("-")
+        DatePickerDialog(
+            this,
+            DatePickerDialog.OnDateSetListener { _, y, m, d -> done(isoOf(y, m, d)) },
+            p[0].toInt(), p[1].toInt() - 1, p[2].toInt()
+        ).apply { setTitle(title) }.show()
+    }
+
+    private fun pickDateRange(done: (String, String) -> Unit) {
+        pickDate("选择结束日期", todayISO()) { end ->
+            pickDate("选择起始日期", shiftISO(end, -89)) { start ->
+                if (start > end) toast("起始日不能晚于结束日")
+                else done(start, end)
+            }
+        }
     }
 
     // ------------------------------------------------------------ 启动

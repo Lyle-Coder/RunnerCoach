@@ -116,8 +116,8 @@ def _today(store: Store) -> dict:
 # 会抛 "Cannot convert dict Object to java.util.Map"；而 JSON 是字符串，
 # 两边都不用做类型映射，嵌套结构也不会丢。
 _API = {
-    "env_info", "status", "login", "submit_mfa", "sync",
-    "dashboard", "card_html", "act_card_html", "runs",
+    "env_info", "status", "login", "submit_mfa", "sync", "sync_range",
+    "dashboard", "card_html", "act_card_html", "runs", "activities", "days_index",
     "start_server", "recent", "read_html",
     "set_llm_config", "get_llm_config", "ai",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
@@ -486,12 +486,16 @@ def coros_sync(days: int = 30, email: str = "", password: str = "") -> dict:
 
 # ---------------------------------------------------------------- 同步
 def sync(days: int = 30, email: str | None = None, password: str | None = None,
-         with_body: bool = True, progress=None, force: bool = False) -> dict:
+         with_body: bool = True, progress=None, force: bool = False,
+         end: str | None = None, activity_pages: int = 1) -> dict:
     """拉数据。`email/password` 只在会话过期时用来续一次，不会被写盘。
 
     增量是默认行为：已有数据且早已过完的日子不会再请求一遍，
     所以「下拉刷新」通常只拉今天和昨天，几秒就能结束。
     需要整段重拉（换表盘 / 补历史字段）时传 `force=True`。
+
+    `end` 是区间结束日（默认今天），`activity_pages` 是活动列表翻页数——
+    两个都是末尾新增参数，旧 APK 的四参数调用完全不受影响。
     """
 
     def cb(i, n, d):
@@ -511,7 +515,8 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
     store = Store(DB)
     svc = SyncService(client, store)
     try:
-        res = svc.sync(days=days, extras=False, progress=cb, force=force)
+        res = svc.sync(days=days, end=end, extras=False, progress=cb,
+                       force=force, activity_pages=activity_pages)
     except SessionExpired:
         # 会话刚好过期：有凭据就重登一次再试，没有就让界面去登录
         if not (email and password):
@@ -519,7 +524,8 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
         try:
             client = _client(email, password)
             res = SyncService(client, store).sync(
-                days=days, extras=False, progress=cb, force=force)
+                days=days, end=end, extras=False, progress=cb,
+                force=force, activity_pages=activity_pages)
         except MfaRequired:
             return {"ok": False, "need_mfa": True, "error": "续期需要验证码"}
         except Exception as e:
@@ -542,6 +548,38 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
         except Exception as e:
             out["body"] = {"count": 0, "error": f"{type(e).__name__}: {e}"}
 
+    return out
+
+
+def sync_range(start: str, end: str | None = None,
+               email: str | None = None, password: str | None = None,
+               with_body: bool = True, force: bool = False,
+               activity_pages: int | None = None) -> dict:
+    """按日期区间补历史数据（App「拉取更多历史」用）。
+
+    `start` / `end` 是 YYYY-MM-DD，end 默认今天。一次最多 3 年，
+    防止误点一次发几百个请求；活动列表按 60 条一页自动翻到区间起点。
+    返回结构与 `sync()` 一致，额外带 `start` / `end` / `activity_pages`。
+    """
+    try:
+        s = dt.date.fromisoformat(str(start))
+        e = dt.date.fromisoformat(str(end)) if end else dt.date.today()
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "日期格式应为 YYYY-MM-DD"}
+    if s > e:
+        return {"ok": False, "error": "开始日期不能晚于结束日期"}
+    days = (e - s).days + 1
+    if days > 1095:
+        return {"ok": False, "error": "一次最多补 3 年（1095 天），请分段拉取"}
+    pages = activity_pages if activity_pages is not None else min(
+        20, max(1, (days + 29) // 30))
+    out = sync(days=days, email=email, password=password,
+               with_body=with_body, progress=None, force=force,
+               end=e.isoformat(), activity_pages=pages)
+    if out.get("ok"):
+        out["start"] = s.isoformat()
+        out["end"] = e.isoformat()
+        out["activity_pages"] = pages
     return out
 
 
@@ -606,15 +644,16 @@ def card_html(date: str | None = None) -> dict:
             **export_spec(BG_CARD, trim=False)}
 
 
-def runs(limit: int = 30) -> dict:
+def runs(limit: int = 30, days: int = 180) -> dict:
     """最近的跑步活动，给 App 的「选一条出图」列表用。
 
     只查本地库，不联网。带 activity_id 才能继续出图。
+    `days` 是回溯天数，补过历史之后可以传更大值（默认仍兼容旧 APK）。
     """
     try:
         store = Store(DB)
         end = dt.date.today()
-        start = end - dt.timedelta(days=180)
+        start = end - dt.timedelta(days=max(1, int(days or 180)))
         out = []
         for r in store.activities(start.isoformat(), end.isoformat()):
             if (r.get("type") or "") not in _RUN_TYPES:
@@ -634,6 +673,93 @@ def runs(limit: int = 30) -> dict:
             if len(out) >= max(1, int(limit)):
                 break
         return {"ok": True, "items": out}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def activities(start: str | None = None, end: str | None = None,
+               types: str | None = None, limit: int = 100,
+               offset: int = 0) -> dict:
+    """查询本地库里的历史活动（不联网），给 App「历史活动」列表用。
+
+    `start` / `end` 是 YYYY-MM-DD；`types` 传 `run` 只筛跑步，也可以传
+    逗号分隔的 typeKey，留空表示全部。`limit` / `offset` 分页，界面用
+    `has_more` 决定要不要显示「加载更早」。
+    """
+    try:
+        store = Store(DB)
+        st = store.stats()
+        # 起点以「活动表」最早日期为准，不能用 daily.first：佳明活动列表
+        # 一次返回最近 60 条，往往横跨到日汇总窗口之前（本机就有 33 条
+        # 9 月的活动），按 daily.first 查会把这些已落库的历史活动漏掉。
+        try:
+            act_first = store.conn.execute(
+                "SELECT MIN(date) FROM activities").fetchone()[0]
+        except Exception:
+            act_first = None
+        e = end or dt.date.today().isoformat()
+        s = start or act_first or st.get("first") or (
+            dt.date.today() - dt.timedelta(days=3650)).isoformat()
+        try:
+            dt.date.fromisoformat(s)      # 非法日期直接报错，别悄悄查出空集
+            dt.date.fromisoformat(e)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "日期格式应为 YYYY-MM-DD"}
+        if s > e:
+            return {"ok": False, "error": "开始日期不能晚于结束日期"}
+        rows = store.activities(s, e)
+        kind = (types or "").strip().lower()
+        if kind == "run":
+            allow = set(_RUN_TYPES)
+        elif kind and kind not in ("all", "全部"):
+            allow = {x.strip() for x in kind.split(",") if x.strip()}
+        else:
+            allow = None
+        picked = [r for r in rows if allow is None or (r.get("type") or "") in allow]
+        lim = max(1, min(500, int(limit or 100)))
+        off = max(0, int(offset or 0))
+        items = []
+        for r in picked[off:off + lim]:
+            dist = (r.get("distance_m") or 0) / 1000
+            pace = r.get("pace_s_km") or 0
+            pace_s = f"{int(pace) // 60}'{int(pace) % 60:02d}\"" if pace else "—"
+            dur = r.get("duration_s") or 0
+            dur_s = f"{int(dur) // 60}:{int(dur) % 60:02d}"
+            items.append({
+                "id": str(r.get("activity_id") or ""),
+                "date": r.get("date") or "",
+                "start": (r.get("start_ts") or "")[11:16],
+                "name": r.get("name") or "活动",
+                "type": r.get("type") or "",
+                "dist": round(dist, 2),
+                "pace": pace_s,
+                "dur": dur_s,
+                "hr": r.get("avg_hr"),
+                "load": r.get("load"),
+                "label": (f"{r.get('date') or ''}  "
+                          f"{(r.get('start_ts') or '')[11:16]}  "
+                          f"{r.get('name') or '活动'}  {dist:.2f}km  {pace_s}"),
+            })
+        return {"ok": True, "items": items, "total": len(picked),
+                "offset": off, "has_more": off + lim < len(picked),
+                "start": s, "end": e,
+                "first": st.get("first"), "last": st.get("last")}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def days_index(limit: int = 400) -> dict:
+    """库里已有数据的日期清单（倒序），给 App 的日期选择器划范围。"""
+    try:
+        store = Store(DB)
+        st = store.stats()
+        rows = store.conn.execute(
+            "SELECT date FROM daily ORDER BY date DESC LIMIT ?",
+            (max(1, min(2000, int(limit or 400))),),
+        ).fetchall()
+        return {"ok": True, "items": [r["date"] for r in rows],
+                "count": st.get("days", 0), "activities": st.get("activities", 0),
+                "first": st.get("first"), "last": st.get("last")}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 

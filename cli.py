@@ -254,8 +254,32 @@ def cmd_sync(args) -> int:
         print(f"\r  同步 {i}/{n} {d}", end="", flush=True)
 
     force = bool(getattr(args, "force", False))
+    days = args.days
+    end = getattr(args, "end", None)
+    pages = getattr(args, "activity_pages", None)
+    start = getattr(args, "start", None)
+    if start:
+        try:
+            s = dt.date.fromisoformat(start)
+            e = dt.date.fromisoformat(end) if end else dt.date.today()
+        except ValueError:
+            print("× --start / --end 必须是 YYYY-MM-DD")
+            return 2
+        if s > e:
+            print("× 起始日不能晚于结束日")
+            return 2
+        days = (e - s).days + 1
+        if days > 1095:
+            print("× 一次最多补 3 年（1095 天），请分段拉取")
+            return 2
+        end = e.isoformat()
+        if pages is None:
+            pages = min(20, max(1, (days + 29) // 30))
+    if pages is None:
+        pages = 1
     try:
-        res = svc.sync(days=args.days, extras=args.extras, progress=progress, force=force)
+        res = svc.sync(days=days, end=end, extras=args.extras,
+                       progress=progress, force=force, activity_pages=pages)
     except SessionExpired:
         print("\n· 会话过期，尝试用已保存的账号自动续期…", flush=True)
         if not _auto_login(load_config()):
@@ -264,7 +288,9 @@ def cmd_sync(args) -> int:
         client = get_client()
         svc = SyncService(client, store)
         try:
-            res = svc.sync(days=args.days, extras=args.extras, progress=progress, force=force)
+            res = svc.sync(days=days, end=end, extras=args.extras,
+                           progress=progress, force=force,
+                           activity_pages=pages)
         except SessionExpired:
             print("\n× 续期后仍然被拒绝，请重新登录：run.bat login")
             return 3
@@ -275,7 +301,7 @@ def cmd_sync(args) -> int:
           f"{res['activities']} 条活动，共 {res.get('requests', 0)} 次请求")
     if not getattr(args, "no_cards", False):
         try:
-            made = auto_cards(store, client, days=min(args.days, 7))
+            made = auto_cards(store, client, days=min(days, 7))
         except Exception as e:
             made = []
             print(f"  活动图生成跳过：{type(e).__name__}: {e}")
@@ -287,7 +313,7 @@ def cmd_sync(args) -> int:
             print(f"   - {e}")
     # 体重 / 体成分：秤的数据不在佳明云里，每次同步顺手带一次（失败不阻断主流程）
     if getattr(args, "body", True):
-        _sync_body(store, days=min(max(args.days, 7), 120))
+        _sync_body(store, days=min(max(days, 7), 120))
     return 0
 
 
@@ -2045,6 +2071,60 @@ def cmd_selftest(args) -> int:
     assert EX.content_height(1080, 1080, 2250) == 2250
     assert EX.content_height(1080, 1080, 1920) == 1920
 
+    # 历史数据（手机端「拉取更多 / 查询历史」）：接口面、区间门禁与活动分页。
+    # 只跑不联网的分支——合法日期的 sync_range 会真发请求，不能进自检。
+    import json as _json
+    import tempfile as _tf
+    from pathlib import Path as _Path
+    from garmin_cn import appapi as AP
+    from garmin_cn.store import Store as _Store
+    from garmin_cn.sync import SyncService as _Sync
+
+    assert {"sync_range", "activities", "days_index"} <= AP._API
+
+    def bad_range(*a):
+        return _json.loads(AP.call("sync_range", _json.dumps(list(a))))
+
+    assert bad_range("2026-11-06", "2026-11-01")["ok"] is False   # 起止颠倒
+    assert bad_range("2020-01-01", "2026-11-06")["ok"] is False   # 超过 3 年
+    assert bad_range("not-a-date")["ok"] is False                 # 非法日期
+    bad_q = _json.loads(AP.call("activities", _json.dumps(["bad-date"])))
+    assert bad_q["ok"] is False and "YYYY-MM-DD" in bad_q["error"]
+    d = _json.loads(AP.call("days_index", _json.dumps([1])))
+    assert d["ok"] and all(k in d for k in ("first", "last", "count", "items"))
+    q = _json.loads(AP.call("activities", _json.dumps([None, None, None, 5, 0])))
+    assert q["ok"] and all(k in q for k in ("items", "total", "has_more", "offset"))
+
+    class _FakeClient:
+        def __init__(self, items):
+            self.items = items
+
+        def activities(self, limit=60, start=0):
+            return self.items[start:start + limit]
+
+    with _tf.TemporaryDirectory() as td:
+        items = [
+            {"activityId": 1000 + i,
+             "startTimeLocal": (dt.date(2026, 11, 6) -
+                                dt.timedelta(days=i)).isoformat() + " 07:00:00",
+             "activityType": {"typeKey": "running"},
+             "duration": 1800, "distance": 6000}
+            for i in range(150)
+        ]
+        # 补一年历史时活动不能只留最近 60 条：翻页应把 150 条都落库
+        sa = _Store(_Path(td) / "a.db")
+        sb = _Store(_Path(td) / "b.db")
+        try:
+            assert _Sync(_FakeClient(items), sa) \
+                .sync_activities(max_pages=3, oldest=None) == 150
+            # 翻到本页已有早于区间起点的活动时收手，不把整个账号历史拉一遍
+            assert _Sync(_FakeClient(items), sb) \
+                .sync_activities(max_pages=3, oldest="2026-11-01") == 60
+        finally:
+            # Windows 下不关连接，TemporaryDirectory 清理时会 WinError 32
+            sa.conn.close()
+            sb.conn.close()
+
     # 分享前轨迹脱敏：档位口径 + 「脱敏版绝不泄漏轨迹」的硬约束。
     # 用合成轨迹（约 1.1 km 直线），不碰任何真实活动 ID / 坐标 / 日期。
     from garmin_cn import privacy as PV
@@ -2228,6 +2308,10 @@ def main() -> int:
 
     q = sub.add_parser("sync", help="同步数据")
     q.add_argument("--days", type=int, default=30)
+    q.add_argument("--start", help="补历史的起始日 YYYY-MM-DD（与 --end 配合，会覆盖 --days）")
+    q.add_argument("--end", help="区间结束日 YYYY-MM-DD，默认今天")
+    q.add_argument("--activity-pages", type=int, default=None,
+                   help="活动列表翻页数（每页 60 条）；补历史时默认按天数自动算")
     q.add_argument("--extras", action="store_true", help="额外拉压力/身体电量明细（更慢）")
     q.add_argument("--force", action="store_true",
                    help="整段重拉（默认增量：已稳定且拉过的日子直接跳过）")

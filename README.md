@@ -89,7 +89,9 @@ run.bat demo --open     :: 用 60 天仿真数据生成看板
 
 ```bat
 run.bat login                    :: 交互输入账号密码，可能需要邮箱验证码
-run.bat sync --days 30           :: 同步最近 30 天
+run.bat sync --days 30           :: 同步最近 30 天（增量）
+run.bat sync --start 2026-01-01 --end 2026-11-06 --no-cards
+                                 :: 按区间补历史（最多 3 年，活动列表自动翻页）
 run.bat report --open            :: 生成看板 output/latest.html
 run.bat card                     :: 生成 1080×1920 一图流
 ```
@@ -104,7 +106,7 @@ POSIX 把 `run.bat` 换成 `./run.sh`。`daily.bat` / `daily.sh` 把「同步 + 
 | 命令 | 作用 |
 |---|---|
 | `doctor` / `status` / `selftest` | 环境自检 / 数据状态 / 离线回归 |
-| `sync --days N` / `backfill` | 增量同步 / 补齐历史明细 |
+| `sync --days N` / `--start … --end …` / `backfill` | 增量同步 / 按日期区间补历史（最多 3 年，活动列表自动翻页）/ 补齐历史明细 |
 | `report` / `card` / `brief` | 看板 / 一图流 / 可发微信的纯文本简报 |
 | `act --id <activity_id> --card` | 单次活动明细与活动图（分圈、曲线、轨迹）；间歇训练自动改底部双栏（左快组 / 右慢组，原地休息型改显示组间恢复时长） |
 | `today` / `plan` / `push` / `note` | 今日处方 / 佳明计划 / 推送课表 / 写点评 |
@@ -122,7 +124,7 @@ POSIX 把 `run.bat` 换成 `./run.sh`。`daily.bat` / `daily.sh` 把「同步 + 
 | 形态 | 适合谁 | 出 PNG | 门槛 |
 |---|---|:---:|---|
 | **桌面 CLI + 本地网页** | 有电脑、想自己改代码 | ✅ | 装 Python，敲命令 |
-| **安卓 APK**（[`android/`](android/)） | 只用手机、不想碰命令行 | ✅ WebView 截图 | 装 APK，下拉同步 |
+| **安卓 APK**（[`android/`](android/)） | 只用手机、不想碰命令行 | ✅ WebView 截图 | 装 APK，下拉同步最近 30 天；⋮ →「历史数据」补拉更早区间 / 按日期看板 / 查历史活动 |
 | **Termux / 局域网只读** | 愿意折腾 / 只想看结果 | HTML 版 | `setup-termux.sh` 或 `serve --lan` |
 
 `serve` 默认只监听 `127.0.0.1`；加 `--lan` 才暴露到局域网，并自动生成访问码，

@@ -49,7 +49,7 @@
 
 | 文件 | 作用 | 验证 |
 |---|---|---|
-| `garmin_cn/appapi.py` | App ↔ Python 的唯一接口面，12 个函数全返回 JSON 化 dict | ✅ 本地实测 |
+| `garmin_cn/appapi.py` | App ↔ Python 的唯一接口面，29 个函数全返回 JSON 化 dict | ✅ 本地实测 |
 | `android/` 工程骨架 | Gradle + Manifest + Kotlin（MainActivity / Secrets）+ 图标 | ✅ **已编译出 APK** |
 | `android/build.bat` | 一键构建（便携 JDK 17 + Gradle 8.7 + SDK 34） | ✅ 实测，增量 16 秒 |
 | `android/sync_python(.sh/.bat)` | 把 `garmin_cn` 同步进 source set | ✅ 34 个 .py（含 `privacy.py`） |
@@ -115,12 +115,18 @@ env_info()                      # 环境自检
 status()                        # 登录态 / 数据范围 / 今日恢复度与处方
 login(email, password)          # 返回 need_mfa 时转去验证码
 submit_mfa(code)                # 验证码是一次性的，内部持有同一个 auth 实例
-sync(days, email, password)     # 会话过期自动续一次；email/password 不落盘
-dashboard(date)                 # 出网页看板
+sync(days, email, password, ..., end=None, activity_pages=1)
+                                # 增量同步；end / activity_pages 是末尾新增参数，
+                                # 旧 APK 的四参数调用完全不受影响
+sync_range(start, end=None, ...) # 按日期区间补历史（最多 3 年），活动列表自动翻页
+activities(start=None, end=None, types=None, limit=100, offset=0)
+                                # 只查本地库的历史活动，支持区间/类型/分页
+days_index(limit=400)           # 已有数据的日期清单，给日期选择器划范围
+dashboard(date)                 # 出网页看板（历史日期也能出）
 card_html(date)                 # 出一图流 HTML（PNG 交给 WebView）
 act_card_html(id, privacy="none")  # 活动图 HTML：画布 1080×2250，成品 1080×1920
                                    # privacy: none 原图 / trim 裁首尾 200m / hide 全隐藏
-runs(limit)                     # 最近跑步活动清单（选一条出图用）
+runs(limit, days=180)           # 最近跑步活动清单（补历史后可传更大 days）
 start_server(port=0)            # 127.0.0.1 只读服务，返回实际端口
 recent(limit)                   # 产物清单
 read_html(path)                 # 只允许读 output/ 下的文件

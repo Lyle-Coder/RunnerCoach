@@ -222,25 +222,45 @@ class SyncService:
             live.save_bb(self.store, date, bb_row)
         return row
 
-    def sync_activities(self, limit: int = 60) -> int:
-        try:
-            items = self.client.activities(limit=limit)
-        except SessionExpired:
-            raise
-        except Exception as e:
-            self.errors.append(f"activities: {type(e).__name__} {e}")
-            return 0
-        n = 0
-        for a in items:
-            if not isinstance(a, dict) or not a.get("activityId"):
-                continue
-            self.store.upsert_activity(parse_activity(a))
-            n += 1
-        return n
+    def sync_activities(self, limit: int = 60, max_pages: int = 1,
+                        oldest: str | None = None) -> int:
+        """分页拉活动列表。默认只取第一页（最近 60 条），与旧行为一致。
+
+        补历史时必须翻页：佳明活动列表按时间倒序，`start` 是偏移量，
+        一次 `sync(days=365)` 若还只取 60 条，日汇总补齐了、活动却仍是
+        最近两个月。翻到「本页最早活动早于区间起点」或不足一页就停，
+        免得为了补一年把账号里十年的活动全拉一遍。
+        """
+        total = 0
+        pages = max(1, min(20, int(max_pages or 1)))
+        for page in range(pages):
+            try:
+                items = self.client.activities(limit=limit, start=page * limit)
+            except SessionExpired:
+                raise
+            except Exception as e:
+                self.errors.append(f"activities: {type(e).__name__} {e}")
+                return total
+            if not items:
+                return total
+            reached = False
+            n = 0
+            for a in items:
+                if not isinstance(a, dict) or not a.get("activityId"):
+                    continue
+                day = (a.get("startTimeLocal") or "")[:10]
+                if oldest and day and day < oldest:
+                    reached = True
+                self.store.upsert_activity(parse_activity(a))
+                n += 1
+                total += 1
+            if n == 0 or len(items) < limit or reached:
+                return total
+        return total
 
     def sync(self, days: int = 30, end: str | None = None, extras: bool = False,
-             progress=None, force: bool = False) -> dict:
-        """同步最近 N 天。
+             progress=None, force: bool = False, activity_pages: int = 1) -> dict:
+        """同步最近 N 天（或截止到 `end` 往前 N 天）。
 
         增量是默认行为：**已经稳定的一天不会再拉一遍**。判定标准是
         「库里已有这天的数据，且上次同步发生在这天之后」——过去的日汇总、
@@ -276,7 +296,7 @@ class SyncService:
             ok += 1
             if progress:
                 progress(i, len(todo), d)
-        acts = self.sync_activities()
+        acts = self.sync_activities(max_pages=activity_pages, oldest=dates[0])
         plan = self.sync_plan(end)
         self.store.set_meta("last_sync", dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.store.set_meta("last_sync_end", end)
