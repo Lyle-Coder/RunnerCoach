@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 130 130">
+  <defs><filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="4"/></filter></defs>
+  <rect width="130" height="130" fill="#0F1B2A"/>
+  
+  <g filter="url(#glow)" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="24" y="34" width="82" height="62" rx="31" fill="none" stroke="#2E7BBF" stroke-width="11" stroke-opacity="0.95"/>
+    <rect x="38" y="48" width="54" height="34" rx="17" fill="none" stroke="#2E5A80" stroke-width="4" stroke-opacity="0.8"/>
+    <path d="M22 65 L48 65 L57 47 L68 85 L78 56 L85 65 L108 65" fill="none" stroke="#5FA8E0" stroke-width="10"/>
+    <circle cx="22" cy="65" r="10" fill="#4FD6A6"/>
+    <rect x="98" y="55" width="20" height="20" rx="4" fill="#E06A5F"/>
+  </g>
+
+  
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <rect x="24" y="34" width="82" height="62" rx="31" fill="none" stroke="#5FA8E0" stroke-width="5"/>
+    <rect x="38" y="48" width="54" height="34" rx="17" fill="none" stroke="#2E5A80" stroke-width="3"/>
+    <path d="M22 65 L48 65 L57 47 L68 85 L78 56 L85 65 L108 65" fill="none" stroke="#CFE6FF" stroke-width="3.5"/>
+    <circle cx="22" cy="65" r="8" fill="#4FD6A6"/>
+    <rect x="100" y="57" width="16" height="16" rx="3.5" fill="#E06A5F"/>
+  </g>
+
+</svg>
