@@ -1120,8 +1120,9 @@ def _probe_material(p: Path) -> dict:
         return {"kind": "image",
                 "w": j.get("w"), "h": j.get("h"),
                 "orientation": j.get("orientation") or 1,
-                "t_utc": j.get("t_utc"), "lat": j.get("lat"),
-                "lon": j.get("lon"), "bytes": j.get("bytes") or 0}
+                "t_utc": j.get("t_utc"), "t_source": j.get("t_source") or "",
+                "lat": j.get("lat"), "lon": j.get("lon"),
+                "bytes": j.get("bytes") or 0, "dur": None}
     from . import clip as clip_mod
     try:
         v = clip_mod.probe(p)
@@ -1129,7 +1130,8 @@ def _probe_material(p: Path) -> dict:
         v = {}
     return {"kind": "video",
             "w": v.get("w"), "h": v.get("h"), "orientation": 1,
-            "t_utc": v.get("t_utc"), "lat": v.get("lat"), "lon": v.get("lon"),
+            "t_utc": v.get("t_utc"), "t_source": v.get("t_source") or "",
+            "lat": v.get("lat"), "lon": v.get("lon"), "dur": v.get("dur"),
             "codec": v.get("codec") or "", "bytes": v.get("bytes") or 0}
 
 
@@ -1163,12 +1165,27 @@ def motion_cleanup(run: str) -> dict:
 
 
 def clips_list() -> dict:
+    """素材清单。顺便把拍摄时间/真实时长探出来，界面上要显示给用户看。
+
+    文件可能被外部删掉（清缓存、换机），所以每条都带 `exists`，
+    界面据此标「文件已丢失」而不是让人对着一条点不动的记录发呆。
+    """
     MEDIA.mkdir(parents=True, exist_ok=True)
     items = _clips_read()
-    # 老记录没有 kind 字段，按扩展名补上，界面才好区分「视频 / 图片」
     for it in items:
-        if not it.get("kind"):
-            it["kind"] = _kind_of(Path(str(it.get("path") or "")))
+        p = Path(str(it.get("path") or ""))
+        it["kind"] = it.get("kind") or _kind_of(p)
+        it["exists"] = p.is_file()
+        if not it["exists"]:
+            continue
+        info = _probe_material(p)
+        it["t_utc"] = info.get("t_utc")
+        it["t_source"] = info.get("t_source") or ""
+        it["w"] = it.get("w") or info.get("w") or 0
+        it["h"] = it.get("h") or info.get("h") or 0
+        # 视频用文件的真实时长：登记时传的是剪辑结果，可能和时间轴差几十毫秒
+        if info.get("dur"):
+            it["dur"] = round(float(info["dur"]), 2)
     return {"ok": True, "items": items, "dir": str(MEDIA)}
 
 

@@ -889,7 +889,12 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------ 素材
-    /** 素材管理：列出已登记的图片/片段，点一条问删除，右上角添加。 */
+    /**
+     * 素材管理：每条显示缩略图 + 名称 + 类型/时长 + 拍摄时间，点一条问删除。
+     *
+     * 为什么不复用 `setItems(文字数组)`：只有文字时根本分不清哪条是哪条——
+     * 一堆 `vid-1730...` 的名字，选错了才发现删错。缩略图 + 时间才认得出来。
+     */
     private fun showClips() {
         thread {
             val r = apiCall("clips_list")
@@ -898,39 +903,210 @@ class MainActivity : Activity() {
                     toast("读取素材失败")
                     return@ui
                 }
-                val arr = r.optJSONArray("items") ?: JSONArray()
-                val labels = (0 until arr.length()).map { i ->
-                    val o = arr.optJSONObject(i) ?: JSONObject()
-                    val name = o.optString("name", "素材")
-                    if (o.optString("kind") == "image") {
-                        "「$name」 · 图片"
-                    } else {
-                        "「$name」 · ${"%.1f".format(o.optDouble("dur", 0.0))} 秒"
-                    }
-                }.toTypedArray()
-                if (labels.isEmpty()) {
-                    AlertDialog.Builder(this)
-                        .setTitle("素材")
-                        .setMessage("还没有素材。\n\n" +
-                            "可以加图片或视频：\n" +
-                            "· 图片直接插到回放对应位置；\n" +
-                            "· 视频能裁出想要的几秒（只搬样本不重编码，几秒就完成）。\n\n" +
-                            "插入位置取文件里的拍摄时间；没有时间信息时按数量均匀铺在整段活动里。")
-                        .setPositiveButton("添加") { _, _ -> pickMedia() }
-                        .setNegativeButton("关闭", null)
-                        .show()
-                    return@ui
-                }
-                AlertDialog.Builder(this)
-                    .setTitle("素材（${labels.size}）")
-                    .setItems(labels) { _, which ->
-                        val o = arr.optJSONObject(which) ?: JSONObject()
-                        confirmDeleteClip(o.optString("id"), o.optString("name"))
-                    }
-                    .setPositiveButton("添加") { _, _ -> pickMedia() }
-                    .setNegativeButton("关闭", null)
-                    .show()
+                clipArray = r.optJSONArray("items") ?: JSONArray()
+                renderClipList()
             }
+        }
+    }
+
+    /** 当前列表数据；缩略图线程回来时要用，所以挂在类上而不是闭包里。 */
+    private var clipArray: JSONArray = JSONArray()
+
+    private fun renderClipList() {
+        val arr = clipArray
+        if (arr.length() == 0) {
+            AlertDialog.Builder(this)
+                .setTitle("素材")
+                .setMessage("还没有素材。\n\n" +
+                    "可以加图片或视频：\n" +
+                    "· 图片直接插到回放对应位置；\n" +
+                    "· 视频能裁出想要的几秒（只搬样本不重编码，几秒就完成）。\n\n" +
+                    "插入位置取文件里的拍摄时间；没有时间信息时按数量均匀铺在整段活动里。")
+                .setPositiveButton("添加") { _, _ -> pickMedia() }
+                .setNegativeButton("关闭", null)
+                .show()
+            return
+        }
+
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(6), dp(10), 0)
+        }
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: JSONObject()
+            box.addView(clipRow(o))
+            if (i < arr.length() - 1) {
+                box.addView(View(this).apply { setBackgroundColor(0xFFEDEFEA.toInt()) },
+                    LinearLayout.LayoutParams(MATCH_PARENT, 1).apply {
+                        leftMargin = dp(66); topMargin = dp(2); bottomMargin = dp(2)
+                    })
+            }
+        }
+
+        // 不再自己套 ScrollView：AlertDialog 的 customPanel 本来就在滚动容器里，
+        // 嵌套一层反而让触摸事件在两层滚动之间抢。
+        AlertDialog.Builder(this)
+            .setTitle("素材（${arr.length()}）")
+            .setView(box)
+            .setPositiveButton("添加") { _, _ -> pickMedia() }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    /** 一行：56dp 缩略图 + 两行文字。 */
+    private fun clipRow(o: JSONObject): View {
+        val path = o.optString("path", "")
+        val name = o.optString("name", "素材")
+        val kind = o.optString("kind", "video")
+        val exists = o.optBoolean("exists", true)
+        val dur = o.optDouble("dur", 0.0)
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(8), dp(2), dp(8))
+            isClickable = true
+            // 给点击一点反馈，否则按下去像是没反应
+            setBackgroundResource(android.R.drawable.list_selector_background)
+        }
+
+        val thumb = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            // 圆角靠 outline 裁：给个圆角 drawable 当背景，再 clipToOutline
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = dp(8).toFloat()
+                setColor(0xFFE4E8E1.toInt())
+            }
+            clipToOutline = true
+        }
+        row.addView(thumb, LinearLayout.LayoutParams(dp(56), dp(56)))
+
+        val texts = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), 0, 0, 0)
+        }
+        val title = TextView(this).apply {
+            text = name
+            textSize = 14f
+            setTextColor(0xFF1A1F1B.toInt())
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+        }
+        val subTxt = clipSubtitle(o, kind, dur, exists)
+        val sub = TextView(this).apply {
+            text = subTxt
+            textSize = 12f
+            setTextColor(if (exists) 0xFF78806F.toInt() else 0xFFB3261E.toInt())
+            setPadding(0, dp(3), 0, 0)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        texts.addView(title)
+        texts.addView(sub)
+        row.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+
+        // 右箭头暗示「点进去有动作」（这里是删除确认）
+        val chev = TextView(this).apply {
+            text = "›"
+            textSize = 20f
+            setTextColor(0xFFB6BDB2.toInt())
+            setPadding(dp(6), 0, dp(2), 0)
+        }
+        row.addView(chev)
+
+        // 点一条不直接删：先给「预览 / 删除」，否则手滑就没了
+        row.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle(name)
+                .setItems(arrayOf("预览", "删除")) { _, which ->
+                    if (which == 0) previewClip(o) else confirmDeleteClip(o.optString("id"), name)
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+
+        if (exists) loadClipThumb(path, kind, dp(56)) { bmp ->
+            if (bmp != null) {
+                thumb.setImageBitmap(bmp)
+                thumb.scaleType = ImageView.ScaleType.CENTER_CROP
+            }
+        }
+        return row
+    }
+
+    /** 副标题：类型 + 时长 + 拍摄/加入时间。拍摄时间优先，没有就说清是「加入」。 */
+    private fun clipSubtitle(o: JSONObject, kind: String, dur: Double, exists: Boolean): String {
+        if (!exists) return "文件已丢失，建议删除"
+        val kindTxt = if (kind == "image") "图片" else "视频"
+        val durTxt = if (kind == "image") "" else " · ${"%.1f".format(dur)} 秒"
+        val tMs = o.optLong("t_utc", 0L)
+        val whenTxt: String
+        val whenLabel: String
+        if (tMs > 0) {
+            whenTxt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(tMs))
+            whenLabel = "拍摄"
+        } else {
+            whenTxt = o.optString("added_at", "—")
+            whenLabel = "加入"
+        }
+        return "$kindTxt$durTxt · $whenLabel $whenTxt"
+    }
+
+    /** 大图预览：图片看原图，视频看第一帧（要看动态得去生成回放）。 */
+    private fun previewClip(o: JSONObject) {
+        val path = o.optString("path", "")
+        val kind = o.optString("kind", "video")
+        val name = o.optString("name", "素材")
+        val iv = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(0xFF12161B.toInt())
+            minimumHeight = dp(160)
+        }
+        val dlg = AlertDialog.Builder(this)
+            .setTitle(name)
+            .setView(iv)
+            .setNegativeButton("关闭", null)
+            .create()
+        dlg.show()
+        dlg.window?.setLayout(
+            (resources.displayMetrics.widthPixels * 0.92f).toInt(), WRAP_CONTENT)
+        loadClipThumb(path, kind, resources.displayMetrics.widthPixels) { bmp ->
+            if (bmp != null) iv.setImageBitmap(bmp)
+        }
+    }
+
+    /** 取缩略图：图片降采样解码，视频抓第一帧。绝不在主线程做。 */
+    private fun loadClipThumb(path: String, kind: String, maxPx: Int,
+                              done: (Bitmap?) -> Unit) {
+        thread {
+            var bmp: Bitmap? = null
+            try {
+                val f = File(path)
+                if (f.isFile) {
+                    bmp = if (kind == "image") {
+                        val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeFile(path, b)
+                        var s = 1
+                        while (b.outWidth / s > maxPx * 2 || b.outHeight / s > maxPx * 2) s *= 2
+                        BitmapFactory.decodeFile(path, BitmapFactory.Options().apply {
+                            inSampleSize = s
+                        })
+                    } else {
+                        val mmr = android.media.MediaMetadataRetriever()
+                        try {
+                            mmr.setDataSource(path)
+                            mmr.getScaledFrameAtTime(
+                                0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                                maxPx * 2, maxPx * 2)
+                        } finally {
+                            try { mmr.release() } catch (_: Throwable) {}
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "clip thumb", t)
+            }
+            ui { done(bmp) }
         }
     }
 
@@ -1018,8 +1194,12 @@ class MainActivity : Activity() {
             ui {
                 busy(false)
                 updateSubtitle()
-                if (add.optBoolean("ok")) toast("已加入素材（图片）")
-                else toast(add.optString("error", "登记失败"))
+                if (add.optBoolean("ok")) {
+                    toast("已加入素材（图片）")
+                    showClips()          // 回到列表，能立刻看到刚加的那条
+                } else {
+                    toast(add.optString("error", "登记失败"))
+                }
             }
         }
     }
@@ -1110,6 +1290,7 @@ class MainActivity : Activity() {
                     val drift = startMs - r.startMs
                     val extra = if (drift > 200) "，实际从 ${r.startMs / 1000.0} 秒开始" else ""
                     toast("已加入素材（${r.durMs / 1000} 秒$extra）")
+                    showClips()          // 回到列表，能立刻看到刚剪的那条
                 } else {
                     toast(add.optString("error", "登记失败"))
                 }

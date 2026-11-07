@@ -2283,6 +2283,16 @@ def cmd_selftest(args) -> int:
     assert "clips = _spread_clips(clips, rt)" in _mo_src, "素材没走均匀铺开兜底"
     assert "if (p.clip.kind === 'image')" in _mo_src, "页面没处理图片素材"
     assert "need.push(p.clip.src)" in _mo_src, "图片素材没进图片预加载队列"
+    # 素材清单要够界面用：类型、文件是否还在、拍摄时间（列表要显示缩略图和时间）
+    assert 'it["exists"] = p.is_file()' in _ap_src, "素材清单没标文件是否存在"
+    assert 'it["t_utc"] = info.get("t_utc")' in _ap_src, "素材清单没带拍摄时间"
+    assert '"t_source"' in _ap_src, "素材清单没带时间来源"
+    _ph = next(iter((HOME / "data" / "photos").rglob("*.jpg")), None) if (
+        HOME / "data" / "photos").is_dir() else None
+    if _ph is not None:
+        _mi = AP._probe_material(_ph)
+        assert _mi["kind"] == "image", _mi
+        assert _mi.get("t_utc"), f"图片素材没读出拍摄时间：{_ph}"
 
     class _FakeClient:
         def __init__(self, items):
