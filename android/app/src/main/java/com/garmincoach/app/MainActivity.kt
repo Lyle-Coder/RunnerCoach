@@ -987,48 +987,11 @@ class MainActivity : Activity() {
     }
 
     private fun showTrimUi(src: File, durMs: Long) {
-        val secs = (durMs / 1000).toInt().coerceAtLeast(2)
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(8), dp(20), 0)
-        }
-        val tip = TextView(this).apply {
-            text = "拖动两个滑块选择片段；起点会对齐到关键帧，可能比选的早一点。"
-            textSize = 12.5f
-            setTextColor(0xFF485046.toInt())
-        }
-        val startBar = android.widget.SeekBar(this).apply { max = secs }
-        val endBar = android.widget.SeekBar(this).apply { max = secs; progress = secs }
-        val info = TextView(this).apply { textSize = 13f; setPadding(0, dp(6), 0, 0) }
-
-        fun refresh() {
-            if (endBar.progress <= startBar.progress) endBar.progress = startBar.progress + 1
-            info.text = "${startBar.progress} 秒 → ${endBar.progress} 秒" +
-                "（${endBar.progress - startBar.progress} 秒）"
-        }
-        val listener = object : android.widget.SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: android.widget.SeekBar?, p: Int, fromUser: Boolean) =
-                refresh()
-            override fun onStartTrackingTouch(sb: android.widget.SeekBar?) {}
-            override fun onStopTrackingTouch(sb: android.widget.SeekBar?) {}
-        }
-        startBar.setOnSeekBarChangeListener(listener)
-        endBar.setOnSeekBarChangeListener(listener)
-        box.addView(tip)
-        box.addView(startBar)
-        box.addView(endBar)
-        box.addView(info)
-        refresh()
-
-        AlertDialog.Builder(this)
-            .setTitle("裁剪素材")
-            .setView(box)
-            .setPositiveButton("保存") { _, _ ->
-                saveClip(src, startBar.progress * 1000L, endBar.progress * 1000L)
-            }
-            .setNegativeButton("取消") { _, _ -> src.delete() }
-            .setOnCancelListener { src.delete() }
-            .show()
+        // 预览 + 关键帧胶片条：光有两个滑块根本不知道第几秒拍的是什么，
+        // 也没法知道落刀会不会被吸附到别处。见 ClipTrimDialog。
+        ClipTrimDialog.show(this, src, durMs,
+            onPick = { s, e -> saveClip(src, s, e) },
+            onCancel = { src.delete() })
     }
 
     private fun saveClip(src: File, startMs: Long, endMs: Long) {
@@ -1049,7 +1012,10 @@ class MainActivity : Activity() {
                 busy(false)
                 updateSubtitle()
                 if (add.optBoolean("ok")) {
-                    toast("已加入素材（${r.durMs / 1000} 秒）")
+                    // 实际落刀点可能比选定的早（吸附到关键帧），说出来免得以为剪错了
+                    val drift = startMs - r.startMs
+                    val extra = if (drift > 200) "，实际从 ${r.startMs / 1000.0} 秒开始" else ""
+                    toast("已加入素材（${r.durMs / 1000} 秒$extra）")
                 } else {
                     toast(add.optString("error", "登记失败"))
                 }
