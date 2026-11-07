@@ -24,6 +24,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
+import secrets
 import shutil
 import sys
 import threading
@@ -119,6 +121,8 @@ _API = {
     "env_info", "status", "login", "submit_mfa", "sync", "sync_range",
     "dashboard", "card_html", "act_card_html", "runs", "activities", "days_index",
     "plan", "set_amap_key", "start_server", "recent", "read_html",
+    "motion_html", "motion_status", "motion_cleanup",
+    "clips_list", "clips_add", "clips_remove",
     "set_llm_config", "get_llm_config", "ai",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
@@ -937,6 +941,206 @@ def set_amap_key(key: str = "") -> dict:
     return {"ok": True, "configured": True, "probe": ok, "message": msg}
 
 
+CLIPS = HOME / "data" / "clips.json"
+MEDIA = HOME / "data" / "media"
+_RUN_RE = re.compile(r"[A-Za-z0-9_-]{6,32}")
+
+
+def _clips_read() -> list[dict]:
+    try:
+        data = json.loads(CLIPS.read_text("utf-8"))
+        items = data.get("items") if isinstance(data, dict) else data
+        return [x for x in (items or []) if isinstance(x, dict)]
+    except Exception:
+        return []
+
+
+def _clips_write(items: list[dict]) -> None:
+    CLIPS.parent.mkdir(parents=True, exist_ok=True)
+    CLIPS.write_text(json.dumps({"items": items}, ensure_ascii=False, indent=1) + "\n",
+                     encoding="utf-8")
+
+
+def _synth_route(detail: dict) -> dict:
+    """从本地缓存的 track + 1Hz 序列合成播放器要的轨迹时间轴。
+
+    云端原始明细里有 `geoPolylineDTO`（每个点都带时间），但缓存的精简版没有，
+    只有抽稀后的经纬度和 1Hz 序列。这里按**累计里程**把两者对齐：轨迹点落在
+    线上多少米，就取序列里对应里程那一秒的时间 / 心率 / 速度。
+    """
+    import bisect
+
+    from .route import haversine
+
+    track = [(float(a), float(b)) for a, b in (detail.get("track") or [])
+             if a is not None and b is not None]
+    pts = (detail.get("series") or {}).get("points") or []
+    if len(track) < 2 or len(pts) < 2:
+        return {}
+    dist = [0.0]
+    for i in range(1, len(track)):
+        dist.append(dist[-1] + haversine(track[i - 1][0], track[i - 1][1],
+                                         track[i][0], track[i][1]))
+    sdist = [float(p.get("dist") or 0) for p in pts]
+    for i in range(1, len(sdist)):            # 单调化，二分才成立
+        if sdist[i] < sdist[i - 1]:
+            sdist[i] = sdist[i - 1]
+    if sdist[-1] <= 0:
+        return {}
+    t0 = float(pts[0].get("t") or 0)
+    ts, hrs, vs = [], [], []
+    for dd in dist:
+        j = min(max(bisect.bisect_left(sdist, dd), 0), len(pts) - 1)
+        p = pts[j]
+        ts.append(int(round(float(p.get("t") or 0) - t0)))
+        hrs.append(int(round(float(p["hr"]))) if p.get("hr") else None)
+        vs.append(round(float(p["spd"]), 2) if p.get("spd") else None)
+    for i in range(1, len(ts)):
+        if ts[i] < ts[i - 1]:
+            ts[i] = ts[i - 1]
+    if ts[-1] <= 0:
+        return {}
+    return {"t0": int(t0), "n": len(track), "t": ts,
+            "lat": [round(a, 6) for a, _ in track],
+            "lon": [round(b, 6) for _, b in track],
+            "d": [round(x, 1) for x in dist],
+            "hr": hrs, "v": vs, "seg": [0] * len(track), "drift": 0.0}
+
+
+def motion_html(activity_id: str, fps: int = 24, duration: int = 30,
+                privacy: str = "none") -> dict:
+    """生成回放视频用的动画 HTML 与收帧参数。
+
+    手机上不跑 ffmpeg：App 把这个 HTML 加载到离屏 WebView
+    （`?export=1&total=<frames>&fps=<fps>&run=<run>`），页面逐帧 POST 到
+    `/__frame`，再由原生 `MediaCodec` 编码成 MP4。
+    """
+    from . import motion as M
+
+    try:
+        store = Store(DB)
+        row = store.get_activity(activity_id=str(activity_id))
+        if not row:
+            return {"ok": False, "error": "库里没有这条活动，先同步一次"}
+        aid = str(row["activity_id"])
+        detail = store.get_detail(aid)
+        if not detail:
+            return {"ok": False, "need_login": True,
+                    "error": "这条活动的明细还没缓存，先出一次图或同步一次"}
+        from . import privacy as PV
+
+        mode = PV.normalize(privacy)
+        detail = dict(detail)
+        track_trim, _ = PV.mask_track(detail.get("track") or [], mode)
+        if len(track_trim) < 2:
+            return {"ok": False, "error": "这个脱敏档位下没有可用的轨迹"}
+        detail["track"] = track_trim
+        # 轨迹被裁过，旧时间轴不能再用；缓存里也没有带时间的原始折线，
+        # 所以统一按「累计里程」把 track 与 1Hz 序列对齐后现场合成一条。
+        rt = _synth_route(detail)
+        if not rt:
+            return {"ok": False,
+                    "error": "这次活动的轨迹点太少，做不了回放（室内跑或无 GPS）"}
+        detail["route"] = rt
+        try:
+            fps = max(12, min(int(fps or 24), 30))
+            dur = max(8, min(int(duration or 30), 60))
+        except (TypeError, ValueError):
+            fps, dur = 24, 30
+        run = secrets.token_hex(6)
+        out = OUT / f"motion-{aid}.html"
+        clips = _clips_for_motion()
+        M.render(row, detail, None, out, duration=float(dur), clips=clips,
+                 clip_cache=HOME / "data" / "motion_cache")
+        return {"ok": True, "html": str(out), "run": run,
+                "frames": int(dur * fps), "fps": fps, "duration": dur,
+                "width": 1080, "height": 1920, "clips": len(clips),
+                "privacy": mode, "name": row.get("name") or "跑步回放"}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _clips_for_motion() -> list[dict]:
+    """素材片段 → motion.build_payload 要的 shot 结构。"""
+    out = []
+    for it in _clips_read():
+        p = Path(str(it.get("path") or ""))
+        if not p.is_file():
+            continue
+        out.append({
+            "path": str(p),
+            "name": it.get("name") or p.stem,
+            "dur": float(it.get("dur") or 3.0),
+            "w": int(it.get("w") or 1080),
+            "h": int(it.get("h") or 1920),
+        })
+    return out
+
+
+def motion_status(run: str) -> dict:
+    """查收帧进度：原生拿它判断页面推到第几帧、有没有推完。"""
+    run = str(run or "")
+    if not _RUN_RE.fullmatch(run):
+        return {"ok": False, "error": "run 不合法"}
+    d = OUT / "_frames" / run
+    if not d.is_dir():
+        return {"ok": True, "frames": 0, "done": False, "dir": str(d)}
+    return {"ok": True, "frames": len(list(d.glob("f_*.jpg"))),
+            "done": (d / "_done.json").is_file(), "dir": str(d)}
+
+
+def motion_cleanup(run: str) -> dict:
+    """出片后清掉帧序列（几百张 JPEG 很占地方）。"""
+    run = str(run or "")
+    if not _RUN_RE.fullmatch(run):
+        return {"ok": False, "error": "run 不合法"}
+    shutil.rmtree(OUT / "_frames" / run, ignore_errors=True)
+    return {"ok": True}
+
+
+def clips_list() -> dict:
+    MEDIA.mkdir(parents=True, exist_ok=True)
+    return {"ok": True, "items": _clips_read(), "dir": str(MEDIA)}
+
+
+def clips_add(path: str, name: str = "", dur: float = 0,
+              w: int = 0, h: int = 0) -> dict:
+    """登记一段素材。剪辑本身由原生侧用 MediaExtractor/Muxer 无损完成，
+    这里只记录结果（文件应落在 `data/media/` 下）。"""
+    p = Path(str(path or ""))
+    if not p.is_file():
+        return {"ok": False, "error": "素材文件不存在"}
+    items = _clips_read()
+    cid = f"c{secrets.token_hex(4)}"
+    items.append({
+        "id": cid, "path": str(p), "name": (name or p.stem)[:60],
+        "dur": round(float(dur or 0), 2), "w": int(w or 0), "h": int(h or 0),
+        "added_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    _clips_write(items)
+    return {"ok": True, "id": cid, "items": items}
+
+
+def clips_remove(clip_id: str) -> dict:
+    items = _clips_read()
+    keep, gone = [], None
+    for it in items:
+        if it.get("id") == clip_id:
+            gone = it
+        else:
+            keep.append(it)
+    if gone is None:
+        return {"ok": False, "error": "没有这段素材"}
+    _clips_write(keep)
+    try:
+        Path(str(gone.get("path") or "")).unlink()
+    except OSError:
+        pass
+    return {"ok": True, "items": keep}
+
+
 def read_html(path: str) -> dict:
     """把产物原文交给 WebView（路径必须落在 output/ 里，避免被当成任意文件读取）。"""
     p = Path(path).resolve()
@@ -966,6 +1170,8 @@ def start_server(port: int = 0) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     srv.token = ""          # type: ignore[attr-defined]
+    srv.media_dir = str(HOME / "data" / "media")   # type: ignore[attr-defined]
+    srv.data_dir = str(HOME / "data")              # type: ignore[attr-defined]
     srv.daemon_threads = True
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()

@@ -131,6 +131,10 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._html(ui.files_page(root))
         if u.path.startswith("/basemap/"):
             return self._basemap(u.path)
+        if u.path.startswith("/media/"):
+            return self._media(u.path)
+        if u.path.startswith("/data/"):
+            return self._data(u.path)
         if u.path in ("", "/", "/index.html"):
             return self._send_index()
         return super().do_GET()
@@ -165,8 +169,133 @@ class _Handler(SimpleHTTPRequestHandler):
         except BrokenPipeError:
             pass
 
+    def _frame_post(self, u) -> None:
+        """回放视频的逐帧上传。
+
+        动画页带 `?export=1` 时，每画完一帧就 POST 一张 JPEG；这里按 run 落到
+        `output/_frames/<run>/f_00001.jpg`。run、帧号都做白名单与范围校验，
+        避免被当成任意文件写入。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机"}, 403)
+        q = parse_qs(u.query)
+        run = (q.get("run") or [""])[0]
+        if not re.fullmatch(r"[A-Za-z0-9_-]{6,32}", run):
+            return self._json({"ok": False, "error": "run 不合法"}, 400)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n > 12 * 1024 * 1024:
+            return self._json({"ok": False, "error": "帧过大"}, 413)
+        body = self.rfile.read(n) if n else b""
+        root = Path(self.directory) / "_frames" / run
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            if u.path.startswith("/__frame"):
+                try:
+                    i = int((q.get("i") or ["0"])[0])
+                except ValueError:
+                    i = -1
+                if not 0 <= i <= 20000:
+                    return self._json({"ok": False, "error": "帧号越界"}, 400)
+                (root / f"f_{i:05d}.jpg").write_bytes(body)
+            elif u.path.startswith("/__timeline"):
+                (root / "_timeline.json").write_bytes(body or b"[]")
+            else:
+                (root / "_done.json").write_text(
+                    json.dumps({"from": (q.get("from") or ["0"])[0]}),
+                    encoding="utf-8")
+        except OSError as e:
+            return self._json({"ok": False, "error": f"写帧失败：{e}"}, 500)
+        self.send_response(204)
+        self.end_headers()
+
+    def _media(self, path: str) -> None:
+        """素材片段/照片：`data/media/` 下的文件，给播放器的 `<video>` 用。
+
+        `file://` 在 WebView 里会被拦，所以和底图一样走同源 URL；`<video>`
+        要 seek 就必须支持 Range，否则 `currentTime` 设不上去。
+        """
+        base = Path(getattr(self.server, "media_dir", self.directory))
+        name = path[len("/media/"):]
+        if not re.fullmatch(r"[A-Za-z0-9._-]+\.(mp4|mov|m4v|jpg|jpeg|png)", name):
+            return self._json({"ok": False, "error": "素材名不合法"}, 404)
+        try:
+            p = (base / name).resolve()
+            p.relative_to(base.resolve())
+        except (ValueError, OSError):
+            return self._json({"ok": False, "error": "素材不存在"}, 404)
+        if not p.is_file():
+            return self._json({"ok": False, "error": "素材不存在"}, 404)
+        data = p.read_bytes()
+        ext = p.suffix.lower()
+        ctype = ("video/mp4" if ext in (".mp4", ".m4v") else
+                 "video/quicktime" if ext == ".mov" else
+                 "image/png" if ext == ".png" else "image/jpeg")
+        return self._send_file(data, ctype, cache="public, max-age=600")
+
+    def _data(self, path: str) -> None:
+        """只读放行 `data/` 下的底图、素材与回放缓存。
+
+        播放器 HTML 里存的是本机绝对路径，到了 http 页面会被解析成 `/data/...`。
+        这里按「目录前缀 + 扩展名」双白名单放行；`config.json`、`session.json`、
+        `*.db` 这些一律 404，不会因为多开一条路由就把私有数据暴露出去。
+        """
+        name = path[len("/data/"):]
+        if not re.fullmatch(
+                r"(basemaps|media|motion_cache)/[A-Za-z0-9._-]+\.(png|jpg|jpeg|mp4|mov|m4v)",
+                name):
+            return self._json({"ok": False, "error": "不允许读取"}, 404)
+        base = Path(getattr(self.server, "data_dir", self.directory))
+        try:
+            p = (base / name).resolve()
+            p.relative_to(base.resolve())
+        except (ValueError, OSError):
+            return self._json({"ok": False, "error": "不存在"}, 404)
+        if not p.is_file():
+            return self._json({"ok": False, "error": "不存在"}, 404)
+        ext = p.suffix.lower()
+        ctype = ("video/mp4" if ext in (".mp4", ".m4v") else
+                 "video/quicktime" if ext == ".mov" else
+                 "image/png" if ext == ".png" else "image/jpeg")
+        return self._send_file(p.read_bytes(), ctype, cache="public, max-age=86400")
+
+    def _send_file(self, data: bytes, ctype: str, *, cache: str) -> None:
+        """带 Range 的文件响应：`<video>` 要 seek 就必须支持 206。"""
+        m = re.match(r"bytes=(\d*)-(\d*)", self.headers.get("Range") or "")
+        if m and (m.group(1) or m.group(2)):
+            start = max(0, min(int(m.group(1) or 0), len(data) - 1))
+            end = min(int(m.group(2)) if m.group(2) else len(data) - 1, len(data) - 1)
+            end = max(start, end)
+            chunk = data[start:end + 1]
+            self.send_response(206)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+            self.send_header("Content-Length", str(len(chunk)))
+            self.end_headers()
+            try:
+                self.wfile.write(chunk)
+            except BrokenPipeError:
+                pass
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", cache)
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except BrokenPipeError:
+            pass
+
     def do_POST(self) -> None:  # noqa: N802
         u = urlparse(self.path)
+        # 回放视频：动画页 `?export=1` 会自己逐帧 POST 上来，这里只负责收。
+        if u.path.startswith(("/__frame", "/__done", "/__timeline")):
+            return self._frame_post(u)
         if not u.path.startswith("/ai/"):
             return self._json({"ok": False, "error": "不支持的接口"}, 404)
         if not self._is_loopback():

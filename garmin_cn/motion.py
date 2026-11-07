@@ -1006,6 +1006,8 @@ async function seekTo(t) {
 }
 
 // ---- 导出：页面自己逐帧渲染 + JPEG 编码，POST 回本地服务写盘。
+// 质量 0.82：0.94 时 1080×1920 单帧约 455KB，手机端 480 帧要占 200MB+；
+// 0.82 约 180KB，肉眼几乎无差，编码器还会再压一道。
 // 比「每帧起一个 Chrome 截图」快一个数量级（后者约 1.8 秒/帧）。
 async function runExport() {
   const total = parseInt(QS.get('total') || '0', 10);
@@ -1026,7 +1028,7 @@ async function runExport() {
   } catch (e) { /* 没有视频就不用报 */ }
   for (let i = from; i < total; i++) {
     await seekTo(i / fps);
-    const blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.94));
+    const blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.82));
     await fetch('/__frame?i=' + i + '&run=' + run, { method: 'POST', body: blob });
   }
   await fetch('/__done?from=' + from + '&run=' + run);
