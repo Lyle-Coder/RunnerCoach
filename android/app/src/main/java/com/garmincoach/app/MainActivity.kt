@@ -221,13 +221,16 @@ class MainActivity : Activity() {
 
     /** 返回优先级：二级页 → 所属 tab → 今日 → 退出。见 docs/交互树.md 第三节。 */
     private fun nativeBack() {
-        val path = try {
-            android.net.Uri.parse(web.url ?: "").path ?: "/"
+        val uri = try {
+            android.net.Uri.parse(web.url ?: "")
         } catch (t: Throwable) {
-            "/"
+            null
         }
+        val path = uri?.path ?: "/"
         when {
-            path.startsWith("/view") -> goTab(1)     // 看板属于历史
+            // 看板默认回历史；从今日页进来的（from=today）回今日
+            path.startsWith("/view") -> goTab(if (uri?.getQueryParameter("from") == "today") 0 else 1)
+            path.startsWith("/plan") -> goTab(0)     // 训练计划属于今日
             path.startsWith("/files") -> goTab(3)    // 产物属于我的
             activeTab != 0 -> goTab(0)               // 其它 tab 先回今日
             else -> finish()                         // 已在今日根页面，退出
@@ -264,6 +267,7 @@ class MainActivity : Activity() {
                     "login:coros" -> askCorosLogin()
                     "login" -> showLoginPicker()
                     "mi" -> showMiPanel()
+                    "planRefresh" -> refreshPlan()
                     else -> toast("未知操作：$name")
                 }
             }
@@ -819,6 +823,23 @@ class MainActivity : Activity() {
      * 账号密码登录一次（新设备会要求图形验证码 + 短信验证），passToken
      * 半年量级长效，之后每次同步/出图 Python 侧自动补拉体重，无需再进面板。
      */
+    /** 训练计划刷新：联网拉一次佳明教练计划（2 个请求），成功后重载页面。 */
+    private fun refreshPlan() {
+        busy(true)
+        thread {
+            val r = apiCall("plan", true)
+            ui {
+                busy(false)
+                if (r.optBoolean("ok")) {
+                    toast("训练计划已更新")
+                    reload()
+                } else {
+                    toast(r.optString("error", "暂时读不到佳明训练计划"))
+                }
+            }
+        }
+    }
+
     private fun showMiPanel() {
         thread {
             val s = apiCall("mi_status")

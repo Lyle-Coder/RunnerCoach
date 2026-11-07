@@ -112,6 +112,29 @@ input,select{font-family:inherit;font-size:12.5px;color:var(--ink);background:va
   border:1px solid var(--line);border-radius:9px;padding:7px 9px;max-width:100%}
 .pager{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
 .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+/* 训练计划：今日课表 + 本周 7 天 */
+.plan-hero{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  padding:18px;box-shadow:var(--shadow)}
+.plan-hero .t{font-size:20px;font-weight:650;line-height:1.35;letter-spacing:-.2px}
+.plan-hero .d{font-size:13px;color:var(--ink2);margin-top:6px;line-height:1.7}
+.plan-hero .n{font-size:11.5px;color:var(--muted);margin-top:10px}
+.plan-hero .n + .n{margin-top:4px}
+.wk{display:flex;flex-direction:column;gap:7px}
+.wrow{display:flex;align-items:center;gap:11px;background:var(--surface);
+  border:1px solid var(--line);border-radius:14px;padding:11px 13px;box-shadow:var(--shadow)}
+.wrow .wd{flex:0 0 40px;font-size:12px;color:var(--muted)}
+.wrow .wb{flex:1;min-width:0;font-size:13.5px;font-weight:600;line-height:1.45}
+.wrow .wb em{display:block;font-style:normal;font-size:11.5px;color:var(--muted);
+  font-weight:400;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wrow.today{background:var(--brand-soft);border-color:transparent}
+.wrow.today .wd{color:var(--brand-ink)}
+.wrow .now{flex:0 0 auto;font-size:10.5px;color:#fff;background:var(--brand);
+  border-radius:999px;padding:2px 8px}
+.wrow.rest .wb{color:var(--muted);font-weight:400}
+.kvline{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;
+  color:var(--ink2);padding:7px 0;border-bottom:1px solid var(--line2)}
+.kvline:last-child{border-bottom:0}
+.kvline b{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
 @media(max-width:380px){
   .acts,.grid{grid-template-columns:1fr}
   .big{font-size:40px}
@@ -402,7 +425,18 @@ def home_page() -> str:
              stat("数据源", "佳明", "可切换高驰 / 小米体重") +
              '</div>')
 
+    # 今日课表：读同步落下的 plan.json，零请求；没有计划就不占版面。
+    plan_html, plan_more = "", ""
+    try:
+        _pl = A.plan(False)
+        if _pl.get("ok"):
+            plan_html = _today_plan_card(_pl)
+            plan_more = ("本周计划", "/plan?from=today")
+    except Exception:
+        plan_html = ""
+
     body = (sec("今日状态", hero + '<div style="height:10px"></div>' + stats) +
+            (sec("今日课表", plan_html, plan_more) if plan_html else "") +
             sec("快捷操作", quick) +
             sec("最近活动", rows) +
             sec("数据覆盖", cover))
@@ -418,6 +452,108 @@ def _session(res: dict) -> str:
         return str(s.get("type") or s.get("title") or "按恢复度安排")
     except Exception:
         return "按恢复度安排"
+
+
+def _plan_meta(item: dict) -> str:
+    """一条课表的副标题：时长 · 训练效果 · 运动类型。"""
+    bits = []
+    if item.get("minutes"):
+        bits.append(f'{item["minutes"]} 分钟')
+    if item.get("effect"):
+        bits.append(str(item["effect"]))
+    if item.get("sport") and item.get("sport") != "跑步":
+        bits.append(str(item["sport"]))
+    return " · ".join(bits) or "未标注强度"
+
+
+def _plan_items_line(items: list[dict]) -> str:
+    return "；".join(
+        (x.get("name") or "训练") + (f' {x["minutes"]}′' if x.get("minutes") else "")
+        for x in items) or "—"
+
+
+def _today_plan_card(pl: dict) -> str:
+    """今日课表卡片：有课就写课名 + 说明，没课就写休息和下一次。"""
+    items = (pl.get("today") or {}).get("items") or []
+    if items:
+        it = items[0]
+        more = "".join(
+            f'<div class="n">另：{esc(x.get("name") or "训练")} · {esc(_plan_meta(x))}</div>'
+            for x in items[1:])
+        return (f'<div class="plan-hero"><div class="t">{esc(it.get("name") or "训练")}</div>'
+                + (f'<div class="d">{esc(it.get("detail"))}</div>' if it.get("detail") else "")
+                + f'<div class="n">{esc(_plan_meta(it))}</div>{more}</div>')
+    nxt = pl.get("next_date")
+    tip = (f'下一次：{esc(nxt)} · {esc(_plan_items_line(pl.get("next_items") or []))}'
+           if nxt else "本周没有排课，按恢复度安排轻松活动")
+    return (f'<div class="plan-hero"><div class="t">今天休息</div>'
+            f'<div class="d">{tip}</div></div>')
+
+
+def plan_page(qs: dict | None = None) -> str:
+    """训练计划二级页（属「今日」tab）：今日课表 + 本周 7 天 + 计划信息。
+
+    数据来自佳明教练计划（同步时落的 `data/plan.json`）；高驰没有对外计划接口，
+    这里不做兜底，没有计划就明确说「没读到」并给一个重新读取的按钮。
+    """
+    from . import appapi as A
+
+    r = A.plan(False)
+    if not r.get("ok"):
+        body = ('<div class="card"><div class="empty"><b>还没读到训练计划</b>'
+                f'{esc(r.get("error") or "先回今日页下拉同步一次")}</div>'
+                '<div class="pager"><div class="btn primary" data-act="planRefresh">'
+                '重新读取</div></div></div>')
+        return page("PLAN · 训练计划", "今天练什么", "佳明教练计划",
+                    sec("状态", body), chip("本机快照"), back=("返回今日", "/"))
+
+    ph = r.get("phase") or {}
+    chips = (chip(str(r.get("level") or "未标注等级"), "ok") +
+             chip(f'{r.get("weeks") or "?"} 周') +
+             (chip(f'当前 {ph["label"]}') if ph.get("label") else "") +
+             (chip(f'每周约 {r["per_week"]} 次') if r.get("per_week") else ""))
+
+    today_iso = (r.get("today") or {}).get("date")
+    rows = ""
+    for d in r.get("week") or []:
+        is_today = d["date"] == today_iso
+        cls = "wrow today" if is_today else "wrow"
+        if d.get("rest"):
+            cls += " rest"
+        if d.get("rest"):
+            wb = '<span class="wb">休息</span>'
+        else:
+            first = (d["items"] or [{}])[0]
+            wb = (f'<span class="wb">{esc(first.get("name") or "训练")}'
+                  f'<em>{esc(_plan_meta(first))}</em></span>')
+        tag = '<span class="now">今天</span>' if is_today else ""
+        rows += f'<div class="{cls}"><span class="wd">{esc(d["dow"])}</span>{wb}{tag}</div>'
+
+    info = ('<div class="card">'
+            f'<div class="kvline"><span>计划</span><b>{esc(r.get("name") or "—")}</b></div>'
+            f'<div class="kvline"><span>周期</span><b>{esc(r.get("start") or "—")}'
+            f' ~ {esc(r.get("end") or "—")}</b></div>'
+            + (f'<div class="kvline"><span>当前阶段</span><b>{esc(ph.get("label"))}</b></div>'
+               if ph.get("label") else "")
+            + f'<div class="kvline"><span>本周休息</span>'
+              f'<b>{r.get("rest_days_in_week") or 0} 天</b></div>'
+            '</div>')
+
+    nxt = r.get("next_date")
+    next_sec = ""
+    if nxt:
+        next_sec = sec("下一次训练",
+                       f'<div class="card"><div class="kvline"><span>{esc(nxt)}</span>'
+                       f'<b>{esc(_plan_items_line(r.get("next_items") or []))}</b></div></div>')
+
+    body = (sec("今日", _today_plan_card(r)) +
+            sec("本周", f'<div class="wk">{rows}</div>') +
+            next_sec +
+            sec("计划信息", info) +
+            '<div class="pager"><div class="btn" data-act="planRefresh">刷新计划</div></div>')
+    return page("PLAN · 训练计划", "今天练什么",
+                (r.get("name") or "佳明教练计划"), body, chips,
+                back=("返回今日", "/"))
 
 
 def me_page() -> str:

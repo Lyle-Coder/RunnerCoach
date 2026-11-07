@@ -124,6 +124,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._html(history.history_page(parse_qs(u.query)))
         if u.path in ("/me", "/me.html"):
             return self._html(ui.me_page())
+        if u.path in ("/plan", "/plan.html"):
+            return self._html(ui.plan_page(parse_qs(u.query)))
         if u.path in ("/files", "/files.html"):
             return self._html(ui.files_page(root))
         if u.path in ("", "/", "/index.html"):

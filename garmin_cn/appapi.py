@@ -647,6 +647,38 @@ def card_html(date: str | None = None) -> dict:
             **export_spec(BG_CARD, trim=False)}
 
 
+def plan(refresh: bool = False, date: str | None = None) -> dict:
+    """佳明教练计划（Garmin Coach / FBT 自适应计划）。
+
+    默认读同步时落下的 `data/plan.json`——零请求，断网也能看。
+    `refresh=True` 才联网拉一次（2 个请求，失败不影响已有快照）。
+    高驰没有对外计划接口，这里只处理佳明；不传账号也不抛异常，统一走 ok/error。
+    """
+    from .plan import fetch, load
+
+    today = date or dt.date.today().isoformat()
+    path = HOME / "data" / "plan.json"
+    data = None if refresh else load(path)
+    if not data:
+        try:
+            client = _client()
+        except AuthError as e:
+            return {"ok": False, "error": f"还没登录佳明：{e}", "kind": "auth"}
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}", "kind": "auth"}
+        try:
+            data = fetch(client, today, out_path=path)
+        except SessionExpired:
+            return {"ok": False, "error": "佳明会话过期，请重新登录", "kind": "auth"}
+        except Exception as e:
+            data = {"available": False, "reason": f"{type(e).__name__}: {e}"}
+    if not data or not data.get("available"):
+        return {"ok": False,
+                "error": (data or {}).get("reason") or "当前没有激活的佳明训练计划",
+                "empty": True}
+    return {"ok": True, **data}
+
+
 def runs(limit: int = 30, days: int = 180) -> dict:
     """最近的跑步活动，给 App 的「选一条出图」列表用。
 

@@ -2124,6 +2124,12 @@ def cmd_selftest(args) -> int:
     # 同页参数变化走 replace，不往历史栈堆条目
     assert "data-nopush" in nav and "data-nopush" in U.BRIDGE_JS
     assert "max-width:820px" in U.DASH_FIX and "max-width:820px" in U.AI_FIX
+    # 训练计划页：读到/读不到都要能出页面，且能回今日、有刷新入口
+    pp = U.plan_page({})
+    assert "PLAN · 训练计划" in pp
+    assert 'class="back" href="/"' in pp
+    assert "planRefresh" in pp
+    assert ('class="plan-hero"' in pp) or ("还没读到训练计划" in pp)
     assert HW._date({"date": ["not-a-date"]}, "date", "2026-11-06") == "2026-11-06"
 
     class _FakeClient:
