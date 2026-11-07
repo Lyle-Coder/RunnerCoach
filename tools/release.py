@@ -219,7 +219,14 @@ def collect_apks(tag: str) -> list[Path]:
 
 
 def build_notes(tag: str, version: str, apks: list[Path]) -> str:
-    prev = git("describe", "--tags", "--abbrev=0", check=False)
+    # 只认正式版本 tag（v1.2.3）。分支快照 tag 形如 snap-<分支>-<时间>，
+    # 两者混在一起会让「本版变更」被截断成只剩一条 release 提交。
+    prev = git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*",
+               check=False).strip()
+    if prev == tag:
+        # 已经手动打过同名 tag 时，往前退一个，别让区间变成空
+        prev = git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*",
+                   f"{tag}^", check=False).strip()
     rng = f"{prev}..HEAD" if prev else "HEAD"
     log = git("log", "--no-merges", "--pretty=format:- %s (%h)", rng, check=False)
     if not log.strip():
