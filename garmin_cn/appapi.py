@@ -29,6 +29,7 @@ import secrets
 import shutil
 import sys
 import threading
+import time
 from pathlib import Path
 
 from .auth import AuthError, GarminCNAuth, MfaRequired
@@ -1052,6 +1053,10 @@ def motion_html(activity_id: str, fps: int = 24, duration: int = 30,
         except (TypeError, ValueError):
             fps, dur = 24, 30
         run = secrets.token_hex(6)
+        # 超时/失败后用户会反复重试，每次都是新 run，旧帧目录（一版 720 帧
+        # 几百 MB）却一直留在磁盘上。开新一轮时顺手清掉过期的，正在导出的
+        # run 远没到这个年龄，不会被误删。
+        _sweep_motion_frames()
         out = OUT / f"motion-{aid}.html"
         clips = _clips_for_motion()
         pl: dict = {}
@@ -1257,6 +1262,32 @@ def motion_audio(run: str) -> dict:
         items.append({"file": str(p), "at": round(at, 3), "dur": round(dur, 3)})
     items.sort(key=lambda x: x["at"])
     return {"ok": True, "items": items, "total": len(items)}
+
+
+def _sweep_motion_frames(max_age_h: float = 24) -> int:
+    """清掉上次导出（尤其是超时重试）留下的过期帧目录，返回删掉的个数。
+
+    只认 `output/_frames/<合法 run>` 且最后写入超过 `max_age_h` 小时的目录；
+    别的目录、别的命名一律不碰。24 小时的门槛远长于一次正常导出，就算
+    慢机器跑满一两个小时，重试也不会把正在收帧的目录删掉。
+    """
+    root = OUT / "_frames"
+    if not root.is_dir():
+        return 0
+    cutoff = time.time() - max_age_h * 3600
+    n = 0
+    for d in root.iterdir():
+        try:
+            if not d.is_dir() or not _RUN_RE.fullmatch(d.name):
+                continue
+            if d.stat().st_mtime > cutoff:
+                continue
+            shutil.rmtree(d, ignore_errors=True)
+            if not d.exists():
+                n += 1
+        except OSError:
+            continue
+    return n
 
 
 def motion_cleanup(run: str) -> dict:

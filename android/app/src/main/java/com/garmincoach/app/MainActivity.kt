@@ -1829,6 +1829,9 @@ class MainActivity : Activity() {
         val renderDone = AtomicInteger(0)
         val encodeDone = AtomicInteger(0)
         val startedAt = System.currentTimeMillis()
+        // 全流水线共享的「最后一次有进展」时刻：渲染侧帧数增长、编码侧每拿到
+        // 一帧或编完一帧都会刷新它。慢机器只要还在推进就一直续期，不会超时。
+        val lastProgressAt = AtomicLong(System.currentTimeMillis())
         val pctLock = Any()
         var lastPct = -1
         // 并行流水线的真实完成度 = 渲染与编码里**较慢**的那条。
@@ -1863,14 +1866,15 @@ class MainActivity : Activity() {
 
         // 只管显示、诊断与兜底取消，不再决定什么时候开始编码
         thread {
-            val t0 = System.currentTimeMillis()
-            val deadline = t0 + 12 * 60 * 1000
-            while (!encoded.get() && !cancel.get() &&
-                System.currentTimeMillis() < deadline
-            ) {
+            var lastFrames = -1
+            while (!encoded.get() && !cancel.get()) {
                 Thread.sleep(700)
                 val st = apiCall("motion_status", run)
                 val n = st.optInt("frames")
+                if (n > lastFrames) {
+                    lastFrames = n
+                    lastProgressAt.set(System.currentTimeMillis())
+                }
                 renderDone.set(n)
                 report()
                 if (n >= frames && n > 0) {
@@ -1881,51 +1885,64 @@ class MainActivity : Activity() {
                     }
                     detach()
                 }
+                // 慢但持续推进时 lastProgressAt 一直被刷新，这里永远不触发。
+                // 只有连续 grace 分钟一帧都没动，才判定页面/编码器真的卡死。
+                // 诊断也放到卡死时才判：旧版「30 秒还没 0 帧」会把加载慢的
+                // WebView 误杀（而且 diag 是空对象，那个分支其实从来没命中）。
+                val grace = if (lastFrames > 0) MOTION_STALL_MS
+                            else MOTION_FIRST_FRAME_MS
+                if (System.currentTimeMillis() - lastProgressAt.get() <= grace) continue
                 val diag = st.optJSONObject("diag")
-                // 页面自报诊断：一直是 0 帧时直接把原因说清楚，
-                // 别让人对着进度条猜是慢还是坏了
-                val fail = when {
-                    n == 0 && diag != null && !diag.optBoolean("base", true) ->
+                val hasDiag = diag != null && diag.length() > 0
+                val baseOk = diag?.optBoolean("base", true) ?: true
+                val msg = when {
+                    lastFrames <= 0 && !baseOk ->
                         "底图没能加载：先到「我的 → 地图底图」配置高德 Key，再试一次"
-                    n == 0 && System.currentTimeMillis() - t0 > 30_000 && diag == null ->
+                    lastFrames <= 0 && !hasDiag ->
                         "播放页没有开始渲染（WebView 未就绪），请重试"
-                    else -> null
+                    else -> "回放生成已停止：连续 ${grace / 60_000} 分钟没有新帧" +
+                        "（已收 ${max(0, lastFrames)}/$frames 帧），请重试"
                 }
-                if (fail != null) {
-                    cancel.set(true)
-                    apiCall("motion_cleanup", run)
-                    detach()
-                    val msg = fail
-                    ui { busy(false); updateSubtitle(); toast(msg) }
-                    break
-                }
-            }
-            if (!encoded.get() && System.currentTimeMillis() >= deadline) {
+                Log.w(TAG, "motion stalled: $msg, render=$n/$frames, " +
+                    "encode=${encodeDone.get()}/$frames")
                 cancel.set(true)
-                ui { toast("回放生成超时，请重试") }
+                apiCall("motion_cleanup", run)
+                detach()
+                ui { busy(false); updateSubtitle(); toast(msg) }
+                break
             }
         }
 
         // 编码线程：与 WebView 渲染并行
         thread {
-            encodeMotion(run, fps, title, frames, cancel, startedAt,
-                { done -> encodeDone.set(done); report() }, { detach() })
+            val ok = encodeMotion(run, fps, title, frames, cancel, startedAt,
+                lastProgressAt,
+                { done ->
+                    encodeDone.set(done)
+                    if (done > 0) lastProgressAt.set(System.currentTimeMillis())
+                    report()
+                }, { detach() })
             encoded.set(true)
-            report(100)          // 收尾强制到 100%，别卡在 99%
+            if (ok) report(100)   // 只有成功才强制到 100%，超时后别显示满格
             detach()
             // 统一收尾：不管成功、失败、诊断取消还是超时，进度圈都得关掉
             ui { busy(false); updateSubtitle() }
         }
     }
 
-    /** 等第 i 帧落盘。服务端用 .tmp + os.replace 原子改名，文件出现即完整；
-     *  120 秒还没有新帧就判定导出中断，别让编码器无限空转。 */
-    private fun awaitFrame(dir: File, i: Int, cancel: AtomicBoolean): File? {
+    /** 等第 i 帧落盘。服务端用 .tmp + os.replace 原子改名，文件出现即完整。
+     *  超时看的是**整条流水线的心跳**，不是这一帧等了多久：渲染慢时每帧可能
+     *  要好几秒甚至几十秒，旧版固定 120 秒死线会在正常推进中把编码器掐断。 */
+    private fun awaitFrame(dir: File, i: Int, cancel: AtomicBoolean,
+                           lastProgressAt: AtomicLong): File? {
         val f = File(dir, String.format(Locale.US, "f_%05d.jpg", i))
-        val deadline = System.currentTimeMillis() + 120_000
         while (!cancel.get()) {
-            if (f.isFile && f.length() > 1024) return f
-            if (System.currentTimeMillis() > deadline) return null
+            if (f.isFile && f.length() > 1024) {
+                lastProgressAt.set(System.currentTimeMillis())
+                return f
+            }
+            if (System.currentTimeMillis() - lastProgressAt.get() >
+                MOTION_STALL_MS) return null
             Thread.sleep(12)
         }
         return null
@@ -1933,25 +1950,30 @@ class MainActivity : Activity() {
 
     private fun encodeMotion(run: String, fps: Int, title: String, total: Int,
                              cancel: AtomicBoolean, startedAt: Long,
-                             report: (Int) -> Unit, detach: () -> Unit) {
+                             lastProgressAt: AtomicLong,
+                             report: (Int) -> Unit, detach: () -> Unit): Boolean {
         val st = apiCall("motion_status", run)
         val dir = File(st.optString("dir"))
         // 页面是先 POST 时间轴、再推第 0 帧。等到时间轴和首帧都在，
         // 音频清单就一定是齐的，不会出现「编完了才发现没混音」。
+        // 不再自带 60 秒死线：首帧慢交给监督线程按「零进展」统一判定，
+        // 也由它给出具体原因，这里只管等 cancel。
         var ready = false
-        for (k in 0 until 300) {
-            if (cancel.get()) break
+        while (!cancel.get()) {
             if (File(dir, "_timeline.json").isFile && File(dir, "f_00000.jpg").isFile) {
                 ready = true
                 break
             }
+            // 监督线程万一挂了，这里也不能无限空转。门槛必须比它的
+            // FIRST_FRAME + STALL 更宽，保证正常情况下先由监督线程给出原因。
+            if (System.currentTimeMillis() - lastProgressAt.get() >
+                MOTION_FIRST_FRAME_MS + MOTION_STALL_MS) break
             Thread.sleep(200)
         }
-        if (cancel.get()) return
-        if (!ready) {
-            apiCall("motion_cleanup", run)
-            ui { busy(false); updateSubtitle(); toast("没有收到帧，回放生成失败") }
-            return
+        if (!ready || cancel.get()) {
+            // cancel=true 说明监督线程已经弹过具体诊断，别重复弹
+            if (!cancel.get()) ui { toast("没有收到帧，回放生成失败，请重试") }
+            return false
         }
         val out = File(File(filesDir, "output"),
             "motion-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".mp4")
@@ -1973,11 +1995,13 @@ class MainActivity : Activity() {
         val r = MotionEncoder.encode(
             dir, out, 1080, 1920, fps, segments,
             frameCount = total,
-            frameAt = MotionEncoder.FrameAt { i -> awaitFrame(dir, i, cancel) },
+            frameAt = MotionEncoder.FrameAt { i ->
+                awaitFrame(dir, i, cancel, lastProgressAt)
+            },
             cancelled = { cancel.get() },
             onProgress = report)
         apiCall("motion_cleanup", run)
-        if (cancel.get()) return          // 诊断分支已经弹过具体原因
+        if (cancel.get()) return false   // 监督线程已经弹过具体原因
         detach()
         val seconds = (System.currentTimeMillis() - startedAt) / 1000
         Log.i(TAG, "motion export done: ${seconds}s, ${r.via} ${r.width}x${r.height}, " +
@@ -1999,6 +2023,7 @@ class MainActivity : Activity() {
             toast("回放已存相册/GarminCoach · ${seconds}s · ${r.via} 编码$tail")
             shareVideo(uri, "分享回放：$title")
         }
+        return r.ok && !cancel.get()     // 只有真的成了才把进度推到 100%
     }
 
     private fun saveVideoToGallery(f: File): Uri? = try {
@@ -2405,6 +2430,18 @@ class MainActivity : Activity() {
 
     private companion object {
         const val TAG = "GarminCoach"
+
+        /**
+         * 回放导出的超时语义（v44）：**慢不是失败，卡死才是**。
+         *
+         * 旧版按「从点击起 12 分钟」一刀切：真机一帧要几秒时，进度还在走，
+         * 到点却直接 cancel 并弹「回放生成超时，请重试」；用户重试又是同样的
+         * 12 分钟，永远出不了片。现在只认「连续这么久没有任何新帧」：只要
+         * 渲染帧数或编码帧数还在增长就一直续期，没有总时长上限。
+         * 首帧前单独放宽，因为 WebView 要加载底图、照片和视频。
+         */
+        const val MOTION_STALL_MS = 5 * 60 * 1000L
+        const val MOTION_FIRST_FRAME_MS = 3 * 60 * 1000L
 
         /** 与 garmin_cn/privacy.py 的 MODES 一一对应，顺序不能改。 */
         val PRIVACY_MODES = arrayOf("none", "trim", "hide")

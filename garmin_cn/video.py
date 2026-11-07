@@ -234,17 +234,19 @@ def render_frames(html: Path, total: int, fps: int, *, workers: int = 2,
             windows = [(miss[j], miss[min(j + step, len(miss)) - 1] + 1)
                        for j in range(0, len(miss), step)]
             launch(windows, attempt)
-            # 卡住判定：60 秒没有新帧就直接换一批进程重来，别干等到超时
-            deadline = time.time() + max(120, len(miss) * 0.5)
+            # 卡住判定：只认「连续没有新帧」，不认「整轮跑了多久」。
+            # 旧版给每轮一个固定 max(120, 缺帧数*0.5) 秒上限，机器慢一点时
+            # 帧还在推进也会被掐断，重启 Chrome 又从头渲，越补越慢，8 轮后
+            # 报「还有 N 帧没渲染出来」。现在只要还在收帧就一直等下去。
             idle, last_n = time.time(), len(got)
-            while time.time() < deadline:
+            while True:
                 if len(got) >= total:
                     break
                 if len(got) != last_n:
                     last_n, idle = len(got), time.time()
                     log(f"  {len(got)}/{total} 帧")
-                elif time.time() - idle > 25:
-                    log(f"! 25 秒没有新帧，重启渲染进程（已收 {len(got)}/{total}）")
+                elif time.time() - idle > 60:
+                    log(f"! 60 秒没有新帧，重启渲染进程（已收 {len(got)}/{total}）")
                     break
                 time.sleep(0.5)
             for p in procs:

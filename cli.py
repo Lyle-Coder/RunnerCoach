@@ -2495,7 +2495,8 @@ def cmd_selftest(args) -> int:
         "没把总帧数与惰性帧源交给编码器"
     assert "cancelled = { cancel.get() }" in _main and "onProgress = report" in _main, \
         "取消信号/进度回调没接上"
-    assert "private fun awaitFrame" in _main and "120_000" in _main, \
+    assert "private fun awaitFrame" in _main and \
+        "MOTION_STALL_MS) return null" in _main, \
         "等帧没有超时，导出卡住会无限空转"
     assert 'File(dir, "_timeline.json").isFile' in _main and "f_00000.jpg" in _main, \
         "没等时间轴与首帧就取音频清单，会漏掉原声"
@@ -2509,6 +2510,92 @@ def cmd_selftest(args) -> int:
         "没有分项计时，真机上定位不了瓶颈"
     assert "${r.via}" in _main and "startedAt" in _main, \
         "完成提示没说明走 GPU/CPU 与总耗时"
+    # ---- v44：超时只判「卡死」，不判「慢」 ----------------------------------
+    # 旧版从点击起 12 分钟硬 deadline：真机一帧几秒时进度还在走，到点却直接
+    # cancel 并弹「回放生成超时，请重试」；用户重试又是同样的 12 分钟，永远
+    # 出不了片。等帧 120 秒 / 首帧 60 秒 / 30 秒 diag 也是同一类误杀。
+    assert "12 * 60 * 1000" not in _main, "还有按总时长一刀切的超时"
+    assert 'toast("回放生成超时，请重试")' not in _main, \
+        "还在把「慢」报成笼统的超时，让用户白重试"
+    assert "120_000" not in _main and "for (k in 0 until 300)" not in _main, \
+        "还留着等帧 120 秒 / 首帧 60 秒的固定死线"
+    assert "MOTION_STALL_MS" in _main and "MOTION_FIRST_FRAME_MS" in _main, \
+        "没有区分「首帧宽限」与「无进展卡死」"
+    assert "lastProgressAt.set(System.currentTimeMillis())" in _main, \
+        "没有共享心跳，帧还在推进也可能被判超时"
+    assert "MOTION_STALL_MS) return null" in _main, \
+        "等帧超时没跟全局心跳挂钩，慢机器会被掐断"
+    assert "if (ok) report(100)" in _main, "超时/失败后还会把进度假推到 100%"
+    assert "motion stalled" in _main, "卡死时没有日志，真机定位不了瓶颈"
+    assert 'diag.length() > 0' in _main, \
+        "诊断还是按固定 30 秒判，或没处理 diag 为空对象的情况"
+    # 桌面补渲同理：整轮固定 max(120, 缺帧数*0.5) 秒会把正在推进的 Chrome 掐断
+    assert "deadline = time.time() + max(120, len(miss) * 0.5)" not in _vsrc, \
+        "PC 端还在按整轮固定时长判超时"
+    assert "last_n, idle = len(got), time.time()" in _vsrc, \
+        "PC 端没有「有新帧就重置空闲计时」"
+    assert "60 秒没有新帧" in _vsrc, "PC 端 25 秒无进展就重启，慢机器会反复重来"
+
+    # 心跳语义模拟：把 App 里 watchdog / awaitFrame 的判定式搬到 Python 上跑。
+    # 双向验证：慢但持续推进必须不超时，真的零进展必须超时；旧版固定 deadline
+    # 与固定 120 秒等帧在同一场景下必须被判失败。
+    _STALL, _FIRST = 300_000, 180_000
+
+    def _watchdog(arrivals, end_ms):
+        """arrivals: 帧数增长的时刻（ms）；返回 (是否卡死, 已收帧数)。"""
+        hits = [0] + [t for t in arrivals if t <= end_ms]
+        last, n = hits[-1], len(hits) - 1
+        grace = _STALL if n > 0 else _FIRST
+        return end_ms - last > grace, n
+
+    def _await_frame(frame_ms, beats):
+        """第 frame_ms 时刻目标帧落盘；beats 是全局心跳（其它帧在推进）。"""
+        last = 0
+        for t in sorted(set([0] + [b for b in beats if b < frame_ms])):
+            if t - last > _STALL:
+                return False
+            last = t
+        return frame_ms - last <= _STALL
+
+    # 每 4 分钟才出一帧、整整 40 分钟：旧版 12 分钟就砍，新版必须跑完
+    _slow = [240_000 * k for k in range(1, 11)]
+    assert _watchdog(_slow, 40 * 60_000) == (False, 10), \
+        "慢但持续推进被误判为超时"
+    assert 40 * 60_000 >= 12 * 60_000, "对照场景必须先超过旧的 12 分钟上限"
+    assert _watchdog([], _FIRST + 1)[0], "首帧一直不来必须判卡死"
+    assert _watchdog([60_000], 60_000 + _STALL + 1)[0], \
+        "收到首帧后连续零进展必须判卡死"
+    assert not _watchdog([60_000], 60_000 + _STALL)[0], \
+        "刚好到宽限边界不该提前判死"
+    # 一帧等 10 分钟，但期间渲染侧每 60 秒都在出别的帧：旧版 120 秒就返回 null
+    assert _await_frame(600_000, [60_000 * k for k in range(1, 10)]), \
+        "全局还在推进时，等单帧不该被 120 秒死线掐断"
+    assert 600_000 > 120_000, "对照场景必须先超过旧的 120 秒等帧上限"
+    assert not _await_frame(600_000, [60_000, 120_000]), \
+        "心跳停了超过宽限还一直空等，卡死就发现不了"
+    # 超时重试会换一个 run 重头渲，旧帧目录（几百 MB）不清理会一直堆着。
+    # 只允许删「过期的合法 run 目录」，正在收帧的新 run 绝不能误删。
+    assert "\n        _sweep_motion_frames()\n" in _ap_src, \
+        "重试会不断留下新 run 的帧目录，没有清理入口（注释掉不算）"
+    with _tf.TemporaryDirectory() as _sd:
+        _sroot = _Path(_sd)
+        _fr = _sroot / "_frames"
+        _fr.mkdir()
+        _old, _new, _weird = (_fr / "aabbcc112233", _fr / "ddeeff445566",
+                              _fr / "not-a-run!")
+        for _d in (_old, _new, _weird):
+            _d.mkdir()
+            (_d / "f_00000.jpg").write_bytes(b"x")
+        (_fr / "keep.txt").write_text("x", encoding="utf-8")
+        import time as _time
+        _stale = _time.time() - 25 * 3600
+        _os.utime(_old, (_stale, _stale))
+        with _mock.patch.object(AP, "OUT", _sroot):
+            assert AP._sweep_motion_frames() == 1, \
+                "过期帧目录没被清掉（或误删了别的目录）"
+        assert not _old.exists() and _new.exists() and _weird.exists(), \
+            "清理误删了正在用的新 run 或非法命名目录"
+        assert (_fr / "keep.txt").is_file(), "清理把普通文件也删了"
     # 百分比序列：min 语义、单调、两端对齐、绝不假跳
     def _pct(r, e, total):
         return min(r, e) * 100 // max(1, total)
