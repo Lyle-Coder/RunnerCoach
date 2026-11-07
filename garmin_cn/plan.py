@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from pathlib import Path
 
 DOW = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6: "周六", 7: "周日"}
@@ -390,9 +391,20 @@ def load(path: Path) -> dict | None:
         return None
 
 
+def _home() -> Path:
+    """数据目录：桌面用项目根，APK 里由 Kotlin 侧用 GARMIN_HOME 指到 filesDir。
+
+    不能直接用 `__file__` 推：APK 里代码在 Chaquopy 的只读 assets 里，
+    `data/plan.json` 却在 GARMIN_HOME 下，两边不是同一个地方——一图流在手机上
+    读不到计划快照就是踩了这个坑。
+    """
+    env = os.environ.get("GARMIN_HOME")
+    return Path(env).expanduser() if env else Path(__file__).resolve().parent.parent
+
+
 def attach(res: dict, path: Path | None = None) -> dict:
     """把本地计划快照挂到 derive() 的结果上，供教练上下文与看板使用。"""
-    res["plan"] = load(path or (Path(__file__).resolve().parent.parent / "data" / "plan.json"))
+    res["plan"] = load(path or (_home() / "data" / "plan.json"))
     return res
 
 

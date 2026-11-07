@@ -2173,6 +2173,32 @@ def cmd_selftest(args) -> int:
     assert fut["week"][6]["items"], "未来 activity 应算课"
     assert fut["week"][3]["done"] is True, "带 activityId 的才算已完成"
     assert PL._months("2026-11-07")[0] == (2026, 10), "要连上个月一起拉，兼容月份语义"
+
+    # 一图流读计划快照必须走 GARMIN_HOME：APK 里代码在只读 assets、数据在
+    # filesDir，用 __file__ 推路径永远读不到——手机上一图流没计划就是这个坑。
+    import os as _os
+    import tempfile as _tf2
+
+    with _tf2.TemporaryDirectory() as td:
+        _data = Path(td) / "data"
+        _data.mkdir(parents=True, exist_ok=True)
+        (_data / "plan.json").write_text(
+            _json.dumps(cal, ensure_ascii=False), encoding="utf-8")
+        _old = _os.environ.get("GARMIN_HOME")
+        _os.environ["GARMIN_HOME"] = td
+        try:
+            _got = PL.attach({}).get("plan") or {}
+            assert _got.get("name") == "佳明日历", \
+                "attach() 要按 GARMIN_HOME 读快照，不能用 __file__ 推"
+            from garmin_cn.card import _week_rows
+
+            _rows = _week_rows(_got, "2026-11-07")
+            assert _rows.count('class="wrow') == 7, "一图流周列表应渲染 7 天"
+        finally:
+            if _old is None:
+                _os.environ.pop("GARMIN_HOME", None)
+            else:
+                _os.environ["GARMIN_HOME"] = _old
     assert HW._date({"date": ["not-a-date"]}, "date", "2026-11-06") == "2026-11-06"
 
     class _FakeClient:
