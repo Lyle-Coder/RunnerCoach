@@ -41,6 +41,7 @@ distance 是米、totalTime 是秒——与佳明侧口径一致，直接进表�
 from __future__ import annotations
 
 import datetime as dt
+import gzip
 import hashlib
 import json
 import time
@@ -206,7 +207,13 @@ class CorosCloud:
         req = urllib.request.Request(url, data=data, headers=hs, method=method)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                text = r.read().decode("utf-8", "replace")
+                raw = r.read()
+                # /activity/detail/query 一类大响应会回 gzip（头里带 Content-Encoding，
+                # 偶尔不带），统一在入口解掉，别让下游把压缩流当"不是 JSON"
+                enc = (r.headers.get("Content-Encoding") or "").lower()
+                if "gzip" in enc or raw[:2] == b"\x1f\x8b":
+                    raw = gzip.decompress(raw)
+                text = raw.decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             snippet = e.read().decode("utf-8", "replace")[:200]
             raise CorosError(f"高驰接口 HTTP {e.code}：{snippet}") from None

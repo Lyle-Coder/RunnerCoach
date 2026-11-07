@@ -859,6 +859,8 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
                privacy: str = PV.MODE_NONE) -> str:
     """组装活动图 HTML。`privacy` 是分享脱敏档位，默认原图，绝不改旧调用方行为。"""
     mode = PV.normalize(privacy)
+    row = {**row, **(detail.get("row_metrics") or {})}
+    source_label = "COROS 高驰" if detail.get("source") == "coros" else "Garmin"
     raw = row.get("raw")
     if isinstance(raw, str):
         try:
@@ -1092,7 +1094,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     {lap_html}
   </div>
 
-  <div class="foot">数据 Garmin</div>
+  <div class="foot">数据 {source_label}</div>
 </div>
 <script>
 /* hero 自适应：长距离 + 带小时的用时（42.54 / 3:14:53）会把右上六格挤到换行，

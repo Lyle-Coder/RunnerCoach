@@ -311,7 +311,11 @@ def fetch(client, activity_id: int | str, *, with_track: bool = True) -> dict:
     aid = str(activity_id)
     details = client.get(
         f"/activity-service/activity/{aid}/details?maxChartSize=4000&maxPolylineSize=4000")
+    if not isinstance(details, dict) or not details:
+        raise ValueError("佳明未返回有效活动明细，请检查活动来源、登录状态或网络后重试")
     splits = client.get(f"/activity-service/activity/{aid}/splits")
+    if not isinstance(splits, dict):
+        raise ValueError("佳明未返回有效分圈数据，请稍后重试")
     try:
         weather = build_weather(client.get(f"/activity-service/activity/{aid}/weather"))
     except Exception:

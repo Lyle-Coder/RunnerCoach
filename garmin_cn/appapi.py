@@ -790,6 +790,7 @@ def act_card_html(activity_id: str, title: str | None = None,
     而且离线优先）。轨迹回落到纯 SVG 矢量，断网也能出图。
 
     明细优先读库里的缓存；没有才联网抓一次并落库，之后就一直离线可用。
+    高驰按原始活动记录识别，凭据由末尾两个独立参数传入；旧五参数调用保持兼容。
     """
     try:
         store = Store(DB)
@@ -798,6 +799,10 @@ def act_card_html(activity_id: str, title: str | None = None,
             return {"ok": False, "error": "库里没有这条活动，先同步一次"}
         aid = str(row["activity_id"])
         src = (row.get("source") or "garmin")
+
+        from . import coros_activity as CA
+        from .coros import CorosAuthError
+        provider = CA.source(row)
 
         detail = store.get_detail(aid)
         if not detail and src == "coros":
@@ -817,13 +822,20 @@ def act_card_html(activity_id: str, title: str | None = None,
             try:
                 from . import activity as act
 
-                detail = act.ensure(store, _client(email, password), aid)
+                if provider == "coros":
+                    detail = CA.ensure(store, HOME, row, coros_email, coros_password)
+                else:
+                    detail = act.ensure(store, _client(email, password), aid)
+            except CorosAuthError:
+                return {"ok": False, "need_login": True, "source": "coros",
+                        "error": "高驰登录已失效，请登录高驰后获取活动明细"}
             except (AuthError, SessionExpired):
                 return {"ok": False, "need_login": True, "source": "garmin",
                         "error": "这条活动的明细还没缓存，需要联网登录后抓一次"}
             except Exception as e:
                 return {"ok": False,
-                        "error": f"抓明细失败（需要联网）：{type(e).__name__}: {e}"}
+                        "source": provider,
+                        "error": f"获取{'高驰' if provider == 'coros' else '佳明'}活动明细失败：{e}"}
         if not detail:
             return {"ok": False, "error": "没拿到活动明细"}
 
