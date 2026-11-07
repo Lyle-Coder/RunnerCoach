@@ -43,7 +43,17 @@ import os
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+def _home() -> Path:
+    """数据目录：桌面用项目根，APK 里由 Kotlin 侧用 GARMIN_HOME 指到 filesDir。
+
+    和 plan.attach() 同一个坑：APK 里 `__file__` 在 Chaquopy 的只读 assets 内，
+    用它推 data/ 会把缓存和 Key 都指到读不到、也写不进的地方。
+    """
+    env = os.environ.get("GARMIN_HOME")
+    return Path(env).expanduser() if env else Path(__file__).resolve().parent.parent
+
+
+ROOT = _home()
 CONF = ROOT / "data" / "amap.json"
 CACHE = ROOT / "data" / "basemaps"
 

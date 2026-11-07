@@ -23,6 +23,7 @@ import datetime as dt
 import hmac
 import json
 import os
+import re
 import secrets
 import socket
 import sys
@@ -128,9 +129,41 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._html(ui.plan_page(parse_qs(u.query)))
         if u.path in ("/files", "/files.html"):
             return self._html(ui.files_page(root))
+        if u.path.startswith("/basemap/"):
+            return self._basemap(u.path)
         if u.path in ("", "/", "/index.html"):
             return self._send_index()
         return super().do_GET()
+
+    def _basemap(self, path: str) -> None:
+        """活动图底图：同源提供 `data/basemaps/*.png`。
+
+        App 的 WebView 加载的是 http 页面，页面里 `file://` 图片会被拦，
+        所以底图必须走同一个 127.0.0.1 服务。文件名串与尺寸/版本绑定，
+        内容不变，给长缓存；路径先 resolve 再校验是否还在缓存目录内。
+        """
+        from . import basemap as BM
+
+        name = path[len("/basemap/"):]
+        if not re.fullmatch(r"[A-Za-z0-9._-]+\.png", name):
+            return self._json({"ok": False, "error": "底图名不合法"}, 404)
+        try:
+            p = (BM.CACHE / name).resolve()
+            p.relative_to(BM.CACHE.resolve())
+        except (ValueError, OSError):
+            return self._json({"ok": False, "error": "底图不存在"}, 404)
+        if not p.is_file():
+            return self._json({"ok": False, "error": "底图不存在"}, 404)
+        data = p.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=2592000")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except BrokenPipeError:
+            pass
 
     def do_POST(self) -> None:  # noqa: N802
         u = urlparse(self.path)

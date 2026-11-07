@@ -2125,6 +2125,7 @@ def cmd_selftest(args) -> int:
     assert 'data-act="login:coros"' in me, "数据源行要直达对应登录"
     assert 'data-act="historySync"' not in me and 'data-act="settings"' not in me
     assert 'href="/files"' in me
+    assert 'data-act="amap"' in me and "地图底图" in me, "我的页要有底图 Key 入口"
     # 看板导航只剩「回来源 tab + 前后翻日期」，不再有横向 tab 入口
     nav = U.nav_html("2026-10-21",
                      {"first": "2026-10-01", "last": "2026-11-06"})
@@ -2201,6 +2202,9 @@ def cmd_selftest(args) -> int:
             else:
                 _os.environ["GARMIN_HOME"] = _old
     assert HW._date({"date": ["not-a-date"]}, "date", "2026-11-06") == "2026-11-06"
+    # 底图 Key 校验：太短的串直接拒，且不写盘
+    _amap = _json.loads(AP.call("set_amap_key", _json.dumps(["short"])))
+    assert not _amap.get("ok") and "不完整" in (_amap.get("error") or "")
 
     class _FakeClient:
         def __init__(self, items):

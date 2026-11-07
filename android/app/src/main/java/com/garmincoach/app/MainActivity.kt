@@ -268,6 +268,7 @@ class MainActivity : Activity() {
                     "login" -> showLoginPicker()
                     "mi" -> showMiPanel()
                     "planRefresh" -> refreshPlan()
+                    "amap" -> showAmapDialog()
                     else -> toast("未知操作：$name")
                 }
             }
@@ -823,6 +824,51 @@ class MainActivity : Activity() {
      * 账号密码登录一次（新设备会要求图形验证码 + 短信验证），passToken
      * 半年量级长效，之后每次同步/出图 Python 侧自动补拉体重，无需再进面板。
      */
+    /** 地图底图 Key：只存本机，配了之后活动图才铺高德底图。 */
+    private fun showAmapDialog() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(10), dp(20), 0)
+        }
+        box.addView(TextView(this).apply {
+            text = "填高德「Web 服务」Key 后，活动图会铺一张真实地图底图。\n\n" +
+                   "换取底图时会把这次跑步的轨迹中心点发给高德；不填则只画矢量轨迹。\n" +
+                   "Key 只保存在本机，不会上传。"
+            textSize = 13f
+            setTextColor(0xFF485046.toInt())
+            setLineSpacing(dp(3).toFloat(), 1f)
+        })
+        val input = EditText(this).apply {
+            hint = "高德 Web 服务 Key"
+            setSingleLine()
+        }
+        box.addView(input)
+        AlertDialog.Builder(this)
+            .setTitle("地图底图")
+            .setView(box)
+            .setPositiveButton("保存") { _, _ -> saveAmapKey(input.text.toString().trim()) }
+            .setNeutralButton("清除") { _, _ -> saveAmapKey("") }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun saveAmapKey(k: String) {
+        busy(true)
+        thread {
+            val r = apiCall("set_amap_key", k)
+            ui {
+                busy(false)
+                if (r.optBoolean("ok")) {
+                    toast(r.optString("message",
+                        if (r.optBoolean("configured")) "已保存" else "已清除"))
+                    reload()
+                } else {
+                    toast(r.optString("error", "保存失败"))
+                }
+            }
+        }
+    }
+
     /** 训练计划刷新：联网拉一次佳明教练计划（2 个请求），成功后重载页面。 */
     private fun refreshPlan() {
         busy(true)

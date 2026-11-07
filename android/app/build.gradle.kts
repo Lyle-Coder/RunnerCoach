@@ -13,8 +13,8 @@ android {
         // 29 起 MediaStore 才有 RELATIVE_PATH，分享一图流不用再写一堆分支
         minSdk = 29
         targetSdk = 34
-        versionCode = 28
-        versionName = "0.5.0-snap6"
+        versionCode = 29
+        versionName = "0.5.0-snap7"
 
         // 只留 arm64：Python 3.12+ 就不再支持 32 位 ABI，
         // 而且多带一个 ABI 就多 8MB。

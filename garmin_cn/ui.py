@@ -575,6 +575,16 @@ def plan_page(qs: dict | None = None) -> str:
                 back=("返回今日", "/"))
 
 
+def _map_on() -> bool:
+    """活动图是否已配好底图 Key（只读配置，不联网）。"""
+    try:
+        from . import basemap as BM
+
+        return BM.available()
+    except Exception:
+        return False
+
+
 def me_page() -> str:
     """「我的」tab：数据源、低频动作、产物、关于。原本都在右上角 ⋮ 里。"""
     from . import appapi as A
@@ -619,7 +629,10 @@ def me_page() -> str:
         ai_txt = "未配置"
 
     more = (row("◫", "产物文件", "看板 / 图片 / 视频清单", href="/files") +
-            row("◍", "AI 模型服务", f"{ai_txt} · 在「教练」页右上角设置", tone="b", go=False))
+            row("◍", "AI 模型服务", f"{ai_txt} · 在「教练」页右上角设置", tone="b", go=False) +
+            row("⌖", "地图底图",
+                ("已配置 · 活动图带高德底图" if _map_on()
+                 else "未配置 · 活动图为矢量轨迹"), act="amap", tone="a"))
 
     about = (f'<div class="card"><div class="lab">RunnerCoach · v{esc(VER)}</div>'
              '<div class="note" style="margin-top:8px;font-size:12.5px;line-height:1.8">'

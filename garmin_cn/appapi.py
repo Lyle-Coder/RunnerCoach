@@ -118,7 +118,7 @@ def _today(store: Store) -> dict:
 _API = {
     "env_info", "status", "login", "submit_mfa", "sync", "sync_range",
     "dashboard", "card_html", "act_card_html", "runs", "activities", "days_index",
-    "start_server", "recent", "read_html",
+    "plan", "set_amap_key", "start_server", "recent", "read_html",
     "set_llm_config", "get_llm_config", "ai",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
@@ -874,11 +874,22 @@ def act_card_html(activity_id: str, title: str | None = None,
             return {"ok": False, "error": "没拿到活动明细"}
 
         from . import privacy as PV
-        from .actcard import H, W, build_html
+        from .actcard import H, TRK_CH, TRK_CW, W, build_html
 
         mode = PV.normalize(privacy)
         _, mask_info = PV.mask_track(detail.get("track") or [], mode)
-        html = build_html(row, detail, None, None, title, privacy=mode)
+
+        # 底图：脱敏档一律不碰（取底图会把轨迹中心点发给高德）。App 的页面走
+        # http://127.0.0.1，`file://` 图片加载不了，所以用同源 URL 交给本机服务。
+        # 没 Key / 断网 / 接口失败时 ensure() 返回 None，静默回落矢量轨迹。
+        bm = None
+        if mode == PV.MODE_NONE and os.environ.get("GARMIN_MAP", "1") != "0":
+            from . import basemap as BM
+
+            got = BM.ensure(detail.get("track") or [], TRK_CW, TRK_CH, aid)
+            if got:
+                bm = {"png": f"/basemap/{Path(got['png']).name}", "meta": got["meta"]}
+        html = build_html(row, detail, None, bm, title, privacy=mode)
         # 档位不同就换文件名：别让脱敏版和原图互相覆盖，也便于事后自证
         suffix = "" if mode == PV.MODE_NONE else f"-{mode}"
         out = OUT / f"act-{row.get('date') or 'unknown'}-{aid}{suffix}.html"
@@ -890,6 +901,38 @@ def act_card_html(activity_id: str, title: str | None = None,
                 **export_spec(BG_ACT)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def set_amap_key(key: str = "") -> dict:
+    """保存高德 Web 服务 Key（只落本机 `data/amap.json`，0600，不上传）。
+
+    没有 Key 时活动图回落到矢量轨迹；配了之后**轨迹中心点会发给高德**换底图，
+    属于「位置数据出本机」，所以只在使用者主动填写后生效。传空串表示清除。
+    """
+    p = HOME / "data" / "amap.json"
+    k = (key or "").strip()
+    if not k:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+        return {"ok": True, "configured": False,
+                "message": "已清除，活动图回落到矢量轨迹"}
+    if len(k) < 16:
+        return {"ok": False, "error": "Key 看起来不完整，重新复制一次"}
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"key": k}, ensure_ascii=False) + "\n", encoding="utf-8")
+        try:
+            os.chmod(p, 0o600)
+        except OSError:
+            pass
+    except OSError as e:
+        return {"ok": False, "error": f"写入失败：{e}"}
+    from . import basemap as BM
+
+    ok, msg = BM.probe(k)
+    return {"ok": True, "configured": True, "probe": ok, "message": msg}
 
 
 def read_html(path: str) -> dict:
