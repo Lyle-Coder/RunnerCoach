@@ -96,7 +96,7 @@ def build_notes(tag: str) -> str:
 
 ## 安装
 
-覆盖安装即可（{apk_ver}，高于正式版的 versionCode）。安装前可核对下方 SHA256。
+覆盖安装即可：内核 `{ver}`，APK {apk_ver}，可直接覆盖正式版。安装前可核对下方 SHA256。
 
 ## 产物
 
