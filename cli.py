@@ -2382,6 +2382,121 @@ def cmd_selftest(args) -> int:
         assert "muxer.addTrack(audio.format)" in _me, "音轨没加进 MP4"
         assert "writeAudio(info.presentationTimeUs, false)" in _me, "音视频没交织"
         assert 'apiCall("motion_audio", run)' in _main, "导出没取混音清单"
+    # ---- 导出提速 + 顶部百分比 ------------------------------------------
+    # 旧版「720 帧全部写盘 → 才开始编码」两段串行；现在边收边编，
+    # 编码器会盯着 f_XXXXX.jpg 出现就立刻读，因此收帧必须原子落盘。
+    _sv_src = _Path(_vid.__file__).parent.joinpath("serve.py").read_text("utf-8")
+    assert "os.replace(tmp, target)" in _sv_src, "App 收帧没原子改名，会读到半张 JPEG"
+    assert 'f".f_{i:05d}.tmp"' in _sv_src, "临时帧文件名会匹配 f_*.jpg，进度被算多"
+    assert "os.replace(tmp, target)" in _vsrc, "桌面导出收帧没同步原子写入"
+    # 真起一次本机服务，验证「文件出现即完整、临时文件不计入进度」
+    with _tf.TemporaryDirectory() as _htd:
+        from functools import partial as _fpartial
+        from http.server import ThreadingHTTPServer as _THS
+        from garmin_cn import serve as _sv
+        import threading as _th
+        import urllib.request as _ur
+        _root = _Path(_htd)
+
+        class _Quiet(_sv._Handler):
+            def log_message(self, *a):
+                pass
+
+        _srv = _THS(("127.0.0.1", 0),
+                    _fpartial(_Quiet, directory=str(_root)))
+        _th.Thread(target=_srv.serve_forever, daemon=True).start()
+        # 盯着 os.replace：只用字符串断言的话，实现改回「直接 write_bytes」
+        # 也可能蒙混过关（文件照样是完整的），必须验证确实走了原子改名。
+        _orig_replace, _renames = _sv.os.replace, []
+
+        def _spy_replace(src, dst):
+            _renames.append((str(src), str(dst)))
+            return _orig_replace(src, dst)
+
+        _sv.os.replace = _spy_replace
+        try:
+            _payload = b"\xff\xd8FAKEJPEG" * 256
+            _url = ("http://127.0.0.1:%d/__frame?i=7&run=benchrun1"
+                    % _srv.server_address[1])
+            with _ur.urlopen(_ur.Request(_url, data=_payload, method="POST"),
+                             timeout=5) as _resp:
+                assert _resp.status == 204
+            _fr = _root / "_frames" / "benchrun1"
+            assert (_fr / "f_00007.jpg").read_bytes() == _payload, \
+                "编码器可能读到写了一半的帧"
+            assert len(_renames) == 1 and _renames[0][0].endswith(".tmp"), \
+                "收帧没走「临时文件 → 原子改名」"
+            assert not list(_fr.glob(".*.tmp")), "原子改名后临时文件没消失"
+            assert len(list(_fr.glob("f_*.jpg"))) == 1, "临时文件被算进帧进度"
+        finally:
+            _sv.os.replace = _orig_replace
+            _srv.shutdown()
+            _srv.server_close()
+    # 编码器：流式帧源 / YUV 查表行批量 / 输入缓冲重试 / 进度回调
+    _me = (_kt_dir / "MotionEncoder.kt").read_text("utf-8")
+    assert "fun interface FrameAt" in _me and "source.get(i)" in _me, \
+        "编码没有惰性帧源，做不到边收边编"
+    assert "val scratch = Scratch(width, height)" in _me, \
+        "每帧还在重新分配 8MB 像素缓冲"
+    assert "YR[(c shr 16) and 255]" in _me and "yb.put(s.y, 0, w)" in _me, \
+        "YUV 没改查表 + 按行批量 put"
+    assert "val y0 = yb.position()" in _me, \
+        "plane buffer 有 crop offset 时会整幅错行"
+    assert "while (idx < 0 && spin++ < 200" in _me, \
+        "输入缓冲拿不到时会丢帧（pts 不推进 → 成片变短）"
+    assert "bmp.recycle()\n                    continue" not in _me, \
+        "还留着丢帧的 continue"
+    assert "onProgress(70 + (i + 1) * 30 / count)" in _me, "编码段没报百分比"
+    # App：全程统一百分比、不显示帧数，且渲染与编码并行
+    _main = (_kt_dir / "MainActivity.kt").read_text("utf-8")
+    assert 'subtitle.text = "生成回放 $v%"' in _main, "顶部没改成百分比"
+    assert '生成回放 $n/$frames 帧' not in _main, "顶部还在显示帧数"
+    assert '"编码中…"' not in _main and '"混入原声并编码中…"' not in _main, \
+        "还有阶段性文字覆盖百分比"
+    assert 'subtitle.text = "生成回放 0%"' in _main, "准备阶段没接上百分比"
+    assert "report(min(70, (n * 70L / max(1, frames)).toInt()))" in _main, \
+        "渲染段没映射到 0~70%"
+    assert "frameCount = total" in _main and "frameAt = MotionEncoder.FrameAt" in _main, \
+        "没把总帧数与惰性帧源交给编码器"
+    assert "cancelled = { cancel.get() }" in _main and "onProgress = report" in _main, \
+        "取消信号/进度回调没接上"
+    assert "private fun awaitFrame" in _main and "120_000" in _main, \
+        "等帧没有超时，导出卡住会无限空转"
+    assert 'File(dir, "_timeline.json").isFile' in _main and "f_00000.jpg" in _main, \
+        "没等时间轴与首帧就取音频清单，会漏掉原声"
+    assert "import java.util.concurrent.atomic.AtomicBoolean" in _main, \
+        "取消信号不是线程安全的"
+    assert "encoded.set(true)" in _main and "ui { busy(false); updateSubtitle() }" in _main, \
+        "超时/失败时进度圈可能一直转"
+    # 百分比序列：单调、两端对齐、不超过 100
+    def _render_pct(n, total):
+        return min(70, n * 70 // max(1, total))
+    def _encode_pct(i, count):
+        return 70 + (i + 1) * 30 // count
+    _seq = [_render_pct(n, 720) for n in range(0, 721, 24)]
+    _seq += [_encode_pct(i, 720) for i in range(0, 720, 4)] + [100]
+    assert _seq[0] == 0 and _seq[-1] == 100 and _seq == sorted(_seq), \
+        "百分比会回退或到不了 100"
+    assert all(0 <= p <= 100 for p in _seq), "百分比越界"
+    # 真机没法逐帧比对 YUV，先在 PC 上锁死「查表 + 2×2 展开」与原公式等价：
+    # 任何符号写反、除法定点写错都会让整条视频偏色。
+    import random as _random
+    _rnd = _random.Random(7)
+    for _ in range(400):
+        _px = [(_rnd.randrange(256), _rnd.randrange(256), _rnd.randrange(256))
+               for _ in range(4)]
+        _old = [sum(c[k] for c in _px) // 4 for k in range(3)]
+        _new = [(_px[0][k] + _px[1][k] + _px[2][k] + _px[3][k]) // 4
+                for k in range(3)]
+        assert _old == _new, "2×2 展开求和与原内层循环不等价"
+        _r, _g, _b = _new
+        assert ((-38 * _r - 74 * _g + 112 * _b + 128) >> 8) + 128 == \
+            (((-38 * _r) + (-74 * _g) + (112 * _b) + 128) >> 8) + 128, \
+            "U 查表与原公式不等价"
+        for _v in (((66 * _r + 129 * _g + 25 * _b + 128) >> 8) + 16,
+                   ((-38 * _r - 74 * _g + 112 * _b + 128) >> 8) + 128,
+                   ((112 * _r - 94 * _g - 18 * _b + 128) >> 8) + 128):
+            assert 0 <= _v <= 255, "YUV 分量溢出 Byte，toByte 会绕回造成色斑"
     # ---- 素材必须「完整插入」：一段都不许丢，同地两段也不许被合并掉 ----
     _frt = {"n": 3, "t0": 1_700_000_000_000, "t": [0, 60, 120],
             "lat": [30.0, 30.001, 30.002], "lon": [120.0, 120.001, 120.002],

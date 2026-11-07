@@ -116,7 +116,10 @@ def render_frames(html: Path, total: int, fps: int, *, workers: int = 2,
                 return
             i = int((q.get("i") or ["0"])[0])
             n = int(self.headers.get("Content-Length") or 0)
-            (FRAMES / f"f_{i:05d}.jpg").write_bytes(self.rfile.read(n))
+            target = FRAMES / f"f_{i:05d}.jpg"
+            tmp = FRAMES / f".f_{i:05d}.tmp"
+            tmp.write_bytes(self.rfile.read(n))
+            os.replace(tmp, target)          # 原子落盘，见 serve.py 同款说明
             self.send_response(204)
             self.end_headers()
             with lock:

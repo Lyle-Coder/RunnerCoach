@@ -199,7 +199,13 @@ class _Handler(SimpleHTTPRequestHandler):
                     i = -1
                 if not 0 <= i <= 20000:
                     return self._json({"ok": False, "error": "帧号越界"}, 400)
-                (root / f"f_{i:05d}.jpg").write_bytes(body)
+                # 先写临时文件再原子改名：导出改成「边收边编」之后，编码器会
+                # 盯着 f_XXXXX.jpg 出现就立刻读，直接 write_bytes 会读到写了一半
+                # 的 JPEG（花屏甚至解码失败）。.tmp 不匹配 f_*.jpg，进度不受影响。
+                target = root / f"f_{i:05d}.jpg"
+                tmp = root / f".f_{i:05d}.tmp"
+                tmp.write_bytes(body)
+                os.replace(tmp, target)
             elif u.path.startswith("/__timeline"):
                 (root / "_timeline.json").write_bytes(body or b"[]")
             elif u.path.startswith("/__diag"):

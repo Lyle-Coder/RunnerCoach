@@ -44,6 +44,7 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -1779,7 +1780,7 @@ class MainActivity : Activity() {
             return
         }
         busy(true)
-        subtitle.text = "准备回放…"
+        subtitle.text = "生成回放 0%"
         thread {
             val r = apiCall("motion_html", id, 24, duration, privacy)
             if (!r.optBoolean("ok")) {
@@ -1799,7 +1800,13 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 离屏 WebView 加载动画页：页面自己逐帧 JPEG POST 到 /__frame。 */
+    /**
+     * 离屏 WebView 加载动画页：页面自己逐帧 JPEG POST 到 /__frame。
+     *
+     * v42 之前是「等 720 帧全部写盘 → 才开始编码」两段串行，30 秒的片子要等
+     * 两遍耗时。现在 WebView 一起就起编码线程，按帧号边收边编；帧齐立刻拆掉
+     * WebView 释放内存（编码只读盘上的 JPEG，不再依赖它）。
+     */
     private fun startMotionView(run: String, frames: Int, fps: Int,
                                 htmlPath: String, title: String) {
         val name = htmlPath.substringAfterLast('/')
@@ -1812,38 +1819,24 @@ class MainActivity : Activity() {
             translationY = 8000f
         }
         pull.addView(view, FrameLayout.LayoutParams(1080, 1920))
-        view.loadUrl(url)
-        thread {
-            var last = -1
-            var fail: String? = null
-            val t0 = System.currentTimeMillis()
-            val deadline = t0 + 12 * 60 * 1000
-            while (System.currentTimeMillis() < deadline) {
-                Thread.sleep(1000)
-                val st = apiCall("motion_status", run)
-                val n = st.optInt("frames")
-                if (n != last) {
-                    last = n
-                    ui { subtitle.text = "生成回放 $n/$frames 帧" }
-                }
-                // 帧齐就走人。`done` 只作参考：它靠页面最后补一个 POST，
-                // 万一那一下丢了，死等 done 会白卡到超时。
-                if (n >= frames && n > 0) {
-                    Thread.sleep(400)
-                    break
-                }
-                val diag = st.optJSONObject("diag")
-                // 页面自报诊断：一直是 0 帧时直接把原因说清楚，
-                // 别让人对着进度条猜是慢还是坏了
-                if (n == 0 && diag != null && !diag.optBoolean("base", true)) {
-                    fail = "底图没能加载：先到「我的 → 地图底图」配置高德 Key，再试一次"
-                    break
-                }
-                if (n == 0 && System.currentTimeMillis() - t0 > 30_000 && diag == null) {
-                    fail = "播放页没有开始渲染（WebView 未就绪），请重试"
-                    break
+
+        val cancel = AtomicBoolean(false)
+        val encoded = AtomicBoolean(false)
+        val detached = AtomicBoolean(false)
+        val pctLock = Any()
+        var lastPct = -1
+        // 渲染线程与编码线程都会报进度，取最大值保证顶部百分比只增不减
+        fun report(p: Int) {
+            val v = synchronized(pctLock) {
+                if (p <= lastPct) -1 else {
+                    lastPct = p
+                    p
                 }
             }
+            if (v >= 0) ui { subtitle.text = "生成回放 $v%" }
+        }
+        fun detach() {
+            if (!detached.compareAndSet(false, true)) return
             ui {
                 try {
                     pull.removeView(view)
@@ -1851,71 +1844,136 @@ class MainActivity : Activity() {
                     Log.w(TAG, "remove motion view", t)
                 }
                 view.destroy()
+            }
+        }
+        report(0)
+        view.loadUrl(url)
+
+        // 只管显示、诊断与兜底取消，不再决定什么时候开始编码
+        thread {
+            val t0 = System.currentTimeMillis()
+            val deadline = t0 + 12 * 60 * 1000
+            while (!encoded.get() && !cancel.get() &&
+                System.currentTimeMillis() < deadline
+            ) {
+                Thread.sleep(700)
+                val st = apiCall("motion_status", run)
+                val n = st.optInt("frames")
+                report(min(70, (n * 70L / max(1, frames)).toInt()))
+                if (n >= frames && n > 0) detach()
+                val diag = st.optJSONObject("diag")
+                // 页面自报诊断：一直是 0 帧时直接把原因说清楚，
+                // 别让人对着进度条猜是慢还是坏了
+                val fail = when {
+                    n == 0 && diag != null && !diag.optBoolean("base", true) ->
+                        "底图没能加载：先到「我的 → 地图底图」配置高德 Key，再试一次"
+                    n == 0 && System.currentTimeMillis() - t0 > 30_000 && diag == null ->
+                        "播放页没有开始渲染（WebView 未就绪），请重试"
+                    else -> null
+                }
                 if (fail != null) {
-                    busy(false)
-                    updateSubtitle()
-                    val got = apiCall("motion_status", run).optInt("frames")
-                    if (got == 0) {
-                        apiCall("motion_cleanup", run)
-                        toast(fail)
-                    } else {
-                        encodeMotion(run, fps, title)
-                    }
-                } else {
-                    encodeMotion(run, fps, title)
+                    cancel.set(true)
+                    apiCall("motion_cleanup", run)
+                    detach()
+                    val msg = fail
+                    ui { busy(false); updateSubtitle(); toast(msg) }
+                    break
                 }
             }
+            if (!encoded.get() && System.currentTimeMillis() >= deadline) {
+                cancel.set(true)
+                ui { toast("回放生成超时，请重试") }
+            }
+        }
+
+        // 编码线程：与 WebView 渲染并行
+        thread {
+            encodeMotion(run, fps, title, frames, cancel,
+                { p -> report(p) }, { detach() })
+            encoded.set(true)
+            detach()
+            // 统一收尾：不管成功、失败、诊断取消还是超时，进度圈都得关掉
+            ui { busy(false); updateSubtitle() }
         }
     }
 
-    private fun encodeMotion(run: String, fps: Int, title: String) {
+    /** 等第 i 帧落盘。服务端用 .tmp + os.replace 原子改名，文件出现即完整；
+     *  120 秒还没有新帧就判定导出中断，别让编码器无限空转。 */
+    private fun awaitFrame(dir: File, i: Int, cancel: AtomicBoolean): File? {
+        val f = File(dir, String.format(Locale.US, "f_%05d.jpg", i))
+        val deadline = System.currentTimeMillis() + 120_000
+        while (!cancel.get()) {
+            if (f.isFile && f.length() > 1024) return f
+            if (System.currentTimeMillis() > deadline) return null
+            Thread.sleep(12)
+        }
+        return null
+    }
+
+    private fun encodeMotion(run: String, fps: Int, title: String, total: Int,
+                             cancel: AtomicBoolean, report: (Int) -> Unit,
+                             detach: () -> Unit) {
         val st = apiCall("motion_status", run)
         val dir = File(st.optString("dir"))
-        if (!dir.isDirectory) {
-            busy(false)
-            updateSubtitle()
-            toast("没有收到帧，回放生成失败")
+        // 页面是先 POST 时间轴、再推第 0 帧。等到时间轴和首帧都在，
+        // 音频清单就一定是齐的，不会出现「编完了才发现没混音」。
+        var ready = false
+        for (k in 0 until 300) {
+            if (cancel.get()) break
+            if (File(dir, "_timeline.json").isFile && File(dir, "f_00000.jpg").isFile) {
+                ready = true
+                break
+            }
+            Thread.sleep(200)
+        }
+        if (cancel.get()) return
+        if (!ready) {
+            apiCall("motion_cleanup", run)
+            ui { busy(false); updateSubtitle(); toast("没有收到帧，回放生成失败") }
             return
         }
-        subtitle.text = "编码中…"
-        thread {
-            val out = File(File(filesDir, "output"),
-                "motion-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".mp4")
-            // 时间轴落在帧目录里，cleanup 会连它一起删，所以先取再编码。
-            // 取不到（没视频素材 / 老页面没回传）就是空列表，编码器退回无声。
-            val ar = apiCall("motion_audio", run)
-            val segments = ArrayList<MotionAudio.Segment>()
-            val rows = ar.optJSONArray("items")
-            if (rows != null) {
-                for (i in 0 until rows.length()) {
-                    val o = rows.optJSONObject(i) ?: continue
-                    val f = o.optString("file", "")
-                    if (f.isNotEmpty()) {
-                        segments.add(MotionAudio.Segment(
-                            f, o.optDouble("at", 0.0), o.optDouble("dur", 0.0)))
-                    }
+        val out = File(File(filesDir, "output"),
+            "motion-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".mp4")
+        // 时间轴落在帧目录里，cleanup 会连它一起删，所以先取再编码。
+        // 取不到（没视频素材 / 老页面没回传）就是空列表，编码器退回无声。
+        val ar = apiCall("motion_audio", run)
+        val segments = ArrayList<MotionAudio.Segment>()
+        val rows = ar.optJSONArray("items")
+        if (rows != null) {
+            for (i in 0 until rows.length()) {
+                val o = rows.optJSONObject(i) ?: continue
+                val f = o.optString("file", "")
+                if (f.isNotEmpty()) {
+                    segments.add(MotionAudio.Segment(
+                        f, o.optDouble("at", 0.0), o.optDouble("dur", 0.0)))
                 }
             }
-            if (segments.isNotEmpty()) ui { subtitle.text = "混入原声并编码中…" }
-            val r = MotionEncoder.encode(dir, out, 1080, 1920, fps, segments)
-            apiCall("motion_cleanup", run)
-            ui {
-                busy(false)
-                updateSubtitle()
-                if (!r.ok) {
-                    toast("编码失败：${r.message}")
-                    return@ui
-                }
-                val uri = saveVideoToGallery(out)
-                if (uri == null) {
-                    toast("回放已生成，但写不进相册：${out.name}")
-                    return@ui
-                }
-                val tail = if (r.audioSegments > 0)
-                    "（含 ${r.audioSegments} 段素材原声）" else ""
-                toast("回放已存相册/GarminCoach$tail")
-                shareVideo(uri, "分享回放：$title")
+        }
+        val r = MotionEncoder.encode(
+            dir, out, 1080, 1920, fps, segments,
+            frameCount = total,
+            frameAt = MotionEncoder.FrameAt { i -> awaitFrame(dir, i, cancel) },
+            cancelled = { cancel.get() },
+            onProgress = report)
+        apiCall("motion_cleanup", run)
+        if (cancel.get()) return          // 诊断分支已经弹过具体原因
+        detach()
+        ui {
+            busy(false)
+            updateSubtitle()
+            if (!r.ok) {
+                toast("编码失败：${r.message}")
+                return@ui
             }
+            val uri = saveVideoToGallery(out)
+            if (uri == null) {
+                toast("回放已生成，但写不进相册：${out.name}")
+                return@ui
+            }
+            val tail = if (r.audioSegments > 0)
+                "（含 ${r.audioSegments} 段素材原声）" else ""
+            toast("回放已存相册/GarminCoach$tail")
+            shareVideo(uri, "分享回放：$title")
         }
     }
 
