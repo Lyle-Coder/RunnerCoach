@@ -23,6 +23,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -174,38 +175,150 @@ def _codec(buf: bytes, moov: tuple[int, int]) -> str:
     return buf[p + 4:p + 8].decode("latin-1", "replace")
 
 
-def probe(path: Path) -> dict:
-    """读一个视频文件的时间/坐标/尺寸/时长/编码。失败时带 error。"""
+# 相机文件名里的时间戳：VID_20261103_180036 / MVIMG_20261103_180036 /
+# PXL_20261103_180036123 / 20261103_180036 / VID20261103180036 …
+_NAME_DT = re.compile(
+    r"(?<!\d)(20\d{2})[-_]?(\d{2})[-_]?(\d{2})[-_T]?(\d{2})[-_:]?(\d{2})[-_:]?(\d{2})")
+_ISO_DT = re.compile(
+    rb"(20\d{2})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(Z|[+-]\d{2}:?\d{2})?")
+
+
+def time_from_name(name: str) -> int | None:
+    """相机文件名里的时间戳 → UTC 毫秒。
+
+    文件名是**本地**时间，按 +08:00 折算（与 `photo.read` 在没有
+    OffsetTimeOriginal 时的默认一致）。剪辑后的成品常被改名为
+    `clip-1730...mp4`，所以调用方要传登记时保留的原始文件名。
+    """
+    m = _NAME_DT.search(Path(str(name or "")).name)
+    if not m:
+        return None
+    try:
+        d = dt.datetime(*(int(x) for x in m.groups()))
+    except ValueError:
+        return None
+    utc = d - dt.timedelta(hours=8)
+    return int(utc.replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+
+
+def _moov_view(path: Path):
+    """返回 `(buf, moov, base)`：buf 是内存片段，base 是它在文件里的起始偏移。
+
+    `probe` 和 `stamp_creation` 共用，避免两处各写一遍「head 找不到就读尾」。
+    """
+    size = path.stat().st_size
+    with path.open("rb") as f:
+        head = f.read(1024 * 1024)
+    moov = _walk(head, 0, len(head), "moov")
+    if moov:
+        return head, moov, 0
+    with path.open("rb") as f:
+        f.seek(max(0, size - 8 * 1024 * 1024))
+        tail = f.read()
+    moov = _walk(tail, 0, len(tail), "moov")
+    return (tail, moov, size - len(tail)) if moov else (b"", None, 0)
+
+
+def _time_from_tags(buf: bytes, moov: tuple[int, int], out: dict,
+                    name_hint: str) -> None:
+    """mvhd 之外的时间来源。
+
+    `mvhd.creation_time` 被重封装清零后，有些文件仍在 `udta/©day` 或
+    `meta/ilst` 的 `com.apple.quicktime.creationdate` 里留着 ISO8601 文本；
+    再不行就退到相机文件名。优先级 mvhd > 文本标签 > 文件名。
+    """
+    if out.get("t_utc"):
+        return
+    a, b = moov
+    m = _ISO_DT.search(buf[a:b])
+    if m:
+        try:
+            d = dt.datetime(*(int(x) for x in m.groups()[:6]))
+            suffix = (m.group(7) or b"").decode("ascii", "ignore")
+            if suffix in ("Z", "+00:00", "+0000"):
+                off = 0.0
+            elif suffix.startswith(("+", "-")):
+                digits = suffix[1:].replace(":", "")
+                off = (1 if suffix[0] == "+" else -1) * (
+                    int(digits[:2]) + int(digits[2:4]) / 60)
+            else:
+                off = 8.0          # 没写时区就当本地(+08)
+            utc = d - dt.timedelta(hours=off)
+            out["t_utc"] = int(utc.replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+            out["t_source"] = "udta"
+            return
+        except (ValueError, IndexError):
+            pass
+    got = time_from_name(name_hint or out.get("name") or "")
+    if got:
+        out["t_utc"], out["t_source"] = got, "name(+08)"
+
+
+def stamp_creation(path: Path, t_utc_ms: int) -> bool:
+    """把拍摄时间写回 mp4 的 mvhd，让**成品自己**带得住时间。
+
+    MediaMuxer / ffmpeg 重封装会把 creation_time 清成 0，只靠 clips.json
+    记录一旦丢失就再也读不回来。这里原地改 creation/modification 两处
+    4 或 8 字节，不改文件长度、不重编码；任何异常都返回 False，
+    绝不因为打标毁掉素材。
+    """
+    try:
+        path = Path(path)
+        secs = int((dt.datetime.fromtimestamp(t_utc_ms / 1000, dt.timezone.utc)
+                    - EPOCH_1904).total_seconds())
+        if secs <= 0:
+            return False
+        buf, moov, base = _moov_view(path)
+        if not moov:
+            return False
+        mv = _walk(buf, moov[0], moov[1], "mvhd")
+        if not mv:
+            return False
+        s = mv[0]
+        n = 8 if buf[s] == 1 else 4
+        ct, mod = base + s + 4, base + s + 4 + n
+        if mod + n > path.stat().st_size:
+            return False
+        raw = secs.to_bytes(n, "big")
+        with path.open("r+b") as f:
+            f.seek(ct)
+            f.write(raw)
+            f.seek(mod)
+            f.write(raw)
+        return True
+    except Exception:
+        return False
+
+
+def probe(path: Path, *, name_hint: str = "") -> dict:
+    """读一个视频文件的时间/坐标/尺寸/时长/编码。失败时带 error。
+
+    `name_hint` 是登记时的原始文件名：成品被改名为 `clip-…` 后，
+    还能靠 `VID_20261103_180036` 这类名字兜出拍摄时间。
+    """
     path = Path(path)
     out: dict = {
         "name": path.name, "path": str(path), "kind": "clip",
-        "lat": None, "lon": None, "t_utc": None, "t_source": "",
+        "lat": None, "lon": None, "t_utc": None, "t_source": "", "t_why": "",
         "w": None, "h": None, "dur": None, "codec": "", "bytes": 0, "error": "",
         "rot": 0,
     }
     try:
         out["bytes"] = path.stat().st_size
-        with path.open("rb") as f:
-            head = f.read(1024 * 1024)
-        moov = _walk(head, 0, len(head), "moov")
-        if not moov:
-            # moov 在文件尾（多数相机就是这样），读尾部再来一次
-            with path.open("rb") as f:
-                f.seek(max(0, out["bytes"] - 8 * 1024 * 1024))
-                tail = f.read()
-            moov = _walk(tail, 0, len(tail), "moov")
-            if moov:
-                return _probe_with(tail, moov, out, path)
+        buf, moov, _ = _moov_view(path)
         if not moov:
             out["error"] = "读不到 moov（不是 mp4/mov，或文件损坏）"
+            out["t_why"] = "文件读不出元数据"
             return out
-        return _probe_with(head, moov, out, path)
+        return _probe_with(buf, moov, out, path, name_hint)
     except OSError as e:
         out["error"] = f"读不了：{e}"
+        out["t_why"] = "文件读不出来"
         return out
 
 
-def _probe_with(buf: bytes, moov: tuple[int, int], out: dict, path: Path) -> dict:
+def _probe_with(buf: bytes, moov: tuple[int, int], out: dict, path: Path,
+                name_hint: str = "") -> dict:
     a, b = moov
     mv = _walk(buf, a, b, "mvhd")
     if mv:
@@ -247,6 +360,10 @@ def _probe_with(buf: bytes, moov: tuple[int, int], out: dict, path: Path) -> dic
     lat, lon, src = _gps(path, buf, moov)
     if lat is not None:
         out["lat"], out["lon"], out["t_source"] = round(lat, 7), round(lon, 7), out["t_source"] or src
+    _time_from_tags(buf, moov, out, name_hint)
+    if not out["t_utc"]:
+        out["t_why"] = ("视频元数据里没有拍摄时间（重封装会清掉 mvhd.creation_time），"
+                        "文件名里也没有可用时间戳")
     if out["dur"] is None:
         out["error"] = out["error"] or "读不到时长"
     elif out["dur"] > MAX_SEC:

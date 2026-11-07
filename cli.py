@@ -2351,6 +2351,16 @@ def cmd_selftest(args) -> int:
     assert 'it["exists"] = p.is_file()' in _ap_src, "素材清单没标文件是否存在"
     assert 'it["t_utc"] = _meta_val(it, info, "t_utc")' in _ap_src, "素材清单没带拍摄时间（且应优先用存下来的）"
     assert '"t_source"' in _ap_src, "素材清单没带时间来源"
+    # 安卓侧：必须把相册原始文件名带进登记（相机名里常带拍摄时间），
+    # 并且列表要说明「没有拍摄时间」的后果，不能只显示一行「加入 xx」。
+    # 手机上没有 android/ 目录，这里只在桌面自检时校验。
+    _kt = Path(AP.__file__).parent.parent / "android/app/src/main/java/com/garmincoach/app/MainActivity.kt"
+    if _kt.is_file():
+        _kt_src = _kt.read_text(encoding="utf-8")
+        assert "OpenableColumns.DISPLAY_NAME" in _kt_src, "安卓没读相册原始文件名"
+        assert "dst.absolutePath, displayName" in _kt_src, "登记时没把原始文件名传给后端"
+        assert "无拍摄时间" in _kt_src, "素材列表没说明缺少拍摄时间"
+        assert "重新读取时间" in _kt_src, "老素材没有补读入口"
     _ph = next(iter((HOME / "data" / "photos").rglob("*.jpg")), None) if (
         HOME / "data" / "photos").is_dir() else None
     if _ph is not None:
@@ -2359,23 +2369,92 @@ def cmd_selftest(args) -> int:
         assert _mi.get("t_utc"), f"图片素材没读出拍摄时间：{_ph}"
     # 登记素材必须从**源文件**取拍摄时间：MediaMuxer 重封装会丢掉 mvhd.creation_time，
     # 只探成品就永远没有时间，回放里只能按数量均匀铺开、位置不准。
+    from garmin_cn import clip as _CL
     _mcd = HOME / "data" / "motion_cache"
     _mp4s = sorted(_mcd.glob("*.mp4")) if _mcd.is_dir() else []
-    _has_t = next((p for p in _mp4s if AP._probe_material(p).get("t_utc")), None)
-    _no_t = next((p for p in _mp4s if not AP._probe_material(p).get("t_utc")), None)
-    if _has_t is not None and _no_t is not None:
-        with _tf.TemporaryDirectory() as _td:
-            _old_clips = AP.CLIPS
-            AP.CLIPS = Path(_td) / "clips.json"
-            try:
-                AP.clips_add(str(_no_t), "旧式", 3.0, 1080, 1920, "video")
-                AP.clips_add(str(_no_t), "新式", 3.0, 1080, 1920, "video", str(_has_t))
+    # 只认「文件里真的写了 mvhd.creation_time」的样本。`name_hint="x.mp4"` 是
+    # 故意的：屏蔽「从文件名兜时间」，免得把靠名字补出时间的副本误当源片。
+    _has_t = next((p for p in _mp4s
+                   if _CL.probe(p, name_hint="x.mp4").get("t_source") == "mvhd"), None)
+
+    # 拍摄时间的多来源兜底：相机文件名 / udta 文本 / 写回成品 mvhd。
+    # 这条链路决定「概览能不能显示拍摄时间」和「老素材能不能自己补回来」。
+    _t = _CL.time_from_name("VID_20261103_180036.mp4")
+    assert _t and dt.datetime.fromtimestamp(
+        _t / 1000, dt.timezone.utc).strftime("%Y-%m-%d %H:%M") == "2026-11-03 10:00", \
+        "相机文件名里的时间戳没解析对"
+    assert _CL.time_from_name("clip-1730966400000.mp4") is None, "无日期的文件名不该凭空造时间"
+    assert _CL.time_from_name("PXL_20261103_180036123.mp4"), "Pixel 文件名尾部的毫秒不该挡住解析"
+    assert "stamp_creation(p, int(t_utc))" in _ap_src, "登记时没把拍摄时间写回成品"
+    assert "name_hint=name_hint" in _ap_src, "登记/清单没把原始文件名传给视频探测"
+    assert "name_hint" in Path(_CL.__file__).read_text(encoding="utf-8"), "视频探测没接原始文件名兜底"
+    assert 'it["t_why"]' in _ap_src, "素材清单没给「读不到拍摄时间」的原因"
+    assert "repairs" in _ap_src, "老素材没有补读落盘"
+
+    # 「没有拍摄时间」的成品**自己造**：把真实样本的 mvhd 时间清零。
+    # 不依赖本机缓存里恰好有转码副本，也不依赖被测的解析逻辑来挑样本
+    # （否则改坏了样本就消失，整块断言会被静默跳过）。
+    if _has_t is not None:
+        _old_clips = AP.CLIPS
+        try:
+            with _tf.TemporaryDirectory() as _td:
+                AP.CLIPS = Path(_td) / "clips.json"
+                _src_t = _CL.probe(_has_t, name_hint="x.mp4")["t_utc"]
+
+                def _fresh(n: str) -> Path:
+                    d = Path(_td) / n
+                    d.write_bytes(_has_t.read_bytes())
+                    buf, moov, base = _CL._moov_view(d)
+                    mv = _CL._walk(buf, moov[0], moov[1], "mvhd")
+                    sz = 8 if buf[mv[0]] == 1 else 4
+                    with d.open("r+b") as f:
+                        f.seek(base + mv[0] + 4)
+                        f.write(b"\0" * (2 * sz))   # creation + modification 清零
+                    return d
+
+                # 1) 源文件继承：两条各用一份成品（clips_add 会原地写回时间，
+                #    共用一个文件会把第一条也「补」上，断言就假通过了）
+                _d_old, _d_new = _fresh("old.mp4"), _fresh("new.mp4")
+                AP.clips_add(str(_d_old), "旧式", 3.0, 1080, 1920, "video")
+                AP.clips_add(str(_d_new), "新式", 3.0, 1080, 1920, "video", str(_has_t))
                 _its = {x["name"]: x for x in AP.clips_list()["items"]}
                 assert not _its["旧式"].get("t_utc"), "样本选错了：成品本身就有时间"
                 assert _its["新式"].get("t_utc"), "登记时没从源文件继承拍摄时间"
                 assert _its["新式"].get("t_source") == "mvhd", _its["新式"].get("t_source")
-            finally:
-                AP.CLIPS = _old_clips
+                assert _CL.probe(_d_new, name_hint="x.mp4").get("t_utc"), \
+                    "成品没被写回拍摄时间，记录一丢就又读不回来了"
+
+                # 2) 独立验证打标本身
+                _dst = _fresh("clip-xyz.mp4")
+                assert not _CL.probe(_dst).get("t_utc"), "打标前成品不该有时间"
+                assert _CL.stamp_creation(_dst, _src_t), "打标失败"
+                assert _CL.probe(_dst).get("t_utc") == _src_t, "打标后成品没读回拍摄时间"
+
+                # 3) 老记录：没存过时间，但名字带摄像头时间戳 → 补读并落盘。
+                #    必须用**没打标过**的另一份成品，否则会从 mvhd 读到时间，
+                #    断言就抓不到「name_hint 没传」这种回归。
+                _d2 = _fresh("clip-abc.mp4")
+                AP.CLIPS.write_text(json.dumps({"items": [{
+                    "id": "old1", "path": str(_d2), "name": "MVIMG_20261103_180036",
+                    "kind": "video", "dur": 3.0, "t_utc": None}]}), encoding="utf-8")
+                _it = AP.clips_list()["items"][0]
+                assert _it.get("t_utc") == _CL.time_from_name("MVIMG_20261103_180036"), \
+                    "老素材没从原始文件名补回拍摄时间"
+                assert _it.get("t_source") == "name(+08)", _it.get("t_source")
+                _raw = json.loads(AP.CLIPS.read_text("utf-8"))["items"][0]
+                assert _raw.get("t_utc") == _it["t_utc"], "补读结果没写回 clips.json"
+                assert "exists" not in _raw and "t_why" not in _raw, "临时字段被写进了记录"
+
+                # 4) 补不回来的：必须给原因，界面不能只显示「加入 xx」让人猜
+                _d3 = _fresh("clip-def.mp4")
+                AP.CLIPS.write_text(json.dumps({"items": [{
+                    "id": "old2", "path": str(_d3), "name": "clip-def",
+                    "kind": "video", "dur": 3.0, "t_utc": None}]}), encoding="utf-8")
+                _bad = AP.clips_list()["items"][0]
+                assert not _bad.get("t_utc") and _bad.get("t_why"), \
+                    "补不回时间时必须给出原因"
+        finally:
+            AP.CLIPS = _old_clips
 
     class _FakeClient:
         def __init__(self, items):

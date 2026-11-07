@@ -1102,7 +1102,7 @@ def _clips_for_motion() -> list[dict]:
         p = Path(str(it.get("path") or ""))
         if not p.is_file():
             continue
-        info = _probe_material(p)
+        info = _probe_material(p, name_hint=str(it.get("name") or ""))
         kind = it.get("kind") or info.get("kind") or "video"
         dur = float(it.get("dur") or 0)
         if dur <= 0:
@@ -1124,30 +1124,38 @@ def _clips_for_motion() -> list[dict]:
     return out
 
 
-def _probe_material(p: Path) -> dict:
+def _probe_material(p: Path, name_hint: str = "") -> dict:
     """按扩展名判类型再读元数据。读不出来也返回带 kind 的骨架，绝不抛异常——
-    素材缺元数据只该「定位不准」，不该让整次回放失败。"""
+    素材缺元数据只该「定位不准」，不该让整次回放失败。
+
+    `name_hint` 是登记时的原始文件名：成品被改名成 `clip-…` 之后，
+    相机名里的 `20261103_180036` 还能兜出拍摄时间。
+    """
     ext = p.suffix.lower()
     if ext in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"):
         from . import photo as photo_mod
         try:
             j = photo_mod.read(p)
-        except Exception:
-            j = {}
+        except Exception as e:
+            j = {"error": f"{type(e).__name__}: {e}"}
         return {"kind": "image",
                 "w": j.get("w"), "h": j.get("h"),
                 "orientation": j.get("orientation") or 1,
                 "t_utc": j.get("t_utc"), "t_source": j.get("t_source") or "",
+                "t_why": "" if j.get("t_utc") else (j.get("error") or "图片里没有 EXIF 拍摄时间"),
                 "lat": j.get("lat"), "lon": j.get("lon"),
                 "bytes": j.get("bytes") or 0, "dur": None}
     from . import clip as clip_mod
     try:
-        v = clip_mod.probe(p)
-    except Exception:
-        v = {}
+        v = clip_mod.probe(p, name_hint=name_hint)
+    except Exception as e:
+        # 以前这里静默吞掉异常，界面只显示「加入 xx」，用户完全无从判断
+        # 是「文件没时间」还是「读崩了」。现在把原因带出去。
+        v = {"t_why": f"读取失败：{type(e).__name__}: {e}"}
     return {"kind": "video",
             "w": v.get("w"), "h": v.get("h"), "orientation": 1,
             "t_utc": v.get("t_utc"), "t_source": v.get("t_source") or "",
+            "t_why": v.get("t_why") or "",
             "lat": v.get("lat"), "lon": v.get("lon"), "dur": v.get("dur"),
             "codec": v.get("codec") or "", "bytes": v.get("bytes") or 0}
 
@@ -1189,20 +1197,37 @@ def clips_list() -> dict:
     """
     MEDIA.mkdir(parents=True, exist_ok=True)
     items = _clips_read()
+    repairs: dict[str, tuple] = {}
     for it in items:
         p = Path(str(it.get("path") or ""))
         it["kind"] = it.get("kind") or _kind_of(p)
         it["exists"] = p.is_file()
         if not it["exists"]:
+            it["t_why"] = "文件已丢失"
             continue
-        info = _probe_material(p)
+        info = _probe_material(p, name_hint=str(it.get("name") or ""))
+        if it.get("t_utc") is None and info.get("t_utc"):
+            # 老版本登记时探不到时间。现在能从 udta / 原始文件名补回来的，
+            # 直接落盘，免得界面一直显示「加入」，回放也一直按数量均分。
+            key = str(it.get("id") or it.get("path") or "")
+            repairs[key] = (info["t_utc"], info.get("t_source") or "")
+            it["t_utc"], it["t_source"] = info["t_utc"], info.get("t_source") or ""
         it["t_utc"] = _meta_val(it, info, "t_utc")
         it["t_source"] = it.get("t_source") or info.get("t_source") or ""
+        it["t_why"] = "" if it.get("t_utc") else (info.get("t_why") or "读不到拍摄时间")
         it["w"] = it.get("w") or info.get("w") or 0
         it["h"] = it.get("h") or info.get("h") or 0
         # 视频用文件的真实时长：登记时传的是剪辑结果，可能和时间轴差几十毫秒
         if info.get("dur"):
             it["dur"] = round(float(info["dur"]), 2)
+    if repairs:
+        # 只把补到的两个字段写回原始记录，别把 exists/t_why 这些临时字段落盘
+        raw = _clips_read()
+        for x in raw:
+            got = repairs.get(str(x.get("id") or x.get("path") or ""))
+            if got and x.get("t_utc") is None:
+                x["t_utc"], x["t_source"] = got
+        _clips_write(raw)
     return {"ok": True, "items": items, "dir": str(MEDIA)}
 
 
@@ -1231,16 +1256,24 @@ def clips_add(path: str, name: str = "", dur: float = 0,
     k = kind or _kind_of(p)
     if k == "image" and dur <= 0:
         dur = STILL_SEC
-    # 源文件优先：它才带得住拍摄时间
+    # 源文件优先：它才带得住拍摄时间。name 是原始文件名，
+    # 即使源片自己没写 creation_time，也能从 VID_20261103_180036 兜出来。
     src = Path(str(probe_from)) if probe_from else p
-    meta = _probe_material(src) if src.is_file() else {}
-    fallback = _probe_material(p)
+    meta = _probe_material(src, name_hint=str(name)) if src.is_file() else {}
+    fallback = _probe_material(p, name_hint=str(name))
+    t_utc = meta.get("t_utc") if meta.get("t_utc") is not None else fallback.get("t_utc")
+    t_src = ((meta.get("t_source") or "") if meta.get("t_utc") else "") \
+        or fallback.get("t_source") or ""
+    t_why = "" if t_utc else (meta.get("t_why") or fallback.get("t_why") or "读不到拍摄时间")
+    # 把时间写回成品的 mvhd：以后就算 clips.json 丢了，也还能从文件本身读回来。
+    if t_utc and k == "video":
+        from . import clip as clip_mod
+        clip_mod.stamp_creation(p, int(t_utc))
     items.append({
         "id": cid, "path": str(p), "name": (name or p.stem)[:60],
         "kind": k,
         "dur": round(float(dur or 0), 2), "w": int(w or 0), "h": int(h or 0),
-        "t_utc": meta.get("t_utc") if meta.get("t_utc") is not None else fallback.get("t_utc"),
-        "t_source": meta.get("t_source") or fallback.get("t_source") or "",
+        "t_utc": t_utc, "t_source": t_src, "t_why": t_why,
         "lat": meta.get("lat") if meta.get("lat") is not None else fallback.get("lat"),
         "lon": meta.get("lon") if meta.get("lon") is not None else fallback.get("lon"),
         "added_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

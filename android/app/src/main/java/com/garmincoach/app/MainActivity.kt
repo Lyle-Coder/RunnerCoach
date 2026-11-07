@@ -993,10 +993,15 @@ class MainActivity : Activity() {
             ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
         }
         val subTxt = clipSubtitle(o, kind, dur, exists)
+        val noTime = o.optLong("t_utc", 0L) <= 0L
         val sub = TextView(this).apply {
             text = subTxt
             textSize = 12f
-            setTextColor(if (exists) 0xFF78806F.toInt() else 0xFFB3261E.toInt())
+            setTextColor(when {
+                !exists -> 0xFFB3261E.toInt()
+                noTime -> 0xFFB26A00.toInt()      // 橙：不是坏了，但位置会不准
+                else -> 0xFF78806F.toInt()
+            })
             setPadding(0, dp(3), 0, 0)
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
@@ -1014,12 +1019,24 @@ class MainActivity : Activity() {
         }
         row.addView(chev)
 
-        // 点一条不直接删：先给「预览 / 删除」，否则手滑就没了
+        // 点一条不直接删：先给动作菜单，否则手滑就没了。
+        // 没有拍摄时间的那条额外给「重新读取」和「为什么」，别让人对着
+        // 一行「加入 xx」猜到底有没有问题。
         row.setOnClickListener {
+            val noTime = o.optLong("t_utc", 0L) <= 0L
+            val actions: Array<CharSequence> = if (noTime)
+                arrayOf("预览", "重新读取时间", "为什么没有拍摄时间？", "删除")
+            else
+                arrayOf("预览", "删除")
             AlertDialog.Builder(this)
                 .setTitle(name)
-                .setItems(arrayOf("预览", "删除")) { _, which ->
-                    if (which == 0) previewClip(o) else confirmDeleteClip(o.optString("id"), name)
+                .setItems(actions) { _, which ->
+                    when {
+                        which == 0 -> previewClip(o)
+                        noTime && which == 1 -> { toast("正在重新读取…"); showClips() }
+                        noTime && which == 2 -> explainMissingTime(o)
+                        else -> confirmDeleteClip(o.optString("id"), name)
+                    }
                 }
                 .setNegativeButton("取消", null)
                 .show()
@@ -1034,22 +1051,34 @@ class MainActivity : Activity() {
         return row
     }
 
-    /** 副标题：类型 + 时长 + 拍摄/加入时间。拍摄时间优先，没有就说清是「加入」。 */
+    /** 副标题：类型 + 时长 + 时间。没拍摄时间要写明，不能只丢一句「加入」。 */
     private fun clipSubtitle(o: JSONObject, kind: String, dur: Double, exists: Boolean): String {
         if (!exists) return "文件已丢失，建议删除"
         val kindTxt = if (kind == "image") "图片" else "视频"
         val durTxt = if (kind == "image") "" else " · ${"%.1f".format(dur)} 秒"
         val tMs = o.optLong("t_utc", 0L)
-        val whenTxt: String
-        val whenLabel: String
         if (tMs > 0) {
-            whenTxt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(tMs))
-            whenLabel = "拍摄"
-        } else {
-            whenTxt = o.optString("added_at", "—")
-            whenLabel = "加入"
+            val whenTxt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(tMs))
+            return "$kindTxt$durTxt · 拍摄 $whenTxt"
         }
-        return "$kindTxt$durTxt · $whenLabel $whenTxt"
+        return "$kindTxt$durTxt · ⚠ 无拍摄时间（加入 ${o.optString("added_at", "—")}）"
+    }
+
+    /** 没有拍摄时间不是「显示问题」：回放会退化成按数量均分，位置不准。说清怎么办。 */
+    private fun explainMissingTime(o: JSONObject) {
+        val why = o.optString("t_why", "").ifBlank { "文件里读不到拍摄时间" }
+        AlertDialog.Builder(this)
+            .setTitle("为什么没有拍摄时间")
+            .setMessage(
+                "$why\n\n" +
+                    "影响：回放里这段只能按数量均匀铺开，位置不准。\n\n" +
+                    "常见原因是视频被剪辑、转发或重封装后，拍摄时间" +
+                    "（mvhd.creation_time）被清掉了。这一版会在添加时把源视频的时间" +
+                    "写进成品，也会从相机文件名（VID_20261103_180036）兜底，所以：\n" +
+                    "· 新加的视频会自动显示「拍摄」；\n" +
+                    "· 老素材的时间在当初剪辑时就丢了，请删掉这条，重新从相册添加一次。")
+            .setPositiveButton("知道了", null)
+            .show()
     }
 
     /** 大图预览：图片看原图，视频看第一帧（要看动态得去生成回放）。 */
@@ -1227,6 +1256,16 @@ class MainActivity : Activity() {
     private fun trimDialog(src: Uri) {
         busy(true)
         thread {
+            // 原始文件名要留住：`clip-<时间戳>` 这种名字既看不出内容，
+            // 也丢了相机写在名字里的拍摄时间（VID_20261103_180036）。
+            val displayName = try {
+                contentResolver.query(src, null, null, null, null)?.use { c ->
+                    val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+                }
+            } catch (t: Throwable) {
+                null
+            } ?: "video.mp4"
             val tmp = File(cacheDir, "clip-src-${System.currentTimeMillis()}.mp4")
             try {
                 contentResolver.openInputStream(src)?.use { i ->
@@ -1254,21 +1293,21 @@ class MainActivity : Activity() {
                     tmp.delete()
                     toast("这段视频太短（不足 1.5 秒）")
                 } else {
-                    showTrimUi(tmp, durMs)
+                    showTrimUi(tmp, durMs, displayName)
                 }
             }
         }
     }
 
-    private fun showTrimUi(src: File, durMs: Long) {
+    private fun showTrimUi(src: File, durMs: Long, displayName: String) {
         // 预览 + 关键帧胶片条：光有两个滑块根本不知道第几秒拍的是什么，
         // 也没法知道落刀会不会被吸附到别处。见 ClipTrimDialog。
         ClipTrimDialog.show(this, src, durMs,
-            onPick = { s, e -> saveClip(src, s, e) },
+            onPick = { s, e -> saveClip(src, s, e, displayName) },
             onCancel = { src.delete() })
     }
 
-    private fun saveClip(src: File, startMs: Long, endMs: Long) {
+    private fun saveClip(src: File, startMs: Long, endMs: Long, displayName: String) {
         busy(true)
         subtitle.text = "剪辑中…"
         thread {
@@ -1282,8 +1321,9 @@ class MainActivity : Activity() {
             }
             // 关键：把**源文件**也传过去，让 Python 先读它的 mvhd 拍摄时间再登记。
             // MediaMuxer 重封装会丢掉 creation_time，只探成品的话永远是「没有拍摄时间」，
-            // 回放里就只能按数量均匀铺开，位置不准。
-            val add = apiCall("clips_add", dst.absolutePath, dst.nameWithoutExtension,
+            // 回放里就只能按数量均匀铺开，位置不准。name 用相册里的原始文件名，
+            // 万一源片自己也没写 creation_time，还能从 VID_20261103_180036 兜出来。
+            val add = apiCall("clips_add", dst.absolutePath, displayName,
                 r.durMs / 1000.0, r.width, r.height, "video", src.absolutePath)
             src.delete()
             ui {
