@@ -53,9 +53,9 @@ def coverage() -> dict:
     return ui.coverage()
 
 
-def nav_html(day: str, cov: dict) -> str:
+def nav_html(day: str, cov: dict, from_: str = "history") -> str:
     """兼容入口：导航条由 ui 统一渲染。"""
-    return ui.nav_html(day, cov)
+    return ui.nav_html(day, cov, from_)
 
 
 def index_section(cov: dict) -> str:
@@ -65,9 +65,10 @@ def index_section(cov: dict) -> str:
                 '下拉同步一次，或用「补拉更多历史」拉取更早的区间。</div></div>')
     first, last = cov["first"], cov["last"]
     quick = "".join(
-        f'<a class="chip" href="/view?{_q(date=d)}">{_esc(d[5:])}</a>'
+        f'<a class="chip" href="/view?date={_esc(d)}&from=history" data-nopush>{_esc(d[5:])}</a>'
         for d in (cov.get("recent") or [])[:12])
-    dates = (f'<form class="filters" method="get" action="/view" style="margin-top:12px">'
+    dates = (f'<form class="filters" method="get" action="/view" data-nopush style="margin-top:12px">'
+             f'<input type="hidden" name="from" value="history">'
              f'<label>按日期查看板 <input type="date" name="date" '
              f'min="{_esc(first)}" max="{_esc(last)}" value="{_esc(last)}"></label>'
              f'<button class="btn primary" type="submit">打开</button></form>')
@@ -80,15 +81,16 @@ def index_section(cov: dict) -> str:
 
 
 def _message(title: str, text: str, cov: dict) -> str:
-    links = ('<div class="pager"><a class="btn" href="/">返回今日</a>'
-             '<a class="btn" href="/history">看历史活动</a>')
+    links = ('<div class="pager">'
+             '<div class="btn primary" data-act="historySync">补拉更早的数据</div>')
     if cov.get("last"):
-        links += (f'<a class="btn primary" href="/view?{_q(date=cov["last"])}">'
+        links += (f'<a class="btn" href="/view?date={cov["last"]}&from=history">'
                   '看最新一天的看板</a>')
     links += '</div>'
     return ui.page("HISTORY · 历史", title, "本地 · 离线可用",
                    ui.sec("提示", f'<div class="card"><div class="empty">{_esc(text)}'
-                          f'</div>{links}</div>'), ui.chip("本机数据", "ok"))
+                          f'</div>{links}</div>'), ui.chip("本机数据", "ok"),
+                   back=("返回历史", "/history"))
 
 
 def view_page(qs: dict) -> str:
@@ -98,6 +100,7 @@ def view_page(qs: dict) -> str:
     cov = coverage()
     today = dt.date.today().isoformat()
     day = _date(qs, "date", cov.get("last") or today)
+    from_ = "today" if _one(qs, "from") == "today" else "history"
     if cov.get("first") and not (cov["first"] <= day <= cov["last"]):
         return _message(
             "这天还没有日汇总",
@@ -114,7 +117,7 @@ def view_page(qs: dict) -> str:
     # 看板是独立产物，桌面 file:// 打开时不带这些；只有走 /view 才注入。
     fix = f"<style>{ui.DASH_FIX}</style>"
     return doc.replace("</head>", fix + "</head>", 1).replace(
-        "<body>", "<body>" + ui.nav_html(day, cov), 1)
+        "<body>", "<body>" + ui.nav_html(day, cov, from_), 1)
 
 
 def history_page(qs: dict) -> str:
@@ -146,7 +149,7 @@ def history_page(qs: dict) -> str:
 
     selected_all = " selected" if not kind else ""
     selected_run = " selected" if kind == "run" else ""
-    form = f"""<form class="card filters" method="get" action="/history">
+    form = f"""<form class="card filters" method="get" action="/history" data-nopush>
       <label>起 <input type="date" name="start" value="{_esc(start)}"></label>
       <label>止 <input type="date" name="end" value="{_esc(end)}"></label>
       <label>类型 <select name="type">
@@ -155,10 +158,10 @@ def history_page(qs: dict) -> str:
       </select></label>
       <button class="btn primary" type="submit">筛选</button>
       <div class="tags" style="width:100%">
-        <a class="chip" href="/history?{_q(type=kind, start=_shift(e, -29), end=e)}">近 30 天</a>
-        <a class="chip" href="/history?{_q(type=kind, start=_shift(e, -89), end=e)}">近 90 天</a>
-        <a class="chip" href="/history?{_q(type=kind, start=_shift(e, -364), end=e)}">近 365 天</a>
-        <a class="chip" href="/history?{_q(type=kind)}">全部</a>
+        <a class="chip" href="/history?{_q(type=kind, start=_shift(e, -29), end=e)}" data-nopush>近 30 天</a>
+        <a class="chip" href="/history?{_q(type=kind, start=_shift(e, -89), end=e)}" data-nopush>近 90 天</a>
+        <a class="chip" href="/history?{_q(type=kind, start=_shift(e, -364), end=e)}" data-nopush>近 365 天</a>
+        <a class="chip" href="/history?{_q(type=kind)}" data-nopush>全部</a>
       </div></form>"""
 
     rows = "".join(
@@ -174,17 +177,21 @@ def history_page(qs: dict) -> str:
     pager = '<div class="pager">'
     if offset:
         pager += (f'<a class="btn" href="/history?'
-                  f'{_q(start=start, end=end, type=kind, offset=max(0, offset - PAGE))}">'
-                  '↑ 较新的活动</a>')
+                  f'{_q(start=start, end=end, type=kind, offset=max(0, offset - PAGE))}" '
+                  f'data-nopush>↑ 较新的活动</a>')
     if r.get("has_more"):
         pager += (f'<a class="btn primary" href="/history?'
-                  f'{_q(start=start, end=end, type=kind, offset=offset + PAGE)}">'
-                  '↓ 加载更早的活动</a>')
-    pager += (f'<a class="btn" href="/view?{_q(date=cov.get("last"))}">按日期查看板</a>'
-              '<a class="btn" href="/">返回今日</a></div>')
+                  f'{_q(start=start, end=end, type=kind, offset=offset + PAGE)}" '
+                  f'data-nopush>↓ 加载更早的活动</a>')
+    pager += '</div>'
+
+    # 「补拉历史」只在这里出现一次：今日页和我的页都不再重复放这个动作
+    more_data = ('<div class="pager">'
+                 '<div class="btn primary" data-act="historySync">补拉更早的数据</div>'
+                 '</div>')
 
     body = (ui.sec("覆盖范围与日期", index_section(cov)) +
-            ui.sec("筛选", form) +
+            ui.sec("筛选", form + more_data) +
             ui.sec("活动", rows + pager))
     return ui.page("HISTORY · 历史", "历史活动", "按区间、类型分页查本地库，点一条出活动图",
                    body, chips)

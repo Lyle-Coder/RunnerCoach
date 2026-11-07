@@ -2095,8 +2095,8 @@ def cmd_selftest(args) -> int:
     q = _json.loads(AP.call("activities", _json.dumps([None, None, None, 5, 0])))
     assert q["ok"] and all(k in q for k in ("items", "total", "has_more", "offset"))
 
-    # 网页外壳与历史入口：首页不再堆文件列表，四个 tab 共用一套 ui.page，
-    # 卡片动作走 data-act，活动行走 data-aid。只测不写文件的分支。
+    # 网页外壳与交互树：四个 tab 共用一套 ui.page，卡片动作走 data-act，
+    # 活动行走 data-aid。约束见 docs/交互树.md：一个动作只有一个入口。
     from garmin_cn import history as HW
     from garmin_cn import ui as U
 
@@ -2105,13 +2105,24 @@ def cmd_selftest(args) -> int:
     hp = HW.history_page({"type": ["run"]})
     assert "page-head" in hp and 'name="start"' in hp
     assert "data-aid=" in hp and "GC.activity" in hp
+    # 「补拉历史」只在历史页出现一次，今日/我的都不再重复
+    assert hp.count('data-act="historySync"') == 1
     home = U.home_page()
     assert "page-head" in home and 'data-act="export"' in home and "data-aid=" in home
-    assert "page-head" in U.me_page() and 'data-act="historySync"' in U.me_page()
+    assert 'href="/history"' not in home, "首页不该再给历史入口，底部 tab 已经有了"
+    me = U.me_page()
+    assert "page-head" in me and 'data-act="login:garmin"' in me
+    assert 'data-act="login:coros"' in me, "数据源行要直达对应登录"
+    assert 'data-act="historySync"' not in me and 'data-act="settings"' not in me
+    assert 'href="/files"' in me
+    # 看板导航只剩「回来源 tab + 前后翻日期」，不再有横向 tab 入口
     nav = U.nav_html("2026-10-21",
                      {"first": "2026-10-01", "last": "2026-11-06"})
     assert "gc-nav" in nav
     assert "/view?date=2026-10-20" in nav and "/view?date=2026-10-22" in nav
+    assert 'href="/history"' in nav and 'href="/"' not in nav
+    # 同页参数变化走 replace，不往历史栈堆条目
+    assert "data-nopush" in nav and "data-nopush" in U.BRIDGE_JS
     assert "max-width:820px" in U.DASH_FIX and "max-width:820px" in U.AI_FIX
     assert HW._date({"date": ["not-a-date"]}, "date", "2026-11-06") == "2026-11-06"
 

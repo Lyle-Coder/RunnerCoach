@@ -24,10 +24,10 @@ import json
 
 CSS = """
 :root{
-  --bg:#F4F6F2; --card:#FFFFFF; --line:#E3E7DF; --line-2:#EDF0EA;
-  --ink:#1B1F1A; --ink-2:#4A5147; --muted:#7A8276; --faint:#A5AC9F;
-  --green:#1D9E75; --green-soft:#E4F3EC; --amber:#C08A16; --amber-soft:#FBF1DA;
-  --red:#C2453F; --red-soft:#FAE7E5; --blue:#3A6EA5; --blue-soft:#E8F0F8;
+  --bg:#F6F7F4; --card:#FFFFFF; --line:#E4E8E1; --line-2:#EEF1EB;
+  --ink:#1A1F1B; --ink-2:#485046; --muted:#78806F; --faint:#A3AA9C;
+  --green:#17845F; --green-soft:#E5F3ED; --amber:#B8860B; --amber-soft:#FBF2DC;
+  --red:#C0453F; --red-soft:#FAE7E5; --blue:#35688F; --blue-soft:#E9F1F8;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;background:var(--bg);color:var(--ink);
@@ -40,7 +40,7 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .top .sub{font-size:11.5px;color:var(--muted);margin-top:2px}
 .gear{width:34px;height:34px;border-radius:10px;border:1px solid var(--line);background:var(--card);
   display:flex;align-items:center;justify-content:center;font-size:16px;color:var(--ink-2);cursor:pointer}
-.tabs{display:flex;gap:6px;background:#E9EDE5;border-radius:12px;padding:4px;margin-bottom:14px}
+.tabs{display:flex;gap:6px;background:#EDF1EA;border-radius:12px;padding:4px;margin-bottom:14px}
 .tabs button{flex:1;border:0;background:transparent;color:var(--ink-2);font-size:13px;font-weight:500;
   padding:8px 0;border-radius:9px;font-family:inherit;cursor:pointer;transition:.15s}
 .tabs button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.06)}
@@ -49,7 +49,7 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .head{font-size:21px;font-weight:600;line-height:1.35;letter-spacing:.2px}
 .focus{font-size:13.5px;color:var(--ink-2);margin-top:6px}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
-.chip{font-size:11.5px;padding:3px 9px;border-radius:999px;background:var(--green-soft);color:#0F6E56}
+.chip{font-size:11.5px;padding:3px 9px;border-radius:999px;background:var(--green-soft);color:#0C6349}
 .chip.gray{background:var(--line-2);color:var(--ink-2)}
 .chip.amber{background:var(--amber-soft);color:#8A6410}
 ul.list{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:9px}
@@ -68,7 +68,7 @@ ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:
   padding:8px 13px;font-size:12.5px;font-family:inherit;cursor:pointer;white-space:nowrap;flex:0 0 auto}
 .btn:active{background:#F1F4EE}
 .btn.primary{background:var(--green);border-color:var(--green);color:#fff}
-.btn.primary:active{background:#178A66}
+.btn.primary:active{background:#126B4E}
 .btn:disabled{opacity:.5}
 .skel{height:14px;border-radius:6px;background:linear-gradient(90deg,#EEF1EB 25%,#F6F8F4 37%,#EEF1EB 63%);
   background-size:400% 100%;animation:sh 1.2s ease infinite;margin-bottom:9px}
@@ -78,10 +78,10 @@ ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:
 .err{border-left:3px solid var(--red);background:var(--red-soft);border-radius:10px;padding:12px 14px;
   font-size:13px;color:#8C2F2A;line-height:1.65}
 .err b{display:block;margin-bottom:4px}
-.quote{font-size:12px;color:var(--muted);background:#F7F9F5;border-radius:8px;padding:8px 10px;
+.quote{font-size:12px;color:var(--muted);background:#FAFBF8;border-radius:8px;padding:8px 10px;
   margin-top:8px;white-space:pre-wrap;max-height:160px;overflow:auto}
 .kv{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:4px}
-.kv div{background:#F7F9F5;border-radius:10px;padding:9px 8px;text-align:center}
+.kv div{background:#FAFBF8;border-radius:10px;padding:9px 8px;text-align:center}
 .kv .v{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
 .kv .k{font-size:10.5px;color:var(--muted);margin-top:2px}
 /* 聊天 */
@@ -113,7 +113,7 @@ ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:
 @keyframes up{from{transform:translateY(18px);opacity:.6}to{transform:none;opacity:1}}
 .panel h2{margin:0 0 4px;font-size:16px;font-weight:600}
 .panel .hint{font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:14px}
-.seg{display:flex;gap:6px;background:#E9EDE5;border-radius:11px;padding:4px;margin-bottom:14px}
+.seg{display:flex;gap:6px;background:#EDF1EA;border-radius:11px;padding:4px;margin-bottom:14px}
 .seg button{flex:1;border:0;background:transparent;padding:8px 0;border-radius:8px;font-size:13px;
   font-family:inherit;color:var(--ink-2);font-weight:500}
 .seg button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.06)}
@@ -441,7 +441,7 @@ async function analyzeLast(btn, host) {
     w.appendChild(el('span', null, '→'));
     w.appendChild(el('span', null, esc(j.next)));
     w.style.marginTop = '12px';
-    w.style.background = 'var(--green-soft)'; w.style.color = '#0F6E56';
+    w.style.background = 'var(--green-soft)'; w.style.color = '#0C6349';
     box.appendChild(w);
   }
   host.replaceChildren(box);
@@ -463,12 +463,12 @@ function spark(points, key) {
   svg.setAttribute('class', 'spark');
   svg.innerHTML =
     '<defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">' +
-    '<stop offset="0%" stop-color="#1D9E75" stop-opacity=".22"/>' +
-    '<stop offset="100%" stop-color="#1D9E75" stop-opacity="0"/></linearGradient></defs>' +
+    '<stop offset="0%" stop-color="#17845F" stop-opacity=".22"/>' +
+    '<stop offset="100%" stop-color="#17845F" stop-opacity="0"/></linearGradient></defs>' +
     '<path d="' + area + '" fill="url(#g1)"/>' +
-    '<path d="' + d + '" fill="none" stroke="#1D9E75" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>' +
+    '<path d="' + d + '" fill="none" stroke="#17845F" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>' +
     '<circle cx="' + x(points.length - 1).toFixed(1) + '" cy="' + y(vs[vs.length - 1]).toFixed(1) +
-    '" r="3.2" fill="#1D9E75"/>';
+    '" r="3.2" fill="#17845F"/>';
   return svg;
 }
 
@@ -632,7 +632,21 @@ function openSheet() {
     console.error('fillSheet failed', e);
   }
 }
-function closeSheet() { $('#sheet').classList.remove('on'); }
+function closeSheet() {
+  const s = $('#sheet');
+  if (s) s.classList.remove('on');
+  // 从 /ai#settings 进来的，关掉抽屉时把 hash 抹掉，刷新不会自动再弹
+  if (location.hash === '#settings') history.replaceState(null, '', location.pathname);
+}
+
+/* 返回键先问页面：抽屉开着就关掉，返回 true 表示已消费。
+   二级页与 tab 之间的回退交给原生统一处理，页面不自己判断层级，
+   否则会和 WebView 历史栈叠成「返回在两个界面之间来回跳」。 */
+window.__gcBack = function(){
+  const s = $('#sheet');
+  if (s && s.classList.contains('on')) { closeSheet(); return true; }
+  return false;
+};
 
 function fillSheet(c) {
   const mode = c.mode || 'own';
@@ -905,7 +919,7 @@ def render(state: dict | None = None) -> str:
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#F4F6F2">
+<meta name="theme-color" content="#F6F7F4">
 <title>{_h.escape(title)}</title>
 <style>{CSS}</style>
 </head><body>
