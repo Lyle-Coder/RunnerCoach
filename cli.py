@@ -994,6 +994,16 @@ def cmd_plan(args) -> int:
     from garmin_cn.plan import fetch, item_line, load
 
     today = args.date or dt.date.today().isoformat()
+    if getattr(args, "diag", False):
+        try:
+            client = get_client()
+        except AuthError as e:
+            print(f"× {e}")
+            return 2
+        from garmin_cn.plan import diag
+
+        print(_json.dumps(diag(client, today), ensure_ascii=False, indent=1))
+        return 0
     if args.cached:
         data = load(HOME / "data" / "plan.json")
         if not data:
@@ -2150,9 +2160,19 @@ def cmd_selftest(args) -> int:
     assert cal["today"]["items"][0]["minutes"] == 40
     assert cal["today"]["items"][0]["km"] == 7.0
     assert cal["week"][1]["done"] is True, "周二有 activity，应标已完成"
-    assert all(not d["items"] for d in cal["week"] if d["date"] == "2026-11-09")
-    assert cal["next_date"] == "2026-11-15", cal["next_date"]
+    assert cal["next_date"] == "2026-11-15", cal["next_date"]  # 11-09 是 note，跳过
     assert PL.from_calendar([], "2026-11-07")["scheduled"] is False
+    # 未来未执行的 activity（没有 activityId）要当排课，不能当成已完成
+    fut = PL.from_calendar([
+        {"itemType": "activity", "date": "2026-11-08", "title": "明天的课",
+         "duration": 3600, "distance": 10000},
+        {"itemType": "workout", "date": "2026-11-05", "title": "周四的课"},
+        {"itemType": "activity", "date": "2026-11-05", "title": "跑步",
+         "activityId": 999},
+    ], "2026-11-07")
+    assert fut["week"][6]["items"], "未来 activity 应算课"
+    assert fut["week"][3]["done"] is True, "带 activityId 的才算已完成"
+    assert PL._months("2026-11-07")[0] == (2026, 10), "要连上个月一起拉，兼容月份语义"
     assert HW._date({"date": ["not-a-date"]}, "date", "2026-11-06") == "2026-11-06"
 
     class _FakeClient:
@@ -2468,9 +2488,11 @@ def main() -> int:
     q.add_argument("--date")
     q.set_defaults(func=cmd_coach)
 
-    q = sub.add_parser("plan", help="读取佳明教练的训练计划与本周课表")
+    q = sub.add_parser("plan", help="读取佳明日历排课（教练计划兜底）与本周课表")
     q.add_argument("--date")
     q.add_argument("--cached", action="store_true", help="只读本地快照，不联网")
+    q.add_argument("--diag", action="store_true",
+                   help="诊断：打印日历月份、条数、类型分布与样例")
     q.set_defaults(func=cmd_plan)
 
     q = sub.add_parser("today", help="今日 105K 备赛课次（跑 today --week 看整周）")

@@ -44,6 +44,8 @@ EFFECT = {
     "MAINTAIN": "维持",
 }
 LEVEL = {"Beginner": "初级", "Intermediate": "中级", "Advanced": "高级"}
+# 向前看多久：备赛周期常到 20 周（140 天），只拉一个月会看不到远期课
+LOOKAHEAD_DAYS = 140
 
 
 def _iso(value: str | None) -> str | None:
@@ -139,6 +141,11 @@ def _num(v) -> float:
         return 0.0
 
 
+# 日历里这些不是「排课」，只是同一天的其它记录
+_SKIP_TYPES = {"note", "goal", "badge", "event", "health",
+               "weighin", "measurement"}
+
+
 def _cal_item(it: dict) -> dict:
     """把一个日历项折成课表行。字段名各地区略有差异，这里都兜一遍。"""
     dur = _num(it.get("duration") or it.get("estimatedDurationInSecs")
@@ -163,24 +170,43 @@ def _cal_item(it: dict) -> dict:
 def from_calendar(items: list[dict] | None, today: str | None = None) -> dict:
     """日历项 → 与 `normalize()` 相同结构的课表。
 
-    只取 `workout` / `race`（自己排进日历的课与比赛）；`activity` 是同一天已
-    完成的记录，只用来给当天打「已完成」标记，不再重复成一条课。
+    只取排课（workout / race，以及任何带 workoutId 的项）；`activity` 是同一天
+    已完成的记录，只用来给当天打「已完成」标记，不再重复成一条课。
+    日期限定在「本周一 ~ 今天 + 62 天」，避免把上个月拉来对齐时带出的旧项算进来。
     """
     today = today or dt.date.today().isoformat()
+    d = dt.date.fromisoformat(today)
+    monday = d - dt.timedelta(days=d.weekday())
+    lo = monday.isoformat()
+    hi = (d + dt.timedelta(days=LOOKAHEAD_DAYS)).isoformat()
+
     workouts: dict[str, list[dict]] = {}
     done: set[str] = set()
+    seen: set[tuple] = set()
     for it in items or []:
         if not isinstance(it, dict):
             continue
         day = _iso(it.get("date"))
-        if not day:
+        if not day or not (lo <= day <= hi):
             continue
         kind = str(it.get("itemType") or "").lower()
         if kind == "activity":
-            done.add(day)
+            # 佳明把「计划但还没跑」的安排也记成 activity：没有 activityId。
+            # 只有已经执行过的（有 activityId，或日期在今天之前）才算完成标记，
+            # 否则会把未来每一天的课全当成「已完成」而漏掉。
+            aid = it.get("activityId") or it.get("activityUUID")
+            if day < today or aid:
+                done.add(day)
+                continue
+        elif kind in _SKIP_TYPES:
             continue
-        if kind not in ("workout", "race") and not it.get("workoutId"):
+        # 没有标题也没有课程 id 的，不当作排课
+        if not (it.get("title") or it.get("workoutId") or it.get("workoutUuid")):
             continue
+        key = (day, str(it.get("title") or ""), it.get("workoutId"))
+        if key in seen:                      # 多拉了相邻月份时可能重复
+            continue
+        seen.add(key)
         workouts.setdefault(day, []).append(_cal_item(it))
 
     d = dt.date.fromisoformat(today)
@@ -217,12 +243,17 @@ def from_calendar(items: list[dict] | None, today: str | None = None) -> dict:
     }
 
 
-def _months(today: str, span: int = 62) -> list[tuple[int, int]]:
-    """从当月开始的月份列表：够覆盖未来 span 天即可（日历按月取）。"""
+def _months(today: str, span: int = LOOKAHEAD_DAYS) -> list[tuple[int, int]]:
+    """从**上个月**开始的月份列表。
+
+    多拉一个月是为了兼容服务端 `month` 的 0-based / 1-based 两种语义：
+    如果传 11 拿到的其实是 12 月，那传 10 才能拿到 11 月。多出来的月份由
+    `from_calendar()` 的日期窗口过滤掉，不会显示成课。
+    """
     d = dt.date.fromisoformat(today)
-    cur = d.replace(day=1)
+    cur = (d.replace(day=1) - dt.timedelta(days=1)).replace(day=1)
     out: list[tuple[int, int]] = []
-    while (cur - d).days <= span and len(out) < 4:
+    while (cur - d).days <= span and len(out) < 7:
         out.append((cur.year, cur.month))
         cur = (cur + dt.timedelta(days=32)).replace(day=1)
     return out
@@ -247,6 +278,57 @@ def fetch_calendar(client, today: str | None = None) -> dict:
     if not items:
         return {"available": False, "reason": "佳明日历里还没有排课"}
     return from_calendar(items, today)
+
+
+def diag(client, today: str | None = None) -> dict:
+    """诊断用：真拉一遍日历，回报月份、条数、类型分布、日期范围与样例。
+
+    当「页面显示不对」但看不出原因时跑它（`cli.py plan --diag`）：
+    * `requests` 里某个月 0 条 → 该月没数据或接口又不认这个月份参数；
+    * `dates` 最早日期比今天晚很多 → 月份语义错位；
+    * `types` 里看不到 workout/race → 课程用的是别的 itemType。
+    """
+    today = today or dt.date.today().isoformat()
+    months = _months(today)
+    out: dict = {"today": today, "months": [f"{y}-{m:02d}" for y, m in months],
+                 "requests": [], "types": {}, "dates": [], "samples": []}
+    items: list[dict] = []
+    for y, m in months:
+        try:
+            data = client.calendar_month(y, m)
+        except Exception as e:
+            out["requests"].append({"month": f"{y}-{m:02d}",
+                                    "error": f"{type(e).__name__}: {e}"})
+            continue
+        got: list = []
+        if isinstance(data, dict):
+            got = data.get("calendarItems") or []
+        elif isinstance(data, list):
+            got = data
+        out["requests"].append({"month": f"{y}-{m:02d}", "items": len(got)})
+        items.extend(got)
+
+    for it in items:
+        if isinstance(it, dict):
+            k = str(it.get("itemType"))
+            out["types"][k] = out["types"].get(k, 0) + 1
+    days = sorted(d for d in (_iso(it.get("date")) for it in items
+                              if isinstance(it, dict)) if d)
+    out["dates"] = [days[0], days[-1]] if days else []
+    out["count"] = len(items)
+    out["samples"] = [
+        {k: it.get(k) for k in ("date", "itemType", "title", "duration",
+                                "distance", "workoutId", "sportTypeKey", "isRace")}
+        for it in items[:12] if isinstance(it, dict)]
+    parsed = from_calendar(items, today)
+    out["parsed"] = {
+        "today": [i.get("name") for i in parsed["today"]["items"]],
+        "next_date": parsed["next_date"],
+        "week": [{"date": w["date"], "items": [i.get("name") for i in w["items"]]}
+                 for w in parsed["week"]],
+        "start": parsed["start"], "end": parsed["end"],
+    }
+    return out
 
 
 def fetch(client, today: str | None = None, out_path: Path | None = None,
