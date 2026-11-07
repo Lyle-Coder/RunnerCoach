@@ -12,20 +12,43 @@
 
 防误报优先于多召回
 ------------------
-* 快段至少 2 组，每组 >= `MIN_SEG_S` 秒且 >= `MIN_SEG_M` 米；
-* 快组平均速度至少比慢组高 `MIN_RATIO` 倍；
-* 快慢必须真正交替（段切换 >= 3 次），匀速跑的抖动、单调加速都不算；
-* 阈值用一维 Otsu 自动二分，不写死配速，节奏跑 / 法特莱克 / 坡冲都能覆盖。
+间歇的本质是「刻意重复的快慢循环」，不是「跑得不太均匀」。早期版本只看
+Otsu 二分 + 少量切换，于是匀速长跑里等两次红灯、爬一段坡、起跑热身和结束
+放松，都会被切成「快组 / 慢组」并套上双栏版式——慢段明明只占全程 2%，
+却被当成一组恢复。现在的门禁要求「结构」而不仅是「有速度差」：
+
+* 二分本身要成立：高组均值相对低组均值至少高 `MIN_SPLIT_GAP`，
+  否则匀速跑的自然抖动只是被硬切成两半；
+* 快段、慢段都至少 `MIN_SETS` 组且各自有最小长度（短慢段并回相邻快段），
+  一次偶发减速构不成循环；
+* 快慢真正交替（段切换 >= `MIN_SWITCHES` 次）；
+* 慢段总时长占全程 >= `MIN_SLOW_SHARE`：等红灯 / 上坡只占百分之一二，
+  真实间歇的恢复段通常占四五成；
+* 快组平均速度至少比慢组高 `MIN_RATIO` 倍。
+
+阈值用一维 Otsu 自动二分，不写死配速，节奏跑 / 法特莱克 / 坡冲仍能覆盖。
+漏判只是保留原来的分圈表，误判却会把整张活动图换成错误的版式，所以宁可
+保守。门槛都集中在下面的常量里，要放宽只改这里。
 """
 from __future__ import annotations
 
 # 一组快跑至少持续这么久、跑这么远，才不是 GPS 抖动或起跑冲刺
 MIN_SEG_S = 20.0
 MIN_SEG_M = 80.0
-# 快组平均速度 / 慢组平均速度 的下限
-MIN_RATIO = 1.15
-MIN_SETS = 2
-MIN_SWITCHES = 3
+# 慢段同样要有实际长度。只按时长判、不按距离判：真实的组间恢复常常是
+# 原地站立（dist≈0），用距离过滤会把它们全删掉。
+MIN_SLOW_SEG_S = 15.0
+# 快组平均速度 / 慢组平均速度 的下限（逐点序列）
+MIN_RATIO = 1.25
+# 分圈是每公里平均值，快慢早已被抹平，判定更粗糙；作为兜底路径宁可更严，
+# 免得把「几圈爬坡 / 等红灯」当成间歇。
+MIN_RATIO_LAPS = 1.35
+MIN_SETS = 3
+MIN_SWITCHES = 5
+# 慢段（含组间恢复）占整段时长的下限
+MIN_SLOW_SHARE = 0.15
+# Otsu 两组均值的相对落差下限：(hi - lo) / hi
+MIN_SPLIT_GAP = 0.18
 # 每栏最多列几行（常见的 400 m 间歇是 12~15 组，行距压紧后能全部列全），
 # 再多才折叠成「其余 N 组」。
 MAX_GROUPS = 16
@@ -130,27 +153,42 @@ def _agg(segs: list[dict], fast: bool) -> dict:
     }
 
 
-def _finish(segs: list[dict], source: str) -> dict | None:
-    """交替性 / 速度差 / 组数三重门禁，通过才认定是间歇。"""
+def _finish(segs: list[dict], source: str,
+            min_ratio: float = MIN_RATIO) -> dict | None:
+    """占比 / 组数 / 交替性 / 速度差四重门禁，全过才认定是间歇。
+
+    慢段数量也要求 `MIN_SETS`：一次等红灯、一段上坡只是「减速」，只有重复
+    出现的慢段才可能是组间恢复。光看快段组数会把长跑主体切成一堆「快组」。
+    """
     fasts = [s for s in segs if s["fast"]]
     slows = [s for s in segs if not s["fast"]]
-    if len(fasts) < MIN_SETS or not slows:
+    if len(fasts) < MIN_SETS or len(slows) < MIN_SETS:
         return None
     switches = sum(1 for i in range(1, len(segs))
                    if segs[i]["fast"] != segs[i - 1]["fast"])
     if switches < MIN_SWITCHES:
         return None
+    total = sum(s["dur_s"] for s in segs)
+    share = sum(s["dur_s"] for s in slows) / total if total > 0 else 0.0
+    if share < MIN_SLOW_SHARE:
+        return None
     vf = _wmean([s["spd"] for s in fasts], [s["dur_s"] for s in fasts]) or 0
     vs = _wmean([s["spd"] for s in slows], [s["dur_s"] for s in slows]) or 0
-    if vs <= 0 or vf / vs < MIN_RATIO:
+    if vs <= 0 or vf / vs < min_ratio:
         return None
     return {
         "source": source,
         "sets": len(fasts),
         "ratio": round(vf / vs, 2),
+        "slow_share": round(share, 3),
         "fast": _agg(segs, True),
         "slow": _agg(segs, False),
     }
+
+
+def _split_ok(lo: float, hi: float) -> bool:
+    """Otsu 切出来的两组必须真的分开，而不是把匀速抖动硬切成两半。"""
+    return hi > 0 and (hi - lo) / hi >= MIN_SPLIT_GAP
 
 
 def from_series(points: list[dict] | None) -> dict | None:
@@ -171,16 +209,25 @@ def from_series(points: list[dict] | None) -> dict | None:
         a, b = max(0, i - 2), min(len(pts), i + 3)
         w = [pts[j].get("spd") or 0.0 for j in range(a, b)]
         smooth.append(sum(w) / len(w))
-    thr, _, _ = _split(smooth)
+    thr, lo, hi = _split(smooth)
+    if not _split_ok(lo, hi):
+        return None
     flags = [v >= thr for v in smooth]
-    # 过短的快段不是一组间歇，并回慢段
-    for is_fast, a, b in _runs(flags):
-        if is_fast:
+    # 过短的段不是一组间歇：短快段并回慢段、短慢段并回快段。两轮足够让
+    # 合并后的相邻同类段接上。慢段只看时长——原地休息的距离本来就近乎 0。
+    for _ in range(2):
+        changed = False
+        for is_fast, a, b in _runs(flags):
             dur = (pts[b - 1]["t"] - pts[a]["t"])
             dist = sum(smooth[a:b]) * dur / max(1, b - a)
-            if dur < MIN_SEG_S or dist < MIN_SEG_M:
+            too_short = (dur < MIN_SEG_S or dist < MIN_SEG_M) if is_fast \
+                else (dur < MIN_SLOW_SEG_S)
+            if too_short:
                 for k in range(a, b):
-                    flags[k] = False
+                    flags[k] = not is_fast
+                changed = True
+        if not changed:
+            break
     segs: list[dict] = []
     for is_fast, a, b in _runs(flags):
         s = _seg(pts[a:b], is_fast, smooth, a, b)
@@ -200,10 +247,14 @@ def from_laps(laps: list[dict] | None) -> dict | None:
     if len(real) < 4:
         return None
     spds = [l["dist_m"] / l["dur_s"] for l in real]
-    thr, _, _ = _split(spds)
+    thr, lo, hi = _split(spds)
+    if not _split_ok(lo, hi):
+        return None
     kinds = [v >= thr for v in spds]           # True = 快
     switches = sum(1 for i in range(1, len(kinds)) if kinds[i] != kinds[i - 1])
-    if switches < MIN_SWITCHES or sum(kinds) < MIN_SETS:
+    # 分圈兜底同样要防「10 公里里 2 圈爬坡就当成间歇」：慢圈也得重复出现。
+    if (switches < MIN_SWITCHES or sum(kinds) < MIN_SETS
+            or len(kinds) - sum(kinds) < MIN_SETS):
         return None
     # 相邻同档圈合成一组（热身/放松通常连续好几圈）
     segs: list[dict] = []
@@ -222,7 +273,7 @@ def from_laps(laps: list[dict] | None) -> dict | None:
             "hr_avg": round(sum(hrs) / len(hrs)) if hrs else None,
             "cad": round(sum(cads) / len(cads), 1) if cads else None,
         })
-    return _finish(segs, "laps")
+    return _finish(segs, "laps", MIN_RATIO_LAPS)
 
 
 def detect(detail: dict | None) -> dict | None:
@@ -233,7 +284,7 @@ def detect(detail: dict | None) -> dict | None:
 
 
 def check() -> None:
-    """离线自检：典型间歇要认出，匀速 / 单调加速不能误报。"""
+    """离线自检：典型间歇要认出，匀速 / 偶发减速 / 单调加速都不能误报。"""
     assert abs(_split([1, 1, 1, 1, 4, 4, 4, 4])[0] - 2.5) < 1e-9
     # 6 组：快 400 m @ 4.2 m/s + 慢 200 m @ 2.6 m/s，采样间隔 5 s
     pts: list[dict] = []
@@ -307,3 +358,57 @@ def check() -> None:
         })
     liv = from_laps(rest_laps)
     assert liv and liv["sets"] == 15 and liv["slow"]["rest"], liv
+
+    # ---- 防误报回归：正常跑步中的「减速」不是间歇 ------------------------
+    def blocks(seq: list[tuple[float, float]], dt: float = 5.0) -> list[dict]:
+        out: list[dict] = []
+        t, d = 0.0, 0.0
+        for spd, secs in seq:
+            for _ in range(max(1, int(secs / dt))):
+                out.append({"t": t, "spd": spd, "hr": 150, "cad": 175,
+                            "dist": d})
+                t += dt
+                d += spd * dt
+        return out
+
+    # 60 min 匀速跑里只有 70 s 的等红灯 / 上坡（占 1.9%）。旧实现把它
+    # 报成「3 组间歇、速度差 2.86×」并换成双栏，正是要修的误报。
+    cruise = [(3.0, 900.0), (0.2, 30.0), (3.0, 900.0), (2.4, 120.0),
+              (3.0, 900.0), (0.2, 30.0), (3.0, 900.0)]
+    assert from_series(blocks(cruise)) is None
+    # 热身慢 + 匀速 + 放松慢：慢段只出现两次，构不成循环
+    assert from_series(blocks([(2.3, 300.0), (3.1, 2400.0),
+                               (2.2, 300.0)])) is None
+    # 5 秒级的 GPS 毛刺 / 短停顿要并回相邻段，不能凑出「快慢交替」
+    assert from_series(blocks(sum(([(3.2, 120.0), (0.4, 5.0)]
+                                   for _ in range(6)), []))) is None
+    # 抖动幅度稍大的匀速跑，也不能被 Otsu 硬切成两组
+    jitter = [{"t": i * 5.0, "spd": 3.0 + (0.12 if i % 3 == 0 else -0.06),
+               "hr": 145, "cad": 176, "dist": i * 15.0} for i in range(120)]
+    assert from_series(jitter) is None
+    # 分圈兜底：10 km 里 2 圈 / 4 圈偏慢（爬坡、等灯）都不该换双栏
+    for slow_idx in ((3, 7), (1, 3, 6, 8)):
+        bumpy = [{"idx": i + 1, "dist_m": 1000.0,
+                  "dur_s": float(430 if i in slow_idx else 333)}
+                 for i in range(10)]
+        assert from_laps(bumpy) is None, slow_idx
+    # series 被拒后，分圈兜底不能把误报再捡回来
+    even_laps = [{"idx": i + 1, "dist_m": 1000.0, "dur_s": 333.0}
+                 for i in range(10)]
+    assert detect({"series": {"points": blocks(cruise)},
+                   "laps": even_laps}) is None
+
+    # ---- 收紧之后仍要保住召回 ------------------------------------------
+    # 最小合法组数（3 组）
+    siv = from_series(blocks(sum(([(4.2, 90.0), (2.6, 70.0)]
+                                  for _ in range(3)), [])))
+    assert siv and siv["sets"] == 3, siv
+    # 温和速度差：名义 1.35×，平滑后约 1.29×，逐点路径要能认出
+    miv = from_series(blocks(sum(([(4.0, 90.0), (2.96, 80.0)]
+                                  for _ in range(6)), [])))
+    assert miv and miv["sets"] >= 5 and miv["ratio"] >= MIN_RATIO, miv
+    # 法特莱克：快慢时长不齐、无严格周期，但确实是重复的快慢循环
+    fartlek = blocks([(3.9, 70.0), (2.4, 95.0), (4.3, 45.0), (2.2, 130.0),
+                      (4.0, 110.0), (2.5, 60.0), (4.4, 55.0), (2.3, 100.0),
+                      (4.1, 80.0)])
+    assert from_series(fartlek) is not None
