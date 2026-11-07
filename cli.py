@@ -2256,6 +2256,34 @@ def cmd_selftest(args) -> int:
         ln for ln in _dlg_src.splitlines() if not ln.strip().startswith(("*", "//", "/*")))
     assert "SeekBar" not in _dlg_code, "不该再用裸 SeekBar（用户看不到画面）"
 
+    # ---- 素材（图片 / 视频）插入链路 ----
+    # 这条链上有三个坑，任一没填上，表现都是「加了素材，回放里什么都没有」：
+    #   1) 合成轨迹的 t0 单位；2) 素材没带拍摄时间；3) 图片根本没被渲染。
+    _ap_src = Path(AP.__file__).read_text(encoding="utf-8")
+    # photo.match 用 (t_utc_ms - t0) / 1000 算相对秒，t0 给秒就全被判成「不在活动时段」
+    assert '"t0": int(t0 * 1000)' in _ap_src, "合成轨迹的 t0 必须是毫秒"
+    assert "def _probe_material" in _ap_src, "素材没读拍摄时间/坐标"
+    assert '"kind": kind' in _ap_src, "素材没带类型（图片/视频）"
+    assert AP._kind_of(Path("a.PNG")) == "image", "图片扩展名识别"
+    assert AP._kind_of(Path("a.mp4")) == "video", "视频扩展名识别"
+    # 没有时间信息的素材必须均匀铺开，不能整批丢掉
+    from garmin_cn import motion as MOT
+
+    _rt = {"n": 2, "t0": 1_700_000_000_000, "t": [0, 200]}
+    _cl = [{"name": "a", "t_utc": None}, {"name": "b", "t_utc": None}]
+    MOT._spread_clips(_cl, _rt)
+    assert _cl[0]["t_utc"] == 1_700_000_066_666, _cl[0]
+    assert _cl[1]["t_utc"] == 1_700_000_133_333, _cl[1]
+    assert _cl[0]["approx"] and _cl[1]["approx"], "铺开的素材要标 approx"
+    # 已经有了拍摄时间的不动
+    _cl2 = [{"name": "c", "t_utc": 1_700_000_050_000}]
+    MOT._spread_clips(_cl2, _rt)
+    assert _cl2[0]["t_utc"] == 1_700_000_050_000, "有时间信息的素材不该被改"
+    _mo_src = Path(MOT.__file__).read_text(encoding="utf-8")
+    assert "clips = _spread_clips(clips, rt)" in _mo_src, "素材没走均匀铺开兜底"
+    assert "if (p.clip.kind === 'image')" in _mo_src, "页面没处理图片素材"
+    assert "need.push(p.clip.src)" in _mo_src, "图片素材没进图片预加载队列"
+
     class _FakeClient:
         def __init__(self, items):
             self.items = items

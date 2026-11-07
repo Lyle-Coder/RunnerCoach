@@ -888,8 +888,8 @@ class MainActivity : Activity() {
         }
     }
 
-    // ------------------------------------------------------------ 素材片段
-    /** 素材管理：列出已登记片段，点一条问删除，右上角添加。 */
+    // ------------------------------------------------------------ 素材
+    /** 素材管理：列出已登记的图片/片段，点一条问删除，右上角添加。 */
     private fun showClips() {
         thread {
             val r = apiCall("clips_list")
@@ -901,38 +901,47 @@ class MainActivity : Activity() {
                 val arr = r.optJSONArray("items") ?: JSONArray()
                 val labels = (0 until arr.length()).map { i ->
                     val o = arr.optJSONObject(i) ?: JSONObject()
-                    val sec = o.optDouble("dur", 0.0)
-                    "「${o.optString("name", "片段")}」 · ${"%.1f".format(sec)} 秒"
+                    val name = o.optString("name", "素材")
+                    if (o.optString("kind") == "image") {
+                        "「$name」 · 图片"
+                    } else {
+                        "「$name」 · ${"%.1f".format(o.optDouble("dur", 0.0))} 秒"
+                    }
                 }.toTypedArray()
                 if (labels.isEmpty()) {
                     AlertDialog.Builder(this)
-                        .setTitle("素材片段")
-                        .setMessage("还没有素材。\n\n从相册选一段视频、裁出想要的几秒，" +
-                            "生成回放时会自动插到对应位置。只搬样本不重编码，几秒就完成。")
-                        .setPositiveButton("添加") { _, _ -> pickVideo() }
+                        .setTitle("素材")
+                        .setMessage("还没有素材。\n\n" +
+                            "可以加图片或视频：\n" +
+                            "· 图片直接插到回放对应位置；\n" +
+                            "· 视频能裁出想要的几秒（只搬样本不重编码，几秒就完成）。\n\n" +
+                            "插入位置取文件里的拍摄时间；没有时间信息时按数量均匀铺在整段活动里。")
+                        .setPositiveButton("添加") { _, _ -> pickMedia() }
                         .setNegativeButton("关闭", null)
                         .show()
                     return@ui
                 }
                 AlertDialog.Builder(this)
-                    .setTitle("素材片段（${labels.size}）")
+                    .setTitle("素材（${labels.size}）")
                     .setItems(labels) { _, which ->
                         val o = arr.optJSONObject(which) ?: JSONObject()
                         confirmDeleteClip(o.optString("id"), o.optString("name"))
                     }
-                    .setPositiveButton("添加") { _, _ -> pickVideo() }
+                    .setPositiveButton("添加") { _, _ -> pickMedia() }
                     .setNegativeButton("关闭", null)
                     .show()
             }
         }
     }
 
-    private fun pickVideo() {
+    /** 相册里图片和视频都能选：图片直接入库，视频走裁剪。 */
+    private fun pickMedia() {
         try {
             startActivityForResult(
                 Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "video/*"
+                    type = "*/*"
+                    putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("video/*", "image/*"))
                 },
                 REQ_VIDEO,
             )
@@ -945,7 +954,92 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_VIDEO && resultCode == android.app.Activity.RESULT_OK) {
-            data?.data?.let { trimDialog(it) }
+            val uri = data?.data ?: return
+            val mime = try {
+                contentResolver.getType(uri) ?: ""
+            } catch (t: Throwable) {
+                ""
+            }
+            if (mime.startsWith("image/")) addImage(uri, mime) else trimDialog(uri)
+        }
+    }
+
+    /**
+     * 图片素材：拷进 data/media 登记即可，不需要裁剪。
+     *
+     * 常见格式**原样**拷，保留 EXIF 的拍摄时间与坐标——回放靠它把素材放到正确位置。
+     * HEIC 之类浏览器解不了的，解码重编成 JPEG（会丢 EXIF，位置由后端均匀铺开兜底）。
+     */
+    private fun addImage(src: Uri, mime: String) {
+        busy(true)
+        subtitle.text = "加入素材…"
+        thread {
+            // 扩展名跟着内容走：本机服务只放行 png/jpg，把 PNG 存成 .jpg 会让
+            // Content-Type 和实际字节对不上；webp / heic 一律重编成 JPEG。
+            val copyAsIs = mime == "image/jpeg" || mime == "image/jpg" || mime == "image/png"
+            val ext = if (mime == "image/png") ".png" else ".jpg"
+            val dst = File(File(filesDir, "data/media"),
+                "img-" + System.currentTimeMillis() + ext)
+            dst.parentFile?.mkdirs()
+            var ok = false
+            if (copyAsIs) {
+                try {
+                    contentResolver.openInputStream(src)?.use { i ->
+                        dst.outputStream().use { o -> i.copyTo(o) }
+                    }
+                    ok = dst.length() > 0
+                } catch (t: Throwable) {
+                    Log.w(TAG, "copy image", t)
+                }
+            }
+            if (!ok) {
+                try {
+                    val bmp = decodeDown(src, 1600)
+                    if (bmp != null) {
+                        dst.outputStream().use { o ->
+                            bmp.compress(Bitmap.CompressFormat.JPEG, 88, o)
+                        }
+                        bmp.recycle()
+                        ok = dst.length() > 0
+                    }
+                } catch (t: Throwable) {
+                    Log.w(TAG, "encode image", t)
+                }
+            }
+            if (!ok) {
+                dst.delete()
+                ui { busy(false); updateSubtitle(); toast("这张图片读不出来") }
+                return@thread
+            }
+            val opt = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(dst.absolutePath, opt)
+            val add = apiCall("clips_add", dst.absolutePath, dst.nameWithoutExtension,
+                0.0, opt.outWidth, opt.outHeight, "image")
+            ui {
+                busy(false)
+                updateSubtitle()
+                if (add.optBoolean("ok")) toast("已加入素材（图片）")
+                else toast(add.optString("error", "登记失败"))
+            }
+        }
+    }
+
+    /** 按最长边降采样解码，避免 4000 万像素的图把内存打爆。 */
+    private fun decodeDown(uri: Uri, maxSide: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        try {
+            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        } catch (_: Throwable) {
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var s = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / s > maxSide) s *= 2
+        val opt = BitmapFactory.Options().apply { inSampleSize = s }
+        return try {
+            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opt) }
+        } catch (t: Throwable) {
+            Log.w(TAG, "decode image", t)
+            null
         }
     }
 

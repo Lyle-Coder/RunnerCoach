@@ -643,8 +643,8 @@ def me_page() -> str:
             row("⌖", "地图底图",
                 ("已配置 · 活动图带高德底图" if _map_on()
                  else "未配置 · 活动图为矢量轨迹"), act="amap", tone="a") +
-            row("✂", "素材片段",
-                f"{_clip_count()} 段 · 轨迹回放时自动插入", act="clips", tone="b"))
+            row("✂", "素材",
+                f"{_clip_count()} 个 · 图片 / 视频，回放时自动插入", act="clips", tone="b"))
 
     about = (f'<div class="card"><div class="lab">RunnerCoach · v{esc(VER)}</div>'
              '<div class="note" style="margin-top:8px;font-size:12.5px;line-height:1.8">'

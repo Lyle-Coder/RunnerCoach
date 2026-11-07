@@ -1000,7 +1000,11 @@ def _synth_route(detail: dict) -> dict:
             ts[i] = ts[i - 1]
     if ts[-1] <= 0:
         return {}
-    return {"t0": int(t0), "n": len(track), "t": ts,
+    # t0 必须是**毫秒**：`photo.match` 用 (t_utc_ms - t0) / 1000 算相对秒。
+    # 这里原来直接给秒，照片和素材全部被判成「不在活动时段」丢掉——
+    # 手机上「加了素材但回放里没有」就是这个原因（桌面路径走 route.build，
+    # 那边的 t0 本来就是毫秒，只有这条合成路径漏了换算）。
+    return {"t0": int(t0 * 1000), "n": len(track), "t": ts,
             "lat": [round(a, 6) for a, _ in track],
             "lon": [round(b, 6) for _, b in track],
             "d": [round(x, 1) for x in dist],
@@ -1064,21 +1068,69 @@ def motion_html(activity_id: str, fps: int = 24, duration: int = 30,
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
+STILL_SEC = 3.0          # 图片素材在回放里停留多久
+
+
 def _clips_for_motion() -> list[dict]:
-    """素材片段 → motion.build_payload 要的 shot 结构。"""
+    """素材（视频 / 图片）→ motion.build_payload 要的 shot 结构。
+
+    必须带上 `t_utc`：`photo.match` 靠拍摄时间把素材挂到轨迹上。
+    之前这里只给路径和时长，结果全部以「没有拍摄时间」被丢掉 ——
+    表现就是「加了素材，回放里却什么都没有」。
+    视频读 mvhd 的 creation_time，图片读 EXIF；都没有的留空，
+    由 `motion` 那边均匀铺开，至少能出现在画面上。
+    """
     out = []
     for it in _clips_read():
         p = Path(str(it.get("path") or ""))
         if not p.is_file():
             continue
+        info = _probe_material(p)
+        kind = info.get("kind") or "video"
+        dur = float(it.get("dur") or 0)
+        if dur <= 0:
+            dur = STILL_SEC if kind == "image" else 3.0
         out.append({
             "path": str(p),
             "name": it.get("name") or p.stem,
-            "dur": float(it.get("dur") or 3.0),
-            "w": int(it.get("w") or 1080),
-            "h": int(it.get("h") or 1920),
+            "kind": kind,
+            "dur": round(dur, 2),
+            "w": int(it.get("w") or info.get("w") or 1080),
+            "h": int(it.get("h") or info.get("h") or 1920),
+            "orientation": int(info.get("orientation") or 1),
+            "t_utc": info.get("t_utc"),
+            "lat": info.get("lat"),
+            "lon": info.get("lon"),
+            "codec": info.get("codec") or "",
+            "bytes": info.get("bytes") or 0,
         })
     return out
+
+
+def _probe_material(p: Path) -> dict:
+    """按扩展名判类型再读元数据。读不出来也返回带 kind 的骨架，绝不抛异常——
+    素材缺元数据只该「定位不准」，不该让整次回放失败。"""
+    ext = p.suffix.lower()
+    if ext in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"):
+        from . import photo as photo_mod
+        try:
+            j = photo_mod.read(p)
+        except Exception:
+            j = {}
+        return {"kind": "image",
+                "w": j.get("w"), "h": j.get("h"),
+                "orientation": j.get("orientation") or 1,
+                "t_utc": j.get("t_utc"), "lat": j.get("lat"),
+                "lon": j.get("lon"), "bytes": j.get("bytes") or 0}
+    from . import clip as clip_mod
+    try:
+        v = clip_mod.probe(p)
+    except Exception:
+        v = {}
+    return {"kind": "video",
+            "w": v.get("w"), "h": v.get("h"), "orientation": 1,
+            "t_utc": v.get("t_utc"), "lat": v.get("lat"), "lon": v.get("lon"),
+            "codec": v.get("codec") or "", "bytes": v.get("bytes") or 0}
 
 
 def motion_status(run: str) -> dict:
@@ -1112,20 +1164,34 @@ def motion_cleanup(run: str) -> dict:
 
 def clips_list() -> dict:
     MEDIA.mkdir(parents=True, exist_ok=True)
-    return {"ok": True, "items": _clips_read(), "dir": str(MEDIA)}
+    items = _clips_read()
+    # 老记录没有 kind 字段，按扩展名补上，界面才好区分「视频 / 图片」
+    for it in items:
+        if not it.get("kind"):
+            it["kind"] = _kind_of(Path(str(it.get("path") or "")))
+    return {"ok": True, "items": items, "dir": str(MEDIA)}
+
+
+def _kind_of(p: Path) -> str:
+    return "image" if p.suffix.lower() in (
+        ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif") else "video"
 
 
 def clips_add(path: str, name: str = "", dur: float = 0,
-              w: int = 0, h: int = 0) -> dict:
-    """登记一段素材。剪辑本身由原生侧用 MediaExtractor/Muxer 无损完成，
-    这里只记录结果（文件应落在 `data/media/` 下）。"""
+              w: int = 0, h: int = 0, kind: str = "") -> dict:
+    """登记一段素材。视频的剪辑由原生侧用 MediaExtractor/Muxer 无损完成，
+    图片直接拷进来即可；这里只记录结果（文件应落在 `data/media/` 下）。"""
     p = Path(str(path or ""))
     if not p.is_file():
         return {"ok": False, "error": "素材文件不存在"}
     items = _clips_read()
     cid = f"c{secrets.token_hex(4)}"
+    k = kind or _kind_of(p)
+    if k == "image" and dur <= 0:
+        dur = STILL_SEC
     items.append({
         "id": cid, "path": str(p), "name": (name or p.stem)[:60],
+        "kind": k,
         "dur": round(float(dur or 0), 2), "w": int(w or 0), "h": int(h or 0),
         "added_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })

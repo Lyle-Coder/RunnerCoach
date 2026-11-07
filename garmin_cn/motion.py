@@ -200,6 +200,31 @@ def make_thumb(src: Path, dst: Path, ph: dict, max_w: int = 1200) -> Path | None
 CLIP_LEAD = 0.15        # 卡片淡入完成后才起播，避免"贴脸突然有声"
 
 
+def _spread_clips(clips: list[dict], rt: dict) -> list[dict]:
+    """给没有拍摄时间的素材补一个位置，均匀铺在活动区间里。
+
+    用户从相册随手加一段素材，文件里往往既没有可信时间也没有 GPS
+    （转发来的图、截屏、剪辑过的视频，元数据都被剥掉了）。
+    `photo.match` 会以「没有拍摄时间」把它们全部丢掉，表现就是
+    「加了素材，回放里却什么都没有」。这里按数量均匀铺开，
+    宁可位置不准，也别让人以为功能坏了。
+    """
+    if not clips or not rt.get("n"):
+        return clips
+    t0 = rt.get("t0")
+    span = float((rt.get("t") or [0])[-1] or 0)
+    if not t0 or span <= 0:
+        return clips
+    miss = [c for c in clips if c.get("t_utc") is None]
+    if not miss:
+        return clips
+    n = len(miss)
+    for i, c in enumerate(miss):
+        c["t_utc"] = int(t0 + span * 1000.0 * (i + 1) / (n + 1))
+        c["approx"] = True
+    return clips
+
+
 def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                   *, clips: list[dict] | None = None, thumb_dir: Path | None = None,
                   clip_cache: Path | None = None, duration: float = 45.0,
@@ -255,11 +280,13 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
     else:
         out_photos, loose = [], []
 
-    # ---- 视频片段：同一套吸附规则，挂到已有的照片点上；挂不上就自己成一个点
+    # ---- 素材片段（视频 / 图片）：同一套吸附规则，挂到已有的照片点上；
+    # 挂不上就自己成一个点
     out_clips = 0
     if clips:
+        clips = _spread_clips(clips, rt)
         cg = photo_mod.match(clips, rt, t0_ms=rt.get("t0"),
-                             keep=("dur", "codec", "bytes"))
+                             keep=("dur", "codec", "bytes", "kind"))
         loose.extend(cg["loose"])
         for g in cg["points"]:
             if not g["shots"]:
@@ -268,24 +295,32 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
             pick = max(g["shots"], key=lambda x: x.get("dur") or 0)
             if not pick.get("dur"):
                 continue
-            src = clip_mod.ensure_playable(pick, clip_cache or (ROOT / "data" / "motion_cache"))
-            # 尺寸以「真正送进浏览器的那个文件」为准：转码时 ffmpeg 已经把旋转
-            # 烘进像素、矩阵归一了，拿它的 tkhd 才是画面真实朝向。
-            # 用原文件的 w/h 会把竖屏塞进横格子（画面被压扁）。
-            real = clip_mod.probe(Path(src))
-            if real.get("w") and real.get("h"):
-                vw, vh = real["w"], real["h"]
-                k = min(1200 / max(vw, vh), 1.0)
-                vw, vh = max(int(vw * k), 1), max(int(vh * k), 1)
-            else:
+            kind = pick.get("kind") or "video"
+            if kind == "image":
+                # 图片素材不做转码，直接把原图交给页面画（Ken Burns 之外不再加工）
+                src = pick["path"]
                 vw, vh = visible_size(pick)
+            else:
+                src = clip_mod.ensure_playable(
+                    pick, clip_cache or (ROOT / "data" / "motion_cache"))
+                # 尺寸以「真正送进浏览器的那个文件」为准：转码时 ffmpeg 已经把旋转
+                # 烘进像素、矩阵归一了，拿它的 tkhd 才是画面真实朝向。
+                # 用原文件的 w/h 会把竖屏塞进横格子（画面被压扁）。
+                real = clip_mod.probe(Path(src))
+                if real.get("w") and real.get("h"):
+                    vw, vh = real["w"], real["h"]
+                    k = min(1200 / max(vw, vh), 1.0)
+                    vw, vh = max(int(vw * k), 1), max(int(vh * k), 1)
+                else:
+                    vw, vh = visible_size(pick)
             x, y = _xy_at(rt, pts, g["t"])
             item = {
                 "src": str(Path(src).resolve()),
+                "kind": kind,
                 "w": vw, "h": vh,
                 "dur": round(float(pick["dur"]), 2), "name": pick["name"],
                 "gap": pick["gap_m"], "approx": bool(pick.get("approx")),
-                "lead": CLIP_LEAD,
+                "lead": CLIP_LEAD if kind != "image" else 0.0,
             }
             # 已有同点照片 → 合并（视频优先，照片当封面/备用）
             host = None
@@ -853,11 +888,19 @@ function drawPop(p, e) {
   ctx.save();
   rr(left, top, pw, ph, 30); ctx.clip();
   if (isClip) {
-    const v = VIDS.get(p.clip.src), [w, h] = lay.cells[0];
-    if (v && v.readyState >= 2) {
-      ctx.drawImage(v, left + pad, top + pad, w, h);
+    const [w, h] = lay.cells[0];
+    if (p.clip.kind === 'image') {
+      // 图片素材：和照片走同一套裁剪铺满卡片，不走 <video>
+      const im = IMG.get(p.clip.src);
+      if (im) drawCell(im, p.clip, left + pad, top + pad, w, h, true);
+      else { ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h); }
     } else {
-      ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h);
+      const v = VIDS.get(p.clip.src);
+      if (v && v.readyState >= 2) {
+        ctx.drawImage(v, left + pad, top + pad, w, h);
+      } else {
+        ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h);
+      }
     }
   } else {
     let x = left + pad;
@@ -884,7 +927,10 @@ function drawPop(p, e) {
   ctx.textAlign = 'left';
   const capX = left + pad + (isClip ? 20 : 2);
   const capW = kmLeft - capX - 10;
-  let capTxt = isClip ? name + '  ' + (p.clip.dur || 0).toFixed(1) + 's' : name + more;
+  const clipTag = isClip
+    ? (p.clip.kind === 'image' ? '图片' : (p.clip.dur || 0).toFixed(1) + 's')
+    : '';
+  let capTxt = isClip ? name + '  ' + clipTag : name + more;
   if (ctx.measureText(capTxt).width > capW) {
     while (capTxt.length > 1 && ctx.measureText(capTxt + '…').width > capW) capTxt = capTxt.slice(0, -1);
     capTxt += '…';
@@ -893,7 +939,7 @@ function drawPop(p, e) {
   ctx.beginPath();
   ctx.rect(left + pad, ty - 30, capX + capW - (left + pad), 42);
   ctx.clip();
-  if (isClip) {                       // 小三角标一下这是会动的
+  if (isClip && p.clip.kind !== 'image') {   // 小三角标一下这是会动的
     ctx.fillStyle = ACCENT;
     ctx.beginPath();
     ctx.moveTo(left + pad + 2, ty - 16);
@@ -1061,9 +1107,10 @@ async function runExport() {
   try {
     const rows = PWIN.map(w => ({
       t: w.t, a: +w.a.toFixed(3), b: +w.b.toFixed(3),
-      dur: w.clip ? w.clip.dur : 0,
+      // 图片素材没有音轨，dur 必须给 0，否则 ffmpeg 会去一个 jpg 里抽音频
+      dur: (w.clip && w.clip.kind !== 'image') ? w.clip.dur : 0,
       lead: w.clip ? (w.clip.lead || 0) : 0,
-      src: w.clip ? w.clip.src : '',
+      src: (w.clip && w.clip.kind !== 'image') ? w.clip.src : '',
     }));
     await fetch('/__timeline?run=' + run, { method: 'POST', body: JSON.stringify(rows) });
   } catch (e) { /* 没有视频就不用报 */ }
@@ -1090,7 +1137,11 @@ window.__motion = {
   if (D.base) need.push(D.base);
   for (const p of (D.photos || [])) {
     for (const s of (p.shots || [])) need.push(s.src);
-    if (p.clip) clips.push(p.clip);
+    if (p.clip) {
+      // 图片素材进图片队列，视频才进 <video>；两条加载路径不能混
+      if (p.clip.kind === 'image') need.push(p.clip.src);
+      else clips.push(p.clip);
+    }
   }
 
   for (let round = 0; round < 3; round++) {
