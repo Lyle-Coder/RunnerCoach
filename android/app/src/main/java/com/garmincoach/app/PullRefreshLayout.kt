@@ -36,7 +36,7 @@ class PullRefreshLayout(context: Context, attrs: AttributeSet? = null) :
         textSize = 13f
         setTextColor(0xFF5A6B5E.toInt())
         gravity = Gravity.CENTER
-        setBackgroundColor(0xFFF4F6F2.toInt())
+        setBackgroundColor(0xFFF6F7F4.toInt())
         elevation = 8f
         translationY = -hintH.toFloat()
     }
@@ -53,7 +53,7 @@ class PullRefreshLayout(context: Context, attrs: AttributeSet? = null) :
     var onRefresh: (() -> Unit)? = null
 
     init {
-        setBackgroundColor(0xFFF4F6F2.toInt())
+        setBackgroundColor(0xFFF6F7F4.toInt())
         addView(hint, LayoutParams(LayoutParams.MATCH_PARENT, hintH, Gravity.TOP))
     }
 

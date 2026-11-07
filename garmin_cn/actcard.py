@@ -876,7 +876,10 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     # 出完 PNG 再打码是没用的——原始折线仍会留在 output/*.html 里。
     track, mask_info = PV.mask_track(detail.get("track") or [], mode)
     if mode != PV.MODE_NONE:
-        basemap = None
+        # trim 只是裁掉首尾，底图由调用方按**裁剪后**的轨迹取景，起终点不会入图；
+        # hide 档完全隐藏轨迹，底图必须一起清掉。
+        if mode == PV.MODE_HIDE:
+            basemap = None
         photo = None
 
     dist_km = (num(row.get("distance_m")) or 0) / 1000
@@ -1328,11 +1331,17 @@ def render(row: dict, detail: dict, out_png: Path, photo: Path | None = None,
     # 脱敏版不碰底图缓存：ensure() 会把真实坐标发给高德并落盘 PNG
     photo_uri = None if mode != PV.MODE_NONE else (
         photo.resolve().as_uri() if photo and Path(photo).exists() else None)
+    # 底图与隐私档位解耦：hide 不取；trim 用裁剪后的轨迹取景（起终点不入图），
+    # 缓存键带档位后缀，避免与「原图」的底图混用。
     mapinfo = None
-    if mode == PV.MODE_NONE and use_map and os.environ.get("GARMIN_MAP", "1") != "0":
+    m_track, _ = PV.mask_track(detail.get("track") or [], mode)
+    if (mode != PV.MODE_HIDE and use_map and len(m_track) >= 2
+            and os.environ.get("GARMIN_MAP", "1") != "0"):
         from . import basemap as _bm
-        got = _bm.ensure(detail.get("track") or [], TRK_CW, TRK_CH,
-                         str(row.get("activity_id") or "act"))
+        ident = str(row.get("activity_id") or "act")
+        if mode != PV.MODE_NONE:
+            ident += f"-{mode}"
+        got = _bm.ensure(m_track, TRK_CW, TRK_CH, ident)
         if got:
             mapinfo = {"png": Path(got["png"]).resolve().as_uri(), "meta": got["meta"]}
     html_path.write_text(

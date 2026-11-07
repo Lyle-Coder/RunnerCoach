@@ -994,6 +994,16 @@ def cmd_plan(args) -> int:
     from garmin_cn.plan import fetch, item_line, load
 
     today = args.date or dt.date.today().isoformat()
+    if getattr(args, "diag", False):
+        try:
+            client = get_client()
+        except AuthError as e:
+            print(f"× {e}")
+            return 2
+        from garmin_cn.plan import diag
+
+        print(_json.dumps(diag(client, today), ensure_ascii=False, indent=1))
+        return 0
     if args.cached:
         data = load(HOME / "data" / "plan.json")
         if not data:
@@ -2095,8 +2105,8 @@ def cmd_selftest(args) -> int:
     q = _json.loads(AP.call("activities", _json.dumps([None, None, None, 5, 0])))
     assert q["ok"] and all(k in q for k in ("items", "total", "has_more", "offset"))
 
-    # 网页外壳与历史入口：首页不再堆文件列表，四个 tab 共用一套 ui.page，
-    # 卡片动作走 data-act，活动行走 data-aid。只测不写文件的分支。
+    # 网页外壳与交互树：四个 tab 共用一套 ui.page，卡片动作走 data-act，
+    # 活动行走 data-aid。约束见 docs/交互树.md：一个动作只有一个入口。
     from garmin_cn import history as HW
     from garmin_cn import ui as U
 
@@ -2105,15 +2115,114 @@ def cmd_selftest(args) -> int:
     hp = HW.history_page({"type": ["run"]})
     assert "page-head" in hp and 'name="start"' in hp
     assert "data-aid=" in hp and "GC.activity" in hp
+    # 「补拉历史」只在历史页出现一次，今日/我的都不再重复
+    assert hp.count('data-act="historySync"') == 1
     home = U.home_page()
     assert "page-head" in home and 'data-act="export"' in home and "data-aid=" in home
-    assert "page-head" in U.me_page() and 'data-act="historySync"' in U.me_page()
+    assert 'href="/history"' not in home, "首页不该再给历史入口，底部 tab 已经有了"
+    me = U.me_page()
+    assert "page-head" in me and 'data-act="login:garmin"' in me
+    assert 'data-act="login:coros"' in me, "数据源行要直达对应登录"
+    assert 'data-act="historySync"' not in me and 'data-act="settings"' not in me
+    assert 'href="/files"' in me
+    assert 'data-act="amap"' in me and "地图底图" in me, "我的页要有底图 Key 入口"
+    # 看板导航只剩「回来源 tab + 前后翻日期」，不再有横向 tab 入口
     nav = U.nav_html("2026-10-21",
                      {"first": "2026-10-01", "last": "2026-11-06"})
     assert "gc-nav" in nav
     assert "/view?date=2026-10-20" in nav and "/view?date=2026-10-22" in nav
+    assert 'href="/history"' in nav and 'href="/"' not in nav
+    # 同页参数变化走 replace，不往历史栈堆条目
+    assert "data-nopush" in nav and "data-nopush" in U.BRIDGE_JS
     assert "max-width:820px" in U.DASH_FIX and "max-width:820px" in U.AI_FIX
+    # 训练计划页：读到/读不到都要能出页面，且能回今日、有刷新入口
+    pp = U.plan_page({})
+    assert "PLAN · 训练计划" in pp
+    assert 'class="back" href="/"' in pp
+    assert "planRefresh" in pp
+    assert ('class="plan-hero"' in pp) or ("还没读到训练计划" in pp)
+
+    # 训练计划：日历优先。workout/race 归一化成同一结构，activity 只用来打
+    # 「已完成」标记，note 等其它日历项不能当成课。
+    from garmin_cn import plan as PL
+
+    cal_items = [
+        {"itemType": "workout", "date": "2026-11-03", "title": "轻松跑",
+         "duration": 3000, "distance": 8000, "sportTypeKey": "running"},
+        {"itemType": "activity", "date": "2026-11-03", "title": "跑步"},
+        {"itemType": "workout", "date": "2026-11-07", "title": "节奏跑",
+         "duration": 2400, "distance": 7000},
+        {"itemType": "race", "date": "2026-11-15", "title": "半马",
+         "distance": 21097},
+        {"itemType": "note", "date": "2026-11-09", "title": "备注"},
+    ]
+    cal = PL.from_calendar(cal_items, "2026-11-07")
+    assert cal["source"] == "calendar" and cal["scheduled"], cal
+    assert cal["today"]["items"][0]["minutes"] == 40
+    assert cal["today"]["items"][0]["km"] == 7.0
+    assert cal["week"][1]["done"] is True, "周二有 activity，应标已完成"
+    assert cal["next_date"] == "2026-11-15", cal["next_date"]  # 11-09 是 note，跳过
+    assert PL.from_calendar([], "2026-11-07")["scheduled"] is False
+    # 未来未执行的 activity（没有 activityId）要当排课，不能当成已完成
+    fut = PL.from_calendar([
+        {"itemType": "activity", "date": "2026-11-08", "title": "明天的课",
+         "duration": 3600, "distance": 10000},
+        {"itemType": "workout", "date": "2026-11-05", "title": "周四的课"},
+        {"itemType": "activity", "date": "2026-11-05", "title": "跑步",
+         "activityId": 999},
+    ], "2026-11-07")
+    assert fut["week"][6]["items"], "未来 activity 应算课"
+    assert fut["week"][3]["done"] is True, "带 activityId 的才算已完成"
+    assert PL._months("2026-11-07")[0] == (2026, 10), "要连上个月一起拉，兼容月份语义"
+
+    # 一图流读计划快照必须走 GARMIN_HOME：APK 里代码在只读 assets、数据在
+    # filesDir，用 __file__ 推路径永远读不到——手机上一图流没计划就是这个坑。
+    import os as _os
+    import tempfile as _tf2
+
+    with _tf2.TemporaryDirectory() as td:
+        _data = Path(td) / "data"
+        _data.mkdir(parents=True, exist_ok=True)
+        (_data / "plan.json").write_text(
+            _json.dumps(cal, ensure_ascii=False), encoding="utf-8")
+        _old = _os.environ.get("GARMIN_HOME")
+        _os.environ["GARMIN_HOME"] = td
+        try:
+            _got = PL.attach({}).get("plan") or {}
+            assert _got.get("name") == "佳明日历", \
+                "attach() 要按 GARMIN_HOME 读快照，不能用 __file__ 推"
+            from garmin_cn.card import _week_cells
+
+            _rows = _week_cells(_got, "2026-11-07")
+            assert _rows.count('class="wkd') == 7, "一图流周视图应横排 7 格"
+            assert '<div class="wk">' in _rows, "横排容器必须存在，不能退回竖排 7 行"
+        finally:
+            if _old is None:
+                _os.environ.pop("GARMIN_HOME", None)
+            else:
+                _os.environ["GARMIN_HOME"] = _old
+    # 回放导出（手机端）：页面走 http，底图/照片必须是同源 URL。
+    # 真机绝对路径是 /data/user/0/<包名>/files/data/basemaps/x.png，
+    # 服务端白名单只认 /data/basemaps/x.png —— 不改写就 404，页面 ready
+    # 永远 false，导出静默停在 0 帧（这是踩过的坑，别再改回去）。
+    from garmin_cn import basemap as BM
+    from garmin_cn import motion as MO
+
+    _web = MO._web_url(str(BM.ROOT / "data" / "basemaps" / "_selftest.png"))
+    assert _web == "/data/basemaps/_selftest.png", _web
+    # 已经是同源路径的不再加工；私密文件（db/session）不转
+    assert MO._web_url("/data/basemaps/_selftest.png") == "/data/basemaps/_selftest.png"
+    assert MO._web_url(str(BM.ROOT / "data" / "session.json")) != "/data/session.json"
+    _msrc = Path(MO.__file__).read_text(encoding="utf-8")
+    # toURL 不能给已带前导 / 的路径再补一个（会变成 //data/... 协议相对 URL，
+    # 浏览器会去找主机名为 data 的地址，请求到不了本机服务）
+    assert "if (n.startsWith('/')) return n;" in _msrc, "toURL 的前导斜杠判断丢了"
+    assert "{ method: 'POST' }" in _msrc, "__done 必须用 POST 写完成标记"
+    assert "window.__motion.ready = !!baseBaked;" in _msrc, "ready 只该要求底图"
     assert HW._date({"date": ["not-a-date"]}, "date", "2026-11-06") == "2026-11-06"
+    # 底图 Key 校验：太短的串直接拒，且不写盘
+    _amap = _json.loads(AP.call("set_amap_key", _json.dumps(["short"])))
+    assert not _amap.get("ok") and "不完整" in (_amap.get("error") or "")
 
     class _FakeClient:
         def __init__(self, items):
@@ -2428,9 +2537,11 @@ def main() -> int:
     q.add_argument("--date")
     q.set_defaults(func=cmd_coach)
 
-    q = sub.add_parser("plan", help="读取佳明教练的训练计划与本周课表")
+    q = sub.add_parser("plan", help="读取佳明日历排课（教练计划兜底）与本周课表")
     q.add_argument("--date")
     q.add_argument("--cached", action="store_true", help="只读本地快照，不联网")
+    q.add_argument("--diag", action="store_true",
+                   help="诊断：打印日历月份、条数、类型分布与样例")
     q.set_defaults(func=cmd_plan)
 
     q = sub.add_parser("today", help="今日 105K 备赛课次（跑 today --week 看整周）")

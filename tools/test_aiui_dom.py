@@ -63,12 +63,21 @@ def static_checks(body: str, js: str) -> list[str]:
     if "platform_auto" not in js:
         raise AssertionError("collect() 必须提交 platform_auto，否则切不回官方服务")
 
+    # 返回键契约：页面必须暴露 __gcBack，抽屉开着时能关掉并返回 true。
+    # 原生 onBackPressed 先问它，再决定回 tab 根还是退出（docs/交互树.md §3）。
+    if "window.__gcBack" not in js:
+        raise AssertionError("AI 页必须暴露 window.__gcBack，供原生返回键优先关抽屉")
+    m_back = re.search(r"window\.__gcBack\s*=\s*function\s*\(\)\s*\{(.*?)\n\};", js, re.S)
+    if not m_back or "closeSheet()" not in m_back.group(1) or "return true" not in m_back.group(1):
+        raise AssertionError("__gcBack 必须在抽屉打开时调用 closeSheet() 并返回 true")
+
     return [
         f"√ BODY {len(known)} 个 id，无重复",
         f"√ JS 引用的 {len(used)} 个 id 全部存在",
         "√ openSheet 先显示抽屉再填内容",
         "√ 平台地址只存在于默认隐藏的自定义容器",
         "√ api() 捕获网络异常、collect() 带 platform_auto",
+        "√ 暴露 __gcBack，返回键可先关抽屉",
     ]
 
 
@@ -108,6 +117,7 @@ const box = {
   Date, Number, Math, JSON, String, Array, Object, Promise, RegExp, Error,
   isNaN, parseInt, parseFloat
 };
+box.window = box;
 box.globalThis = box;
 vm.runInNewContext(src + '\n;globalThis.__T={openSheet,fillSheet,collect,STATE};', box);
 const T = box.__T, sheet = doc.querySelector('#sheet'), main = doc.querySelector('#mainAct');

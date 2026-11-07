@@ -122,6 +122,7 @@ sync_range(start, end=None, ...) # 按日期区间补历史（最多 3 年），
 activities(start=None, end=None, types=None, limit=100, offset=0)
                                 # 只查本地库的历史活动，支持区间/类型/分页
 days_index(limit=400)           # 已有数据的日期清单，给日期选择器划范围
+plan(refresh=False)             # 训练安排：佳明日历优先、教练计划兜底；默认读快照，refresh 联网
 dashboard(date)                 # 出网页看板（历史日期也能出）
 card_html(date)                 # 出一图流 HTML（PNG 交给 WebView）
 act_card_html(id, privacy="none")  # 活动图 HTML：画布 1080×2250，成品 1080×1920
@@ -138,6 +139,7 @@ read_html(path)                 # 只允许读 output/ 下的文件
 /            今日 tab   ui.home_page()      恢复度 / 负荷 / 快捷动作 / 最近活动
 /history     历史 tab   history_page()      区间 / 类型 / 分页；data-aid 点行出图
 /view?date=  历史 tab   view_page()         按需生成看板 + DASH_FIX + 日期导航
+/plan        今日二级   ui.plan_page()      今日课表 / 本周七天 / 下次训练（佳明教练计划）
 /ai          教练 tab   aiui.render()       原样 + AI_FIX 统一外框
 /me          我的 tab   ui.me_page()        数据源 / 低频动作 / 产物 / 关于
 /files       我的 tab   ui.files_page()     原首页降级成产物清单

@@ -301,7 +301,8 @@ def http(url: str, *, data: bytes | None = None, headers: dict[str, str] | None 
         raise ReleaseError(f"Gitee API 连接失败：{e.reason}") from None
 
 
-def gitee_ensure_release(owner: str, repo: str, tag: str, notes: str, token: str) -> str:
+def gitee_ensure_release(owner: str, repo: str, tag: str, notes: str, token: str,
+                         prerelease: bool = False, target: str = "main") -> str:
     base = f"{API}/repos/{owner}/{repo}"
     q = urllib.parse.quote(token, safe="")
     who = http(f"{API}/user?access_token={q}", token=token)
@@ -321,8 +322,8 @@ def gitee_ensure_release(owner: str, repo: str, tag: str, notes: str, token: str
         "tag_name": tag,
         "name": f"RunnerCoach {tag}",
         "body": notes,
-        "target_commitish": "main",
-        "prerelease": False,
+        "target_commitish": target,
+        "prerelease": bool(prerelease),
     }, ensure_ascii=False).encode("utf-8")
     created = json.loads(http(
         base + "/releases", data=payload, method="POST", token=token,
