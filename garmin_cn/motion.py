@@ -197,7 +197,36 @@ def make_thumb(src: Path, dst: Path, ph: dict, max_w: int = 1200) -> Path | None
 
 
 # ------------------------------------------------------------------ 数据打包
-CLIP_LEAD = 0.15        # 卡片淡入完成后才起播，避免"贴脸突然有声"
+CLIP_LEAD = 0.0         # 素材延迟起播的秒数：0 = 卡片一出现就播
+                        # 原来是 0.15（怕"贴脸突然有声"），但那会让停留必须多留 0.15s
+                        # 收尾，总时长就对不上「30s + 素材总长」的要求了。
+RAMP = 0.70             # 每处素材「停住」前后各 0.7s 加减速（播放秒）
+HOLD_MIN, HOLD_MAX = 0.6, 180.0   # 上限只是防呆：单段素材最多停 3 分钟。
+# 素材要「完整插入」，一般几十秒的视频远到不了这个量级；
+# 再长的话成片帧数会到万级，手机端渲染和存储都撑不住。
+
+
+def _timeline_total(play: float, photos: list[dict]) -> float:
+    """页面时间轴的真实总时长，算法必须与 JS 里的 `TL` / `holdsSum` 逐字一致。
+
+    总时长 = 巡航预算 + 素材停留。素材停留是**额外叠加**的，不挤占 `play`：
+    30 秒巡航 + 视频素材总长 + 3 秒 × 图片素材数。
+
+    App 靠这个数算要渲染多少帧，算小了片子尾巴会被截掉（素材越多截得越狠）。
+    """
+    holds = 0.0
+    plain = 0
+    for ph in photos:
+        clip = ph.get("clip")
+        if clip:
+            holds += max(HOLD_MIN, min(HOLD_MAX, float(clip.get("dur") or 0)))
+        else:
+            plain += 1
+    if plain:
+        holds += min(2.8, max(1.0, play * 0.40 / plain)) * plain
+    # 加减速本身也占播放时间。素材多到「光加减速就超过 play」时，巡航被压成 0，
+    # 总长以加减速兜底 —— 对应页面里那条 build(8000) 的退化分支。
+    return max(play, 2 * RAMP * len(photos)) + holds
 
 
 def _spread_clips(clips: list[dict], rt: dict) -> list[dict]:
@@ -285,7 +314,12 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
     out_clips = 0
     if clips:
         clips = _spread_clips(clips, rt)
+        # cluster_m=0：素材**不合并**。两段视频拍在同一地点很常见（同路口前后各
+        # 一段），合并后只会保留最长的一段，另一段就凭空消失了——用户要的是
+        # 「素材完整插入」。clamp_ends：时间明显不在这次活动里的也贴到最近的
+        # 一端，不许丢。
         cg = photo_mod.match(clips, rt, t0_ms=rt.get("t0"),
+                             cluster_m=0.0, clamp_ends=True,
                              keep=("dur", "codec", "bytes", "kind"))
         loose.extend(cg["loose"])
         for g in cg["points"]:
@@ -320,7 +354,7 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                 "w": vw, "h": vh,
                 "dur": round(float(pick["dur"]), 2), "name": pick["name"],
                 "gap": pick["gap_m"], "approx": bool(pick.get("approx")),
-                "lead": CLIP_LEAD if kind != "image" else 0.0,
+                "lead": CLIP_LEAD,
             }
             # 已有同点照片 → 合并（视频优先，照片当封面/备用）
             host = None
@@ -353,6 +387,10 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
         "dur": int(s["duration_s"]), "dist": round(s["distance_m"], 1),
         "hr_avg": s.get("hr_avg"), "hr_max": s.get("hr_max"),
         "play": float(duration),
+        # 真实总时长（见 `_timeline_total`）。App 按它算渲染帧数。
+        "total": round(_timeline_total(float(duration), out_photos), 3),
+        "spread": sum(1 for p in out_photos
+                      if p.get("clip") and p["clip"].get("approx")),
         "photos": out_photos, "clips": out_clips, "loose": loose,
         "accent": ACCENT,
     }
@@ -499,26 +537,31 @@ function paceAt(rt) {
 // 原来是位置折线（KEYS），速度在进出照片处从 1x 硬切到 0.0125x——位置连着，
 // 但速度不连续，看起来就是「猛刹一脚、再猛窜出去」。现在改成速度剖面：
 // 匀速 → 半余弦减速 0.7s → 完全静止 hold 秒 → 半余弦加速 0.7s，
-// 归一化后保证总时长正好等于 D.play、终点正好落在 D.dur。
+// 归一化后保证「巡航 + 加减速」正好等于 D.play、终点正好落在 D.dur；
+// 素材停留是额外叠加的，见下面 holdsSum。
 const RAMP = 0.70;                  // 加减速时长（播放秒）
 const PWIN = [];                    // 每处照片的播放时间窗口 {a: 停住开始, b: 停住结束}
 const TL = (function () {
   const ps = (D.photos || []).slice().sort((a, b) => a.t - b.t);
   const n = ps.length;
-  // 停留时长按点算：有实况的按片段长度（要播完），照片点平分剩下的预算
-  const budget = D.play * 0.40;
-  let used = 0;
+  // 素材停留**叠加**在巡航时长之上，不挤占轨迹节奏：
+  //   视频按自身时长整段播完，图片/照片按固定停留。
+  // 于是总时长 = D.play（轨迹巡航 + 加减速）+ 所有停留，
+  // 也就是「30s + 视频素材总时长 + 3s × 图片素材数」。早期版本把停留塞进
+  // D.play 里，素材一多轨迹就被压成几秒飞完全程，看起来像"时长算错了"。
   for (const ph of ps) {
     if (ph.clip) {
-      // 整段放完：卡片停留 = 素材本身长度 + 一点收尾，方便后期再剪
-      ph._hold = Math.min(40, Math.max(1.2, ph.clip.dur + 0.6));
-      used += ph._hold;
+      const d = ph.clip.dur || 0;
+      ph._hold = Math.max(0.6, Math.min(180, d));
     }
   }
+  // 纯照片点（没挂素材）仍按预算平分，同样叠加在 D.play 之上
   const plain = ps.filter(x => !x.clip);
-  const rest = Math.max(budget - used, D.play * 0.12);
+  const clipHold = ps.reduce((a, ph) => a + (ph.clip ? ph._hold : 0), 0);
+  const rest = D.play * 0.40;
   const baseHold = plain.length ? Math.min(2.8, Math.max(1.0, rest / plain.length)) : 0;
   for (const x of plain) x._hold = baseHold;
+  const holdsSum = clipHold + baseHold * plain.length;
 
   // 给定 k（轨迹秒/播放秒），排出整条时间轴；总时长随 k 单调递减，二分求 k
   function build(k) {
@@ -546,15 +589,23 @@ const TL = (function () {
   let lo = 0.5, hi = 8000, best = build(10);
   for (let i = 0; i < 48; i++) {
     const mid = (lo + hi) / 2, t = build(mid);
-    if (t.total > D.play) lo = mid; else { hi = mid; best = t; }
+    // 只把「巡航 + 加减速」压进 D.play；停留是额外加的
+    if (t.total - holdsSum > D.play) lo = mid; else { hi = mid; best = t; }
   }
+  // 极端情况：素材多到「光加减速就超过巡航预算」，二分无解（best 还停在
+  // 初始的 build(10)，会把片子拉成几十秒的慢动作）。退化成轨迹瞬间走完，
+  // 至少每条素材都完整放到。
+  if (best.total - holdsSum > D.play + 0.05) best = build(8000);
   for (const w of best.win) PWIN.push(Object.assign({}, w.ph, { a: w.a, b: w.b }));
   return best;
 })();
 
+// 整条片子的真实总时长：巡航预算 + 所有素材停留
+const TOTAL = TL.total;
+
 function routeAt(p) {
   if (p <= 0) return 0;
-  if (p >= D.play) return D.dur;
+  if (p >= TOTAL) return D.dur;
   const segs = TL.segs;
   let lo = 0, hi = segs.length - 1;
   while (lo < hi) {                    // 找 p 落在哪一段
@@ -1068,9 +1119,9 @@ let playT = 0, last = 0, playing = true, raf = null;
 function loop(ts) {
   if (!last) last = ts;
   playT += (ts - last) / 1000; last = ts;
-  if (playT >= D.play) playT = D.play;
+  if (playT >= TOTAL) playT = TOTAL;
   drawFrame(playT);
-  if (playT < D.play) raf = requestAnimationFrame(loop);
+  if (playT < TOTAL) raf = requestAnimationFrame(loop);
   else playing = false;
 }
 function play() {
@@ -1086,7 +1137,7 @@ function pause() {
 // 导出的每一帧都要求"画面停在某个确定时刻"，所以这里要等视频 seek 到位再画
 async function seekTo(t) {
   pause();
-  playT = Math.max(0, Math.min(t, D.play));
+  playT = Math.max(0, Math.min(t, TOTAL));
   await syncVideo(popAt(playT).w);
   drawFrame(playT);
   return playT;
@@ -1125,7 +1176,7 @@ async function runExport() {
 }
 
 window.__motion = {
-  duration: D.play, seek: seekTo, play: play, pause: pause,
+  duration: TOTAL, seek: seekTo, play: play, pause: pause,
   frames: N, ready: false,
 };
 
@@ -1217,14 +1268,21 @@ window.addEventListener('keydown', e => {
 def render(row: dict, detail: dict, photos: list[dict] | None,
            out_html: Path, *, duration: float = 45.0,
            thumb_dir: Path | None = None, clips: list[dict] | None = None,
-           clip_cache: Path | None = None, web: bool = False) -> Path:
-    """生成播放器 HTML。返回路径（同目录另存一份 payload 便于排查）。"""
+           clip_cache: Path | None = None, web: bool = False,
+           payload_out: dict | None = None) -> Path:
+    """生成播放器 HTML。返回路径（同目录另存一份 payload 便于排查）。
+
+    `payload_out`：传一个 dict 进来，就把这次实际用的 payload 填进去。
+    调用方要拿 `total`（真实总时长）算帧数时用得上，比再从 HTML 里正则抠可靠。
+    """
     out_html = Path(out_html)
     out_html.parent.mkdir(parents=True, exist_ok=True)
     payload = build_payload(row, detail, photos, clips=clips, thumb_dir=thumb_dir,
                             clip_cache=clip_cache, duration=duration, web=web)
+    if payload_out is not None:
+        payload_out.update(payload)
     out_html.write_text(build_html(payload), encoding="utf-8")
-    meta = {k: payload[k] for k in ("title", "sub", "dur", "dist", "play")}
+    meta = {k: payload[k] for k in ("title", "sub", "dur", "dist", "play", "total")}
     meta["photos"] = [{"t": p["t"], "d": p["d"],
                        "n": len(p.get("shots") or []),
                        "clip": (p.get("clip") or {}).get("name")}

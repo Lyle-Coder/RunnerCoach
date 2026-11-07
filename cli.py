@@ -590,8 +590,10 @@ def cmd_motion(args) -> int:
     side = html.with_suffix(".json").read_text("utf-8")
     meta = json.loads(side)
     print(f"√ {row['name']}（{row['date']}）")
+    _nclip = sum(1 for p in meta["photos"] if p.get("clip"))
+    _tail = f"（轨迹 {args.duration:.0f} 秒 + {_nclip} 段素材停留）" if _nclip else ""
     print(f"  {meta['dist'] / 1000:.2f} km · {meta['dur'] // 60} 分 "
-          f"{meta['dur'] % 60} 秒 · 成片 {args.duration:.0f} 秒")
+          f"{meta['dur'] % 60} 秒 · 成片 {meta.get('total') or args.duration:.0f} 秒{_tail}")
     print(f"  轨迹点 {(detail.get('route') or {}).get('n')}｜照片 {len(photos)} 张"
           f"｜实况 {len(videos)} 段，匹配 {len(meta['photos'])} 处")
     for p in meta["photos"]:
@@ -2283,6 +2285,68 @@ def cmd_selftest(args) -> int:
     assert "clips = _spread_clips(clips, rt)" in _mo_src, "素材没走均匀铺开兜底"
     assert "if (p.clip.kind === 'image')" in _mo_src, "页面没处理图片素材"
     assert "need.push(p.clip.src)" in _mo_src, "图片素材没进图片预加载队列"
+    # ---- 总时长：30 秒巡航 + 素材停留。停留是**叠加**的，不许挤占巡航 ----
+    # 旧版把素材停留塞进 30 秒预算里：素材一多，轨迹就被压成几秒飞完全程；
+    # App 又按 30 秒算帧数，末尾的素材直接被截掉——看着就像「锚点错了」。
+    _hold3 = [{"t": 1.0, "clip": {"dur": 8.0}}, {"t": 2.0, "clip": {"dur": 3.0}},
+              {"t": 3.0, "clip": {"dur": 3.0}}]
+    assert MOT._timeline_total(30.0, _hold3) == 44.0, MOT._timeline_total(30.0, _hold3)
+    assert MOT._timeline_total(30.0, []) == 30.0, "没有素材时总长应该正好是巡航预算"
+    # 长素材也要整段放完（60 秒的老上限会把长视频截掉）
+    assert MOT._timeline_total(30.0, [{"t": 1.0, "clip": {"dur": 90.0}}]) == 120.0
+    # 页面收片尾要靠算出来的真实总时长；帧数也必须按它算
+    assert "const TOTAL = TL.total;" in _mo_src, "页面没用真实总时长"
+    assert "duration: TOTAL" in _mo_src, "导出接口没暴露真实总时长"
+    assert "if (playT >= D.play)" not in _mo_src, "片尾判断还在用旧的 30 秒预算"
+    assert "if (p >= D.play) return D.dur" not in _mo_src, "轨迹取值还在用旧的 30 秒预算"
+    assert "int(round(total * fps))" in _ap_src, "帧数没按真实总时长算（末尾素材会被截掉）"
+    # 桌面导出用的收帧服务：`/__done` 和 `/__diag` 没 `i` 参数，掉进收帧分支
+    # 就会被当成 i=0 覆盖真首帧（`/__done` 的 body 为空 → 首帧 0 字节，成片少一帧）
+    from garmin_cn import video as _vid
+
+    _vsrc = Path(_vid.__file__).read_text(encoding="utf-8")
+    assert 'if self.path.startswith(("/__done", "/__diag"))' in _vsrc, \
+        "收帧服务没显式吃掉 /__done 与 /__diag，首帧会被写成 0 字节"
+    # ---- 素材必须「完整插入」：一段都不许丢，同地两段也不许被合并掉 ----
+    from unittest import mock as _mock
+
+    _frt = {"n": 3, "t0": 1_700_000_000_000, "t": [0, 60, 120],
+            "lat": [30.0, 30.001, 30.002], "lon": [120.0, 120.001, 120.002],
+            "d": [0, 100, 200], "hr": [120, 130, 140], "seg": [0],
+            "v": [1.6, 1.7, 1.8]}
+    with _tf.TemporaryDirectory() as _ptd:
+        _pp = _Path(_ptd)
+
+        def _mkclip(name, kind, dur, t_utc, lat=None, lon=None):
+            p = _pp / name
+            p.write_bytes(b"x")
+            return {"path": str(p), "name": name[:-4], "kind": kind, "dur": dur,
+                    "w": 1080, "h": 1440 if kind == "image" else 1920,
+                    "t_utc": t_utc, "lat": lat, "lon": lon}
+
+        _fclips = [
+            # 同一地点两段视频（只差 1 秒）：合并掉一段就等于「素材丢了」
+            _mkclip("a.mp4", "video", 8.0, 1_700_000_030_000, 30.0005, 120.0005),
+            _mkclip("b.mp4", "video", 5.0, 1_700_000_031_000, 30.0005, 120.0005),
+            _mkclip("c.jpg", "image", 3.0, 1_700_000_070_000, 30.0012, 120.0012),
+            # 时间差 3 小时（明显不在这次活动里）：贴到最近的一端，不许丢
+            _mkclip("d.mp4", "video", 4.0, 1_700_000_000_000 - 3 * 3600_000),
+        ]
+        with _mock.patch.object(MOT, "ensure_basemap", lambda *a, **k: None), \
+                _mock.patch.object(MOT.clip_mod, "ensure_playable",
+                                   lambda i, c: i["path"]), \
+                _mock.patch.object(MOT.clip_mod, "probe",
+                                   lambda p: {"w": 1080, "h": 1920}):
+            _fpl = MOT.build_payload({"name": "测", "start_ts": "2026-11-07 07:00:00"},
+                                     {"route": _frt}, None, clips=_fclips,
+                                     duration=30.0)
+        _got_names = sorted(p["clip"]["name"] for p in _fpl["photos"] if p.get("clip"))
+        assert _got_names == ["a", "b", "c", "d"], f"素材没完整插入：{_got_names}"
+        assert not _fpl["loose"], f"素材被判成挂不上了：{_fpl['loose']}"
+        # 30 + 8 + 5 + 3 + 4，一张不少
+        assert _fpl["total"] == 50.0, _fpl["total"]
+        _clamp = next(p for p in _fpl["photos"] if (p.get("clip") or {}).get("name") == "d")
+        assert _clamp["t"] == 0.0 and _clamp["clip"]["approx"], "越界素材没贴到起点"
     # 素材清单要够界面用：类型、文件是否还在、拍摄时间（列表要显示缩略图和时间）
     assert 'it["exists"] = p.is_file()' in _ap_src, "素材清单没标文件是否存在"
     assert 'it["t_utc"] = _meta_val(it, info, "t_utc")' in _ap_src, "素材清单没带拍摄时间（且应优先用存下来的）"

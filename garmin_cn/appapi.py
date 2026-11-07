@@ -1054,12 +1054,19 @@ def motion_html(activity_id: str, fps: int = 24, duration: int = 30,
         run = secrets.token_hex(6)
         out = OUT / f"motion-{aid}.html"
         clips = _clips_for_motion()
+        pl: dict = {}
         # web=True：App 里的播放器走 http，必须把底图/照片/视频换成本源 URL，
         # 否则真机上绝对路径 404 → 页面 ready=false → 一帧都不推
         M.render(row, detail, None, out, duration=float(dur), clips=clips,
-                 clip_cache=HOME / "data" / "motion_cache", web=True)
+                 clip_cache=HOME / "data" / "motion_cache", web=True,
+                 payload_out=pl)
+        # 帧数必须按**真实总时长**算：巡航 30 秒 + 素材停留（视频自身时长、
+        # 图片 3 秒/张）。以前按 30 秒算，素材一多尾巴就被截掉——最后几段
+        # 视频干脆没出现在成片里，看起来就像「锚点错了」。
+        total = float(pl.get("total") or dur)
         return {"ok": True, "html": str(out), "run": run,
-                "frames": int(dur * fps), "fps": fps, "duration": dur,
+                "frames": max(1, int(round(total * fps))), "fps": fps,
+                "duration": round(total, 2), "play": dur,
                 "width": 1080, "height": 1920, "clips": len(clips),
                 "privacy": mode, "name": row.get("name") or "跑步回放"}
     except ValueError as e:

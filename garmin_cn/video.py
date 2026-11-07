@@ -104,6 +104,16 @@ def render_frames(html: Path, total: int, fps: int, *, workers: int = 2,
                 self.send_response(204)
                 self.end_headers()
                 return
+            # `/__diag`（诊断）和 `/__done`（完成标记）必须**显式吃掉**，不能让它们
+            # 掉到下面的收帧逻辑：两者都没有 `i` 参数，会被当成 i=0 覆盖真正的首帧。
+            # `/__done` 的 body 是空的 → 首帧被写成 0 字节，成片从第 1 帧开始。
+            if self.path.startswith(("/__done", "/__diag")):
+                n = int(self.headers.get("Content-Length") or 0)
+                if n:
+                    self.rfile.read(n)
+                self.send_response(204)
+                self.end_headers()
+                return
             i = int((q.get("i") or ["0"])[0])
             n = int(self.headers.get("Content-Length") or 0)
             (FRAMES / f"f_{i:05d}.jpg").write_bytes(self.rfile.read(n))
@@ -314,7 +324,17 @@ def export(html: Path, dest: Path, *, duration: float, fps: int = 30,
             "  或下载解压后把 ffmpeg.exe 放到 tools/ 目录\n"
             "（不想装就先只出网页：去掉 --mp4）")
 
-    total = max(int(round(duration * fps)), 1)
+    # 成片长度以页面算出来的「真实总时长」为准：巡航预算 + 素材停留。
+    # 只按 `duration`（巡航预算）算会把后面的素材和尾段一起截掉——
+    # 桌面和手机两条路都得认这一个数，别各算各的。
+    total_s = float(duration)
+    try:
+        _side = Path(html).with_suffix(".json")
+        if _side.exists():
+            total_s = float(json.loads(_side.read_text("utf-8")).get("total") or duration)
+    except (OSError, ValueError):
+        total_s = float(duration)
+    total = max(int(round(total_s * fps)), 1)
     frames = render_frames(html, total, fps, workers=workers, log=log)
 
     dest = Path(dest)
@@ -329,12 +349,12 @@ def export(html: Path, dest: Path, *, duration: float, fps: int = 30,
         "-i", str(frames / "f_%05d.jpg"),
     ]
     if clips:
-        cmd += ["-f", "lavfi", "-t", f"{duration:.3f}", "-i",
+        cmd += ["-f", "lavfi", "-t", f"{total_s:.3f}", "-i",
                 "anullsrc=r=48000:cl=stereo"]
         for src, _, _ in clips:
             cmd += ["-i", src]
         st = "aformat=sample_fmts=fltp:channel_layouts=stereo"
-        parts = [f"[1:a]atrim=0:{duration:.3f},asetpts=N/SR/TB,{st}[base]"]
+        parts = [f"[1:a]atrim=0:{total_s:.3f},asetpts=N/SR/TB,{st}[base]"]
         for k, (_, at, _dur) in enumerate(clips):
             ms = max(int(round(at * 1000)), 0)
             # 片段多半是单声道，不升轨的话 amix 会把整条音轨降成 mono
@@ -351,7 +371,7 @@ def export(html: Path, dest: Path, *, duration: float, fps: int = 30,
         "-pix_fmt", "yuv420p",
     ]
     if clips:
-        cmd += ["-c:a", "aac", "-b:a", "160k", "-t", f"{duration:.3f}"]
+        cmd += ["-c:a", "aac", "-b:a", "160k", "-t", f"{total_s:.3f}"]
     cmd += ["-movflags", "+faststart", str(dest)]
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0 or not dest.exists():
