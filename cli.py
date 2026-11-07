@@ -2307,9 +2307,82 @@ def cmd_selftest(args) -> int:
     _vsrc = Path(_vid.__file__).read_text(encoding="utf-8")
     assert 'if self.path.startswith(("/__done", "/__diag"))' in _vsrc, \
         "收帧服务没显式吃掉 /__done 与 /__diag，首帧会被写成 0 字节"
-    # ---- 素材必须「完整插入」：一段都不许丢，同地两段也不许被合并掉 ----
+    # ---- 音轨：素材原声要按时间轴混进成片 ----
     from unittest import mock as _mock
 
+    # 三个坑：① 页面给 WebView 的 src 是 /data/... URL，解码器打不开，
+    #   必须另存一份磁盘路径；② 图片段 dur=0 不能混音；③ 时间轴是页面 POST
+    #   上来的，路径必须先过白名单，不能让它指向任意文件。
+    assert '"local": str(Path(src).resolve())' in _mo_src, "payload 没保留素材磁盘路径"
+    assert "w.clip.local || w.clip.src" in _mo_src, "页面没把本地路径回传给混音"
+    _web_blk = _mo_src[_mo_src.index("    if web:"):][:400]
+    assert "local" not in _web_blk, "web 改写不该动 local（原生要磁盘路径）"
+    assert 'w.get("file") or w.get("src")' in _vsrc, "桌面 ffmpeg 没优先用本地路径"
+    assert "def motion_audio(" in _ap_src, "原生拿不到混音清单"
+    assert '"motion_audio"' in _ap_src, "motion_audio 没注册进 App 接口白名单"
+    # 真机素材路径 /data/user/0/<包名>/files/data/media/... 也以 /data/ 开头，
+    # 必须先按「确实存在的绝对路径」认，否则会被当成同源 URL 拼错、原声全丢
+    assert "if Path(s).is_absolute() and Path(s).is_file():" in _ap_src, \
+        "真机绝对路径会被误判成同源 URL"
+    with _tf.TemporaryDirectory() as _atd:
+        _aroot = _Path(_atd)
+        (_aroot / "data/media").mkdir(parents=True)
+        (_aroot / "data/motion_cache").mkdir(parents=True)
+        _av = _aroot / "data/media/a.mp4"
+        _av.write_bytes(b"x")
+        _bv = _aroot / "data/motion_cache/b.mp4"
+        _bv.write_bytes(b"x")
+        (_aroot / "data/garmin.db").write_bytes(b"x")
+        _arun = "audio123"
+        _adir = _aroot / "output/_frames" / _arun
+        _adir.mkdir(parents=True)
+        _tl = _adir / "_timeline.json"
+        _tl.write_text(_json.dumps([
+            {"file": "/data/media/a.mp4", "src": "/data/media/a.mp4",
+             "a": 3.0, "lead": 0.5, "dur": 8.0},
+            {"file": "", "src": "", "a": 12.0, "lead": 0, "dur": 0},   # 图片段
+            {"file": "/data/media/gone.mp4", "a": 15.0, "dur": 4.0},   # 文件丢了
+            {"file": "/data/garmin.db", "a": 16.0, "dur": 4.0},        # 越权
+            {"src": "/data/motion_cache/b.mp4", "a": 1.0, "dur": 5.0},  # 老页面只有 src
+            {"file": str(_bv), "src": "/data/media/wrong.mp4",
+             "a": 20.0, "dur": 2.0},                          # file 必须压过 src
+        ]), encoding="utf-8")
+        with _mock.patch.object(AP, "HOME", _aroot), \
+                _mock.patch.object(AP, "OUT", _aroot / "output"):
+            assert AP._audio_local("/media/a.mp4") == _av
+            assert AP._audio_local(str(_bv)) == _bv
+            assert AP._audio_local("/data/../etc/passwd") is None, "不能跳出 data/"
+            assert AP._audio_local("/data/garmin.db") is None, "不能读私有文件"
+            assert AP._audio_local("/data/media/a.jpg") is None, "图片没有音轨"
+            _got = AP.motion_audio(_arun)
+            assert AP.motion_audio("no-such-run")["items"] == [], "没有时间轴应返回空清单"
+        assert _got["ok"] and _got["total"] == 3, _got
+        assert _got["items"][0]["at"] == 1.0, "老页面只给 src 时没按起点排序"
+        assert _got["items"][1]["at"] == 3.5, _got["items"]
+        assert _got["items"][1]["file"] == str(_av), "URL 没映射回本地文件"
+        assert _got["items"][2]["file"] == str(_bv), "file 没压过 src"
+        assert not AP.motion_audio("bad run!")["ok"], "run 没做校验"
+        # 桌面 ffmpeg 读的是同一份时间轴，优先 file、丢掉图片段
+        _tl2 = _adir / "_desktop_timeline.json"
+        _tl2.write_text(_json.dumps([
+            {"file": str(_av), "src": "/data/media/a.mp4",
+             "a": 2.0, "lead": 0.5, "dur": 8.0},
+            {"src": "/data/media/a.mp4", "a": 4.0, "dur": 0},
+        ]), encoding="utf-8")
+        _ca = _vid._clip_audio(_tl2)
+        assert len(_ca) == 1 and _ca[0][0] == str(_av) and _ca[0][1] == 2.5, _ca
+    # 手机端：解码混音 → AAC → 与视频交织写进同一个 MP4
+    _kt_dir = Path(AP.__file__).parent.parent / "android/app/src/main/java/com/garmincoach/app"
+    if (_kt_dir / "MotionAudio.kt").is_file():
+        _ma = (_kt_dir / "MotionAudio.kt").read_text(encoding="utf-8")
+        _me = (_kt_dir / "MotionEncoder.kt").read_text(encoding="utf-8")
+        _main = (_kt_dir / "MainActivity.kt").read_text(encoding="utf-8")
+        assert "createDecoderByType" in _ma, "没解码素材音轨"
+        assert "MIMETYPE_AUDIO_AAC" in _ma, "没压成 AAC"
+        assert "muxer.addTrack(audio.format)" in _me, "音轨没加进 MP4"
+        assert "writeAudio(info.presentationTimeUs, false)" in _me, "音视频没交织"
+        assert 'apiCall("motion_audio", run)' in _main, "导出没取混音清单"
+    # ---- 素材必须「完整插入」：一段都不许丢，同地两段也不许被合并掉 ----
     _frt = {"n": 3, "t0": 1_700_000_000_000, "t": [0, 60, 120],
             "lat": [30.0, 30.001, 30.002], "lon": [120.0, 120.001, 120.002],
             "d": [0, 100, 200], "hr": [120, 130, 140], "seg": [0],
@@ -2342,6 +2415,11 @@ def cmd_selftest(args) -> int:
                                      duration=30.0)
         _got_names = sorted(p["clip"]["name"] for p in _fpl["photos"] if p.get("clip"))
         assert _got_names == ["a", "b", "c", "d"], f"素材没完整插入：{_got_names}"
+        # 混音要的磁盘路径必须一直在，且等于页面看到的源（web=True 时只改 src）
+        assert all(_Path(p["clip"]["local"]).is_absolute()
+                   and p["clip"]["local"] == p["clip"]["src"]
+                   for p in _fpl["photos"] if p.get("clip")), \
+            "素材没带可解码的本地路径"
         assert not _fpl["loose"], f"素材被判成挂不上了：{_fpl['loose']}"
         # 30 + 8 + 5 + 3 + 4，一张不少
         assert _fpl["total"] == 50.0, _fpl["total"]

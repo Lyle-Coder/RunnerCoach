@@ -1817,7 +1817,23 @@ class MainActivity : Activity() {
         thread {
             val out = File(File(filesDir, "output"),
                 "motion-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".mp4")
-            val r = MotionEncoder.encode(dir, out, 1080, 1920, fps)
+            // 时间轴落在帧目录里，cleanup 会连它一起删，所以先取再编码。
+            // 取不到（没视频素材 / 老页面没回传）就是空列表，编码器退回无声。
+            val ar = apiCall("motion_audio", run)
+            val segments = ArrayList<MotionAudio.Segment>()
+            val rows = ar.optJSONArray("items")
+            if (rows != null) {
+                for (i in 0 until rows.length()) {
+                    val o = rows.optJSONObject(i) ?: continue
+                    val f = o.optString("file", "")
+                    if (f.isNotEmpty()) {
+                        segments.add(MotionAudio.Segment(
+                            f, o.optDouble("at", 0.0), o.optDouble("dur", 0.0)))
+                    }
+                }
+            }
+            if (segments.isNotEmpty()) ui { subtitle.text = "混入原声并编码中…" }
+            val r = MotionEncoder.encode(dir, out, 1080, 1920, fps, segments)
             apiCall("motion_cleanup", run)
             ui {
                 busy(false)
@@ -1831,7 +1847,9 @@ class MainActivity : Activity() {
                     toast("回放已生成，但写不进相册：${out.name}")
                     return@ui
                 }
-                toast("回放已存相册/GarminCoach")
+                val tail = if (r.audioSegments > 0)
+                    "（含 ${r.audioSegments} 段素材原声）" else ""
+                toast("回放已存相册/GarminCoach$tail")
                 shareVideo(uri, "分享回放：$title")
             }
         }

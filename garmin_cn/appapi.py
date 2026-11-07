@@ -121,7 +121,7 @@ _API = {
     "env_info", "status", "login", "submit_mfa", "sync", "sync_range",
     "dashboard", "card_html", "act_card_html", "runs", "activities", "days_index",
     "plan", "set_amap_key", "start_server", "recent", "read_html",
-    "motion_html", "motion_status", "motion_cleanup",
+    "motion_html", "motion_status", "motion_cleanup", "motion_audio",
     "clips_list", "clips_add", "clips_remove",
     "set_llm_config", "get_llm_config", "ai",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
@@ -1178,6 +1178,85 @@ def motion_status(run: str) -> dict:
     return {"ok": True, "frames": len(list(d.glob("f_*.jpg"))),
             "done": (d / "_done.json").is_file(), "dir": str(d),
             "diag": diag}
+
+
+def _audio_local(raw: str) -> Path | None:
+    """时间轴里的素材标识 → 本机磁盘路径。
+
+    页面给 WebView 用的是 `/data/media/xxx.mp4` 这种同源 URL（见 motion._web_url），
+    MediaExtractor 打不开 URL；桌面导出的老页面则直接回传绝对路径。两种都认，
+    但**只放行 data/ 下的素材目录**：时间轴是页面 POST 上来的，不能让一个
+    JSON 就把任意文件交给解码器。
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    data = (HOME / "data").resolve()
+    try:
+        # 真机上素材的绝对路径是 /data/user/0/<包名>/files/data/media/...，
+        # 开头也是 /data/！先按「确实存在的绝对路径」认，别把它当成同源 URL
+        # 再拼一次家目录（那样拼出的文件不存在，原声会整段丢掉）。
+        if Path(s).is_absolute() and Path(s).is_file():
+            p = Path(s).resolve()
+        elif s.startswith("/data/"):
+            p = (data / s[len("/data/"):]).resolve()
+        elif s.startswith("/media/"):
+            p = (data / "media" / s[len("/media/"):]).resolve()
+        elif s.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", s):
+            return None                    # 绝对路径但文件不在，不做二次解释
+        else:
+            return None
+        p.relative_to(data)
+        # 只允许素材与转码缓存，basemaps / garmin.db 一律不碰
+        if p.parent.name not in ("media", "motion_cache"):
+            return None
+        if p.suffix.lower() not in (".mp4", ".mov", ".m4v"):
+            return None
+        return p if p.is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
+def motion_audio(run: str) -> dict:
+    """给原生侧的混音清单：把 `/__timeline` 回传的素材窗口翻译成磁盘文件 + 起点。
+
+    手机端的 `MotionEncoder` 没有 ffmpeg，靠 MediaCodec 自己解码原声；它需要知道
+    每段素材的**本地文件**和在成片里的**起始秒**。页面只给 URL 和窗口位置，
+    这里做 URL→路径的映射与白名单校验，顺便丢掉图片段（dur=0）、越界和丢文件的。
+
+    返回 `items: [{file, at, dur}]`；空列表是正常情况（没加视频素材 / 导出失败），
+    原生侧据此退回原来的无音轨编码。
+    """
+    run = str(run or "")
+    if not _RUN_RE.fullmatch(run):
+        return {"ok": False, "error": "run 不合法"}
+    f = OUT / "_frames" / run / "_timeline.json"
+    if not f.is_file():
+        return {"ok": True, "items": [], "total": 0}
+    try:
+        rows = json.loads(f.read_text("utf-8"))
+    except (OSError, ValueError) as e:
+        return {"ok": False, "error": f"时间轴读不出来：{e}"}
+    items: list[dict] = []
+    for w in rows if isinstance(rows, list) else []:
+        if not isinstance(w, dict):
+            continue
+        try:
+            dur = float(w.get("dur") or 0)
+        except (TypeError, ValueError):
+            continue
+        if dur <= 0:
+            continue                     # 图片素材没有音轨
+        p = _audio_local(str(w.get("file") or w.get("src") or ""))
+        if p is None:
+            continue
+        try:
+            at = max(0.0, float(w.get("a") or 0) + float(w.get("lead") or 0))
+        except (TypeError, ValueError):
+            at = 0.0
+        items.append({"file": str(p), "at": round(at, 3), "dur": round(dur, 3)})
+    items.sort(key=lambda x: x["at"])
+    return {"ok": True, "items": items, "total": len(items)}
 
 
 def motion_cleanup(run: str) -> dict:

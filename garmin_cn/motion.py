@@ -350,6 +350,10 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
             x, y = _xy_at(rt, pts, g["t"])
             item = {
                 "src": str(Path(src).resolve()),
+                # 同源 URL 只给页面看；混原声时原生编解码器要的是磁盘路径。
+                # `web=True` 会把 src 改成 /data/...，这个字段必须原样留着，
+                # 否则手机上 `/__timeline` 回传的 src 是 URL，MediaExtractor 打不开。
+                "local": str(Path(src).resolve()),
                 "kind": kind,
                 "w": vw, "h": vh,
                 "dur": round(float(pick["dur"]), 2), "name": pick["name"],
@@ -1162,6 +1166,9 @@ async function runExport() {
       dur: (w.clip && w.clip.kind !== 'image') ? w.clip.dur : 0,
       lead: w.clip ? (w.clip.lead || 0) : 0,
       src: (w.clip && w.clip.kind !== 'image') ? w.clip.src : '',
+      // 磁盘绝对路径：桌面 ffmpeg 与手机 MediaCodec 都从它读原声。
+      // src 在 App 里是 /data/... 的同源 URL，只能给 WebView，不能拿去解码。
+      file: (w.clip && w.clip.kind !== 'image') ? (w.clip.local || w.clip.src) : '',
     }));
     await fetch('/__timeline?run=' + run, { method: 'POST', body: JSON.stringify(rows) });
   } catch (e) { /* 没有视频就不用报 */ }

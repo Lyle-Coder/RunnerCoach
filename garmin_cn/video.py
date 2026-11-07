@@ -297,14 +297,18 @@ def sweep_profiles(log=print) -> None:
 
 
 def _clip_audio(timeline: Path) -> list[tuple[str, float, float]]:
-    """从页面回传的时间轴里挑出有音轨可用的片段：(文件, 开始秒, 自身时长)。"""
+    """从页面回传的时间轴里挑出有音轨可用的片段：(文件, 开始秒, 自身时长)。
+
+    优先用 `file`（磁盘绝对路径）：`src` 在 App 里是 `/data/...` 同源 URL，
+    ffmpeg 打不开。老页面没回传 `file` 时再退回 `src`。
+    """
     try:
         rows = json.loads(Path(timeline).read_text("utf-8"))
     except (OSError, ValueError):
         return []
     out = []
     for w in rows if isinstance(rows, list) else []:
-        src = str(w.get("src") or "")
+        src = str(w.get("file") or w.get("src") or "")
         dur = float(w.get("dur") or 0)
         if not src or dur <= 0 or not Path(src).exists():
             continue
