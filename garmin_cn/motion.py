@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -59,6 +60,7 @@ def _web_url(path: str) -> str:
 # 静态图按 540×960 请求 + scale=2 → 1080×1920，与画布 1:1
 BASE_W, BASE_H = 540, 960
 PAD = 44                 # 取景内边距（BASE 坐标系）
+MOTION_REV = 2           # rev2：缓存键纳入取景指纹，杜绝串档（见 ensure_basemap）
 ROOT = Path(__file__).resolve().parent.parent
 ACCENT = "#34D399"       # 与一图流同一支绿
 INK = "#0B0F14"
@@ -89,7 +91,7 @@ def meta_of(track: list[list[float]]) -> dict:
     lons = [p[0] for p in pts]
     lats = [p[1] for p in pts]
     return {
-        "fit": "motion", "rev": 1,
+        "fit": "motion", "rev": MOTION_REV,
         "center": [round((min(lons) + max(lons)) / 2, 6),
                    round((min(lats) + max(lats)) / 2, 6)],
         "zoom": _fit_zoom(track), "w": BASE_W, "h": BASE_H, "s": 1.0,
@@ -97,24 +99,49 @@ def meta_of(track: list[list[float]]) -> dict:
     }
 
 
+def _fit_key(meta: dict, npts: int) -> str:
+    """取景指纹：换成别的隐私档位 / 轨迹更新 / 取景算法改版，都必须换底图。
+
+    以前缓存文件名只有 `motion-<activity_id>.png`，而 App 默认档位是
+    `trim`（首尾各裁 200 m）。同一条活动先用「不脱敏」生成过一次，缓存的
+    就是**完整轨迹**的 zoom；之后用默认档生成，轨迹被裁短了，却仍拿那张
+    底图和它的 meta 来投影 —— 轨迹缩在画面一角，看起来就是「底图缩放错了」。
+    两种档位的取景中心、zoom 都不同，把它们编进文件名就再也不会串。
+    """
+    raw = (f"rev{meta['rev']}|{meta['center'][0]:.6f},{meta['center'][1]:.6f}"
+           f"|z{meta['zoom']}|{meta['w']}x{meta['h']}|pad{meta['pad']}"
+           f"|frame{meta['frame'][0]}x{meta['frame'][1]}|n{npts}")
+    return hashlib.sha1(raw.encode("ascii")).hexdigest()[:10]
+
+
 def ensure_basemap(track: list[list[float]], ident: str) -> dict | None:
-    """取底图（带缓存）。没有 Key 或接口失败返回 None，调用方回落到纯色底。"""
+    """取底图（带缓存）。没有 Key 或接口失败返回 None，调用方回落到纯色底。
+
+    缓存必须跟着**这次的取景**走：命中时逐个核对 center / zoom / 画幅，
+    旧版本留下的 `motion-<id>.png` 因为文件名不带指纹，自然不再被读取。
+    """
     if len(track) < 2:
         return None
-    cache = basemap.CACHE / f"motion-{ident}.png"
+    meta = meta_of(track)
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(ident))[:48]
+    cache = basemap.CACHE / f"motion-{safe_id}-{_fit_key(meta, len(track))}.png"
     meta_f = cache.with_name(cache.stem + ".json")
     if cache.exists() and cache.stat().st_size > 1024 and meta_f.exists():
         try:
-            meta = json.loads(meta_f.read_text("utf-8"))
-            if meta.get("fit") == "motion" and meta.get("rev") == 1 \
-                    and meta.get("frame") == [W, H]:
-                return {"png": cache, "meta": meta}
+            old = json.loads(meta_f.read_text("utf-8"))
+            same = (old.get("fit") == "motion" and old.get("rev") == MOTION_REV
+                    and old.get("frame") == meta["frame"]
+                    and old.get("center") == meta["center"]
+                    and old.get("zoom") == meta["zoom"]
+                    and old.get("w") == meta["w"] and old.get("h") == meta["h"]
+                    and old.get("pad") == meta["pad"])
+            if same:
+                return {"png": cache, "meta": old}
         except (OSError, ValueError):
             pass
     k = basemap.key()
     if not k:
         return None
-    meta = meta_of(track)
     meta["region"] = basemap.regeo(meta["center"][1], meta["center"][0])
     import urllib.request
 

@@ -201,6 +201,43 @@ def time_from_name(name: str) -> int | None:
     return int(utc.replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
 
 
+def _scan_moov(path: Path, size: int):
+    """顶层 box 顺序扫描，兜住 moov 落在文件中段的视频。
+
+    手机拍的长片、分片录制的 mp4 常把 moov 放在 mdat 之间；只读文件头 1 MB
+    和文件尾 8 MB 会直接判成「读不到 moov」，于是明明有拍摄时间也显示没有。
+    这里只按每个顶层 box 的 8/16 字节头 seek，找到 moov 才读它的载荷。
+    """
+    try:
+        with path.open("rb") as f:
+            off = 0
+            while off + 8 <= size:
+                f.seek(off)
+                hdr = f.read(16)
+                if len(hdr) < 8:
+                    return None
+                n = int.from_bytes(hdr[:4], "big")
+                typ = hdr[4:8].decode("latin-1", "replace")
+                h = 8
+                if n == 1:
+                    if len(hdr) < 16:
+                        return None
+                    n = int.from_bytes(hdr[8:16], "big")
+                    h = 16
+                elif n == 0:
+                    n = size - off
+                if n < h or off + n > size:
+                    return None
+                if typ == "moov":
+                    f.seek(off + h)
+                    buf = f.read(n - h)
+                    return buf, (0, len(buf)), off + h
+                off += n
+    except OSError:
+        return None
+    return None
+
+
 def _moov_view(path: Path):
     """返回 `(buf, moov, base)`：buf 是内存片段，base 是它在文件里的起始偏移。
 
@@ -216,7 +253,9 @@ def _moov_view(path: Path):
         f.seek(max(0, size - 8 * 1024 * 1024))
         tail = f.read()
     moov = _walk(tail, 0, len(tail), "moov")
-    return (tail, moov, size - len(tail)) if moov else (b"", None, 0)
+    if moov:
+        return tail, moov, size - len(tail)
+    return _scan_moov(path, size) or (b"", None, 0)
 
 
 def _time_from_tags(buf: bytes, moov: tuple[int, int], out: dict,

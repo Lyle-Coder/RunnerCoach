@@ -2439,6 +2439,17 @@ def cmd_selftest(args) -> int:
         assert "dst.absolutePath, displayName" in _kt_src, "登记时没把原始文件名传给后端"
         assert "无拍摄时间" in _kt_src, "素材列表没说明缺少拍摄时间"
         assert "重新读取时间" in _kt_src, "老素材没有补读入口"
+        # 真机上「相册显示有拍摄时间、App 却说没有」：时间只在 MediaStore /
+        # MediaMetadataRetriever 的日期标签里，裁完的 mp4 根本不带。必须在选片
+        # 那一刻取走，并作为最后一档兜底传进 clips_add。
+        assert "METADATA_KEY_DATE" in _kt_src, "没从视频解码器读拍摄日期"
+        assert '"datetaken"' in _kt_src, "没从相册读 DATE_TAKEN"
+        assert "src.absolutePath, takenMs" in _kt_src, "裁切前时间没传给 clips_add"
+        assert "clips_reprobe" in _kt_src, "「重新读取时间」没真的调后端重探"
+        assert "parseMediaDate" in _kt_src, "视频日期标签没解析"
+    assert '"clips_reprobe"' in _ap_src, "clips_reprobe 没注册进 App 接口白名单"
+    assert "taken_ms" in _ap_src and "t_native" in _ap_src, "原生兜底时间没落盘"
+    assert "def clips_reprobe" in _ap_src, "缺重探接口"
     _ph = next(iter((HOME / "data" / "photos").rglob("*.jpg")), None) if (
         HOME / "data" / "photos").is_dir() else None
     if _ph is not None:
@@ -2531,8 +2542,102 @@ def cmd_selftest(args) -> int:
                 _bad = AP.clips_list()["items"][0]
                 assert not _bad.get("t_utc") and _bad.get("t_why"), \
                     "补不回时间时必须给出原因"
+
+                # 5) 真机兜底：mp4 里完全没有时间，只有相册/解码器给的时间。
+                #    用户看到的「有拍摄时间」往往就是这一份，裁完就没了。
+                AP.CLIPS = Path(_td) / "native.json"
+                _d4 = _fresh("clip-native.mp4")
+                _r4 = AP.clips_add(str(_d4), "clip-native", 3.0, 1080, 1920,
+                                  "video", "", _src_t)
+                assert _r4["ok"] and _r4["t_utc"] == _src_t, "原生兜底时间没被采用"
+                assert _r4["t_source"] == "相册/视频日期标签", _r4["t_source"]
+                _it4 = AP.clips_list()["items"][0]
+                assert _it4["t_utc"] == _src_t and _it4["t_native"] == _src_t, \
+                    "原生兜底时间没存进记录"
+                assert _CL.probe(_d4, name_hint="x.mp4").get("t_utc") == _src_t, \
+                    "兜底时间没写回成品"
+                assert AP._norm_taken_ms(_src_t / 1000) == _src_t, "秒级时间没换算"
+                assert AP._norm_taken_ms(0) == 0 and AP._norm_taken_ms(1) == 0, \
+                    "非法时间没挡住（会把加入时间当拍摄时间）"
+
+                # 6) 「重新读取时间」：记录里存了兜底时间，重探要真能补回来
+                _d5 = _fresh("clip-reprobe.mp4")
+                AP.CLIPS.write_text(json.dumps({"items": [{
+                    "id": "n1", "path": str(_d5), "name": "clip-reprobe",
+                    "kind": "video", "dur": 3.0, "t_utc": None,
+                    "t_native": _src_t}]}), encoding="utf-8")
+                _rr = AP.clips_reprobe("n1")
+                assert _rr["ok"] and _rr["t_utc"] == _src_t, _rr
+                assert _CL.probe(_d5, name_hint="x.mp4").get("t_utc") == _src_t, \
+                    "重探没把时间写回成品"
+                assert not AP.clips_reprobe("missing")["ok"]
         finally:
             AP.CLIPS = _old_clips
+
+    # 7) moov 落在文件中段的视频：head 1 MB / tail 8 MB 都够不着，必须靠顶层
+    #    box 扫描。这也是真机「原片有拍摄时间、导入后却读不到」的一类根因。
+    with _tf.TemporaryDirectory() as _td2:
+        def _box(typ, payload):
+            return (8 + len(payload)).to_bytes(4, "big") + typ.encode("ascii") + payload
+
+        _secs = int((dt.datetime(2026, 11, 7, 10, 0, tzinfo=dt.timezone.utc)
+                     - _CL.EPOCH_1904).total_seconds())
+        _mvhd = (b"\0" * 4 + _secs.to_bytes(4, "big") + _secs.to_bytes(4, "big")
+                 + (1000).to_bytes(4, "big") + (3000).to_bytes(4, "big")
+                 + b"\0" * 80)
+        _mid = Path(_td2) / "mid-moov.mp4"
+        _mid.write_bytes(_box("ftyp", b"isom" + b"\0" * 4 + b"isom")
+                         + _box("mdat", b"\0" * (9 * 1024 * 1024))
+                         + _box("moov", _box("mvhd", _mvhd)))
+        _want = int((_CL.EPOCH_1904 + dt.timedelta(seconds=_secs)).timestamp() * 1000)
+        _info = _CL.probe(_mid, name_hint="x.mp4")
+        assert _info.get("t_utc") == _want and _info.get("t_source") == "mvhd", \
+            f"中段 moov 没读到拍摄时间：{_info.get('t_why')}"
+        assert _CL.stamp_creation(_mid, _want + 60000), "中段 moov 打标失败"
+        assert _CL.probe(_mid, name_hint="x.mp4").get("t_utc") == _want + 60000, \
+            "中段 moov 打标后没读回新时间"
+
+    # 8) 底图缓存必须跟着取景走：同一活动换隐私档位（轨迹被裁短）后，
+    #    绝不能复用旧底图，否则轨迹缩在画面一角，看着就是「底图缩放错」。
+    from garmin_cn import motion as _MOT2, basemap as _BM2
+    with _tf.TemporaryDirectory() as _td3:
+        _cache = Path(_td3) / "basemaps"
+        _cache.mkdir()
+        _fake_png = b"\x89PNG\r\n\x1a\n" + b"0" * 2048
+        _t_full = [[32.690, 109.000], [32.700, 109.010], [32.695, 109.005]]
+        _t_trim = [[32.695, 109.005], [32.696, 109.006]]
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return _fake_png
+
+        with _mock.patch.object(_BM2, "CACHE", _cache), \
+             _mock.patch.object(_BM2, "key", lambda: "fake"), \
+             _mock.patch.object(_BM2, "regeo", lambda *a, **k: ""), \
+             _mock.patch("urllib.request.urlopen", lambda *a, **k: _Resp()):
+            _a = _MOT2.ensure_basemap(_t_full, "act1")
+            _b = _MOT2.ensure_basemap(_t_trim, "act1")
+            assert _a and _b, "假底图没取到"
+            assert Path(_a["png"]) != Path(_b["png"]), \
+                "不同取景复用了同一张底图（串档）"
+            assert _a["meta"]["center"] != _b["meta"]["center"] or \
+                _a["meta"]["zoom"] != _b["meta"]["zoom"], "两档取景参数不该相同"
+            _a2 = _MOT2.ensure_basemap(_t_full, "act1")
+            assert Path(_a2["png"]) == Path(_a["png"]), "同档位没命中缓存"
+            # 旧版缓存（文件名不带指纹、rev=1）必须被彻底忽略
+            _legacy = _cache / "motion-act1.png"
+            _legacy.write_bytes(_fake_png)
+            _legacy.with_name("motion-act1.json").write_text(json.dumps({
+                "fit": "motion", "rev": 1, "frame": [1080, 1920],
+                "center": [0.0, 0.0], "zoom": 4}), encoding="utf-8")
+            _c = _MOT2.ensure_basemap(_t_full, "act1")
+            assert Path(_c["png"]).name != _legacy.name, "旧缓存没失效"
 
     class _FakeClient:
         def __init__(self, items):

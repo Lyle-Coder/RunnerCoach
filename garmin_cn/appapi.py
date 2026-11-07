@@ -122,7 +122,7 @@ _API = {
     "dashboard", "card_html", "act_card_html", "runs", "activities", "days_index",
     "plan", "set_amap_key", "start_server", "recent", "read_html",
     "motion_html", "motion_status", "motion_cleanup", "motion_audio",
-    "clips_list", "clips_add", "clips_remove",
+    "clips_list", "clips_add", "clips_remove", "clips_reprobe",
     "set_llm_config", "get_llm_config", "ai",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
@@ -1285,14 +1285,18 @@ def clips_list() -> dict:
             it["t_why"] = "文件已丢失"
             continue
         info = _probe_material(p, name_hint=str(it.get("name") or ""))
-        if it.get("t_utc") is None and info.get("t_utc"):
-            # 老版本登记时探不到时间。现在能从 udta / 原始文件名补回来的，
-            # 直接落盘，免得界面一直显示「加入」，回放也一直按数量均分。
-            key = str(it.get("id") or it.get("path") or "")
-            repairs[key] = (info["t_utc"], info.get("t_source") or "")
-            it["t_utc"], it["t_source"] = info["t_utc"], info.get("t_source") or ""
-        it["t_utc"] = _meta_val(it, info, "t_utc")
-        it["t_source"] = it.get("t_source") or info.get("t_source") or ""
+        native = _norm_taken_ms(it.get("t_native"))
+        had = bool(it.get("t_utc"))
+        # 老版本登记时探不到时间。现在能从 udta / 原始文件名 / 原生兜底
+        # 补回来的直接落盘，免得界面一直显示「加入」、回放一直按数量均分。
+        found = info.get("t_utc") or native
+        if not had and found:
+            src = (info.get("t_source") or "") if info.get("t_utc") else "相册/视频日期标签"
+            it["t_utc"], it["t_source"] = found, src
+            repairs[str(it.get("id") or it.get("path") or "")] = (found, src)
+        it["t_utc"] = _meta_val(it, info, "t_utc") or native or None
+        it["t_source"] = it.get("t_source") or info.get("t_source") \
+            or ("相册/视频日期标签" if native else "")
         it["t_why"] = "" if it.get("t_utc") else (info.get("t_why") or "读不到拍摄时间")
         it["w"] = it.get("w") or info.get("w") or 0
         it["h"] = it.get("h") or info.get("h") or 0
@@ -1304,10 +1308,28 @@ def clips_list() -> dict:
         raw = _clips_read()
         for x in raw:
             got = repairs.get(str(x.get("id") or x.get("path") or ""))
-            if got and x.get("t_utc") is None:
+            if got and not x.get("t_utc"):
                 x["t_utc"], x["t_source"] = got
         _clips_write(raw)
     return {"ok": True, "items": items, "dir": str(MEDIA)}
+
+
+def _norm_taken_ms(v) -> int:
+    """原生侧传来的拍摄时间统一成 UTC 毫秒。
+
+    各 ROM 的 `DATE_TAKEN` 有给毫秒的、也有给秒的；`MediaMetadataRetriever`
+    解析出来也是毫秒。范围外的（0、1970、加进来时的系统时间被误传）一律
+    丢掉——把「加入时间」当拍摄时间会直接把素材锚到错误的轨迹位置。
+    """
+    try:
+        n = int(float(v or 0))
+    except (TypeError, ValueError):
+        return 0
+    if 1_000_000_000 <= n < 100_000_000_000:
+        n *= 1000
+    if not (946_684_800_000 <= n < 4_102_444_800_000):   # 2000-01-01 ~ 2100-01-01
+        return 0
+    return n
 
 
 def _kind_of(p: Path) -> str:
@@ -1315,17 +1337,54 @@ def _kind_of(p: Path) -> str:
         ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif") else "video"
 
 
+def clips_reprobe(clip_id: str) -> dict:
+    """素材列表里的「重新读取时间」：成品、原始文件名、原生兜底时间再探一遍。
+
+    以前这个按钮只是把列表重刷一次，成品被改名成 `clip-…`、又没写回时间时，
+    点多少次都一样。现在会重新探测、把补到的时间写回成品的 mvhd 并落盘。
+    """
+    items = _clips_read()
+    for it in items:
+        if str(it.get("id") or "") != str(clip_id):
+            continue
+        p = Path(str(it.get("path") or ""))
+        if not p.is_file():
+            return {"ok": False, "error": "文件已丢失，删掉重新添加一次"}
+        info = _probe_material(p, name_hint=str(it.get("name") or ""))
+        native = _norm_taken_ms(it.get("t_native"))
+        t = info.get("t_utc") or it.get("t_utc") or native
+        if not t:
+            why = info.get("t_why") or "文件里没有拍摄时间，剪辑前的源文件也没留下"
+            it["t_why"] = why
+            _clips_write(items)
+            return {"ok": True, "t_utc": 0,
+                    "error": "还是读不到：" + why + "。请删掉这条，重新从相册添加一次"}
+        it["t_utc"] = int(t)
+        it["t_source"] = (info.get("t_source") or it.get("t_source")
+                          or "相册/剪辑前")
+        it["t_why"] = ""
+        if (it.get("kind") or _kind_of(p)) == "video":
+            from . import clip as clip_mod
+            clip_mod.stamp_creation(p, int(t))
+        _clips_write(items)
+        return {"ok": True, "t_utc": int(t), "t_source": it["t_source"]}
+    return {"ok": False, "error": "没有这段素材"}
+
+
 def clips_add(path: str, name: str = "", dur: float = 0,
               w: int = 0, h: int = 0, kind: str = "",
-              probe_from: str = "") -> dict:
+              probe_from: str = "", taken_ms: float = 0) -> dict:
     """登记一段素材。视频的剪辑由原生侧用 MediaExtractor/Muxer 无损完成，
     图片直接拷进来即可；这里只记录结果（文件应落在 `data/media/` 下）。
 
     `probe_from` 是**剪辑前的源文件**：视频一旦被 MediaMuxer 重封装，
     `mvhd.creation_time` 就没了（实测转码/重封装后的 mp4 一律读不到），
     只探成品会永远拿不到拍摄时间，回放里就只能按数量均匀铺开、位置不准。
-    所以在登记时就把源文件的拍摄时间/坐标读出来存进记录，
-    之后 `clips_list` / `_clips_for_motion` 一律优先用存下来的值。
+
+    `taken_ms` 是原生侧从**相册/视频解码器**读到的拍摄时间。真机上「相册里
+    明明显示拍摄时间、App 里却是无拍摄时间」多半就是这个：时间只存在于
+    MediaStore 的 DATE_TAKEN 或 MediaMetadataRetriever 的日期标签里，
+    拷进 cache 的 mp4、以及裁出来的成品都不带它。所以必须在一开始就取出来。
     """
     p = Path(str(path or ""))
     if not p.is_file():
@@ -1340,9 +1399,16 @@ def clips_add(path: str, name: str = "", dur: float = 0,
     src = Path(str(probe_from)) if probe_from else p
     meta = _probe_material(src, name_hint=str(name)) if src.is_file() else {}
     fallback = _probe_material(p, name_hint=str(name))
-    t_utc = meta.get("t_utc") if meta.get("t_utc") is not None else fallback.get("t_utc")
-    t_src = ((meta.get("t_source") or "") if meta.get("t_utc") else "") \
-        or fallback.get("t_source") or ""
+    native = _norm_taken_ms(taken_ms)
+    t_utc = meta.get("t_utc") or fallback.get("t_utc") or native or None
+    if meta.get("t_utc"):
+        t_src = meta.get("t_source") or "剪辑前源文件"
+    elif fallback.get("t_utc"):
+        t_src = fallback.get("t_source") or "成品文件"
+    elif native:
+        t_src = "相册/视频日期标签"
+    else:
+        t_src = ""
     t_why = "" if t_utc else (meta.get("t_why") or fallback.get("t_why") or "读不到拍摄时间")
     # 把时间写回成品的 mvhd：以后就算 clips.json 丢了，也还能从文件本身读回来。
     if t_utc and k == "video":
@@ -1353,12 +1419,15 @@ def clips_add(path: str, name: str = "", dur: float = 0,
         "kind": k,
         "dur": round(float(dur or 0), 2), "w": int(w or 0), "h": int(h or 0),
         "t_utc": t_utc, "t_source": t_src, "t_why": t_why,
+        # 原生兜底时间存下来：以后「重新读取时间」、clips.json 被重写都还在
+        "t_native": native or None,
         "lat": meta.get("lat") if meta.get("lat") is not None else fallback.get("lat"),
         "lon": meta.get("lon") if meta.get("lon") is not None else fallback.get("lon"),
         "added_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
     _clips_write(items)
-    return {"ok": True, "id": cid, "items": items}
+    return {"ok": True, "id": cid, "t_utc": t_utc, "t_source": t_src,
+            "items": items}
 
 
 def clips_remove(clip_id: str) -> dict:

@@ -13,6 +13,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.DocumentsContract
 import android.system.Os
 import android.util.Base64
 import android.text.InputType
@@ -42,6 +43,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -1033,7 +1035,18 @@ class MainActivity : Activity() {
                 .setItems(actions) { _, which ->
                     when {
                         which == 0 -> previewClip(o)
-                        noTime && which == 1 -> { toast("正在重新读取…"); showClips() }
+                        noTime && which == 1 -> {
+                            toast("正在重新读取…")
+                            thread {
+                                val r = apiCall("clips_reprobe", o.optString("id"))
+                                val got = r.optLong("t_utc", 0L)
+                                ui {
+                                    toast(if (got > 0) "已补到拍摄时间"
+                                    else r.optString("error", "还是读不到拍摄时间"))
+                                    showClips()
+                                }
+                            }
+                        }
                         noTime && which == 2 -> explainMissingTime(o)
                         else -> confirmDeleteClip(o.optString("id"), name)
                     }
@@ -1073,10 +1086,13 @@ class MainActivity : Activity() {
                 "$why\n\n" +
                     "影响：回放里这段只能按数量均匀铺开，位置不准。\n\n" +
                     "常见原因是视频被剪辑、转发或重封装后，拍摄时间" +
-                    "（mvhd.creation_time）被清掉了。这一版会在添加时把源视频的时间" +
-                    "写进成品，也会从相机文件名（VID_20261103_180036）兜底，所以：\n" +
+                    "（mvhd.creation_time）被清掉了。很多手机把拍摄时间只写在" +
+                    "相册数据库或视频日期标签里，mp4 文件本身并没有。\n" +
+                    "这一版在选片那一刻就把相册时间、视频日期标签、原始文件名" +
+                    "和剪辑前源文件一起取出来，登记时会写进成品，所以：\n" +
                     "· 新加的视频会自动显示「拍摄」；\n" +
-                    "· 老素材的时间在当初剪辑时就丢了，请删掉这条，重新从相册添加一次。")
+                    "· 老素材的时间在当初剪辑时就丢了，点「重新读取时间」再试一次，\n" +
+                    "  仍读不到就删掉这条，重新从相册添加。")
             .setPositiveButton("知道了", null)
             .show()
     }
@@ -1252,16 +1268,56 @@ class MainActivity : Activity() {
         }
     }
 
+    /** 视频自己写的拍摄日期：`20261107T185530.000Z` / `2026-11-07 18:55:30+0800`。 */
+    private fun parseMediaDate(s: String?): Long {
+        if (s.isNullOrBlank()) return 0L
+        val m = Regex("(\\d{4})[-/]?(\\d{2})[-/]?(\\d{2})[T ]?(\\d{2}):?(\\d{2}):?(\\d{2})")
+            .find(s) ?: return 0L
+        val (y, mo, d, h, mi, se) = m.destructured
+        val off = Regex("([+-])(\\d{2}):?(\\d{2})$").find(s.trim())
+        val tz = when {
+            s.trim().endsWith("Z", true) -> "UTC"
+            off != null -> "GMT${off.groupValues[1]}${off.groupValues[2]}:${off.groupValues[3]}"
+            else -> TimeZone.getDefault().id
+        }
+        return try {
+            Calendar.getInstance(TimeZone.getTimeZone(tz)).apply {
+                set(Calendar.YEAR, y.toInt())
+                set(Calendar.MONTH, mo.toInt() - 1)
+                set(Calendar.DAY_OF_MONTH, d.toInt())
+                set(Calendar.HOUR_OF_DAY, h.toInt())
+                set(Calendar.MINUTE, mi.toInt())
+                set(Calendar.SECOND, se.toInt())
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+        } catch (t: Throwable) {
+            0L
+        }
+    }
+
     /** 先把选中的视频拷进缓存（extractor 需要文件路径），再弹裁剪。 */
     private fun trimDialog(src: Uri) {
         busy(true)
         thread {
             // 原始文件名要留住：`clip-<时间戳>` 这种名字既看不出内容，
             // 也丢了相机写在名字里的拍摄时间（VID_20261103_180036）。
+            // 同时把相册的 DATE_TAKEN / 文件修改时间取出来：真机上很多视频的
+            // 拍摄时间只存在于 MediaStore，mp4 里的 mvhd 是 0，光探文件永远读不到。
+            var storeTakenMs = 0L
             val displayName = try {
                 contentResolver.query(src, null, null, null, null)?.use { c ->
-                    val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                    if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+                    if (!c.moveToFirst()) return@use null
+                    fun col(name: String): Long = try {
+                        val i = c.getColumnIndex(name)
+                        if (i >= 0 && !c.isNull(i)) c.getLong(i) else 0L
+                    } catch (t: Throwable) {
+                        0L
+                    }
+                    val dt = col("datetaken")
+                    val lm = col(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                    storeTakenMs = if (dt > 0) dt else lm
+                    val ni = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (ni >= 0) c.getString(ni) else null
                 }
             } catch (t: Throwable) {
                 null
@@ -1276,38 +1332,45 @@ class MainActivity : Activity() {
                 return@thread
             }
             var durMs = 0L
+            var metaDateMs = 0L
             val mmr = android.media.MediaMetadataRetriever()
             try {
                 mmr.setDataSource(tmp.absolutePath)
                 durMs = mmr.extractMetadata(
                     android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
                     ?.toLongOrNull() ?: 0L
+                metaDateMs = parseMediaDate(mmr.extractMetadata(
+                    android.media.MediaMetadataRetriever.METADATA_KEY_DATE))
             } catch (t: Throwable) {
                 Log.w(TAG, "read duration", t)
             } finally {
                 try { mmr.release() } catch (_: Throwable) {}
             }
+            // 视频自己的日期标签 > 相册 DATE_TAKEN > 文件修改时间。
+            // DATE_ADDED 故意不用：那是「下载/加入媒体库」的时间，不是拍摄时间。
+            val takenMs = if (metaDateMs > 0) metaDateMs else storeTakenMs
             ui {
                 busy(false)
                 if (durMs < 1500) {
                     tmp.delete()
                     toast("这段视频太短（不足 1.5 秒）")
                 } else {
-                    showTrimUi(tmp, durMs, displayName)
+                    showTrimUi(tmp, durMs, displayName, takenMs)
                 }
             }
         }
     }
 
-    private fun showTrimUi(src: File, durMs: Long, displayName: String) {
+    private fun showTrimUi(src: File, durMs: Long, displayName: String, takenMs: Long) {
         // 预览 + 关键帧胶片条：光有两个滑块根本不知道第几秒拍的是什么，
         // 也没法知道落刀会不会被吸附到别处。见 ClipTrimDialog。
         ClipTrimDialog.show(this, src, durMs,
-            onPick = { s, e -> saveClip(src, s, e, displayName) },
+            onPick = { s, e -> saveClip(src, s, e, displayName, takenMs) },
             onCancel = { src.delete() })
     }
 
-    private fun saveClip(src: File, startMs: Long, endMs: Long, displayName: String) {
+    private fun saveClip(src: File, startMs: Long, endMs: Long,
+                         displayName: String, takenMs: Long) {
         busy(true)
         subtitle.text = "剪辑中…"
         thread {
@@ -1319,12 +1382,12 @@ class MainActivity : Activity() {
                 ui { busy(false); updateSubtitle(); toast("剪辑失败：${r.message}") }
                 return@thread
             }
-            // 关键：把**源文件**也传过去，让 Python 先读它的 mvhd 拍摄时间再登记。
-            // MediaMuxer 重封装会丢掉 creation_time，只探成品的话永远是「没有拍摄时间」，
-            // 回放里就只能按数量均匀铺开，位置不准。name 用相册里的原始文件名，
-            // 万一源片自己也没写 creation_time，还能从 VID_20261103_180036 兜出来。
+            // 关键：把**源文件**和**相册拍摄时间**都传过去。MediaMuxer 重封装会丢
+            // creation_time；不少手机把拍摄时间只写在 MediaStore / 解码器日期标签里，
+            // 裁完的成品和拷进 cache 的源片都读不出来，只能在选片这一刻取走。
+            // name 是相册原始文件名，最后还能从 VID_20261103_180036 兜一层。
             val add = apiCall("clips_add", dst.absolutePath, displayName,
-                r.durMs / 1000.0, r.width, r.height, "video", src.absolutePath)
+                r.durMs / 1000.0, r.width, r.height, "video", src.absolutePath, takenMs)
             src.delete()
             ui {
                 busy(false)
@@ -1333,7 +1396,8 @@ class MainActivity : Activity() {
                     // 实际落刀点可能比选定的早（吸附到关键帧），说出来免得以为剪错了
                     val drift = startMs - r.startMs
                     val extra = if (drift > 200) "，实际从 ${r.startMs / 1000.0} 秒开始" else ""
-                    toast("已加入素材（${r.durMs / 1000} 秒$extra）")
+                    val noTime = if (add.optLong("t_utc", 0L) <= 0L) "，⚠ 没读到拍摄时间" else ""
+                    toast("已加入素材（${r.durMs / 1000} 秒$extra）$noTime")
                     showClips()          // 回到列表，能立刻看到刚剪的那条
                 } else {
                     toast(add.optString("error", "登记失败"))
