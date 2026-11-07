@@ -2596,6 +2596,71 @@ def cmd_selftest(args) -> int:
         assert not _old.exists() and _new.exists() and _weird.exists(), \
             "清理误删了正在用的新 run 或非法命名目录"
         assert (_fr / "keep.txt").is_file(), "清理把普通文件也删了"
+    # ---- v45：底图视口自适应（放大裁切）+ 视频卡片黑屏频闪 ------------------
+    # 高德 zoom 只能是整数，`_fit_zoom` 选「刚好装得下」的那一档，于是某些
+    # 活动的轨迹会撑到画幅 90%（看着像底图被放大裁切），另一些只占 30%。
+    # 修法是底图位图与所有轨迹坐标共用同一组 (k,dx,dy) 仿射变换。
+    assert "def _view_fit" in _msrc and '"view": view' in _msrc, \
+        "底图与轨迹没有共用同一组视口变换"
+    assert "g.drawImage(im, 0, 0, nw, nh, V.dx, V.dy, W * V.k, H * V.k)" in _msrc, \
+        "bakeBase 没按 view 绘制底图，轨迹和路网会错开"
+    assert "g.fillStyle = '#0E131A'; g.fillRect(0, 0, W, H);" in _msrc, \
+        "视口缩小时画布边缘会露出纯黑"
+    assert 'pts = [(x * view["k"] + view["dx"], y * view["k"] + view["dy"])' in _msrc, \
+        "轨迹点没跟着底图做同一变换"
+    assert '"view": pl.get("view") or {}' in _ap_src, \
+        "App 拿不到取景参数，真机没法定位底图问题"
+    assert "view: D.view || null" in _msrc and "baseSize:" in _msrc, \
+        "诊断没回传视口参数与底图实际解码尺寸"
+    # 三种占比都要落到目标区间；变换必须是同一个仿射（距离比 = k）
+    for _bw, _bh, _label in ((0.84, 0.91, "放大裁切"),
+                             (0.30, 0.36, "缩在一角"),
+                             (0.59, 0.73, "正常")):
+        _pad = [(540 - 1080 * _bw / 2 + 1080 * _bw * i / 8,
+                 960 - 1920 * _bh / 2 + 1920 * _bh * i / 8)
+                for i in range(9)]
+        _v = MO._view_fit(_pad)
+        _after = [(x * _v["k"] + _v["dx"], y * _v["k"] + _v["dy"])
+                  for x, y in _pad]
+        _rw = (max(p[0] for p in _after) - min(p[0] for p in _after)) / 1080
+        _rh = (max(p[1] for p in _after) - min(p[1] for p in _after)) / 1920
+        assert _rw <= MO.VIEW_W + 0.01 and _rh <= MO.VIEW_H + 0.01, \
+            f"{_label}：变换后轨迹仍顶到边缘"
+        assert _rw >= MO.VIEW_W * 0.55 and _rh >= MO.VIEW_H * 0.55, \
+            f"{_label}：变换后轨迹还是缩在一角"
+        assert abs(abs(_after[1][0] - _after[0][0]) -
+                   abs(_pad[1][0] - _pad[0][0]) * _v["k"]) < 0.01, \
+            "底图与轨迹用的不是同一组变换"
+    # 视频：`seeked` 不代表新帧已解码，真机 WebView 会画出黑帧。
+    # 只有亮度达标的帧才更新缓存，黑帧复用上一张有效画面。
+    assert "const VLAST = new Map()" in _msrc and "function videoFrame(" in _msrc, \
+        "视频卡片没有黑帧探测与上一帧缓存"
+    assert "lit = sum > 24 * 24 * 3 * 8" in _msrc and "getImageData" in _msrc, \
+        "黑帧判据丢了"
+    assert "videoFrame(p.clip.src, v, w, h)" in _msrc, \
+        "drawPop 还在直接画 <video>，黑帧会闪出来"
+    assert "ctx.drawImage(v, left + pad" not in _msrc, \
+        "还留着直连 <video> 的绘制路径"
+    assert "VLAST.clear()" in _msrc and "lastClipSrc" in _msrc, \
+        "切换素材窗口没清缓存，会闪上一段的末帧"
+
+    # 黑帧语义模拟：亮帧更新、黑帧复用、切窗口清空
+    def _vframes(seq, switch_at=None):
+        cache, out = None, []
+        for i, lum in enumerate(seq):
+            if switch_at is not None and i == switch_at:
+                cache = None
+            if lum > 8:
+                cache = ("frame", i)
+            out.append(cache)
+        return out
+
+    _vf = [30, 0, 40, 0, 0]
+    _vgot = _vframes(_vf)
+    assert _vgot[1] == _vgot[0] and _vgot[3] == _vgot[2] == ("frame", 2), \
+        "黑帧没有复用上一张有效画面"
+    assert _vframes(_vf, switch_at=4)[4] is None, \
+        "切素材窗口没清缓存，第一帧会闪上一段的末帧"
     # 百分比序列：min 语义、单调、两端对齐、绝不假跳
     def _pct(r, e, total):
         return min(r, e) * 100 // max(1, total)

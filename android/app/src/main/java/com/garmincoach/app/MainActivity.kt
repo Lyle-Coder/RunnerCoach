@@ -1793,6 +1793,9 @@ class MainActivity : Activity() {
                 }
                 return@thread
             }
+            // 真机上排查底图缩放：k 是底图与轨迹共用的视口缩放，
+            // ratio 是变换前轨迹外框占画幅的比例（过大 = 旧版会顶到边缘）。
+            Log.i(TAG, "motion view=" + r.optJSONObject("view"))
             ui {
                 startMotionView(
                     r.optString("run"), r.optInt("frames"), r.optInt("fps", 24),

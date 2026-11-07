@@ -303,10 +303,16 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                 basemap.to_px(la, lo, meta)[1] * 2)
                for la, lo in zip(rt["lat"], rt["lon"])]
         gps = True
+        # 同一组变换也会在 JS 的 bakeBase 里作用到底图位图上，两者必须同源，
+        # 否则轨迹就会和路网错开。无底图时 _project 已排好版，不要动。
+        view = _view_fit(pts)
+        pts = [(x * view["k"] + view["dx"], y * view["k"] + view["dy"])
+               for x, y in pts]
     else:
         # 没底图：自己投影到画布，留出上下给文字
         pts = _project(rt, W, H)
         gps = False
+        view = {"k": 1.0, "dx": 0.0, "dy": 0.0, "ratio": [0.0, 0.0]}
 
     out_photos = []
     if photos:
@@ -411,6 +417,7 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
         "sub": " · ".join(x for x in [started,
                                       (bm or {}).get("meta", {}).get("region") or region] if x),
         "base": str(bm["png"].resolve()) if bm else "", "gps": gps,
+        "view": view,
         "root": str(ROOT),
         "t": rt["t"], "x": [round(p[0], 1) for p in pts],
         "y": [round(p[1], 1) for p in pts],
@@ -433,6 +440,34 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
             if p.get("clip"):
                 p["clip"]["src"] = _web_url(p["clip"]["src"])
     return pl
+
+
+# 视口自适应（v45）：高德静态图的 zoom 只能是整数，粒度是 2 倍。
+# `_fit_zoom` 选「刚好装得下整条轨迹」的那一档，于是轨迹外框会落在
+# 画幅的 50%~100% 之间：偏大的一边就**顶到甚至超出画面边缘**，看起来
+# 像「底图被放大裁切」；偏小的一边又缩在一角。两种都是同一件事。
+# 这里把底图和轨迹用**同一组**仿射变换一起缩放到目标占比并居中：
+# 变换同时作用于底图位图与所有轨迹/照片坐标，地理对齐一点不变。
+VIEW_W, VIEW_H = 0.66, 0.70     # 轨迹外框目标占画布宽 / 高的比例
+VIEW_CY = 0.53                  # 目标中心略低于正中，给顶部 HUD 让位
+VIEW_K_MIN, VIEW_K_MAX = 0.60, 1.50
+
+
+def _view_fit(pts: list[tuple[float, float]]) -> dict:
+    """算 (k, dx, dy)：`(x,y) -> (x*k+dx, y*k+dy)`，底图与轨迹一起用。"""
+    if len(pts) < 2:
+        return {"k": 1.0, "dx": 0.0, "dy": 0.0, "ratio": [0.0, 0.0]}
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    bw, bh = max(x1 - x0, 1.0), max(y1 - y0, 1.0)
+    k = min(W * VIEW_W / bw, H * VIEW_H / bh)
+    k = max(VIEW_K_MIN, min(VIEW_K_MAX, k))
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    tx, ty = W / 2, H * VIEW_CY
+    return {"k": round(k, 4),
+            "dx": round(tx - cx * k, 1), "dy": round(ty - cy * k, 1),
+            "ratio": [round(bw / W, 3), round(bh / H, 3)]}
 
 
 def _project(rt: dict, w: int, h: int) -> list[tuple[float, float]]:
@@ -688,12 +723,18 @@ let baseBaked = null;
 function bakeBase() {
   const im = IMG.get(D.base);
   if (!im) return;
+  const V = D.view || {k: 1, dx: 0, dy: 0};
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const g = c.getContext('2d');
-  // 高德静态图是浅底，压在深色看板上会抢主体，压暗到「看得到路名」就够
+  // 视口 k<1 时底图盖不满画布，先铺一层看板底色，边缘才不会露出纯黑
+  g.fillStyle = '#0E131A'; g.fillRect(0, 0, W, H);
+  // 高德静态图是浅底，压在深色看板上会抢主体，压暗到「看得到路名」就够。
+  // 9 参 drawImage：源是全图，目标按 view 变换；Python 侧的轨迹点已用
+  // 同一组 (k,dx,dy) 变换过，两者必须严格同源，否则路网和轨迹会错开。
   g.filter = 'brightness(.60) saturate(.72) contrast(1.04)';
-  g.drawImage(im, 0, 0, W, H);
+  const nw = im.naturalWidth || W, nh = im.naturalHeight || H;
+  g.drawImage(im, 0, 0, nw, nh, V.dx, V.dy, W * V.k, H * V.k);
   g.filter = 'none';
   g.fillStyle = 'rgba(9,13,19,.30)';
   g.fillRect(0, 0, W, H);
@@ -897,6 +938,37 @@ function ensureVideo(src) {
   return v;
 }
 
+// 真机 WebView 里 `seeked` 只代表定位完成，不代表这一帧已经解码好；
+// 直接 drawImage(video) 会画出黑帧，成片里就是「视频卡片黑屏频闪」。
+// 每帧先用 24×24 小画布探一下平均亮度，只有确实有画面才更新缓存；
+// 黑帧一律复用上一张有效画面 —— 最坏是短暂停住，绝不会闪黑。
+const VLAST = new Map();          // src -> {c, w, h}
+const VPROBE = document.createElement('canvas');
+VPROBE.width = 24; VPROBE.height = 24;
+const vpctx = VPROBE.getContext('2d', {willReadFrequently: true});
+function videoFrame(src, v, w, h) {
+  let lit = false;
+  try {
+    vpctx.drawImage(v, 0, 0, 24, 24);
+    const d = vpctx.getImageData(0, 0, 24, 24).data;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+    lit = sum > 24 * 24 * 3 * 8;   // 平均亮度 > 8/255 才算有画面
+  } catch (e) { lit = false; }
+  if (lit) {
+    let rec = VLAST.get(src);
+    if (!rec || rec.w !== w || rec.h !== h) {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      rec = {c: c, w: w, h: h};
+      VLAST.set(src, rec);
+    }
+    rec.c.getContext('2d').drawImage(v, 0, 0, w, h);
+  }
+  const rec = VLAST.get(src);
+  return rec ? rec.c : null;
+}
+
 function popLayout(p) {
   if (p.clip) {
     const c = p.clip;
@@ -978,11 +1050,10 @@ function drawPop(p, e) {
       else { ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h); }
     } else {
       const v = VIDS.get(p.clip.src);
-      if (v && v.readyState >= 2) {
-        ctx.drawImage(v, left + pad, top + pad, w, h);
-      } else {
-        ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h);
-      }
+      const frame = (v && v.readyState >= 2)
+        ? videoFrame(p.clip.src, v, w, h) : null;
+      if (frame) ctx.drawImage(frame, left + pad, top + pad, w, h);
+      else { ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h); }
     }
   } else {
     let x = left + pad;
@@ -1050,6 +1121,7 @@ function drawPop(p, e) {
 
 // 导出走"精确 seek"，播放走"让视频自己跑"——每帧都 seek 的话播放会卡成幻灯
 let videoDriven = false;
+let lastClipSrc = null;
 async function syncVideo(p) {
   for (const [src, v] of VIDS) {
     if (!p || !p.clip || p.clip.src !== src) { if (!v.paused) v.pause(); }
@@ -1141,6 +1213,10 @@ function drawFrame(playT) {
   drawHud(hd, rt);
   drawFoot(rt);
   const pop = popAt(playT);
+  // 换素材窗口（或退出窗口）时丢掉上一张缓存画面，否则新窗口第一帧
+  // 若是黑的，会闪一下上一段素材的末帧。播放与导出都会走这里。
+  const curClip = (pop.w && pop.w.clip) ? pop.w.clip.src : null;
+  if (curClip !== lastClipSrc) { VLAST.clear(); lastClipSrc = curClip; }
   if (videoDriven) driveVideo(pop.w);
   if (pop.w && pop.k > 0) drawPop(pop.w, smooth(pop.k));
 }
@@ -1259,9 +1335,14 @@ window.__motion = {
   // 照片/视频缺了只是那几处难看，不能因此整段不出片——之前把三者绑在一起，
   // 手机上底图 404 就表现为「一直 0 帧，页面也不报错」。
   window.__motion.ready = !!baseBaked;
+  const bim = IMG.get(D.base);
   window.__motion.diag = {
     base: !!baseBaked, missing: missing.length, missingOne: missing.slice(0, 3),
     clips: clips.length, vidOk: vidOk,
+    // 真机上「底图缩放错」时靠这两个数定位：view 是本次的视口变换，
+    // baseSize 是 WebView 实际解码出来的底图像素尺寸。
+    view: D.view || null,
+    baseSize: bim ? [bim.naturalWidth, bim.naturalHeight] : [0, 0],
     names: clips.filter(c => {
       const v = VIDS.get(c.src); return !v || v.readyState < 2;
     }).map(c => c.name).slice(0, 3),

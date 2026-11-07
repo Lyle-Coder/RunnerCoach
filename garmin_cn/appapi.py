@@ -1073,7 +1073,9 @@ def motion_html(activity_id: str, fps: int = 24, duration: int = 30,
                 "frames": max(1, int(round(total * fps))), "fps": fps,
                 "duration": round(total, 2), "play": dur,
                 "width": 1080, "height": 1920, "clips": len(clips),
-                "privacy": mode, "name": row.get("name") or "跑步回放"}
+                "privacy": mode, "name": row.get("name") or "跑步回放",
+                # 真机排查「底图缩放」用：App 会写进 Logcat
+                "view": pl.get("view") or {}}
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:
