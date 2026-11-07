@@ -1050,8 +1050,10 @@ def motion_html(activity_id: str, fps: int = 24, duration: int = 30,
         run = secrets.token_hex(6)
         out = OUT / f"motion-{aid}.html"
         clips = _clips_for_motion()
+        # web=True：App 里的播放器走 http，必须把底图/照片/视频换成本源 URL，
+        # 否则真机上绝对路径 404 → 页面 ready=false → 一帧都不推
         M.render(row, detail, None, out, duration=float(dur), clips=clips,
-                 clip_cache=HOME / "data" / "motion_cache")
+                 clip_cache=HOME / "data" / "motion_cache", web=True)
         return {"ok": True, "html": str(out), "run": run,
                 "frames": int(dur * fps), "fps": fps, "duration": dur,
                 "width": 1080, "height": 1920, "clips": len(clips),
@@ -1087,8 +1089,16 @@ def motion_status(run: str) -> dict:
     d = OUT / "_frames" / run
     if not d.is_dir():
         return {"ok": True, "frames": 0, "done": False, "dir": str(d)}
+    diag = {}
+    try:
+        f = d / "_diag.json"
+        if f.is_file():
+            diag = json.loads(f.read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        diag = {}
     return {"ok": True, "frames": len(list(d.glob("f_*.jpg"))),
-            "done": (d / "_done.json").is_file(), "dir": str(d)}
+            "done": (d / "_done.json").is_file(), "dir": str(d),
+            "diag": diag}
 
 
 def motion_cleanup(run: str) -> dict:

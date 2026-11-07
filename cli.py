@@ -2201,6 +2201,24 @@ def cmd_selftest(args) -> int:
                 _os.environ.pop("GARMIN_HOME", None)
             else:
                 _os.environ["GARMIN_HOME"] = _old
+    # 回放导出（手机端）：页面走 http，底图/照片必须是同源 URL。
+    # 真机绝对路径是 /data/user/0/<包名>/files/data/basemaps/x.png，
+    # 服务端白名单只认 /data/basemaps/x.png —— 不改写就 404，页面 ready
+    # 永远 false，导出静默停在 0 帧（这是踩过的坑，别再改回去）。
+    from garmin_cn import basemap as BM
+    from garmin_cn import motion as MO
+
+    _web = MO._web_url(str(BM.ROOT / "data" / "basemaps" / "_selftest.png"))
+    assert _web == "/data/basemaps/_selftest.png", _web
+    # 已经是同源路径的不再加工；私密文件（db/session）不转
+    assert MO._web_url("/data/basemaps/_selftest.png") == "/data/basemaps/_selftest.png"
+    assert MO._web_url(str(BM.ROOT / "data" / "session.json")) != "/data/session.json"
+    _msrc = Path(MO.__file__).read_text(encoding="utf-8")
+    # toURL 不能给已带前导 / 的路径再补一个（会变成 //data/... 协议相对 URL，
+    # 浏览器会去找主机名为 data 的地址，请求到不了本机服务）
+    assert "if (n.startsWith('/')) return n;" in _msrc, "toURL 的前导斜杠判断丢了"
+    assert "{ method: 'POST' }" in _msrc, "__done 必须用 POST 写完成标记"
+    assert "window.__motion.ready = !!baseBaked;" in _msrc, "ready 只该要求底图"
     assert HW._date({"date": ["not-a-date"]}, "date", "2026-11-06") == "2026-11-06"
     # 底图 Key 校验：太短的串直接拒，且不写盘
     _amap = _json.loads(AP.call("set_amap_key", _json.dumps(["short"])))

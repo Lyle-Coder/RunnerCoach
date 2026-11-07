@@ -202,6 +202,10 @@ class _Handler(SimpleHTTPRequestHandler):
                 (root / f"f_{i:05d}.jpg").write_bytes(body)
             elif u.path.startswith("/__timeline"):
                 (root / "_timeline.json").write_bytes(body or b"[]")
+            elif u.path.startswith("/__diag"):
+                # 页面自报「底图/照片/视频加载到哪一步」：导出卡住时
+                # 原生侧靠它给出具体原因，不用再猜
+                (root / "_diag.json").write_bytes(body or b"{}")
             else:
                 (root / "_done.json").write_text(
                     json.dumps({"from": (q.get("from") or ["0"])[0]}),
@@ -244,7 +248,8 @@ class _Handler(SimpleHTTPRequestHandler):
         """
         name = path[len("/data/"):]
         if not re.fullmatch(
-                r"(basemaps|media|motion_cache)/[A-Za-z0-9._-]+\.(png|jpg|jpeg|mp4|mov|m4v)",
+                r"(basemaps|media|motion_cache|thumbs)/"
+                r"[A-Za-z0-9._-]+\.(png|jpg|jpeg|mp4|mov|m4v)",
                 name):
             return self._json({"ok": False, "error": "不允许读取"}, 404)
         base = Path(getattr(self.server, "data_dir", self.directory))
@@ -294,7 +299,7 @@ class _Handler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         u = urlparse(self.path)
         # 回放视频：动画页 `?export=1` 会自己逐帧 POST 上来，这里只负责收。
-        if u.path.startswith(("/__frame", "/__done", "/__timeline")):
+        if u.path.startswith(("/__frame", "/__done", "/__timeline", "/__diag")):
             return self._frame_post(u)
         if not u.path.startswith("/ai/"):
             return self._json({"ok": False, "error": "不支持的接口"}, 404)

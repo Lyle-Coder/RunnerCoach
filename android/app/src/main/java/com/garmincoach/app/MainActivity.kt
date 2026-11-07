@@ -1466,7 +1466,9 @@ class MainActivity : Activity() {
         view.loadUrl(url)
         thread {
             var last = -1
-            val deadline = System.currentTimeMillis() + 10 * 60 * 1000
+            var fail: String? = null
+            val t0 = System.currentTimeMillis()
+            val deadline = t0 + 12 * 60 * 1000
             while (System.currentTimeMillis() < deadline) {
                 Thread.sleep(1000)
                 val st = apiCall("motion_status", run)
@@ -1475,7 +1477,23 @@ class MainActivity : Activity() {
                     last = n
                     ui { subtitle.text = "生成回放 $n/$frames 帧" }
                 }
-                if (n >= frames && st.optBoolean("done")) break
+                // 帧齐就走人。`done` 只作参考：它靠页面最后补一个 POST，
+                // 万一那一下丢了，死等 done 会白卡到超时。
+                if (n >= frames && n > 0) {
+                    Thread.sleep(400)
+                    break
+                }
+                val diag = st.optJSONObject("diag")
+                // 页面自报诊断：一直是 0 帧时直接把原因说清楚，
+                // 别让人对着进度条猜是慢还是坏了
+                if (n == 0 && diag != null && !diag.optBoolean("base", true)) {
+                    fail = "底图没能加载：先到「我的 → 地图底图」配置高德 Key，再试一次"
+                    break
+                }
+                if (n == 0 && System.currentTimeMillis() - t0 > 30_000 && diag == null) {
+                    fail = "播放页没有开始渲染（WebView 未就绪），请重试"
+                    break
+                }
             }
             ui {
                 try {
@@ -1484,7 +1502,19 @@ class MainActivity : Activity() {
                     Log.w(TAG, "remove motion view", t)
                 }
                 view.destroy()
-                encodeMotion(run, fps, title)
+                if (fail != null) {
+                    busy(false)
+                    updateSubtitle()
+                    val got = apiCall("motion_status", run).optInt("frames")
+                    if (got == 0) {
+                        apiCall("motion_cleanup", run)
+                        toast(fail)
+                    } else {
+                        encodeMotion(run, fps, title)
+                    }
+                } else {
+                    encodeMotion(run, fps, title)
+                }
             }
         }
     }

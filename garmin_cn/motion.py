@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -32,6 +33,29 @@ from . import basemap, clip as clip_mod, photo as photo_mod, route as route_mod
 from .metrics import num
 
 W, H = 1080, 1920
+
+# `data/` 下能通过 http 放行的子目录（与 serve._data 的白名单保持一致）
+_WEB_RE = re.compile(r"(basemaps|media|motion_cache|thumbs)/"
+                     r"[A-Za-z0-9._-]+\.(png|jpg|jpeg|mp4|mov|m4v)")
+
+
+def _web_url(path: str) -> str:
+    """本机绝对路径 → 同源 URL；不在 `data/` 下就原样返回。
+
+    桌面用 file:// 打开播放器，绝对路径能直接加载；但 App 里页面是
+    `http://127.0.0.1:port/xxx.html`，绝对路径会被当成 URL 路径——
+    真机上 `base` 是 `/data/user/0/<包名>/files/data/basemaps/x.png`，
+    服务端白名单只认 `/data/basemaps/...`，于是 404，底图加载不出来，
+    页面 `ready` 永远是 false，导出直接静默返回（表现为一直 0 帧）。
+    """
+    if not path:
+        return path
+    try:
+        rel = Path(str(path)).resolve().relative_to(
+            (basemap.ROOT / "data").resolve()).as_posix()
+    except (ValueError, OSError):
+        return path
+    return "/data/" + rel if _WEB_RE.fullmatch(rel) else path
 # 静态图按 540×960 请求 + scale=2 → 1080×1920，与画布 1:1
 BASE_W, BASE_H = 540, 960
 PAD = 44                 # 取景内边距（BASE 坐标系）
@@ -179,8 +203,12 @@ CLIP_LEAD = 0.15        # 卡片淡入完成后才起播，避免"贴脸突然�
 def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                   *, clips: list[dict] | None = None, thumb_dir: Path | None = None,
                   clip_cache: Path | None = None, duration: float = 45.0,
-                  region: str = "") -> dict:
-    """把活动行 + 明细 + 照片/视频整理成播放器要的一份 JSON。"""
+                  region: str = "", web: bool = False) -> dict:
+    """把活动行 + 明细 + 照片/视频整理成播放器要的一份 JSON。
+
+    `web=True` 时把本机绝对路径换成 `/data/...` 同源 URL——App 里的播放器
+    走 http，绝对路径加载不出来（见 `_web_url`）。桌面 file:// 场景保持原样。
+    """
     rt = detail.get("route") or {}
     if not rt.get("n"):
         raise ValueError("这次活动没有轨迹数据（室内跑 / 无 GPS / 未重抓明细）")
@@ -277,7 +305,7 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
 
     s = route_mod.summary(rt)
     started = (row.get("start_ts") or "")[5:16]
-    return {
+    pl = {
         "w": W, "h": H,
         "title": row.get("name") or "跑步",
         "sub": " · ".join(x for x in [started,
@@ -293,6 +321,14 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
         "photos": out_photos, "clips": out_clips, "loose": loose,
         "accent": ACCENT,
     }
+    if web:
+        pl["base"] = _web_url(pl["base"])
+        for p in pl["photos"]:
+            for sh in p.get("shots") or []:
+                sh["src"] = _web_url(sh["src"])
+            if p.get("clip"):
+                p["clip"]["src"] = _web_url(p["clip"]["src"])
+    return pl
 
 
 def _project(rt: dict, w: int, h: int) -> list[tuple[float, float]]:
@@ -368,6 +404,11 @@ function toURL(p) {
   if (!p) return '';
   if (/^(https?|file|data):/i.test(p)) return p;
   const n = p.replace(/\\/g, '/');
+  // 已经是同源绝对路径（App 里后端会直接把 `data/` 下的资源改写成
+  // `/data/xxx.png`）。这里若再补一个 `/` 就变成 `//data/xxx.png`——
+  // 双斜杠是协议相对 URL，浏览器会去找名为 data 的主机，请求压根到不了
+  // 本机服务，底图永远加载不出来。
+  if (n.startsWith('/')) return n;
   if (!HTTP) return 'file:///' + n;
   const root = (D.root || '').replace(/\\/g, '/');
   return '/' + (n.toLowerCase().startsWith(root.toLowerCase()) ? n.slice(root.length + 1) : n);
@@ -1031,7 +1072,9 @@ async function runExport() {
     const blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.82));
     await fetch('/__frame?i=' + i + '&run=' + run, { method: 'POST', body: blob });
   }
-  await fetch('/__done?from=' + from + '&run=' + run);
+  // 必须是 POST：服务端只在 do_POST 里写完成标记，GET 会 404，
+  // 调用方就会一直等 done 而等不到
+  await fetch('/__done?from=' + from + '&run=' + run, { method: 'POST' });
 }
 
 window.__motion = {
@@ -1076,12 +1119,26 @@ window.__motion = {
   if (missing.length) console.warn('资源没加载全：' + missing.join(', '));
   if (clips.length && !vidOk) console.warn('视频没能解码：' + clips.map(c => c.name).join(', '));
 
-  // 资源不齐就不出帧：缺了底图会得到一整段黑画面，而帧数还是齐的，
-  // 导出端根本发现不了。宁可让这一路空着，让上层补渲。
-  window.__motion.ready = !!baseBaked && missing.length === 0 && vidOk;
+  // 只有底图是硬条件：缺了它整段都是黑画面，而帧数照样齐，导出端发现不了。
+  // 照片/视频缺了只是那几处难看，不能因此整段不出片——之前把三者绑在一起，
+  // 手机上底图 404 就表现为「一直 0 帧，页面也不报错」。
+  window.__motion.ready = !!baseBaked;
+  window.__motion.diag = {
+    base: !!baseBaked, missing: missing.length, missingOne: missing.slice(0, 3),
+    clips: clips.length, vidOk: vidOk,
+    names: clips.filter(c => {
+      const v = VIDS.get(c.src); return !v || v.readyState < 2;
+    }).map(c => c.name).slice(0, 3),
+  };
   drawFrame(0);
 
   if (QS.get('export') === '1') {
+    // 先把诊断回传：出了问题时原生能说清是底图、照片还是视频，
+    // 而不是让用户对着转圈猜。
+    try {
+      await fetch('/__diag?run=' + (QS.get('run') || ''), {
+        method: 'POST', body: JSON.stringify(window.__motion.diag) });
+    } catch (e) { /* 上报失败不影响导出 */ }
     if (!window.__motion.ready) return;
     runExport(); return;
   }
@@ -1109,12 +1166,12 @@ window.addEventListener('keydown', e => {
 def render(row: dict, detail: dict, photos: list[dict] | None,
            out_html: Path, *, duration: float = 45.0,
            thumb_dir: Path | None = None, clips: list[dict] | None = None,
-           clip_cache: Path | None = None) -> Path:
+           clip_cache: Path | None = None, web: bool = False) -> Path:
     """生成播放器 HTML。返回路径（同目录另存一份 payload 便于排查）。"""
     out_html = Path(out_html)
     out_html.parent.mkdir(parents=True, exist_ok=True)
     payload = build_payload(row, detail, photos, clips=clips, thumb_dir=thumb_dir,
-                            clip_cache=clip_cache, duration=duration)
+                            clip_cache=clip_cache, duration=duration, web=web)
     out_html.write_text(build_html(payload), encoding="utf-8")
     meta = {k: payload[k] for k in ("title", "sub", "dur", "dist", "play")}
     meta["photos"] = [{"t": p["t"], "d": p["d"],
