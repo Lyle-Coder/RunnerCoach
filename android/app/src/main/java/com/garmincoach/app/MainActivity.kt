@@ -45,6 +45,8 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -1823,17 +1825,27 @@ class MainActivity : Activity() {
         val cancel = AtomicBoolean(false)
         val encoded = AtomicBoolean(false)
         val detached = AtomicBoolean(false)
+        val rendered = AtomicBoolean(false)
+        val renderDone = AtomicInteger(0)
+        val encodeDone = AtomicInteger(0)
+        val startedAt = System.currentTimeMillis()
         val pctLock = Any()
         var lastPct = -1
-        // 渲染线程与编码线程都会报进度，取最大值保证顶部百分比只增不减
-        fun report(p: Int) {
-            val v = synchronized(pctLock) {
-                if (p <= lastPct) -1 else {
-                    lastPct = p
-                    p
+        // 并行流水线的真实完成度 = 渲染与编码里**较慢**的那条。
+        // v42 用 max(渲染 0~70, 编码 70~100)：编码编完第 0 帧就报 70，
+        // 进度条瞬间假跳到 70%，之后渲染侧所有上报都被单调保护吞掉，
+        // 只剩每 24~29 帧才涨 1% 的编码刻度。这里改成两条线程各报帧数，
+        // 统一按 min(r, e) 换算，绝不虚高。
+        fun report(force: Int? = null) {
+            val v = force ?: (minOf(renderDone.get(), encodeDone.get()) * 100L /
+                max(1, frames)).toInt().coerceIn(0, 100)
+            val show = synchronized(pctLock) {
+                if (v <= lastPct) -1 else {
+                    lastPct = v
+                    v
                 }
             }
-            if (v >= 0) ui { subtitle.text = "生成回放 $v%" }
+            if (show >= 0) ui { subtitle.text = "生成回放 $show%" }
         }
         fun detach() {
             if (!detached.compareAndSet(false, true)) return
@@ -1846,7 +1858,7 @@ class MainActivity : Activity() {
                 view.destroy()
             }
         }
-        report(0)
+        report()
         view.loadUrl(url)
 
         // 只管显示、诊断与兜底取消，不再决定什么时候开始编码
@@ -1859,8 +1871,16 @@ class MainActivity : Activity() {
                 Thread.sleep(700)
                 val st = apiCall("motion_status", run)
                 val n = st.optInt("frames")
-                report(min(70, (n * 70L / max(1, frames)).toInt()))
-                if (n >= frames && n > 0) detach()
+                renderDone.set(n)
+                report()
+                if (n >= frames && n > 0) {
+                    if (rendered.compareAndSet(false, true)) {
+                        Log.i(TAG, "motion render done: " +
+                            "${(System.currentTimeMillis() - startedAt) / 1000}s, " +
+                            "$n frames")
+                    }
+                    detach()
+                }
                 val diag = st.optJSONObject("diag")
                 // 页面自报诊断：一直是 0 帧时直接把原因说清楚，
                 // 别让人对着进度条猜是慢还是坏了
@@ -1888,9 +1908,10 @@ class MainActivity : Activity() {
 
         // 编码线程：与 WebView 渲染并行
         thread {
-            encodeMotion(run, fps, title, frames, cancel,
-                { p -> report(p) }, { detach() })
+            encodeMotion(run, fps, title, frames, cancel, startedAt,
+                { done -> encodeDone.set(done); report() }, { detach() })
             encoded.set(true)
+            report(100)          // 收尾强制到 100%，别卡在 99%
             detach()
             // 统一收尾：不管成功、失败、诊断取消还是超时，进度圈都得关掉
             ui { busy(false); updateSubtitle() }
@@ -1911,8 +1932,8 @@ class MainActivity : Activity() {
     }
 
     private fun encodeMotion(run: String, fps: Int, title: String, total: Int,
-                             cancel: AtomicBoolean, report: (Int) -> Unit,
-                             detach: () -> Unit) {
+                             cancel: AtomicBoolean, startedAt: Long,
+                             report: (Int) -> Unit, detach: () -> Unit) {
         val st = apiCall("motion_status", run)
         val dir = File(st.optString("dir"))
         // 页面是先 POST 时间轴、再推第 0 帧。等到时间轴和首帧都在，
@@ -1958,6 +1979,9 @@ class MainActivity : Activity() {
         apiCall("motion_cleanup", run)
         if (cancel.get()) return          // 诊断分支已经弹过具体原因
         detach()
+        val seconds = (System.currentTimeMillis() - startedAt) / 1000
+        Log.i(TAG, "motion export done: ${seconds}s, ${r.via} ${r.width}x${r.height}, " +
+            "ok=${r.ok}, audio=${r.audioSegments}, frames=$total, msg=${r.message}")
         ui {
             busy(false)
             updateSubtitle()
@@ -1972,7 +1996,7 @@ class MainActivity : Activity() {
             }
             val tail = if (r.audioSegments > 0)
                 "（含 ${r.audioSegments} 段素材原声）" else ""
-            toast("回放已存相册/GarminCoach$tail")
+            toast("回放已存相册/GarminCoach · ${seconds}s · ${r.via} 编码$tail")
             shareVideo(uri, "分享回放：$title")
         }
     }

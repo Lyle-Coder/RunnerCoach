@@ -2379,7 +2379,7 @@ def cmd_selftest(args) -> int:
         _main = (_kt_dir / "MainActivity.kt").read_text(encoding="utf-8")
         assert "createDecoderByType" in _ma, "没解码素材音轨"
         assert "MIMETYPE_AUDIO_AAC" in _ma, "没压成 AAC"
-        assert "muxer.addTrack(audio.format)" in _me, "音轨没加进 MP4"
+        assert "muxer.addTrack(it.format)" in _me, "音轨没在 muxer.start() 前加进 MP4"
         assert "writeAudio(info.presentationTimeUs, false)" in _me, "音视频没交织"
         assert 'apiCall("motion_audio", run)' in _main, "导出没取混音清单"
     # ---- 导出提速 + 顶部百分比 ------------------------------------------
@@ -2432,30 +2432,65 @@ def cmd_selftest(args) -> int:
             _sv.os.replace = _orig_replace
             _srv.shutdown()
             _srv.server_close()
-    # 编码器：流式帧源 / YUV 查表行批量 / 输入缓冲重试 / 进度回调
+    # 编码器：流式帧源 / GPU Surface 主路径 / CPU 自动降级 / 输入缓冲重试
     _me = (_kt_dir / "MotionEncoder.kt").read_text("utf-8")
     assert "fun interface FrameAt" in _me and "source.get(i)" in _me, \
         "编码没有惰性帧源，做不到边收边编"
-    assert "val scratch = Scratch(width, height)" in _me, \
-        "每帧还在重新分配 8MB 像素缓冲"
+    assert "val scratch = if (!useSurface) Scratch(width, height) else null" in _me, \
+        "每帧还在重新分配 8MB 像素缓冲，或 CPU 降级路径没了"
     assert "YR[(c shr 16) and 255]" in _me and "yb.put(s.y, 0, w)" in _me, \
-        "YUV 没改查表 + 按行批量 put"
+        "CPU 降级的 YUV 没改查表 + 按行批量 put"
     assert "val y0 = yb.position()" in _me, \
         "plane buffer 有 crop offset 时会整幅错行"
     assert "while (idx < 0 && spin++ < 200" in _me, \
         "输入缓冲拿不到时会丢帧（pts 不推进 → 成片变短）"
     assert "bmp.recycle()\n                    continue" not in _me, \
         "还留着丢帧的 continue"
-    assert "onProgress(70 + (i + 1) * 30 / count)" in _me, "编码段没报百分比"
+    assert "onProgress(i + 1)" in _me, "编码侧没上报已编码帧数"
+    assert "70 + (i + 1) * 30" not in _me, \
+        "还在用「70~100」的串行阶段百分比，并行时会假跳到 70%"
+    # GPU 路径：Surface 输入 + 自动降级
+    assert "codec.createInputSurface()" in _me, "没用 MediaCodec 输入 Surface"
+    assert "codec.signalEndOfInputStream()" in _me, "Surface 输入没送 EOS"
+    assert "for (useSurface in listOf(true, false))" in _me, \
+        "GPU 初始化失败时没有自动重建 codec 降级 CPU"
+    assert "COLOR_FormatSurface" in _me and "COLOR_FormatYUV420Flexible" in _me, \
+        "两种输入格式的 color format 没分别设置"
+    assert "val audio = try" in _me and "MotionAudio.build(segments, totalUs)" in _me, \
+        "GPU→CPU 降级会把音轨解码重做一遍或整段丢掉"
+    assert "val via = if (useSurface)" in _me and "mux.audioSegments, via" in _me, \
+        "结果里没标出走的是 GPU 还是 CPU"
+    assert "opts.inBitmap = it" in _me and "inMutable = true" in _me, \
+        "每帧还在重新分配 8MB 解码缓冲，720 帧会有 5GB+ 的 GC 压力"
+    assert "reusable?.recycle()" in _me, "复用的 Bitmap 最终没释放"
+    assert "GLUtils.texSubImage2D" in _me or "gl!!.draw(bmp, pts)" in _me, \
+        "GPU 路径没有逐帧提交画面"
+    _gl = (_kt_dir / "MotionGL.kt").read_text("utf-8")
+    assert "eglPresentationTimeANDROID(display, eglSurface, ptsUs * 1000L)" in _gl, \
+        "Surface 输入没按微秒→纳秒设帧时间戳，成片时长会错"
+    assert "GLUtils.texSubImage2D" in _gl and "GLUtils.texImage2D" in _gl, \
+        "纹理没分配/复用，每帧都在重新申请 GPU 内存"
+    assert "EGL14.eglSwapBuffers" in _gl, "没把帧提交给编码器"
+    assert "1.0 - aTex.y" in _gl, "Bitmap 上传后画面会上下颠倒"
+    assert "EGL_RECORDABLE_ANDROID" in _gl and "listOf(true, false)" in _gl, \
+        "不支持 recordable 扩展的设备会直接初始化失败"
+    assert "eglGetError()" in _gl or "glGetError()" in _gl, \
+        "GL/EGL 出错没有检查，会静默出花屏"
     # App：全程统一百分比、不显示帧数，且渲染与编码并行
     _main = (_kt_dir / "MainActivity.kt").read_text("utf-8")
-    assert 'subtitle.text = "生成回放 $v%"' in _main, "顶部没改成百分比"
+    assert 'subtitle.text = "生成回放 $show%"' in _main, "顶部没改成百分比"
     assert '生成回放 $n/$frames 帧' not in _main, "顶部还在显示帧数"
+    assert '生成回放 $v%' not in _main, "还留着旧的百分比变量"
     assert '"编码中…"' not in _main and '"混入原声并编码中…"' not in _main, \
         "还有阶段性文字覆盖百分比"
     assert 'subtitle.text = "生成回放 0%"' in _main, "准备阶段没接上百分比"
-    assert "report(min(70, (n * 70L / max(1, frames)).toInt()))" in _main, \
-        "渲染段没映射到 0~70%"
+    assert "renderDone.set(n)" in _main and "encodeDone.set(done)" in _main, \
+        "渲染/编码没有各自上报帧数"
+    assert "minOf(renderDone.get(), encodeDone.get())" in _main, \
+        "进度没取两阶段的短板，并行时会虚高"
+    assert "report(min(70," not in _main and "70L /" not in _main, \
+        "还留着 0~70 / 70~100 的固定阶段分段"
+    assert "report(100)" in _main, "编码收尾没有强制到 100%"
     assert "frameCount = total" in _main and "frameAt = MotionEncoder.FrameAt" in _main, \
         "没把总帧数与惰性帧源交给编码器"
     assert "cancelled = { cancel.get() }" in _main and "onProgress = report" in _main, \
@@ -2466,18 +2501,24 @@ def cmd_selftest(args) -> int:
         "没等时间轴与首帧就取音频清单，会漏掉原声"
     assert "import java.util.concurrent.atomic.AtomicBoolean" in _main, \
         "取消信号不是线程安全的"
+    assert "import java.util.concurrent.atomic.AtomicInteger" in _main, \
+        "双线程帧计数不是线程安全的"
     assert "encoded.set(true)" in _main and "ui { busy(false); updateSubtitle() }" in _main, \
         "超时/失败时进度圈可能一直转"
-    # 百分比序列：单调、两端对齐、不超过 100
-    def _render_pct(n, total):
-        return min(70, n * 70 // max(1, total))
-    def _encode_pct(i, count):
-        return 70 + (i + 1) * 30 // count
-    _seq = [_render_pct(n, 720) for n in range(0, 721, 24)]
-    _seq += [_encode_pct(i, 720) for i in range(0, 720, 4)] + [100]
+    assert "motion render done" in _main and "motion export done" in _main, \
+        "没有分项计时，真机上定位不了瓶颈"
+    assert "${r.via}" in _main and "startedAt" in _main, \
+        "完成提示没说明走 GPU/CPU 与总耗时"
+    # 百分比序列：min 语义、单调、两端对齐、绝不假跳
+    def _pct(r, e, total):
+        return min(r, e) * 100 // max(1, total)
+    _seq = [_pct(n, n, 720) for n in range(0, 721, 4)]
     assert _seq[0] == 0 and _seq[-1] == 100 and _seq == sorted(_seq), \
         "百分比会回退或到不了 100"
     assert all(0 <= p <= 100 for p in _seq), "百分比越界"
+    assert _pct(1, 1, 720) < 5, "第一帧就跳到 70%，进度条又虚高了"
+    assert _pct(700, 100, 720) == _pct(100, 100, 720), \
+        "渲染快、编码慢时没按较慢的一条显示"
     # 真机没法逐帧比对 YUV，先在 PC 上锁死「查表 + 2×2 展开」与原公式等价：
     # 任何符号写反、除法定点写错都会让整条视频偏色。
     import random as _random
