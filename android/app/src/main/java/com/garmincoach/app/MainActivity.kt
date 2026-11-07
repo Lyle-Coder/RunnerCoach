@@ -1175,7 +1175,9 @@ class MainActivity : Activity() {
             .setTitle("分享前脱敏")
             .setMessage(
                 "这张活动图含你的 GPS 轨迹，起终点可能暴露住址或常跑路线。\n" +
-                    "选好档位后才会生成图片并分享；原图会先存进相册。"
+                    "选好档位后才会生成图片并分享；原图会先存进相册。\n" +
+                    "配过地图 Key 时，「原图」和「裁剪」会铺地图底图（裁剪档只用中间段取景），" +
+                    "「隐藏轨迹」不显示地图。"
             )
             .setSingleChoiceItems(PRIVACY_LABELS, checked) { _, which -> checked = which }
             .setNegativeButton("取消", null)

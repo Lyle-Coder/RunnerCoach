@@ -877,18 +877,20 @@ def act_card_html(activity_id: str, title: str | None = None,
         from .actcard import H, TRK_CH, TRK_CW, W, build_html
 
         mode = PV.normalize(privacy)
-        _, mask_info = PV.mask_track(detail.get("track") or [], mode)
+        m_track, mask_info = PV.mask_track(detail.get("track") or [], mode)
 
-        # 底图：脱敏档一律不碰（取底图会把轨迹中心点发给高德）。App 的页面走
-        # http://127.0.0.1，`file://` 图片加载不了，所以用同源 URL 交给本机服务。
-        # 没 Key / 断网 / 接口失败时 ensure() 返回 None，静默回落矢量轨迹。
+        # 底图：`hide` 档完全不碰；`trim` 只裁首尾，用**裁剪后**的轨迹取景，
+        # 起终点区域不会出现在底图上。没有 Key / 断网 / 接口失败时静默回落矢量。
+        # 页面走 http://127.0.0.1，`file://` 图片加载不了，所以用同源 URL。
         bm = None
-        if mode == PV.MODE_NONE and os.environ.get("GARMIN_MAP", "1") != "0":
+        if mode != PV.MODE_HIDE and os.environ.get("GARMIN_MAP", "1") != "0":
             from . import basemap as BM
 
-            got = BM.ensure(detail.get("track") or [], TRK_CW, TRK_CH, aid)
+            ident = aid if mode == PV.MODE_NONE else f"{aid}-{mode}"
+            got = BM.ensure(m_track, TRK_CW, TRK_CH, ident)
             if got:
-                bm = {"png": f"/basemap/{Path(got['png']).name}", "meta": got["meta"]}
+                name = Path(got["png"]).name
+                bm = {"png": f"/basemap/{name}", "meta": got["meta"]}
         html = build_html(row, detail, None, bm, title, privacy=mode)
         # 档位不同就换文件名：别让脱敏版和原图互相覆盖，也便于事后自证
         suffix = "" if mode == PV.MODE_NONE else f"-{mode}"
