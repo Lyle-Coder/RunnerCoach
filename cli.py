@@ -2190,10 +2190,11 @@ def cmd_selftest(args) -> int:
             _got = PL.attach({}).get("plan") or {}
             assert _got.get("name") == "佳明日历", \
                 "attach() 要按 GARMIN_HOME 读快照，不能用 __file__ 推"
-            from garmin_cn.card import _week_rows
+            from garmin_cn.card import _week_cells
 
-            _rows = _week_rows(_got, "2026-11-07")
-            assert _rows.count('class="wrow') == 7, "一图流周列表应渲染 7 天"
+            _rows = _week_cells(_got, "2026-11-07")
+            assert _rows.count('class="wkd') == 7, "一图流周视图应横排 7 格"
+            assert '<div class="wk">' in _rows, "横排容器必须存在，不能退回竖排 7 行"
         finally:
             if _old is None:
                 _os.environ.pop("GARMIN_HOME", None)

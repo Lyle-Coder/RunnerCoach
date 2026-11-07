@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import html
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -93,34 +94,71 @@ def _bars(parts: list[dict]) -> str:
     return "".join(out)
 
 
-def _week_rows(plan: dict | None, today: str) -> str:
-    if not plan or not plan.get("available"):
-        return '<p class="empty">还没有读到教练计划</p>'
-    # 整周都排休息（计划没排训练 / 恢复周）时，7 行「休息」纯属占地方——
-    # 一屏高度是固定的，这 200 多像素要从今日训练和图里挤出来。
-    if all(d.get("rest") for d in (plan.get("week") or [])):
+def _cal_short(name: str) -> str:
+    """课名压短：去掉「W10 」周次与「周四」这类星期前缀。
+
+    一格只有 ~123px、18px 字号，只够两行；星期已经单独显示在格子上方，
+    课名里再带一遍会把「6×800m 间歇」挤成第三行被裁掉。
+    """
+    s = re.sub(r"^W\d+\s+", "", str(name or "")).strip()
+    s = re.sub(r"^周[一二三四五六日天]\s*", "", s).strip()
+    return s or "训练"
+
+
+def _cal_sub(item: dict, more: int = 1) -> str:
+    """一格里的副标题：距离 · 时长（同一天多节课时补 +N）。"""
+    bits = []
+    km = item.get("km")
+    if km:
+        bits.append(f"{km:g} km")
+    mins = item.get("minutes")
+    if mins:
+        bits.append(f"{mins}′")
+    if more > 1:
+        bits.append(f"+{more - 1}")
+    return " · ".join(bits)
+
+
+def _week_cells(plan: dict | None, today: str,
+                done: dict | None = None) -> str:
+    """本周 7 天横排日历条，与 105K 备赛卡（`_race_week`）同一套版式。
+
+    以前这里是竖排 7 行（`wlist`），吃掉约 280px，直接把 1080×1920 的固定
+    画幅挤变形；横排只占一格高度，还能横向比出「哪天练、哪天休」。
+    数据来自佳明日历或教练计划，两者 `week` 结构相同。
+    """
+    week = (plan or {}).get("week") or []
+    if not week:
+        return '<p class="empty">还没有读到训练计划</p>'
+    if all(d.get("rest") for d in week):
         return ('<p class="empty" style="padding:4px 0">'
                 '本周计划均为休息日（教练未排训练）</p>')
-    rows = []
-    for d in plan.get("week") or []:
-        is_today = d["date"] == today
-        cls = "wrow today" if is_today else "wrow"
-        tag = '<b class="now">今天</b>' if is_today else ""
-        if d.get("rest"):
-            body = '<span class="rest">休息</span>'
+    done = done or {}
+    cells = []
+    for d in week:
+        date = str(d.get("date") or "")
+        is_today = date == today
+        items = [x for x in (d.get("items") or []) if isinstance(x, dict)]
+        if items:
+            name = _cal_short(items[0].get("name"))
+            sub = _cal_sub(items[0], len(items))
         else:
-            body = "".join(
-                f'<span class="wl">{esc(x.get("name") or "训练")}'
-                + (f' · {x["minutes"]}′' if x.get("minutes") else "")
-                + (f' · {esc(x["effect"])}' if x.get("effect") else "")
-                + "</span>"
-                for x in d["items"]
-            )
-        rows.append(
-            f'<div class="{cls}"><span class="wd">{esc(d["dow"])}</span>'
-            f'<span class="wbody">{body}</span>{tag}</div>'
-        )
-    return "".join(rows)
+            name, sub = "休", ""
+        act = done.get(date) or {}
+        if d.get("done") or (act.get("min") or 0) >= 5:
+            badge = '<div class="act ok">已完成</div>'
+        elif is_today:
+            badge = '<div class="act void">今天</div>'
+        elif date < today:
+            badge = '<div class="act miss">未练</div>'
+        else:
+            badge = '<div class="act void">—</div>'
+        cells.append(
+            f'<div class="wkd{" today" if is_today else ""}">'
+            f'<div class="d">{esc(d.get("dow") or "")}</div>'
+            f'<div class="plan">{esc(name)}</div>'
+            f'<div class="sub">{esc(sub)}</div>{badge}</div>')
+    return '<div class="wk">' + "".join(cells) + "</div>"
 
 
 def _race_week(day: dt.date, done: dict[str, dict] | None = None) -> str:
@@ -571,7 +609,7 @@ def build_html(res: dict, sync_at: str | None = None,
     else:
         rp_line = ""
         plan_title = f'<b>{esc(plan_name)}</b>' + (f' · {esc(phase)}' if phase else '')
-        week_body = f'<div class="wlist">{_week_rows(plan, res["date"])}</div>'
+        week_body = _week_cells(plan, res["date"], done_by_day)
 
     return f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width={W},initial-scale=1,viewport-fit=cover">
@@ -647,8 +685,10 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .wkd .d{{font-size:17px;color:#7F8A97}}
 .wkd.today .d{{color:#4FD6A6;font-weight:600}}
 .wkd .plan{{font-size:18px;color:#DDE5EE;font-weight:600;margin-top:4px;line-height:1.28;
-  min-height:38px;display:flex;align-items:center;justify-content:center}}
-.wkd .sub{{font-size:14px;color:#7F8A97;line-height:1.25;min-height:17px}}
+  min-height:38px;max-height:46px;overflow:hidden;
+  display:flex;align-items:center;justify-content:center}}
+.wkd .sub{{font-size:14px;color:#7F8A97;line-height:1.25;min-height:17px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
 .wkd .act{{margin-top:auto;font-size:15px;font-weight:600;border-radius:7px;
   padding:3px 0;margin-top:7px}}
 .wkd .act.ok{{background:rgba(79,214,166,.16);color:#4FD6A6}}
