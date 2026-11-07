@@ -2224,6 +2224,38 @@ def cmd_selftest(args) -> int:
     _amap = _json.loads(AP.call("set_amap_key", _json.dumps(["short"])))
     assert not _amap.get("ok") and "不完整" in (_amap.get("error") or "")
 
+    # ---- 素材裁剪（原生侧）：预览必须与结果一致 ----
+    # 裁剪界面（ClipTrimDialog）和剪辑器（ClipTrimmer）是配对的：
+    #   起点必须落在关键帧上，否则从 GOP 中间切过去开头花屏；
+    #   两条轨必须共用同一个时间原点，否则音画差零点几秒就错位。
+    # 这两条都是「改了看不出来、但结果就是不对」的坑，钉在自检里。
+    _kt = HOME / "android" / "app" / "src" / "main" / "java" / "com" / "garmincoach" / "app"
+    _trim_src = (_kt / "ClipTrimmer.kt").read_text(encoding="utf-8")
+    _dlg_src = (_kt / "ClipTrimDialog.kt").read_text(encoding="utf-8")
+    # 剪辑器：视频轨用 PREVIOUS_SYNC 找起点（对齐到关键帧）
+    assert "MediaExtractor.SEEK_TO_PREVIOUS_SYNC" in _trim_src, "起点没吸附关键帧"
+    # 时间原点统一：baseUs 算一次，所有轨共用，不能每条轨各算各的。
+    # 早期版本音频单独 seek 到 startMs，视频对齐到前一个关键帧，
+    # 两者差零点几秒 → 音画错位（不修就是「剪出来声音和画对不上」）。
+    assert "val baseUs =" in _trim_src, "缺少统一时间原点 baseUs"
+    # 轨道循环里的那次 seek（最后一次）必须用 baseUs，不能各轨各算
+    _seek_blk = _trim_src[_trim_src.rindex("ex.seekTo("):][:200]
+    assert "baseUs," in _seek_blk, "轨道 seek 没统一用 baseUs（音画会错位）"
+    # 起点之前的样本要丢掉，否则减去 baseUs 会得到负时间戳
+    assert "if (pts >= baseUs)" in _trim_src, "没丢弃原点之前的样本"
+    # 裁剪界面：起点吸附关键帧、终点自由 —— 两端语义不同，不能一视同仁
+    assert "SAMPLE_FLAG_SYNC" in _dlg_src, "关键帧扫描没了"
+    assert "getScaledFrameAtTime" in _dlg_src, "胶片条缩略图没了"
+    # 吸附的判据不能被改成永假（那样等于没吸附，起点会落到 GOP 中间 → 开头花屏）
+    assert "if (!snapEnabled || keys.isEmpty()) return t" in _dlg_src, \
+        "起点没吸附关键帧（snap 的短路条件被改了）"
+    # 预览要有画面，不能又退回裸滑块
+    assert "TextureView" in _dlg_src and "MediaPlayer" in _dlg_src, "预览播放器没了"
+    # 排除注释后再查 SeekBar：注释里提到「之前的裸 SeekBar」是正常的
+    _dlg_code = "\n".join(
+        ln for ln in _dlg_src.splitlines() if not ln.strip().startswith(("*", "//", "/*")))
+    assert "SeekBar" not in _dlg_code, "不该再用裸 SeekBar（用户看不到画面）"
+
     class _FakeClient:
         def __init__(self, items):
             self.items = items
