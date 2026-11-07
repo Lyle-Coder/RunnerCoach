@@ -647,12 +647,14 @@ def card_html(date: str | None = None) -> dict:
             **export_spec(BG_CARD, trim=False)}
 
 
-def plan(refresh: bool = False, date: str | None = None) -> dict:
-    """佳明教练计划（Garmin Coach / FBT 自适应计划）。
+def plan(refresh: bool = False, date: str | None = None,
+         source: str = "auto") -> dict:
+    """训练安排（佳明日历优先，Garmin Coach 兜底）。
 
     默认读同步时落下的 `data/plan.json`——零请求，断网也能看。
-    `refresh=True` 才联网拉一次（2 个请求，失败不影响已有快照）。
-    高驰没有对外计划接口，这里只处理佳明；不传账号也不抛异常，统一走 ok/error。
+    `refresh=True` 才联网拉一次，失败不影响已有快照。
+    `source`：auto / calendar / coach，见 `plan.fetch()`。
+    高驰没有对外计划接口，这里只处理佳明。
     """
     from .plan import fetch, load
 
@@ -667,14 +669,14 @@ def plan(refresh: bool = False, date: str | None = None) -> dict:
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}", "kind": "auth"}
         try:
-            data = fetch(client, today, out_path=path)
+            data = fetch(client, today, out_path=path, source=source)
         except SessionExpired:
             return {"ok": False, "error": "佳明会话过期，请重新登录", "kind": "auth"}
         except Exception as e:
             data = {"available": False, "reason": f"{type(e).__name__}: {e}"}
     if not data or not data.get("available"):
         return {"ok": False,
-                "error": (data or {}).get("reason") or "当前没有激活的佳明训练计划",
+                "error": (data or {}).get("reason") or "当前没有可用的训练安排",
                 "empty": True}
     return {"ok": True, **data}
 

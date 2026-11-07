@@ -2130,6 +2130,29 @@ def cmd_selftest(args) -> int:
     assert 'class="back" href="/"' in pp
     assert "planRefresh" in pp
     assert ('class="plan-hero"' in pp) or ("还没读到训练计划" in pp)
+
+    # 训练计划：日历优先。workout/race 归一化成同一结构，activity 只用来打
+    # 「已完成」标记，note 等其它日历项不能当成课。
+    from garmin_cn import plan as PL
+
+    cal_items = [
+        {"itemType": "workout", "date": "2026-11-03", "title": "轻松跑",
+         "duration": 3000, "distance": 8000, "sportTypeKey": "running"},
+        {"itemType": "activity", "date": "2026-11-03", "title": "跑步"},
+        {"itemType": "workout", "date": "2026-11-07", "title": "节奏跑",
+         "duration": 2400, "distance": 7000},
+        {"itemType": "race", "date": "2026-11-15", "title": "半马",
+         "distance": 21097},
+        {"itemType": "note", "date": "2026-11-09", "title": "备注"},
+    ]
+    cal = PL.from_calendar(cal_items, "2026-11-07")
+    assert cal["source"] == "calendar" and cal["scheduled"], cal
+    assert cal["today"]["items"][0]["minutes"] == 40
+    assert cal["today"]["items"][0]["km"] == 7.0
+    assert cal["week"][1]["done"] is True, "周二有 activity，应标已完成"
+    assert all(not d["items"] for d in cal["week"] if d["date"] == "2026-11-09")
+    assert cal["next_date"] == "2026-11-15", cal["next_date"]
+    assert PL.from_calendar([], "2026-11-07")["scheduled"] is False
     assert HW._date({"date": ["not-a-date"]}, "date", "2026-11-06") == "2026-11-06"
 
     class _FakeClient:

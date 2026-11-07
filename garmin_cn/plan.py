@@ -1,9 +1,14 @@
-"""佳明教练计划（Garmin Run Coach / FBT 自适应）的读取与归一化。
+"""训练计划的读取与归一化。
 
-接口来源（国区 /gc-api）：
-  GET /trainingplan-service/trainingplan/active-plans?startDate=YYYY-MM-DD
-  GET /trainingplan-service/trainingplan/fbt-adaptive/{planId}   ← taskList 是逐日课表
+两条数据源，输出**同一个结构**，展示层不用区分：
+
+1. **佳明 Connect 日历**（首选）：`/calendar-service/year/{y}/month/{m}`
+   自己排进日历的课程（`workout`）、比赛（`race`）都在这里，已完成的
+   当天会有 `activity` 项。Garmin Coach 暂停时也能照常读到排课。
+2. **佳明教练计划**（兜底）：`/trainingplan-service/trainingplan/...`
+   只有启用 Garmin Coach / FBT 自适应计划时才有内容。
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -127,9 +132,152 @@ def normalize(detail: dict, today: str | None = None) -> dict:
     }
 
 
-def fetch(client, today: str | None = None, out_path: Path | None = None) -> dict:
-    """拉一次当前计划。取不到就返回 available=False，不抛异常。"""
+def _num(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _cal_item(it: dict) -> dict:
+    """把一个日历项折成课表行。字段名各地区略有差异，这里都兜一遍。"""
+    dur = _num(it.get("duration") or it.get("estimatedDurationInSecs")
+               or it.get("elapsedDuration"))
+    dist = _num(it.get("distance") or it.get("estimatedDistanceInMeters"))
+    sport_key = it.get("sportTypeKey") or (it.get("activityType") or {}).get("typeKey")
+    return {
+        "name": it.get("title") or it.get("workoutName") or "训练",
+        "detail": it.get("description") or "",
+        "sport": SPORT.get(sport_key),
+        "sport_key": sport_key,
+        "minutes": round(dur / 60) or None,
+        "km": round(dist / 1000, 1) or None,
+        "effect": EFFECT.get(it.get("trainingEffectLabel") or ""),
+        "rest": False,
+        "race": bool(it.get("isRace")) or str(it.get("itemType") or "").lower() == "race",
+        "workout_id": it.get("workoutId"),
+        "status": None,
+    }
+
+
+def from_calendar(items: list[dict] | None, today: str | None = None) -> dict:
+    """日历项 → 与 `normalize()` 相同结构的课表。
+
+    只取 `workout` / `race`（自己排进日历的课与比赛）；`activity` 是同一天已
+    完成的记录，只用来给当天打「已完成」标记，不再重复成一条课。
+    """
     today = today or dt.date.today().isoformat()
+    workouts: dict[str, list[dict]] = {}
+    done: set[str] = set()
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        day = _iso(it.get("date"))
+        if not day:
+            continue
+        kind = str(it.get("itemType") or "").lower()
+        if kind == "activity":
+            done.add(day)
+            continue
+        if kind not in ("workout", "race") and not it.get("workoutId"):
+            continue
+        workouts.setdefault(day, []).append(_cal_item(it))
+
+    d = dt.date.fromisoformat(today)
+    monday = d - dt.timedelta(days=d.weekday())
+    week_dates = [(monday + dt.timedelta(days=i)).isoformat() for i in range(7)]
+
+    week = []
+    for date in week_dates:
+        its = workouts.get(date, [])
+        week.append({"date": date, "dow": DOW[dt.date.fromisoformat(date).isoweekday()],
+                     "items": its, "rest": not its, "done": date in done})
+
+    today_items = workouts.get(today, [])
+    upcoming = sorted(k for k in workouts if k > today)
+    days = sorted(workouts)
+
+    return {
+        "available": True,
+        "scheduled": bool(workouts),
+        "source": "calendar",
+        "name": "佳明日历",
+        "description": "来自佳明 Connect 日历的排课（自己排入的课程与比赛）",
+        "level": None, "weeks": None, "per_week": None, "version": None,
+        "start": days[0] if days else today,
+        "end": days[-1] if days else today,
+        "status": None, "phase": None,
+        "today": {"date": today, "items": today_items,
+                  "rest": not today_items, "done": today in done},
+        "week": week,
+        "next_date": upcoming[0] if upcoming else None,
+        "next_items": workouts.get(upcoming[0], []) if upcoming else [],
+        "rest_days_in_week": sum(1 for w in week if w["rest"]),
+        "done_days": sorted(done),
+    }
+
+
+def _months(today: str, span: int = 62) -> list[tuple[int, int]]:
+    """从当月开始的月份列表：够覆盖未来 span 天即可（日历按月取）。"""
+    d = dt.date.fromisoformat(today)
+    cur = d.replace(day=1)
+    out: list[tuple[int, int]] = []
+    while (cur - d).days <= span and len(out) < 4:
+        out.append((cur.year, cur.month))
+        cur = (cur + dt.timedelta(days=32)).replace(day=1)
+    return out
+
+
+def fetch_calendar(client, today: str | None = None) -> dict:
+    """按月拉日历并归一化。一个排课都没有时返回 available=False。"""
+    today = today or dt.date.today().isoformat()
+    items: list[dict] = []
+    for year, month in _months(today):
+        try:
+            data = client.calendar_month(year, month)
+        except Exception as e:
+            if not items:
+                return {"available": False,
+                        "reason": f"日历读取失败：{type(e).__name__}: {e}"}
+            break
+        if isinstance(data, dict):
+            items.extend(data.get("calendarItems") or [])
+        elif isinstance(data, list):
+            items.extend(data)
+    if not items:
+        return {"available": False, "reason": "佳明日历里还没有排课"}
+    return from_calendar(items, today)
+
+
+def fetch(client, today: str | None = None, out_path: Path | None = None,
+          source: str = "auto") -> dict:
+    """拉一次训练安排。取不到就返回 available=False，不抛异常。
+
+    `source`：
+    * `auto`（默认）—— 先看日历，日历里没有排课再回落到 Garmin Coach 计划；
+    * `calendar` —— 只看日历；
+    * `coach` —— 只看教练计划。
+
+    之所以日历优先：Garmin Coach 暂停后 active-plans 是空的，但自己排进日历的
+    课程/比赛仍在，那才是实际执行的计划。
+    """
+    today = today or dt.date.today().isoformat()
+
+    if source in ("auto", "calendar"):
+        try:
+            cal = fetch_calendar(client, today)
+        except Exception as e:
+            cal = {"available": False, "reason": f"{type(e).__name__}: {e}"}
+        use = cal.get("scheduled") if source == "auto" else cal.get("available")
+        if use:
+            if out_path:
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(json.dumps(cal, ensure_ascii=False, indent=1),
+                                    encoding="utf-8")
+            return cal
+        if source == "calendar":
+            return cal
+
     try:
         plans = client.active_plans(today)
     except Exception as e:
@@ -144,6 +292,7 @@ def fetch(client, today: str | None = None, out_path: Path | None = None) -> dic
     except Exception:
         detail = None
     data = normalize(detail or plan, today)
+    data["source"] = "coach"
 
     if out_path:
         out_path.parent.mkdir(parents=True, exist_ok=True)

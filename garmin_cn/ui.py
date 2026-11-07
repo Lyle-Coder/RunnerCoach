@@ -130,6 +130,8 @@ input,select{font-family:inherit;font-size:12.5px;color:var(--ink);background:va
 .wrow.today .wd{color:var(--brand-ink)}
 .wrow .now{flex:0 0 auto;font-size:10.5px;color:#fff;background:var(--brand);
   border-radius:999px;padding:2px 8px}
+.wrow .done{flex:0 0 auto;font-size:10.5px;color:var(--brand-ink);background:var(--surface);
+  border:1px solid var(--line);border-radius:999px;padding:2px 8px}
 .wrow.rest .wb{color:var(--muted);font-weight:400}
 .kvline{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;
   color:var(--ink2);padding:7px 0;border-bottom:1px solid var(--line2)}
@@ -455,8 +457,10 @@ def _session(res: dict) -> str:
 
 
 def _plan_meta(item: dict) -> str:
-    """一条课表的副标题：时长 · 训练效果 · 运动类型。"""
+    """一条课表的副标题：距离 · 时长 · 训练效果 · 运动类型。"""
     bits = []
+    if item.get("km"):
+        bits.append(f'{item["km"]} km')
     if item.get("minutes"):
         bits.append(f'{item["minutes"]} 分钟')
     if item.get("effect"):
@@ -474,7 +478,10 @@ def _plan_items_line(items: list[dict]) -> str:
 
 def _today_plan_card(pl: dict) -> str:
     """今日课表卡片：有课就写课名 + 说明，没课就写休息和下一次。"""
-    items = (pl.get("today") or {}).get("items") or []
+    t = pl.get("today") or {}
+    items = t.get("items") or []
+    done = bool(t.get("done"))
+    badge = '<div class="n" style="color:var(--brand-ink)">已完成</div>' if done else ""
     if items:
         it = items[0]
         more = "".join(
@@ -482,12 +489,12 @@ def _today_plan_card(pl: dict) -> str:
             for x in items[1:])
         return (f'<div class="plan-hero"><div class="t">{esc(it.get("name") or "训练")}</div>'
                 + (f'<div class="d">{esc(it.get("detail"))}</div>' if it.get("detail") else "")
-                + f'<div class="n">{esc(_plan_meta(it))}</div>{more}</div>')
+                + f'<div class="n">{esc(_plan_meta(it))}</div>{badge}{more}</div>')
     nxt = pl.get("next_date")
     tip = (f'下一次：{esc(nxt)} · {esc(_plan_items_line(pl.get("next_items") or []))}'
            if nxt else "本周没有排课，按恢复度安排轻松活动")
     return (f'<div class="plan-hero"><div class="t">今天休息</div>'
-            f'<div class="d">{tip}</div></div>')
+            f'<div class="d">{tip}</div>{badge}</div>')
 
 
 def plan_page(qs: dict | None = None) -> str:
@@ -508,10 +515,16 @@ def plan_page(qs: dict | None = None) -> str:
                     sec("状态", body), chip("本机快照"), back=("返回今日", "/"))
 
     ph = r.get("phase") or {}
-    chips = (chip(str(r.get("level") or "未标注等级"), "ok") +
-             chip(f'{r.get("weeks") or "?"} 周') +
-             (chip(f'当前 {ph["label"]}') if ph.get("label") else "") +
-             (chip(f'每周约 {r["per_week"]} 次') if r.get("per_week") else ""))
+    if r.get("source") == "calendar":
+        chips = (chip("佳明日历", "ok") +
+                 chip(f'{r.get("start")} ~ {r.get("end")}') +
+                 chip(f'本周 {7 - (r.get("rest_days_in_week") or 0)} 练'))
+    else:
+        chips = (chip("教练计划", "ok") +
+                 (chip(str(r["level"])) if r.get("level") else "") +
+                 (chip(f'{r["weeks"]} 周') if r.get("weeks") else "") +
+                 (chip(f'当前 {ph["label"]}') if ph.get("label") else "") +
+                 (chip(f'每周约 {r["per_week"]} 次') if r.get("per_week") else ""))
 
     today_iso = (r.get("today") or {}).get("date")
     rows = ""
@@ -526,12 +539,18 @@ def plan_page(qs: dict | None = None) -> str:
             first = (d["items"] or [{}])[0]
             wb = (f'<span class="wb">{esc(first.get("name") or "训练")}'
                   f'<em>{esc(_plan_meta(first))}</em></span>')
-        tag = '<span class="now">今天</span>' if is_today else ""
+        if is_today:
+            tag = '<span class="now">今天</span>'
+        elif d.get("done"):
+            tag = '<span class="done">已完成</span>'
+        else:
+            tag = ""
         rows += f'<div class="{cls}"><span class="wd">{esc(d["dow"])}</span>{wb}{tag}</div>'
 
+    src_label = "佳明日历" if r.get("source") == "calendar" else (r.get("name") or "教练计划")
     info = ('<div class="card">'
-            f'<div class="kvline"><span>计划</span><b>{esc(r.get("name") or "—")}</b></div>'
-            f'<div class="kvline"><span>周期</span><b>{esc(r.get("start") or "—")}'
+            f'<div class="kvline"><span>来源</span><b>{esc(src_label)}</b></div>'
+            f'<div class="kvline"><span>覆盖</span><b>{esc(r.get("start") or "—")}'
             f' ~ {esc(r.get("end") or "—")}</b></div>'
             + (f'<div class="kvline"><span>当前阶段</span><b>{esc(ph.get("label"))}</b></div>'
                if ph.get("label") else "")

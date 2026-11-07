@@ -122,7 +122,7 @@ sync_range(start, end=None, ...) # 按日期区间补历史（最多 3 年），
 activities(start=None, end=None, types=None, limit=100, offset=0)
                                 # 只查本地库的历史活动，支持区间/类型/分页
 days_index(limit=400)           # 已有数据的日期清单，给日期选择器划范围
-plan(refresh=False)             # 佳明教练计划：默认读 plan.json 快照，refresh 联网拉一次
+plan(refresh=False)             # 训练安排：佳明日历优先、教练计划兜底；默认读快照，refresh 联网
 dashboard(date)                 # 出网页看板（历史日期也能出）
 card_html(date)                 # 出一图流 HTML（PNG 交给 WebView）
 act_card_html(id, privacy="none")  # 活动图 HTML：画布 1080×2250，成品 1080×1920
