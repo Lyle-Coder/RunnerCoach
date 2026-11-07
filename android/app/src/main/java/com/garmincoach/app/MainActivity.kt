@@ -1275,13 +1275,17 @@ class MainActivity : Activity() {
             val dst = File(File(filesDir, "data/media"),
                 "clip-" + System.currentTimeMillis() + ".mp4")
             val r = ClipTrimmer.trim(src, dst, startMs, endMs)
-            src.delete()
             if (!r.ok) {
+                src.delete()
                 ui { busy(false); updateSubtitle(); toast("剪辑失败：${r.message}") }
                 return@thread
             }
+            // 关键：把**源文件**也传过去，让 Python 先读它的 mvhd 拍摄时间再登记。
+            // MediaMuxer 重封装会丢掉 creation_time，只探成品的话永远是「没有拍摄时间」，
+            // 回放里就只能按数量均匀铺开，位置不准。
             val add = apiCall("clips_add", dst.absolutePath, dst.nameWithoutExtension,
-                r.durMs / 1000.0, r.width, r.height)
+                r.durMs / 1000.0, r.width, r.height, "video", src.absolutePath)
+            src.delete()
             ui {
                 busy(false)
                 updateSubtitle()

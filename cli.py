@@ -2285,7 +2285,7 @@ def cmd_selftest(args) -> int:
     assert "need.push(p.clip.src)" in _mo_src, "图片素材没进图片预加载队列"
     # 素材清单要够界面用：类型、文件是否还在、拍摄时间（列表要显示缩略图和时间）
     assert 'it["exists"] = p.is_file()' in _ap_src, "素材清单没标文件是否存在"
-    assert 'it["t_utc"] = info.get("t_utc")' in _ap_src, "素材清单没带拍摄时间"
+    assert 'it["t_utc"] = _meta_val(it, info, "t_utc")' in _ap_src, "素材清单没带拍摄时间（且应优先用存下来的）"
     assert '"t_source"' in _ap_src, "素材清单没带时间来源"
     _ph = next(iter((HOME / "data" / "photos").rglob("*.jpg")), None) if (
         HOME / "data" / "photos").is_dir() else None
@@ -2293,6 +2293,25 @@ def cmd_selftest(args) -> int:
         _mi = AP._probe_material(_ph)
         assert _mi["kind"] == "image", _mi
         assert _mi.get("t_utc"), f"图片素材没读出拍摄时间：{_ph}"
+    # 登记素材必须从**源文件**取拍摄时间：MediaMuxer 重封装会丢掉 mvhd.creation_time，
+    # 只探成品就永远没有时间，回放里只能按数量均匀铺开、位置不准。
+    _mcd = HOME / "data" / "motion_cache"
+    _mp4s = sorted(_mcd.glob("*.mp4")) if _mcd.is_dir() else []
+    _has_t = next((p for p in _mp4s if AP._probe_material(p).get("t_utc")), None)
+    _no_t = next((p for p in _mp4s if not AP._probe_material(p).get("t_utc")), None)
+    if _has_t is not None and _no_t is not None:
+        with _tf.TemporaryDirectory() as _td:
+            _old_clips = AP.CLIPS
+            AP.CLIPS = Path(_td) / "clips.json"
+            try:
+                AP.clips_add(str(_no_t), "旧式", 3.0, 1080, 1920, "video")
+                AP.clips_add(str(_no_t), "新式", 3.0, 1080, 1920, "video", str(_has_t))
+                _its = {x["name"]: x for x in AP.clips_list()["items"]}
+                assert not _its["旧式"].get("t_utc"), "样本选错了：成品本身就有时间"
+                assert _its["新式"].get("t_utc"), "登记时没从源文件继承拍摄时间"
+                assert _its["新式"].get("t_source") == "mvhd", _its["新式"].get("t_source")
+            finally:
+                AP.CLIPS = _old_clips
 
     class _FakeClient:
         def __init__(self, items):

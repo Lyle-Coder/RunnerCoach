@@ -1071,6 +1071,16 @@ def motion_html(activity_id: str, fps: int = 24, duration: int = 30,
 STILL_SEC = 3.0          # 图片素材在回放里停留多久
 
 
+def _meta_val(it: dict, info: dict, key: str):
+    """记录里存过就用存的，否则回落到现场探测。
+
+    登记时从源文件读到的拍摄时间比成品的更可信（重封装会丢 creation_time），
+    所以存下来的值优先。
+    """
+    v = it.get(key)
+    return v if v is not None else info.get(key)
+
+
 def _clips_for_motion() -> list[dict]:
     """素材（视频 / 图片）→ motion.build_payload 要的 shot 结构。
 
@@ -1086,7 +1096,7 @@ def _clips_for_motion() -> list[dict]:
         if not p.is_file():
             continue
         info = _probe_material(p)
-        kind = info.get("kind") or "video"
+        kind = it.get("kind") or info.get("kind") or "video"
         dur = float(it.get("dur") or 0)
         if dur <= 0:
             dur = STILL_SEC if kind == "image" else 3.0
@@ -1098,9 +1108,9 @@ def _clips_for_motion() -> list[dict]:
             "w": int(it.get("w") or info.get("w") or 1080),
             "h": int(it.get("h") or info.get("h") or 1920),
             "orientation": int(info.get("orientation") or 1),
-            "t_utc": info.get("t_utc"),
-            "lat": info.get("lat"),
-            "lon": info.get("lon"),
+            "t_utc": _meta_val(it, info, "t_utc"),
+            "lat": _meta_val(it, info, "lat"),
+            "lon": _meta_val(it, info, "lon"),
             "codec": info.get("codec") or "",
             "bytes": info.get("bytes") or 0,
         })
@@ -1179,8 +1189,8 @@ def clips_list() -> dict:
         if not it["exists"]:
             continue
         info = _probe_material(p)
-        it["t_utc"] = info.get("t_utc")
-        it["t_source"] = info.get("t_source") or ""
+        it["t_utc"] = _meta_val(it, info, "t_utc")
+        it["t_source"] = it.get("t_source") or info.get("t_source") or ""
         it["w"] = it.get("w") or info.get("w") or 0
         it["h"] = it.get("h") or info.get("h") or 0
         # 视频用文件的真实时长：登记时传的是剪辑结果，可能和时间轴差几十毫秒
@@ -1195,9 +1205,17 @@ def _kind_of(p: Path) -> str:
 
 
 def clips_add(path: str, name: str = "", dur: float = 0,
-              w: int = 0, h: int = 0, kind: str = "") -> dict:
+              w: int = 0, h: int = 0, kind: str = "",
+              probe_from: str = "") -> dict:
     """登记一段素材。视频的剪辑由原生侧用 MediaExtractor/Muxer 无损完成，
-    图片直接拷进来即可；这里只记录结果（文件应落在 `data/media/` 下）。"""
+    图片直接拷进来即可；这里只记录结果（文件应落在 `data/media/` 下）。
+
+    `probe_from` 是**剪辑前的源文件**：视频一旦被 MediaMuxer 重封装，
+    `mvhd.creation_time` 就没了（实测转码/重封装后的 mp4 一律读不到），
+    只探成品会永远拿不到拍摄时间，回放里就只能按数量均匀铺开、位置不准。
+    所以在登记时就把源文件的拍摄时间/坐标读出来存进记录，
+    之后 `clips_list` / `_clips_for_motion` 一律优先用存下来的值。
+    """
     p = Path(str(path or ""))
     if not p.is_file():
         return {"ok": False, "error": "素材文件不存在"}
@@ -1206,10 +1224,18 @@ def clips_add(path: str, name: str = "", dur: float = 0,
     k = kind or _kind_of(p)
     if k == "image" and dur <= 0:
         dur = STILL_SEC
+    # 源文件优先：它才带得住拍摄时间
+    src = Path(str(probe_from)) if probe_from else p
+    meta = _probe_material(src) if src.is_file() else {}
+    fallback = _probe_material(p)
     items.append({
         "id": cid, "path": str(p), "name": (name or p.stem)[:60],
         "kind": k,
         "dur": round(float(dur or 0), 2), "w": int(w or 0), "h": int(h or 0),
+        "t_utc": meta.get("t_utc") if meta.get("t_utc") is not None else fallback.get("t_utc"),
+        "t_source": meta.get("t_source") or fallback.get("t_source") or "",
+        "lat": meta.get("lat") if meta.get("lat") is not None else fallback.get("lat"),
+        "lon": meta.get("lon") if meta.get("lon") is not None else fallback.get("lon"),
         "added_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
     _clips_write(items)
