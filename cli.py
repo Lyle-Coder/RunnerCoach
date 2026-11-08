@@ -539,10 +539,107 @@ def cmd_act(args) -> int:
     return 0
 
 
+def cmd_race(args) -> int:
+    """赛事成绩：录入官方成绩、列出个人最好成绩、出赛后复盘图。"""
+    store = Store(DB)
+
+    # ---- 录入官方成绩 ----
+    if args.add:
+        date = args.date or dt.date.today().isoformat()
+        event = args.event or "比赛"
+        aid = args.id or ""
+        if not aid:
+            row = store.get_activity(date=date)
+            aid = row["activity_id"] if row else ""
+        rid = store.add_race_result(
+            date=date, event=event, bib=args.bib or "",
+            activity_id=aid, gun_s=args.gun, net_s=args.net,
+            distance_km=args.dist, target_s=args.target, note=args.note or "")
+        print(f"√ 已录入 {date} {event} 官方成绩（id={rid}）")
+        if args.net:
+            print(f"  净成绩 {_hms(args.net)}" + (f"｜枪声 {_hms(args.gun)}" if args.gun else ""))
+
+    # ---- 个人最好成绩 ----
+    if args.best or not (args.add or args.card):
+        pbs = store.personal_bests()
+        if not pbs:
+            print("· 还没有录入任何官方成绩（用 --add 录一场）")
+        else:
+            print("√ 个人最好成绩：")
+            for r in pbs:
+                t = r.get("net_s") or r.get("gun_s")
+                tgt = r.get("target_s")
+                gap = ""
+                if tgt and t:
+                    gap = f"　较目标 {t - tgt:+.0f} 秒"
+                print(f"  {r['date']} {r['event']}　{_hms(t)}"
+                      f"　({r.get('distance_km') or 0:.2f} km){gap}")
+
+    # ---- 赛后复盘图 ----
+    if args.card:
+        from garmin_cn import activity as act
+        from garmin_cn.racecard import render as render_race
+        from garmin_cn import raceplan
+
+        date = args.date or dt.date.today().isoformat()
+        race = store.race_result(date, args.event)
+        if not race:
+            print(f"× {date} 没有录入官方成绩，先用 --add 录入")
+            return 2
+        aid = race.get("activity_id") or ""
+        row = store.get_activity(activity_id=aid) if aid else None
+        if not row:
+            row = store.get_activity(date=date)
+        if not row:
+            print(f"× 库里没有找到 {date} 的活动")
+            return 2
+        try:
+            client = get_client(require=True)
+            detail = act.ensure(store, client, row["activity_id"])
+        except Exception as e:
+            print(f"× 抓取明细失败：{type(e).__name__}: {e}")
+            return 3
+
+        # 赛后一周课表：比赛次日（周一）起 7 天
+        week = []
+        for k in range(7):
+            d = dt.date.fromisoformat(date) + dt.timedelta(days=1 + k)
+            info = raceplan.day_info(d) or {}
+            week.append({
+                "dow": info.get("dow") or ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][k],
+                "main": info.get("abbr") or "休",
+                "sub": info.get("sub") or "",
+                "kind": info.get("kind") or "rest",
+            })
+
+        out = OUT / f"race-{date}.png"
+        try:
+            path, is_png = _shot(render_race, out, race, detail, week,
+                                 coach_text=args.coach or "", row=row)
+        except Exception as e:
+            print(f"× 出图失败：{type(e).__name__}: {e}")
+            return 4
+        if is_png:
+            shutil.copyfile(path, OUT / "race.png")
+            print(f"√ 赛后复盘图已生成：{path}")
+        else:
+            _no_browser_note(path)
+        if args.open:
+            open_any(path)
+    return 0
+
+
+def _hms(sec) -> str:
+    if sec is None:
+        return "—"
+    s = int(round(sec))
+    h, m, ss = s // 3600, (s % 3600) // 60, s % 60
+    return f"{h}:{m:02d}:{ss:02d}" if h else f"{m}:{ss:02d}"
+
+
 def cmd_motion(args) -> int:
     """动态轨迹回放：合成轨迹 → 取底图 → 出 1080×1920 播放器（可再导 MP4）。"""
     from garmin_cn import activity as act, clip as clp, motion as mot, photo as ph
-
     store = Store(DB)
     row = store.get_activity(activity_id=args.id, date=args.date)
     if not row:
@@ -3215,6 +3312,23 @@ def main() -> int:
                    help="分享脱敏：none 原图 / trim 首尾各裁 200m / hide 完全隐藏轨迹")
     q.add_argument("--open", action="store_true")
     q.set_defaults(func=cmd_act)
+
+    q = sub.add_parser("race", help="赛事成绩：录官方成绩 / 看 PB / 出赛后复盘图")
+    q.add_argument("--add", action="store_true", help="录入一场比赛的官方成绩")
+    q.add_argument("--date", help="日期 YYYY-MM-DD")
+    q.add_argument("--event", help="赛事名称，默认「比赛」")
+    q.add_argument("--bib", help="参赛号")
+    q.add_argument("--id", help="关联的佳明活动 ID")
+    q.add_argument("--net", type=float, help="净成绩（秒），如 5301 表示 1:28:21")
+    q.add_argument("--gun", type=float, help="枪声成绩（秒）")
+    q.add_argument("--dist", type=float, help="官方距离（km），半马 21.0975")
+    q.add_argument("--target", type=float, help="赛前目标时间（秒）")
+    q.add_argument("--note", help="备注：赛道特点、天气等")
+    q.add_argument("--best", action="store_true", help="列出个人最好成绩")
+    q.add_argument("--card", action="store_true", help="生成赛后复盘图 PNG")
+    q.add_argument("--coach", help="复盘图上的一段点评")
+    q.add_argument("--open", action="store_true")
+    q.set_defaults(func=cmd_race)
 
     q = sub.add_parser("motion", help="动态轨迹回放（1080×1920，网页或 MP4）")
     q.add_argument("--id", help="活动 ID")

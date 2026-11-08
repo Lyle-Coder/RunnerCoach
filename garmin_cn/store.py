@@ -62,6 +62,16 @@ CREATE TABLE IF NOT EXISTS activity_detail (
     cad_avg REAL, cad_max REAL, stride_cm REAL,
     payload TEXT
 );
+-- 官方成绩：手表记的是「按表起停」，组委会记的是枪声/净成绩，
+-- 两者能差半分钟到一分钟。PB 与复盘要以组委会成绩为准，所以单独存一份。
+CREATE TABLE IF NOT EXISTS race_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT, event TEXT, bib TEXT, activity_id TEXT,
+    gun_s REAL, net_s REAL, distance_km REAL, target_s REAL,
+    note TEXT, created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_race_date ON race_results(date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_race_key ON race_results(date, event);
 """
 
 
@@ -154,6 +164,58 @@ class Store:
             (date or time.strftime("%Y-%m-%d"), time.strftime("%Y-%m-%d %H:%M"), source, text),
         )
         self.conn.commit()
+
+    # ---------- 赛事成绩 ----------
+    def add_race_result(self, date: str, event: str, net_s: float | None = None,
+                        gun_s: float | None = None, distance_km: float | None = None,
+                        bib: str = "", activity_id: str = "", target_s: float | None = None,
+                        note: str = "") -> int:
+        """录入一场比赛的官方成绩。同一日期重复录入会覆盖，避免复盘时读到旧值。"""
+        self.conn.execute(
+            "INSERT INTO race_results (date, event, bib, activity_id, gun_s, net_s,"
+            " distance_km, target_s, note, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(date, event) DO UPDATE SET"
+            " bib=excluded.bib, activity_id=excluded.activity_id, gun_s=excluded.gun_s,"
+            " net_s=excluded.net_s, distance_km=excluded.distance_km,"
+            " target_s=excluded.target_s, note=excluded.note",
+            (date, event, bib, activity_id, gun_s, net_s, distance_km, target_s,
+             note, time.strftime("%Y-%m-%d %H:%M")),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            "SELECT id FROM race_results WHERE date=? AND event=?", (date, event)
+        ).fetchone()
+        return int(row["id"]) if row else 0
+
+    def race_result(self, date: str, event: str | None = None) -> dict | None:
+        if event:
+            row = self.conn.execute(
+                "SELECT * FROM race_results WHERE date=? AND event=?", (date, event)
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT * FROM race_results WHERE date=? ORDER BY id DESC LIMIT 1", (date,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def race_results(self, limit: int = 20) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM race_results ORDER BY date DESC, id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def personal_bests(self) -> list[dict]:
+        """按赛事名取每场最好成绩（净成绩优先，其次枪声）。"""
+        best: dict[str, dict] = {}
+        for r in self.race_results(limit=200):
+            key = r.get("event") or ""
+            t = r.get("net_s") or r.get("gun_s")
+            if not t:
+                continue
+            if key not in best or t < (best[key].get("net_s") or best[key].get("gun_s") or 1e9):
+                best[key] = r
+        return sorted(best.values(), key=lambda x: x.get("net_s") or x.get("gun_s") or 1e9)
 
     def save_detail(self, activity_id: str, payload: dict, fetched_at: str | None = None) -> None:
         sm = payload.get("summary") or {}

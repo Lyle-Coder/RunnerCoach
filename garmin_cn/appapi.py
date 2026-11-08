@@ -1103,6 +1103,11 @@ def _clips_for_motion() -> list[dict]:
     表现就是「加了素材，回放里却什么都没有」。
     视频读 mvhd 的 creation_time，图片读 EXIF；都没有的留空，
     由 `motion` 那边均匀铺开，至少能出现在画面上。
+
+    时长以**文件真实时长**为准，不信登记时记的那个值：
+    登记时传的 dur 可能为 0（原生侧还没量出来），这里如果照用就退化成
+    3 秒——用户加了一段 51 秒的视频，回放里只播 3 秒，等于被裁掉了。
+    所以视频一律重新探文件，读不到才退回登记值。
     """
     out = []
     for it in _clips_read():
@@ -1111,7 +1116,8 @@ def _clips_for_motion() -> list[dict]:
             continue
         info = _probe_material(p, name_hint=str(it.get("name") or ""))
         kind = it.get("kind") or info.get("kind") or "video"
-        dur = float(it.get("dur") or 0)
+        # 视频：文件真实时长优先；探不到才用登记值
+        dur = float(info.get("dur") or 0) or float(it.get("dur") or 0)
         if dur <= 0:
             dur = STILL_SEC if kind == "image" else 3.0
         out.append({
@@ -1432,6 +1438,10 @@ def clips_add(path: str, name: str = "", dur: float = 0,
     src = Path(str(probe_from)) if probe_from else p
     meta = _probe_material(src, name_hint=str(name)) if src.is_file() else {}
     fallback = _probe_material(p, name_hint=str(name))
+    # 时长也以文件为准：原生侧传的 dur 可能是剪辑结果的估算值，
+    # 有真实时长就别用它——登记 0 更糟（后面会退化成 3 秒）。
+    if k == "video":
+        dur = float(fallback.get("dur") or meta.get("dur") or 0) or float(dur or 0)
     native = _norm_taken_ms(taken_ms)
     t_utc = meta.get("t_utc") or fallback.get("t_utc") or native or None
     if meta.get("t_utc"):

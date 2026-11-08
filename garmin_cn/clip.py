@@ -30,7 +30,14 @@ from pathlib import Path
 
 VIDEO_EXT = {".mp4", ".mov", ".m4v"}
 EPOCH_1904 = dt.datetime(1904, 1, 1, tzinfo=dt.timezone.utc)
-MAX_SEC = 30.0           # 超过这个长度的不当「实况」用（30s 内都按整段插进回放）
+# 实况照片里内嵌的那段 MP4 天然只有几秒，超过 30s 说明是抽取出了别的东西
+# （比如整张照片被当成视频），不当「实况」用。
+LIVE_MAX_SEC = 30.0
+# 用户自己添加的视频没有理由被长度卡住——「完整插入」意味着多长都整段播完。
+# 上限只防呆：60 分钟以上基本是误选了整段电影。
+MAX_VIDEO_SEC = 3600.0
+# 转码参数版本号：改了转码逻辑就 +1，缓存键随之变化，旧产物自然作废。
+TRANSCODE_VER = 2
 _CONTAINERS = {"moov", "trak", "mdia", "minf", "stbl", "udta", "meta", "ilst", "dinf", "edts"}
 
 
@@ -329,11 +336,16 @@ def stamp_creation(path: Path, t_utc_ms: int) -> bool:
         return False
 
 
-def probe(path: Path, *, name_hint: str = "") -> dict:
+def probe(path: Path, *, name_hint: str = "",
+          max_sec: float | None = MAX_VIDEO_SEC) -> dict:
     """读一个视频文件的时间/坐标/尺寸/时长/编码。失败时带 error。
 
     `name_hint` 是登记时的原始文件名：成品被改名为 `clip-…` 后，
     还能靠 `VID_20261103_180036` 这类名字兜出拍摄时间。
+
+    `max_sec` 是时长上限，超过就判为「不当实况用」。默认按独立视频处理
+    （上限很宽，用户加多长的视频都整段插进回放）；只有从照片里抽出来的
+    实况片段才用 LIVE_MAX_SEC 这种紧上限——照片尾巴里挂的 MP4 天然只有几秒。
     """
     path = Path(path)
     out: dict = {
@@ -349,7 +361,10 @@ def probe(path: Path, *, name_hint: str = "") -> dict:
             out["error"] = "读不到 moov（不是 mp4/mov，或文件损坏）"
             out["t_why"] = "文件读不出元数据"
             return out
-        return _probe_with(buf, moov, out, path, name_hint)
+        out = _probe_with(buf, moov, out, path, name_hint)
+        if max_sec is not None and out.get("dur") and out["dur"] > max_sec:
+            out["error"] = f"时长 {out['dur']:.1f}s，超过 {max_sec:.0f}s，不当实况用"
+        return out
     except OSError as e:
         out["error"] = f"读不了：{e}"
         out["t_why"] = "文件读不出来"
@@ -405,8 +420,6 @@ def _probe_with(buf: bytes, moov: tuple[int, int], out: dict, path: Path,
                         "文件名里也没有可用时间戳")
     if out["dur"] is None:
         out["error"] = out["error"] or "读不到时长"
-    elif out["dur"] > MAX_SEC:
-        out["error"] = f"时长 {out['dur']:.1f}s，超过 {MAX_SEC:.0f}s，不当实况用"
     return out
 
 
@@ -484,7 +497,8 @@ def probe_motion(path: Path, cache: Path) -> dict | None:
     mp4 = extract_motion(Path(path), cache)
     if not mp4:
         return None
-    info = probe(mp4)
+    # 照片尾巴里抽出来的 MP4 用紧上限：超过 30s 说明抽错了东西
+    info = probe(mp4, max_sec=LIVE_MAX_SEC)
     if info.get("error"):
         return None
     info["name"] = f"{Path(path).name}（实况）"
@@ -544,6 +558,10 @@ def ensure_playable(info: dict, cache: Path) -> str:
 
     转码不只是为了兼容：`-g 15` 把 GOP 压到 0.5 秒，逐帧导出时
     seek 从 20~50 ms 降到 2~3 ms。
+
+    **不要加 `-t` 截断**：用户加的视频要「完整插入」，转码后时长必须和
+    源文件一致。以前这里写死 `-t 30`，35 秒的素材被砍到 30 秒，回放里
+    最后 5 秒直接没了，而页面上的时长标签还写着原时长——对不上。
     """
     path = Path(info["path"])
     if playable(info):
@@ -552,13 +570,15 @@ def ensure_playable(info: dict, cache: Path) -> str:
     if not exe:
         return str(path)                     # 没 ffmpeg 就原样试一把
     cache.mkdir(parents=True, exist_ok=True)
+    # 缓存键带一个转码版本号：改了转码参数（去掉 -t 截断）之后，
+    # 旧缓存里的文件是被砍过的，不能再复用。
     key = hashlib.md5(f"{path}|{path.stat().st_mtime_ns}|{info.get('bytes')}"
-                      .encode()).hexdigest()[:10]
+                      f"|v{TRANSCODE_VER}".encode()).hexdigest()[:10]
     dst = cache / f"{path.stem}-{key}.mp4"
     if dst.exists() and dst.stat().st_size > 4096:
         return str(dst)
     cmd = [exe, "-y", "-loglevel", "error", "-i", str(path),
-           "-t", f"{MAX_SEC}", "-vf",
+           "-vf",
            "scale='if(gt(iw\\,ih)\\,min(1080\\,iw)\\,-2)':'if(gt(iw\\,ih)\\,-2\\,min(1080\\,ih))'",
            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
            "-g", "15", "-pix_fmt", "yuv420p",

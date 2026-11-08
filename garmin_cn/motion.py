@@ -228,9 +228,10 @@ CLIP_LEAD = 0.0         # 素材延迟起播的秒数：0 = 卡片一出现就�
                         # 原来是 0.15（怕"贴脸突然有声"），但那会让停留必须多留 0.15s
                         # 收尾，总时长就对不上「30s + 素材总长」的要求了。
 RAMP = 0.70             # 每处素材「停住」前后各 0.7s 加减速（播放秒）
-HOLD_MIN, HOLD_MAX = 0.6, 180.0   # 上限只是防呆：单段素材最多停 3 分钟。
-# 素材要「完整插入」，一般几十秒的视频远到不了这个量级；
-# 再长的话成片帧数会到万级，手机端渲染和存储都撑不住。
+# 上限只是防呆，不是裁剪。素材要「完整插入」：视频按自身时长整段播完，
+# 所以这里的上限必须 ≥ clip.py 的 MAX_VIDEO_SEC，否则长视频会被截断播放
+# （页面时长标签写的是原时长，实际只播了前面一段，两边对不上）。
+HOLD_MIN, HOLD_MAX = 0.6, 3600.0
 
 
 def _timeline_total(play: float, photos: list[dict]) -> float:
@@ -618,7 +619,9 @@ const TL = (function () {
   for (const ph of ps) {
     if (ph.clip) {
       const d = ph.clip.dur || 0;
-      ph._hold = Math.max(0.6, Math.min(180, d));
+      // 上限与 Python 侧 HOLD_MAX 保持一致（3600s），只防呆不裁剪：
+      // 视频按自身时长整段播完，标签写多久就播多久。
+      ph._hold = Math.max(0.6, Math.min(3600, d));
     }
   }
   // 纯照片点（没挂素材）仍按预算平分，同样叠加在 D.play 之上
