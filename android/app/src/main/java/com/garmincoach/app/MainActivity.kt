@@ -1870,10 +1870,23 @@ class MainActivity : Activity() {
         // 只管显示、诊断与兜底取消，不再决定什么时候开始编码
         thread {
             var lastFrames = -1
+            var loggedPre = ""
             while (!encoded.get() && !cancel.get()) {
                 Thread.sleep(700)
                 val st = apiCall("motion_status", run)
                 val n = st.optInt("frames")
+                // 每段视频的预抽帧结果：真机上能确认走的是新路径、
+                // 抽到多少格真正有画面（lit=0 就说明视频解码有问题）
+                st.optJSONObject("diag")?.optJSONObject("preload")?.let { p ->
+                    val key = "${p.optString("name")}/${p.optInt("n")}/${p.optInt("lit")}"
+                    if (key != loggedPre) {
+                        loggedPre = key
+                        Log.i(TAG, "motion preload: ${p.optString("name")} " +
+                            "${p.optInt("lit")}/${p.optInt("n")} frames " +
+                            "@${p.optDouble("fps")}fps " +
+                            "${p.optInt("w")}x${p.optInt("h")}")
+                    }
+                }
                 if (n > lastFrames) {
                     lastFrames = n
                     lastProgressAt.set(System.currentTimeMillis())

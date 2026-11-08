@@ -1029,6 +1029,107 @@ const VPROBE = document.createElement('canvas');
 VPROBE.width = 24; VPROBE.height = 24;
 const vpctx = VPROBE.getContext('2d', {willReadFrequently: true});
 
+// ---- 导出期「按段预抽帧」----------------------------------------------
+// 旧路径每遇一个新抽帧格就 v.currentTime = want，等 seeked / 120ms，然后
+// 从 <video> 里 drawImage 两次（24×24 亮度探测 + 卡片整帧重绘）。后两步在
+// Android WebView 上是**同步等解码器**：随机 seek 后要从最近关键帧解几十
+// 帧，几百毫秒一格很常见，6 秒素材就能拖到几分钟。更糟的是 seek 期间
+// readyState 会短暂掉到 1，旧版 WAITED 记过一次就不再等、也不推进 VSTEP，
+// 画面会永久停在某一帧（音轨是原生独立解码的，所以照常播）——这就是真机
+// 上「画面中间暂停、声音正常」。
+// 现在改成：进入某段素材时一次性**顺序**把整段抽成小画布数组，渲染循环
+// 只读缓存位图，零 seek、零解码等待。按段缓存、切段释放，内存有硬上限。
+const VPRE = { src: null, fps: CLIP_FPS, frames: [], w: 0, h: 0, lit: 0 };
+const VPFAIL = new Set();      // 预抽失败的素材回退到逐格 seek
+let exportMode = false;
+let VREL = 0;                  // 当前帧在素材内的相对秒数（缓存索引用）
+const PRE_MAX = 150;           // 单段最多 150 格，长素材自动降格率
+const PRE_SEEK_MS = 250;       // 单格 seek 上限；整段最坏 < 40 秒
+const PRE_LONG = 480;          // 预抽画布长边，卡片里放大绘制足够
+
+function preSize(clip) {
+  const cw0 = clip.w || 1080, ch0 = clip.h || 1920;
+  const k = Math.min(840 / cw0, 780 / ch0, 1.5);
+  const cw = Math.max(1, Math.round(cw0 * k)), ch = Math.max(1, Math.round(ch0 * k));
+  const s = Math.min(1, PRE_LONG / Math.max(cw, ch));
+  return [Math.max(1, Math.round(cw * s)), Math.max(1, Math.round(ch * s))];
+}
+function preCanvas(w, h) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  return c;
+}
+// 顺序 seek：严格等 seeked（带上限），超时也继续——顺序推进不会像随机
+// seek 那样把解码器来回拽，而且整段只做一次，不占渲染循环的关键路径。
+function seekExact(v, t, ms) {
+  return new Promise(res => {
+    if (Math.abs(v.currentTime - t) <= 0.001 && !v.seeking) return res();
+    let hit = false, tm = null;
+    const done = () => {
+      if (hit) return;
+      hit = true;
+      if (tm) clearTimeout(tm);
+      v.removeEventListener('seeked', done);
+      res();
+    };
+    tm = setTimeout(done, ms || PRE_SEEK_MS);
+    v.addEventListener('seeked', done, { once: true });
+    try { v.currentTime = t; } catch (e) { done(); }
+  });
+}
+function probeLit(v) {
+  try {
+    if (v.readyState < 2) return false;
+    vpctx.drawImage(v, 0, 0, 24, 24);
+    const d = vpctx.getImageData(0, 0, 24, 24).data;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+    return sum > 24 * 24 * 3 * 8;
+  } catch (e) { return false; }
+}
+// 黑帧复用上一格画面，首格黑则用首帧缩略图，保证任何时刻都有确定帧：
+// 既不会中途冻结，也不会闪黑。每格是独立画布，不是共用一张。
+async function preloadClip(clip) {
+  VPRE.src = clip.src; VPRE.frames = []; VPRE.lit = 0; VREL = 0;
+  const v = VIDS.get(clip.src);
+  if (!v) { VPFAIL.add(clip.src); return; }
+  if (v.readyState < 2) await waitReady(v, 2500);
+  if (v.readyState < 2) { VPFAIL.add(clip.src); return; }
+  const [w, h] = preSize(clip);
+  const dur = Math.max(0.1, clip.dur || 1);
+  const n = Math.max(1, Math.min(PRE_MAX, Math.ceil(dur * CLIP_FPS)));
+  VPRE.w = w; VPRE.h = h; VPRE.fps = n / dur;
+  const scratch = preCanvas(w, h);
+  const g = scratch.getContext('2d');
+  let prev = null;
+  for (let i = 0; i < n; i++) {
+    await seekExact(v, Math.min(i / VPRE.fps, Math.max(0, dur - 0.02)), PRE_SEEK_MS);
+    const lit = probeLit(v);
+    if (lit) { g.drawImage(v, 0, 0, w, h); VPRE.lit++; }
+    const f = preCanvas(w, h);
+    const fg = f.getContext('2d');
+    if (lit || prev) fg.drawImage(lit ? scratch : prev, 0, 0);
+    else {
+      const first = VFIRST.get(clip.src);
+      if (first) fg.drawImage(first.c, 0, 0, w, h);
+      else { fg.fillStyle = '#141A22'; fg.fillRect(0, 0, w, h); }
+    }
+    VPRE.frames.push(f);
+    prev = f;
+  }
+  if (!v.paused) v.pause();
+  const info = { name: clip.name, n: n, lit: VPRE.lit,
+                 fps: +VPRE.fps.toFixed(2), w: w, h: h };
+  window.__motion.preload = info;
+  // 回传诊断：真机 Logcat 能看到每段抽了多少格、多少格真有画面。
+  // 带上原 diag 一起写，别把底图/视口信息覆盖掉。
+  try {
+    await fetch('/__diag?run=' + (QS.get('run') || ''), {
+      method: 'POST',
+      body: JSON.stringify(Object.assign({}, window.__motion.diag, {preload: info}))
+    });
+  } catch (e) { /* 上报失败不影响导出 */ }
+}
+
 // 首帧兜底：视频元素 loadeddata 之后先抓一帧存住。
 // 导出时是多路 Chrome 并行渲染，每路进程各自维护 VLAST——某一路的
 // 视频元素还没解出当前帧时，VLAST 里是空的，videoFrame 返回 null，
@@ -1069,10 +1170,16 @@ function fallbackFrame(src, w, h) {
   return null;
 }
 function videoFrame(src, v, w, h) {
-  // 同一抽帧格里不再探测亮度、不再把视频帧重画到 w×h 离屏画布：
-  // 旧版每帧一次 24×24 getImageData + 840×780 drawImage，几千帧下来
-  // 比编码本身还慢。复用缓存即可，成片里卡片画面 12fps 足够跟得上。
-  // 「同格已处理」连黑帧也要算数，否则视频一直解不出画面时会每帧重探。
+  // 导出期预抽帧就绪：按素材内相对时间直接取缓存位图，完全不碰 <video>。
+  // 这是整条流水线提速的关键——渲染循环里不再有解码等待，也不再有
+  // 「seek 没到位却抓到旧帧」这种让画面停住的机会。
+  if (exportMode && VPRE.src === src && VPRE.frames.length && !VPFAIL.has(src)) {
+    const i = Math.max(0, Math.min(VPRE.frames.length - 1,
+      Math.floor(Math.max(0, VREL) * VPRE.fps)));
+    return VPRE.frames[i];
+  }
+  // 回退路径（播放模式 / 预抽失败）：同一抽帧格里不再探测亮度、不再把
+  // 视频帧重画到 w×h 离屏画布。
   const step = VSTEP.get(src);
   if (step != null && VDONE.get(src) === step) return fallbackFrame(src, w, h);
   let lit = false;
@@ -1281,33 +1388,44 @@ async function syncVideo(p) {
   const src = p.clip.src;
   const v = VIDS.get(src);
   if (!v) return;
-  // 把目标时间量化到 1/CLIP_FPS 的格子上：成片仍是 24fps，但卡片画面
-  // 每 2 帧才换一张。随机 seek 是整条流水线最贵的一步（长 GOP 要从
-  // 最近关键帧解码几十帧），旧版 `0.04` 的省 seek 阈值在 24fps 下
-  // （帧间隔 0.0417s）永远不命中，等于每帧都 seek 一次。
   const rel = playT - p.a - (p.clip.lead || 0);
-  const step = Math.floor(Math.max(0, rel) * CLIP_FPS);
-  if (VSTEP.get(src) === step) return;
-  // 视频还没解出画面：只在这个素材第一次要用时等一次，上限 1.5 秒。
-  // 旧版每帧都可能 await waitReady(4000)，几千帧就是小时级空等。
-  if (v.readyState < 2) {
-    if (!WAITED.has(src)) { WAITED.add(src); await waitReady(v, 1500); }
-    if (v.readyState < 2) return;   // 不推进 VSTEP：下一帧再试，用兜底帧顶住
+  VREL = Math.max(0, rel);
+  // 导出期预抽帧就绪：只记相对时间，绝不再 seek / drawImage(video)。
+  // 随机 seek 是整条流水线最贵的一步（长 GOP 要从最近关键帧解码几十帧），
+  // 旧版 `0.04` 的省 seek 阈值在 24fps 下（帧间隔 0.0417s）永远不命中，
+  // 等于每帧都 seek 一次；现在整段只在 preloadClip 里顺序抽一次。
+  if (exportMode && VPRE.src === src && VPRE.frames.length && !VPFAIL.has(src)) {
+    VSTEP.set(src, Math.floor(VREL * VPRE.fps));
+    return;
   }
-  VSTEP.set(src, step);
+  const step = Math.floor(VREL * CLIP_FPS);
+  if (VSTEP.get(src) === step) return;
+  // 视频还没解出画面：每次都短等一次，绝不能「等过一次就永远不等」。
+  // seek 期间 readyState 会短暂掉到 1，旧版 WAITED 一旦记过就直接 return，
+  // VSTEP 再也不推进，成片里视频画面永久冻结（音轨独立解码所以照常）。
+  if (v.readyState < 2) {
+    const first = !WAITED.has(src);
+    WAITED.add(src);
+    await waitReady(v, first ? 1500 : 250);
+    if (v.readyState < 2) return;   // 用兜底帧顶住，下一帧再试
+  }
   const want = Math.max(0, Math.min(step / CLIP_FPS, (p.clip.dur || 1) - 0.02));
-  if (Math.abs(v.currentTime - want) <= 0.02) return;
-  await new Promise(res => {
-    let tm = null;
-    const done = () => {
-      if (tm) { clearTimeout(tm); tm = null; }
-      v.removeEventListener('seeked', done);   // 超时后别把 once 监听堆在元素上
-      res();
-    };
-    tm = setTimeout(done, 120);
-    v.addEventListener('seeked', done, { once: true });
-    try { v.currentTime = want; } catch (err) { done(); }
-  });
+  if (Math.abs(v.currentTime - want) > 0.02) {
+    await new Promise(res => {
+      let tm = null;
+      const done = () => {
+        if (tm) { clearTimeout(tm); tm = null; }
+        v.removeEventListener('seeked', done);   // 超时后别把 once 监听堆在元素上
+        res();
+      };
+      tm = setTimeout(done, 120);
+      v.addEventListener('seeked', done, { once: true });
+      try { v.currentTime = want; } catch (err) { done(); }
+    });
+  }
+  // VSTEP 必须等 seek 走完才推进：早设的话 120ms 超时会被当成「这一格已
+  // 处理」，videoFrame 抓到 seek 未完成的旧帧也当成新画面缓存下来。
+  VSTEP.set(src, step);
 }
 
 function driveVideo(p) {
@@ -1447,8 +1565,19 @@ async function runExport() {
     }));
     await fetch('/__timeline?run=' + run, { method: 'POST', body: JSON.stringify(rows) });
   } catch (e) { /* 没有视频就不用报 */ }
+  // 导出期启用「按段预抽帧」：进入某段素材时一次性顺序抽完，之后渲染
+  // 循环只读缓存位图，不再逐格 seek。切出窗口立刻释放，内存有上限。
+  // 时间轴是单调递增的，所以每段只会抽一次；预抽失败的素材加入 VPFAIL，
+  // 自动回退到旧的逐格 seek 路径，不会把导出卡死。
+  exportMode = true;
   for (let i = from; i < total; i++) {
-    await seekTo(i / fps);
+    const t = i / fps;
+    const w = popAt(t).w;
+    const clip = (w && w.clip && w.clip.kind !== 'image') ? w.clip : null;
+    const src = clip ? clip.src : null;
+    if (src && src !== VPRE.src && !VPFAIL.has(src)) await preloadClip(clip);
+    if (!src && VPRE.frames.length) { VPRE.frames = []; VPRE.src = null; }
+    await seekTo(t);
     const blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.82));
     await fetch('/__frame?i=' + i + '&run=' + run, { method: 'POST', body: blob });
   }

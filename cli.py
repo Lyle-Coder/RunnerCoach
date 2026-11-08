@@ -2765,8 +2765,8 @@ def cmd_selftest(args) -> int:
         "视频卡片没有抽帧网格，导出仍会逐帧 seek"
     assert "const VDONE = new Map()" in _msrc and "const WAITED = new Set()" in _msrc, \
         "缺「同格只抓一次 / 只等一次就绪」的状态"
-    assert "Math.floor(Math.max(0, rel) * CLIP_FPS)" in _msrc, \
-        "seek 目标没量化到抽帧网格"
+    assert "Math.floor(VREL * CLIP_FPS)" in _msrc, \
+        "回退路径的 seek 目标没量化到抽帧网格（v47 起 rel 统一存进 VREL）"
     assert "if (VSTEP.get(src) === step) return;" in _msrc, \
         "同一抽帧格里还是会重复 seek"
     assert "VDONE.get(src) === step" in _msrc, \
@@ -2776,16 +2776,86 @@ def cmd_selftest(args) -> int:
         "黑帧（没有缓存）时同格仍会反复探测，视频解不出画面就又拖慢导出"
     assert "setTimeout(done, 350)" not in _msrc and "setTimeout(done, 120)" in _msrc, \
         "seek 超时仍是 350ms，几千帧会积成几十分钟"
-    assert "removeEventListener('seeked', done)" in _msrc, \
-        "超时后 once 监听会堆在 video 元素上"
-    assert "waitReady(v, 4000)" not in _msrc and "waitReady(v, 1500)" in _msrc, \
-        "还在每帧等最多 4 秒视频就绪"
+    assert _msrc.count("v.removeEventListener('seeked', done);") >= 2, \
+        "预抽 seekExact / 回退路径 有一处超时后没清理 seeked 监听"
+    assert "waitReady(v, 4000)" not in _msrc and "first ? 1500 : 250" in _msrc, \
+        "还在每帧等最多 4 秒视频就绪（v47 起每次只短等 250ms）"
     assert "Math.min(840 / iw, 780 / ih, 1)" in _msrc, \
         "首帧兜底没缩到卡片尺寸，11 段原分辨率 canvas 会吃满 WebView 内存"
     assert "const w = v.videoWidth || 1080, h = v.videoHeight || 1920" not in _msrc, \
         "首帧兜底还在按视频原始分辨率建常驻画布"
     assert "VSTEP.clear(); VDONE.clear();" in _msrc, \
         "切换素材窗口没重置抽帧格，会串到上一段"
+
+    # ---- v47：视频画面中途冻结 + 渲染循环仍被随机 seek 拖住 ----------------
+    # 冻结：Android WebView 在 seek 期间 readyState 会短暂掉到 1。旧版
+    # WAITED 只等第一次、之后每格直接放弃；VSTEP 又在 seek **之前**置位，
+    # 于是 120ms 超时那一格也被当成「已处理」，videoFrame 抓到 seek 未完成
+    # 的旧帧（非黑，亮度判据过）缓存下来。连续超时时画面就停住不动，而音轨
+    # 由原生 MediaExtractor 独立解码，所以「画面暂停、声音正常」。
+    assert "const VPRE = {" in _msrc and "async function preloadClip(" in _msrc, \
+        "没有导出期按段预抽帧，渲染循环还得逐格 seek <video>"
+    assert "const PRE_MAX = 150" in _msrc and "PRE_SEEK_MS = 250" in _msrc, \
+        "预抽没有格数/单格耗时上限，长素材会吃满内存或触发零进展重启"
+    assert "const PRE_LONG = 480" in _msrc and "function preSize(" in _msrc, \
+        "预抽画布没缩到卡片尺寸，几百格原分辨率会吃满 WebView"
+    assert "await seekExact(v, Math.min(" in _msrc and "const lit = probeLit(v);" in _msrc, \
+        "预抽没有严格等 seeked 与黑帧探测"
+    assert "if (!WAITED.has(src))" not in _msrc, \
+        "还在「等过一次就绪就永远不等」，readyState 掉到 1 时恢复不了"
+    assert "first ? 1500 : 250" in _msrc, \
+        "回退路径没有每次短等就绪"
+    _vstep_set = _msrc.find("VSTEP.set(src, step)")
+    _want_seek = _msrc.find("try { v.currentTime = want; }")
+    assert 0 < _want_seek < _vstep_set, \
+        "VSTEP 又提前到 seek 之前了，超时那一格会把旧帧当成新画面缓存"
+    _pre_ret = _msrc.find("VSTEP.set(src, Math.floor(VREL * VPRE.fps));\n    return;")
+    assert 0 < _pre_ret < _want_seek, \
+        "预抽就绪时没在 seek 之前返回，渲染循环仍在随机 seek"
+    assert _msrc.count("exportMode && VPRE.src === src && VPRE.frames.length") >= 2, \
+        "syncVideo / videoFrame 没有都走预抽缓存分支"
+    assert "exportMode = true" in _msrc and "await preloadClip(clip)" in _msrc, \
+        "runExport 没有在进入素材窗口时预抽"
+    assert "if (!src && VPRE.frames.length)" in _msrc, \
+        "切出素材窗口没释放缓存，长片会堆满小画布"
+    assert "VPFAIL.add(clip.src)" in _msrc and "!VPFAIL.has(src)" in _msrc, \
+        "预抽失败没有回退路径，视频解不出画面会把导出卡死"
+    assert "preload: info" in _msrc and "motion preload:" in _main, \
+        "真机拿不到每段预抽结果，出问题没法定位"
+    # 预抽索引映射：短素材保持 12fps；长素材自动降格率，索引仍单调不越界
+    for _dur47, _label in ((6.0, "6 秒"), (60.0, "60 秒"), (256.0, "长片")):
+        _n47 = max(1, min(150, int(_dur47 * 12 + 0.999)))
+        _fps47 = _n47 / _dur47
+        _seq47 = [max(0, min(_n47 - 1, int(_i / 24 * _fps47)))
+                  for _i in range(int(_dur47 * 24))]
+        assert len(_seq47) > 0 and _seq47[0] == 0, f"{_label}：首格不对"
+        assert all(b >= a for a, b in zip(_seq47, _seq47[1:])), \
+            f"{_label}：画面索引回退，成片里视频会倒放"
+        assert max(_seq47) < _n47, f"{_label}：索引越界会取到空帧"
+        assert _n47 <= 150, f"{_label}：单段预抽超过内存上限"
+    # 预抽语义模拟：旧路径在渲染循环里每换一格就随机 seek 一次；新路径整段
+    # 只在进入窗口时顺序抽一次，渲染循环零 seek。零 seek 既消除了逐帧解码
+    # 等待，也让「seek 超时 → 抓到旧帧 → 画面停住」这条链不再存在。
+    def _render47(_dur, _frames, preload):
+        _n = max(1, min(150, int(_dur * 12 + 0.999)))
+        _fps = _n / _dur
+        _seeks, _idx = 0, []
+        for _i in range(_frames):
+            _rel = _i / 24
+            if not preload:
+                _prev = int(max(0, (_i - 1) / 24) * 12)
+                if int(_rel * 12) != _prev:
+                    _seeks += 1
+            _idx.append(max(0, min(_n - 1, int(_rel * _fps))))
+        return _seeks, _idx
+
+    _old_seek, _ = _render47(6.0, 48, False)
+    _new_seek, _new_idx = _render47(6.0, 48, True)
+    assert _old_seek > 0 and _new_seek == 0, \
+        "渲染循环里还在随机 seek，画面冻结与耗时问题都会回来"
+    assert _new_idx[-1] > _new_idx[0] and \
+        all(b >= a for a, b in zip(_new_idx, _new_idx[1:])), \
+        "预抽画面索引没有随播放时间推进，成片视频会停住"
 
     # 数值模拟（不依赖外部 DB）：稀疏 + 重复时间戳的路线，新旧算法逐帧对比。
     _pt = [0, 10, 25, 25, 40, 66, 80, 100, 100, 130, 150,
