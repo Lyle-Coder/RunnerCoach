@@ -603,6 +603,27 @@ def sync_range(start: str, end: str | None = None,
 
 
 # ---------------------------------------------------------------- 产出
+def _refresh_live(store, date: str) -> None:
+    """出图/出报告前刷新一次「会随时间变」的指标（身体电量）。
+
+    `daily` 里的 `bb_high / bb_low` 来自 daily summary，是当天第一次同步的
+    快照；「此刻还剩多少」只存在于 bodyBattery 的日内序列里。CLI 出图前本来
+    就会拉，App 侧以前没拉 —— 于是手机上一图流的身体电量永远是「未测量」。
+    没登录 / 离线都静默跳过，退回库里上一次的值。
+    """
+    client = None
+    try:
+        client = _client()
+    except Exception:
+        client = None
+    try:
+        from . import live as L
+
+        L.body_battery(store, date, client)
+    except Exception:
+        pass
+
+
 def dashboard(date: str | None = None, live: bool = True) -> dict:
     """出网页看板，返回文件路径（App 用 WebView 直接读它，或走 start_server）。"""
     store = Store(DB)
@@ -611,10 +632,10 @@ def dashboard(date: str | None = None, live: bool = True) -> dict:
 
     d = date or dt.date.today().isoformat()
     if live:
+        _refresh_live(store, d)
         try:
             from . import live as L
 
-            L.body_battery(store, d, None)
             L.scale(store, HOME)
         except Exception:
             pass
@@ -645,6 +666,8 @@ def card_html(date: str | None = None) -> dict:
     d = date or dt.date.today().isoformat()
     from .card import build_html
     from .plan import attach
+
+    _refresh_live(store, d)
 
     try:
         res = attach(derive(store, d))

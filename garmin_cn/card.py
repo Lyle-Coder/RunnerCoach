@@ -367,6 +367,58 @@ def _spark(points: list[tuple[float, float | None]], *, w: int = 470, h: int = 9
     )
 
 
+def bb_state(t: dict) -> dict:
+    """身体电量的展示口径（纯函数，自检直接测它）。
+
+    优先级：日内序列末点 → daily.bb_now → 全天最高 → 未测量。
+
+    为什么要用序列末点：`bb_now` 是上次实时拉取写下的，可能比曲线旧；
+    而序列最后一点才是「此刻还剩多少」。
+    为什么最后要退到「全天最高」：`bb_high/low` 来自 daily summary，live 层
+    上线之前同步的老数据只有这两个值 —— 直接写「未测量」等于否认那天有电量。
+    """
+    now = num(t.get("bb_now"))
+    now_at = t.get("bb_now_at") or ""
+    high = num(t.get("bb_high"))
+    scrubbed = bool(t.get("night_scrubbed"))
+    try:
+        from . import live as livemod
+        series = [] if scrubbed else livemod._load_series(t.get("bb_series"))
+    except Exception:
+        series = []
+    pts = [((ts / 1000 + 8 * 3600) % 86400 / 3600.0, v) for ts, v in series]
+    if series and not scrubbed:
+        now = series[-1][1]
+        if not now_at:
+            hh = pts[-1][0]
+            now_at = f"{int(hh):02d}:{int(round((hh % 1) * 60)):02d}"
+    if now is not None:
+        val = f"{now:.0f}"
+        txt = f"{val}%"
+        sub = "手表掉落" if scrubbed else (f"当前 {now_at}" if now_at else "当前值")
+    elif high is not None:
+        val = f"{high:.0f}"
+        txt = f"最高 {val}%"
+        sub = "今日最高" + ("（手表掉落）" if scrubbed else "")
+    else:
+        val, txt, sub = "—", "未测量", "未测量"
+    if scrubbed and not series:
+        head = "身体电量（今天 · 手表掉落，夜间未测量）"
+    elif now is not None:
+        # 有当前值但没有曲线（老数据 / 这次没拉到序列）时也要说清是当前值，
+        # 别写成「今日最高」—— 值和副标题会对不上。
+        _tail = f"{'，' + now_at if now_at else ''}"
+        head = (f"身体电量（今天 · 当前 {txt}{_tail}）" if series
+                else f"身体电量（今天 · 当前 {txt}{_tail} · 无日内曲线）")
+    elif high is not None:
+        head = f"身体电量（今日最高 {high:.0f}% · 日内曲线未同步）"
+    else:
+        head = "身体电量（未同步）"
+    return {"now": now, "now_at": now_at, "high": high, "series": series,
+            "pts": pts, "val": val, "txt": txt, "sub": sub, "head": head,
+            "scrubbed": scrubbed}
+
+
 def build_html(res: dict, sync_at: str | None = None,
                src: str = "Garmin 国区") -> str:
     d = dt.date.fromisoformat(res["date"])
@@ -572,19 +624,8 @@ def build_html(res: dict, sync_at: str | None = None,
     # 身体电量：当前值 / 曲线来自 live.py 在出图前的实时拉取（bb_now / bb_series）
     # 夜间手表掉落时这些读数是缺测残渣，manual.apply_sleep_fix 已作废——
     # 这里老实显示「未测量」，不拿残渣冒充现状。
-    bb_now = num(t.get("bb_now"))
-    bb_now_at = t.get("bb_now_at") or ""
-    scrubbed = bool(t.get("night_scrubbed"))
-    try:
-        from . import live as livemod
-        bb_series = [] if scrubbed else livemod._load_series(t.get("bb_series"))
-    except Exception:
-        bb_series = []
-    bb_pts = [((ts / 1000 + 8 * 3600) % 86400 / 3600.0, v) for ts, v in bb_series]
-    bb_val = f"{bb_now:.0f}" if bb_now is not None else "—"
-    bb_txt = f'{bb_val}%' if bb_now is not None else "未测量"
-    bb_sub = ("手表掉落" if scrubbed else
-              (f'当前 {bb_now_at}' if bb_now_at else "未测量"))
+    _bb = bb_state(t)
+    bb_val, bb_sub, bb_head = _bb["val"], _bb["sub"], _bb["head"]
 
     # 图表：睡眠 7 天柱状 + 身体电量当日曲线 + HRV / 静息心率 14 天折线
     sleep_need_h = (num(t.get("sleep_need_min")) or 0) / 60 or 7.5
@@ -593,7 +634,7 @@ def build_html(res: dict, sync_at: str | None = None,
                         height=72, unit=" h", target=sleep_need_h,
                         extra=[nap_rows.get(d_) for d_, _ in (res["series"].get("sleep_h") or [])],
                         extra_color="#5FA8E0", legend=("主睡眠", "小睡"))
-    bb_spark = _spark(bb_pts, h=48, color="#E0A33A", label="", unit="%")
+    bb_spark = _spark(_bb["pts"], h=48, color="#E0A33A", label="", unit="%")
     hrv_pts = [(i, num(v)) for i, (_, v) in enumerate(res["series"].get("hrv") or [])]
     rhr_pts = [(i, num(v)) for i, (_, v) in enumerate(res["series"].get("rhr") or [])]
     hrv_spark = _spark(hrv_pts[-14:], h=42, color="#5FA8E0", label="HRV", unit=" ms")
@@ -834,8 +875,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
       </div>
       <div class="chart-h">睡眠（近 7 天 · 柱高为小时）</div>
       {sleep_bars}
-      <div class="chart-h">{'身体电量（今天 · 手表掉落，夜间未测量）' if scrubbed
-        else f'身体电量（今天 · 当前 {esc(bb_txt)}{("，" + esc(bb_now_at)) if bb_now_at else ""}）'}</div>
+      <div class="chart-h">{esc(bb_head)}</div>
       {bb_spark}
       <div class="chart-h">HRV 与静息心率（近 14 天）</div>
       {hrv_spark}

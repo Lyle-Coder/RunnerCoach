@@ -3186,6 +3186,54 @@ def cmd_selftest(args) -> int:
     if not any(m["count"] for m in _hs["months"] if m["key"] == _ms[0]):
         assert "看这 0 次活动的明细" not in _empty and "这个周期没有活动" in _empty, \
             "空周期仍给了一个点进去什么都没有的明细链接"
+
+    # ---- v58：完整看板换深色 + 一图流身体电量 ------------------------------
+    from garmin_cn import report as _R, card as _C
+    _r_src = Path(_R.__file__).read_text(encoding="utf-8")
+    assert "--bg:#070B12" in _r_src and "--card:#0F1622" in _r_src, \
+        "完整看板还是浅色，和 App 其它页面不是一套"
+    assert "radial-gradient(900px 520px" in _r_src, \
+        "完整看板背景没有径向渐变，深色会像没加载完"
+    assert "linear-gradient(180deg,#121B2A,#0F1622)" in _r_src, \
+        "看板卡片没换成上浅下深"
+    for _bad in ("--bg:#F4F6F2", "#FAFBF8", "background:#FFFFFF", "#1D9E75"):
+        assert _bad not in _r_src, f"完整看板还有浅色/旧色残留：{_bad}"
+    # 一图流：App 侧出图前必须真去拉一次（以前 client=None，等于不联网）
+    # 看板和卡片两个出口都要刷新，少一个就会那一处永远「未测量」
+    assert "def _refresh_live(" in _aa_src and \
+        _aa_src.count("_refresh_live(store, d)") >= 2, \
+        "App 出图前没刷新身体电量，一图流只能永远「未测量」"
+    assert "L.body_battery(store, d, None)" not in _aa_src, \
+        "看板还在用 client=None 的空调用，根本没联网"
+    # 展示口径：序列末点 > 当前值 > 全天最高 > 未测量
+    _b1 = _C.bb_state({"bb_series": "[[1794067200000,27],[1794078900000,64]]",
+                       "bb_now": 99, "bb_high": 100})
+    assert _b1["val"] == "64" and "当前" in _b1["head"] and len(_b1["pts"]) == 2, \
+        "有日内序列时没取序列末点（还在用可能过期的 bb_now）"
+    _b2 = _C.bb_state({"bb_high": 100, "bb_low": 24})
+    assert _b2["val"] == "100" and "今日最高" in _b2["sub"], \
+        "只有全天最高时又被写成「未测量」"
+    assert "日内曲线未同步" in _b2["head"], "退到全天最高时没说清曲线缺失"
+    _b3 = _C.bb_state({"bb_now": 55, "bb_now_at": "10:20"})
+    assert _b3["val"] == "55" and "10:20" in _b3["sub"] and "当前" in _b3["head"], \
+        "只有当前值时标题口径不对"
+    _b4 = _C.bb_state({})
+    assert _b4["val"] == "—" and _b4["sub"] == "未测量", "真没数据时也没写未测量"
+    _b5 = _C.bb_state({"night_scrubbed": True, "bb_high": 90})
+    assert _b5["sub"] == "今日最高（手表掉落）" and "手表掉落" in _b5["head"], \
+        "夜间缺测的提示丢了"
+    # 出图前那次刷新必须是「快速失败」：默认 30 秒 × 3 次重试会让离线时
+    # 打开完整看板卡近两分钟，宁可 8 秒拿不到就退回库里的值。
+    from garmin_cn import live as _L
+    _live_src = Path(_L.__file__).read_text(encoding="utf-8")
+    assert "timeout: int = 8, retries: int = 1" in _live_src, \
+        "出图刷新又用回 30 秒/3 次重试，离线会卡很久"
+    assert "body_battery_day(date, timeout=timeout, retries=retries)" in _live_src, \
+        "超时参数没有真正传到请求层"
+    from garmin_cn import client as _CL
+    _cl_src = Path(_CL.__file__).read_text(encoding="utf-8")
+    assert "body_battery_day(self, date: str, *, timeout: int = 30" in _cl_src, \
+        "client 层不支持短超时"
     assert "putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)" in _main, \
         "相册不能多选，批量添加不成立"
     assert "val u = pendingVideos.removeFirstOrNull()" in _main and \
