@@ -1028,7 +1028,9 @@ const VLAST = new Map();          // src -> {c, w, h}
 // 导出时的视频抽帧状态：VSTEP 是「当前落在哪一格」，VDONE 是「这一格
 // 已经抓过画面」。播放模式不走 syncVideo，两个 Map 都是空的，于是
 // videoFrame 每帧正常抓新画面，不受影响。
-const CLIP_FPS = 12;              // 卡片画面最多每秒更新 12 次（成片仍 24fps）
+const CLIP_FPS = 8;               // 卡片画面最多每秒更新 8 次（成片仍 24fps）
+// 画质优先：8fps 让出帧率，换来每帧 840px —— 正好等于卡片最大显示尺寸，
+// 绘制时不再放大，480px 时代的糊边就没了。
 const VSTEP = new Map();          // src -> 抽帧格号
 const VDONE = new Map();          // src -> 已完成抓帧的格号
 const WAITED = new Set();         // src -> 已经等过「视频就绪」，别每帧等
@@ -1050,9 +1052,9 @@ const VPRE = { src: null, fps: CLIP_FPS, frames: [], w: 0, h: 0, lit: 0 };
 const VPFAIL = new Set();      // 预抽失败的素材回退到逐格 seek
 let exportMode = false;
 let VREL = 0;                  // 当前帧在素材内的相对秒数（缓存索引用）
-const PRE_MAX = 150;           // PC 端兜底上限（App 端走原生抽帧，不进这里）
+const PRE_MAX = 72;            // PC 端兜底上限（App 端走原生抽帧，不进这里）
 const PRE_SEEK_MS = 150;       // 兜底单格 seek 上限；PC Chrome 上几十毫秒就到位
-const PRE_LONG = 480;          // 预抽画布长边，卡片里放大绘制足够
+const PRE_LONG = 840;          // 预抽画布长边 = 卡片显示上限，1:1 不放大
 
 // 原生抽好的素材帧（v48）：App 在起 WebView 之前就用 MediaMetadataRetriever
 // 把每段视频按 12fps 抽成缩略 JPEG，页面只读 <img>。
@@ -1650,6 +1652,8 @@ async function runExport() {
   // 时间轴是单调递增的，所以每段只会抽一次；预抽失败的素材加入 VPFAIL，
   // 自动回退到旧的逐格 seek 路径，不会把导出卡死。
   exportMode = true;
+  // 导出期时间充裕：统一高质量插值，缩小时不会出现锯齿/糊边
+  try { ctx.imageSmoothingQuality = 'high'; } catch (e) {}
   // 原生抽好的素材帧（App 在起 WebView 前就备好了）；PC 端没有这个文件，
   // 会回落到下面的逐段预抽。
   await loadClipImages(run);

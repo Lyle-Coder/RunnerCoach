@@ -2765,7 +2765,7 @@ def cmd_selftest(args) -> int:
     # 视频段：随机 seek 是整条流水线最贵的一步，而旧阈值 0.04 在 24fps
     # （帧间隔 0.0417s）下永远不命中，等于每帧都 seek 一次；另有
     # waitReady(4000) 每帧最多空等 4 秒、11 段视频各存一张全分辨率首帧。
-    assert "const CLIP_FPS = 12" in _msrc and "const VSTEP = new Map()" in _msrc, \
+    assert "const CLIP_FPS = 8" in _msrc and "const VSTEP = new Map()" in _msrc, \
         "视频卡片没有抽帧网格，导出仍会逐帧 seek"
     assert "const VDONE = new Map()" in _msrc and "const WAITED = new Set()" in _msrc, \
         "缺「同格只抓一次 / 只等一次就绪」的状态"
@@ -2799,9 +2799,9 @@ def cmd_selftest(args) -> int:
     # 由原生 MediaExtractor 独立解码，所以「画面暂停、声音正常」。
     assert "const VPRE = {" in _msrc and "async function preloadClip(" in _msrc, \
         "没有导出期按段预抽帧，渲染循环还得逐格 seek <video>"
-    assert "const PRE_MAX = 150" in _msrc and "PRE_SEEK_MS = 150" in _msrc, \
+    assert "const PRE_MAX = 72" in _msrc and "PRE_SEEK_MS = 150" in _msrc, \
         "PC 兜底预抽没有格数/单格耗时上限"
-    assert "const PRE_LONG = 480" in _msrc and "function preSize(" in _msrc, \
+    assert "const PRE_LONG = 840" in _msrc and "function preSize(" in _msrc, \
         "预抽画布没缩到卡片尺寸，几百格原分辨率会吃满 WebView"
     assert "await seekExact(v, Math.min(" in _msrc and "const lit = probeLit(v);" in _msrc, \
         "预抽没有严格等 seeked 与黑帧探测"
@@ -2826,6 +2826,18 @@ def cmd_selftest(args) -> int:
         "if (v.readyState < 2) { VPFAIL.add(clip.src); return; }" in _msrc and \
         "!VPFAIL.has(src)" in _msrc, \
         "预抽失败没有回退路径，视频解不出画面会把导出卡死"
+    # 画质优先：帧率让到 8fps，每帧长边 840 = 卡片显示上限，1:1 不放大；
+    # JPEG 92，导出期统一高质量插值。旧版 480px 放大到 840 才是「糊」的根因。
+    _ck53 = (_kt_dir / "MotionClips.kt").read_text(encoding="utf-8")
+    assert "private const val JPEG_QUALITY = 92" in _ck53, \
+        "抽帧 JPEG 质量又降回去了，卡片会有块状伪影"
+    assert "java.io.File(root, \"c$ci\"), 8, 72, 840," in _main, \
+        "抽帧参数不是 8fps / 72 格 / 840px，画质或耗时又要失守"
+    assert "ctx.imageSmoothingQuality = 'high';" in _msrc and \
+        "try { ctx.imageSmoothingQuality = 'high'; } catch (e) {}" in _msrc, \
+        "导出期没有开高质量缩放"
+    assert "const PRE_LONG = 840" in _msrc and "const PRE_MAX = 72" in _msrc, \
+        "PC 兜底画布/格数没跟上画质优先的口径"
     assert "preload: info" in _msrc and "motion preload:" in _main, \
         "真机拿不到每段预抽结果，出问题没法定位"
     # 预抽索引映射：短素材保持 12fps；长素材自动降格率，索引仍单调不越界
@@ -2997,7 +3009,7 @@ def cmd_selftest(args) -> int:
         "没有批量删除/更新接口"
     assert '"clips_remove_many", "clips_update",' in _aa_src, \
         "新接口没注册到 _API，App 调不到"
-    assert "clipDialog?.dismiss()" in _main, \
+    assert "clipDialog?.dismiss()\n        clipDialog = null" in _main, \
         "重建素材列表前没关旧对话框，「删完还能看见旧列表」"
     assert "val cb = CheckBox(this)" in _main, "素材行没有多选勾选框"
     # 素材列表必须是固定高度的可滚列表：AlertDialog.customPanel 在部分机型上
@@ -3026,7 +3038,7 @@ def cmd_selftest(args) -> int:
         "分节标记/图标底座丢了科技风样式"
     assert "--bg:#070B12" in _ai_src, "AI 页还是浅色，和 App 不一致"
     assert 'theme-color" content="#070B12"' in _ui_src, "移动端主题色没换"
-    assert "0xFF070B12.toInt()" in _main and "0xFF4DA3FF.toInt()" in _main, \
+    assert _main.count("0xFF070B12.toInt()") >= 2 and "0xFF4DA3FF.toInt()" in _main, \
         "原生顶栏/底栏还是浅色"
     assert "Theme.Material.NoActionBar" in _man, "原生主题还是 Light"
     # 浅色 token 不许回来：这几处是整套暗色主题的锚点

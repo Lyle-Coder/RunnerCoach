@@ -23,6 +23,9 @@ import kotlin.math.min
  */
 object MotionClips {
 
+    /** 抽帧 JPEG 质量。卡片是成片里最亮眼的元素，82 会有可见块状伪影。 */
+    private const val JPEG_QUALITY = 92
+
     /** n = 实际抽到的帧数；fps = 实际格率（长素材会被 maxFrames 压低）。 */
     data class Info(val n: Int, val fps: Double, val w: Int, val h: Int)
 
@@ -67,7 +70,7 @@ object MotionClips {
                 if (i == 0) { outW = bmp.width; outH = bmp.height }
                 try {
                     FileOutputStream(File(outDir, "$i.jpg")).use {
-                        bmp.compress(Bitmap.CompressFormat.JPEG, 82, it)
+                        bmp.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it)
                     }
                     done++
                 } finally {

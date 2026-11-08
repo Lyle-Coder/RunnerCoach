@@ -2155,8 +2155,11 @@ class MainActivity : Activity() {
             val ci = c.optInt("ci", i)
             ui { subtitle.text = "准备素材画面 ${i + 1}/${arr.length()}" }
             val t0 = System.currentTimeMillis()
+            // 画质优先：长边 840 正好等于卡片最大显示尺寸（不再放大），
+            // 帧率让到 8fps、单段上限 72 格（9 秒内素材满帧率，更长的自动降格率）。
+            // 抽帧总量反而比 12fps/150 格少一半，导出更快。
             val info = MotionClips.extract(
-                c.optString("file"), java.io.File(root, "c$ci"), 12, 150, 480,
+                c.optString("file"), java.io.File(root, "c$ci"), 8, 72, 840,
                 c.optInt("rotate", 0))
             try {
                 index.put(ci.toString(), org.json.JSONObject()
