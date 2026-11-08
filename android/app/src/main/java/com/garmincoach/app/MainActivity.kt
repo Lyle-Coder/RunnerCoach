@@ -1796,12 +1796,47 @@ class MainActivity : Activity() {
             // 真机上排查底图缩放：k 是底图与轨迹共用的视口缩放，
             // ratio 是变换前轨迹外框占画幅的比例（过大 = 旧版会顶到边缘）。
             Log.i(TAG, "motion view=" + r.optJSONObject("view"))
+            // 原生预抽素材帧：必须在起 WebView 之前做完 —— 这时还没有监督
+            // 线程，不会撞上「连续 5 分钟没有新帧」的判死。抽不到帧的段
+            // n=0，页面退回静态封面，绝不再在 WebView 里 drawImage(<video>)。
+            prepareClipFrames(r)
             ui {
                 startMotionView(
                     r.optString("run"), r.optInt("frames"), r.optInt("fps", 24),
                     r.optString("html"), r.optString("name", "跑步回放"),
                 )
             }
+        }
+    }
+
+    /** 把每段视频按 12fps 抽成缩略 JPEG，再写 `_clips.json` 给页面按 ci 取图。 */
+    private fun prepareClipFrames(r: org.json.JSONObject) {
+        val arr = r.optJSONArray("clips") ?: return
+        val dir = r.optString("dir")
+        if (arr.length() == 0 || dir.isEmpty()) return
+        val root = java.io.File(dir)
+        val index = org.json.JSONObject()
+        for (i in 0 until arr.length()) {
+            val c = arr.optJSONObject(i) ?: continue
+            val ci = c.optInt("ci", i)
+            ui { subtitle.text = "准备素材画面 ${i + 1}/${arr.length()}" }
+            val t0 = System.currentTimeMillis()
+            val info = MotionClips.extract(
+                c.optString("file"), java.io.File(root, "c$ci"), 12, 150, 480)
+            try {
+                index.put(ci.toString(), org.json.JSONObject()
+                    .put("n", info.n).put("fps", info.fps)
+                    .put("w", info.w).put("h", info.h))
+            } catch (_: Throwable) {}
+            Log.i(TAG, "motion clip ${c.optString("name")}: ${info.n} 帧 @ " +
+                "${String.format(Locale.US, "%.1f", info.fps)}fps " +
+                "${info.w}x${info.h}, " +
+                "${(System.currentTimeMillis() - t0) / 1000}s")
+        }
+        try {
+            java.io.File(root, "_clips.json").writeText(index.toString(), Charsets.UTF_8)
+        } catch (t: Throwable) {
+            Log.w(TAG, "写 _clips.json 失败: ${t.message}")
         }
     }
 

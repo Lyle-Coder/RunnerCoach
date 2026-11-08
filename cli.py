@@ -2795,8 +2795,8 @@ def cmd_selftest(args) -> int:
     # 由原生 MediaExtractor 独立解码，所以「画面暂停、声音正常」。
     assert "const VPRE = {" in _msrc and "async function preloadClip(" in _msrc, \
         "没有导出期按段预抽帧，渲染循环还得逐格 seek <video>"
-    assert "const PRE_MAX = 150" in _msrc and "PRE_SEEK_MS = 250" in _msrc, \
-        "预抽没有格数/单格耗时上限，长素材会吃满内存或触发零进展重启"
+    assert "const PRE_MAX = 150" in _msrc and "PRE_SEEK_MS = 150" in _msrc, \
+        "PC 兜底预抽没有格数/单格耗时上限"
     assert "const PRE_LONG = 480" in _msrc and "function preSize(" in _msrc, \
         "预抽画布没缩到卡片尺寸，几百格原分辨率会吃满 WebView"
     assert "await seekExact(v, Math.min(" in _msrc and "const lit = probeLit(v);" in _msrc, \
@@ -2818,7 +2818,9 @@ def cmd_selftest(args) -> int:
         "runExport 没有在进入素材窗口时预抽"
     assert "if (!src && VPRE.frames.length)" in _msrc, \
         "切出素材窗口没释放缓存，长片会堆满小画布"
-    assert "VPFAIL.add(clip.src)" in _msrc and "!VPFAIL.has(src)" in _msrc, \
+    assert "if (!v) { VPFAIL.add(clip.src); return; }" in _msrc and \
+        "if (v.readyState < 2) { VPFAIL.add(clip.src); return; }" in _msrc and \
+        "!VPFAIL.has(src)" in _msrc, \
         "预抽失败没有回退路径，视频解不出画面会把导出卡死"
     assert "preload: info" in _msrc and "motion preload:" in _main, \
         "真机拿不到每段预抽结果，出问题没法定位"
@@ -2856,6 +2858,67 @@ def cmd_selftest(args) -> int:
     assert _new_idx[-1] > _new_idx[0] and \
         all(b >= a for a, b in zip(_new_idx, _new_idx[1:])), \
         "预抽画面索引没有随播放时间推进，成片视频会停住"
+
+    # ---- v48：把抽帧从 WebView 挪到原生 -----------------------------------
+    # 真机症状：「第 219 帧没送到（导出中断）」= 编码线程连续 5 分钟没等到新帧。
+    # 219/24 ≈ 9.1 秒，正好落在第一段素材窗口开始处：页面在预抽那一段时被
+    # `drawImage(<video>)` **同步**阻塞，主线程占住后连 setTimeout 兜底都跑不了。
+    # v46/v47 只是把「逐格随机 seek」换成「整段顺序 seek」，总成本没降。
+    _clips_kt = _kt_dir / "MotionClips.kt"
+    assert _clips_kt.is_file(), \
+        "没有原生抽帧实现，WebView 里抽一段 6 秒素材仍要 5 分钟"
+    _ck = _clips_kt.read_text(encoding="utf-8")
+    assert "object MotionClips {" in _ck, "原生抽帧入口被改名/删掉"
+    assert _ck.count("getScaledFrameAtTime") >= 2, \
+        "原生抽帧没用缩略帧 API（精确帧 + 关键帧两条都要）"
+    assert "OPTION_CLOSEST" in _ck and "OPTION_CLOSEST_SYNC" in _ck, \
+        "精确帧失败没有退回关键帧，个别编码器上会整段抽不到"
+    assert "bmp.recycle()" in _ck and "FileOutputStream" in _ck, \
+        "抽帧没有逐帧回收 Bitmap / 落盘 JPEG，几十张原图就 OOM"
+    assert "METADATA_KEY_VIDEO_ROTATION" in _ck, \
+        "竖拍视频没按 rotation 交换宽高，卡片里会横过来"
+    assert "prepareClipFrames(r)" in _main, \
+        "App 没有在起 WebView 前预抽素材帧"
+    _pre_call = _main.find("prepareClipFrames(r)")
+    _start_view = _main.find("startMotionView(\n")
+    assert 0 < _pre_call < _start_view, \
+        "抽帧跑到 startMotionView 之后了，会撞上「5 分钟没有新帧」判死"
+    assert '"clips": clip_list' in _ap_src and \
+        '"dir": str(OUT / "_frames" / run)' in _ap_src, \
+        "motion_html 没把素材清单 / 帧目录交给原生"
+    assert '"ci": (p["clip"].get("ci")' in _ap_src and \
+        '"file": p["clip"].get("local")' in _ap_src, \
+        "素材清单缺下标或本地路径，原生抽不了"
+    assert 'item["ci"] = out_clips' in _msrc, "payload 里的 clip 没有 ci 下标"
+    assert "const CIMG = new Map()" in _msrc and \
+        "async function loadClipImages(" in _msrc, \
+        "页面没有原生帧加载入口，还在 WebView 里抽"
+    assert "await loadClipImages(run);" in _msrc, "runExport 没先加载原生帧"
+    _load_call = _msrc.find("await loadClipImages(run);")
+    _loop48 = _msrc.find("for (let i = from; i < total; i++)")
+    assert 0 < _load_call < _loop48, \
+        "原生帧在逐帧循环之后才加载，等于没用"
+    assert "CIMG.has(ci)" in _msrc, "preloadClip 没有优先用原生帧"
+    assert _msrc.count("if (exportMode && VPFAIL.has(src))") >= 2, \
+        "抽帧失败没有在 syncVideo / videoFrame 两处都拦成静态封面"
+    assert "if (exportMode && CIREADY) { VPFAIL.add(clip.src); return; }" in _msrc, \
+        "清单读到了却没有这段素材时，还是会回 WebView 里抽"
+    _ci_ret = _msrc.find(
+        "if (exportMode && CIREADY) { VPFAIL.add(clip.src); return; }")
+    _fallback48 = _msrc.find("const v = VIDS.get(clip.src);")
+    assert 0 < _ci_ret < _fallback48, \
+        "CIREADY 的静态封面分支在 WebView 抽帧之后，App 端仍会走同步解码那条路"
+    assert "im.decode ? im.decode().catch" in _msrc, \
+        "原生帧没有预解码，首帧 drawImage 还会卡在解码上"
+    # 原生帧索引：n 被原生 maxFrames=150 截断，fps=n/dur，页面按 floor(rel*fps)
+    for _dur48, _n48 in ((6.0, 72), (30.0, 150), (256.0, 150)):
+        _f48 = _n48 / _dur48
+        _seq48 = [max(0, min(_n48 - 1, int(_i / 24 * _f48)))
+                  for _i in range(int(_dur48 * 24))]
+        assert _seq48[0] == 0 and _seq48[-1] < _n48, \
+            f"{_dur48}s 素材的原生帧索引越界"
+        assert all(b >= a for a, b in zip(_seq48, _seq48[1:])), \
+            f"{_dur48}s 素材的原生帧索引会倒退，成片里视频倒放"
 
     # 数值模拟（不依赖外部 DB）：稀疏 + 重复时间戳的路线，新旧算法逐帧对比。
     _pt = [0, 10, 25, 25, 40, 66, 80, 100, 100, 130, 150,

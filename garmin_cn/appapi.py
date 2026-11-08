@@ -1071,10 +1071,23 @@ def motion_html(activity_id: str, fps: int = 24, duration: int = 30,
         # 图片 3 秒/张）。以前按 30 秒算，素材一多尾巴就被截掉——最后几段
         # 视频干脆没出现在成片里，看起来就像「锚点错了」。
         total = float(pl.get("total") or dur)
+        # 视频素材清单交给原生抽帧：WebView 里 `drawImage(<video>)` 会同步等
+        # 解码，真机上一段 6 秒素材要 5 分钟，直接把导出拖到「5 分钟没有新帧」
+        # 判死（提示「第 N 帧没送到」）。原生 MediaMetadataRetriever 快一两个
+        # 数量级，页面只读抽好的 <img>。`ci` 与页面 payload 里的 clip.ci 一致。
+        clip_list = [{"ci": (p["clip"].get("ci") if p["clip"].get("ci") is not None else -1),
+                      "name": p["clip"].get("name") or "",
+                      "file": p["clip"].get("local") or "",
+                      "dur": float(p["clip"].get("dur") or 0),
+                      "w": int(p["clip"].get("w") or 0),
+                      "h": int(p["clip"].get("h") or 0)}
+                     for p in (pl.get("photos") or [])
+                     if p.get("clip") and p["clip"].get("kind") != "image"]
         return {"ok": True, "html": str(out), "run": run,
                 "frames": max(1, int(round(total * fps))), "fps": fps,
                 "duration": round(total, 2), "play": dur,
-                "width": 1080, "height": 1920, "clips": len(clips),
+                "width": 1080, "height": 1920, "clips": clip_list,
+                "dir": str(OUT / "_frames" / run),
                 "privacy": mode, "name": row.get("name") or "跑步回放",
                 # 真机排查「底图缩放」用：App 会写进 Logcat
                 "view": pl.get("view") or {}}

@@ -422,6 +422,10 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                 "gap": pick["gap_m"], "approx": bool(pick.get("approx")),
                 "lead": CLIP_LEAD,
             }
+            # 素材下标：App 端原生抽帧按这个下标建目录 c<ci>/，
+            # 页面再用 `_clips.json` 里的同一下标取图。必须和 out_clips
+            # 同步递增（只数视频，图片素材不占号），否则页面会取错段。
+            item["ci"] = out_clips
             # 已有同点照片 → 合并（视频优先，照片当封面/备用）
             host = None
             for p0 in out_photos:
@@ -1043,9 +1047,49 @@ const VPRE = { src: null, fps: CLIP_FPS, frames: [], w: 0, h: 0, lit: 0 };
 const VPFAIL = new Set();      // 预抽失败的素材回退到逐格 seek
 let exportMode = false;
 let VREL = 0;                  // 当前帧在素材内的相对秒数（缓存索引用）
-const PRE_MAX = 150;           // 单段最多 150 格，长素材自动降格率
-const PRE_SEEK_MS = 250;       // 单格 seek 上限；整段最坏 < 40 秒
+const PRE_MAX = 150;           // PC 端兜底上限（App 端走原生抽帧，不进这里）
+const PRE_SEEK_MS = 150;       // 兜底单格 seek 上限；PC Chrome 上几十毫秒就到位
 const PRE_LONG = 480;          // 预抽画布长边，卡片里放大绘制足够
+
+// 原生抽好的素材帧（v48）：App 在起 WebView 之前就用 MediaMetadataRetriever
+// 把每段视频按 12fps 抽成缩略 JPEG，页面只读 <img>。
+// `CIMG.get(ci)` = {imgs, fps, n, w, h}；`CIREADY` 表示 `_clips.json` 读到了。
+// 一旦 CIREADY，凡是没有图（n === 0）的素材一律静态封面 —— 绝不再在
+// WebView 里 `drawImage(<video>)`：那一步会**同步**等解码器出帧，主线程被占住
+// 时 setTimeout 兜底也跑不了，真机上能把一段 6 秒素材拖到 5 分钟以上，
+// 最后被编码线程判死（提示「第 N 帧没送到」）。
+const CIMG = new Map();
+let CIREADY = false;
+async function loadClipImages(run) {
+  if (!run) return;
+  try {
+    const r = await fetch('_frames/' + run + '/_clips.json', {cache: 'no-store'});
+    if (!r.ok) return;
+    const obj = await r.json();
+    const jobs = [];
+    for (const k in obj) {
+      const it = obj[k] || {};
+      const n = it.n | 0;
+      if (n <= 0) {
+        CIMG.set(+k, {imgs: [], fps: CLIP_FPS, n: 0, w: 0, h: 0});
+        continue;
+      }
+      const imgs = [];
+      const base = '_frames/' + run + '/c' + k + '/';
+      for (let i = 0; i < n; i++) {
+        const im = new Image();
+        im.src = base + i + '.jpg';
+        imgs.push(im);
+        jobs.push(im.decode ? im.decode().catch(() => null)
+                             : Promise.resolve());
+      }
+      CIMG.set(+k, {imgs: imgs, fps: it.fps || CLIP_FPS, n: n,
+                    w: it.w | 0, h: it.h | 0});
+    }
+    await Promise.all(jobs);   // 全部解码完再开跑，首帧不会卡在解码上
+    CIREADY = true;
+  } catch (e) { /* 没有原生帧（PC 端 / 老服务）就走页面预抽兜底 */ }
+}
 
 function preSize(clip) {
   const cw0 = clip.w || 1080, ch0 = clip.h || 1920;
@@ -1090,6 +1134,17 @@ function probeLit(v) {
 // 既不会中途冻结，也不会闪黑。每格是独立画布，不是共用一张。
 async function preloadClip(clip) {
   VPRE.src = clip.src; VPRE.frames = []; VPRE.lit = 0; VREL = 0;
+  const ci = (clip.ci == null) ? -1 : +clip.ci;
+  // 原生已经抽好：直接接管，零解码、零 seek
+  if (exportMode && CIMG.has(ci)) {
+    const c = CIMG.get(ci);
+    if (!c.n || !c.imgs.length) { VPFAIL.add(clip.src); return; }
+    VPRE.frames = c.imgs; VPRE.fps = c.fps; VPRE.lit = c.n;
+    VPRE.w = c.w; VPRE.h = c.h;
+    return;
+  }
+  // 清单读到了却没有这一段（含 n=0）：静态封面，别回 WebView 里抽
+  if (exportMode && CIREADY) { VPFAIL.add(clip.src); return; }
   const v = VIDS.get(clip.src);
   if (!v) { VPFAIL.add(clip.src); return; }
   if (v.readyState < 2) await waitReady(v, 2500);
@@ -1170,6 +1225,8 @@ function fallbackFrame(src, w, h) {
   return null;
 }
 function videoFrame(src, v, w, h) {
+  // 原生抽帧失败 / 没有这一段：静态封面。绝不再碰 <video>。
+  if (exportMode && VPFAIL.has(src)) return fallbackFrame(src, w, h);
   // 导出期预抽帧就绪：按素材内相对时间直接取缓存位图，完全不碰 <video>。
   // 这是整条流水线提速的关键——渲染循环里不再有解码等待，也不再有
   // 「seek 没到位却抓到旧帧」这种让画面停住的机会。
@@ -1398,6 +1455,7 @@ async function syncVideo(p) {
     VSTEP.set(src, Math.floor(VREL * VPRE.fps));
     return;
   }
+  if (exportMode && VPFAIL.has(src)) return;   // 静态封面，一次 seek 都不做
   const step = Math.floor(VREL * CLIP_FPS);
   if (VSTEP.get(src) === step) return;
   // 视频还没解出画面：每次都短等一次，绝不能「等过一次就永远不等」。
@@ -1570,6 +1628,9 @@ async function runExport() {
   // 时间轴是单调递增的，所以每段只会抽一次；预抽失败的素材加入 VPFAIL，
   // 自动回退到旧的逐格 seek 路径，不会把导出卡死。
   exportMode = true;
+  // 原生抽好的素材帧（App 在起 WebView 前就备好了）；PC 端没有这个文件，
+  // 会回落到下面的逐段预抽。
+  await loadClipImages(run);
   for (let i = from; i < total; i++) {
     const t = i / fps;
     const w = popAt(t).w;
