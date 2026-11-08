@@ -117,6 +117,13 @@ a{color:var(--brand-ink);text-decoration:none}
   border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px;
   color:inherit;cursor:pointer;box-shadow:var(--shadow)}
 .row:active{background:rgba(59,130,246,.10);border-color:rgba(96,165,250,.34)}
+/* 当前选中的周期行：左侧一道蓝条 + 蓝底。滚动列表里要一眼看出
+   「现在这张柱状图讲的是哪个月」，否则点完还是一排一模一样的行。 */
+.row.on{background:linear-gradient(180deg,rgba(59,130,246,.20),rgba(34,211,238,.07));
+  border-color:rgba(96,165,250,.52);
+  box-shadow:inset 3px 0 0 #3B82F6, 0 12px 30px -22px rgba(59,130,246,.9)}
+.row.on .t{color:#DCEBFF}
+.row.on .go{color:#8CC2FF}
 /* 图标底座：蓝青渐变 + 内发光，是整页「科技感」的主要来源 */
 .row .ic{flex:0 0 auto;width:36px;height:36px;border-radius:11px;display:flex;
   align-items:center;justify-content:center;font-size:15px;font-weight:600;
@@ -379,15 +386,25 @@ def stat(label: str, value, note: str = "", unit: str = "") -> str:
 
 
 def row(icon: str, title: str, desc: str, *, act: str = "", href: str = "",
-        aid: str = "", tone: str = "", go: bool = True) -> str:
+        aid: str = "", tone: str = "", go: bool = True,
+        on: bool = False, nopush: bool = False) -> str:
+    """列表行。
+
+    `on=True` 表示「当前选中的那一条」，左侧加一道蓝条；
+    `nopush=True` 走 `location.replace`，同页切参数不往历史栈里堆条目
+    （否则连点五个月份，返回键要按五次才出得去）。
+    """
     tag = "a" if href else "div"
     attr = f' href="{esc(href)}"' if href else ""
+    if href and nopush:
+        attr += " data-nopush"
     if act:
         attr += f' data-act="{esc(act)}"'
     if aid:
         attr += f' data-aid="{esc(aid)}"'
     arrow = '<span class="go">›</span>' if go else ""
-    return (f'<{tag} class="row"{attr}><span class="ic {esc(tone)}">{esc(icon)}</span>'
+    cls = "row on" if on else "row"
+    return (f'<{tag} class="{cls}"{attr}><span class="ic {esc(tone)}">{esc(icon)}</span>'
             f'<span class="tx"><span class="t">{esc(title)}</span>'
             f'<span class="d">{esc(desc)}</span></span>{arrow}</{tag}>')
 

@@ -132,12 +132,14 @@ def _month_end(key: str) -> str:
     return d.isoformat()
 
 
-def _month_bars(months: list[dict]) -> str:
-    """近 12 个月跑量柱状图（纯 SVG，不引第三方库，离线可用）。
+def _month_bars(months: list[dict], hot: str = "", link: str = "") -> str:
+    """周期柱状图（纯 SVG，不引第三方库，离线可用）。
 
-    当前月用实色、历史月半透明：一眼能看出「这个月还没跑完」。
-    没跑的月份也画一根 8px 的底座，否则中间断档读不出来。
+    `hot` 是「当前这一根」的 key（日期 `2026-11-08` 或月份 `2026-11`）。
+    旧版固定把最后一根画成实色 —— 那只对「近 12 个月」成立；一旦柱状图
+    跟着选中的历史月份走，最后一根不再是「本月」，实色就成了误导。
     """
+    today_hint = hot
     if not months:
         return '<div class="empty">还没有活动，先同步或补拉历史</div>'
     n = len(months)
@@ -156,8 +158,8 @@ def _month_bars(months: list[dict]) -> str:
         h = 6 + (H - pad_b - pad_t) * (km / vapor)
         x = i * (bw + gap)
         y = H - pad_b - h
-        cur = i == n - 1
-        show_lab = (not dense) or i == 0 or (i + 1) % 5 == 0 or cur
+        cur = bool(today_hint) and str(m.get("key") or "") == today_hint
+        show_lab = (not dense) or i == 0 or (i + 1) % 5 == 0 or i == n - 1
         bars.append(
             f'<rect x="{x:.0f}" y="{y:.0f}" width="{bw:.0f}" height="{h:.0f}" rx="4" '
             f'fill="url(#mb)" opacity="{1 if cur else 0.52}"/>'
@@ -167,6 +169,17 @@ def _month_bars(months: list[dict]) -> str:
             + (f'<text x="{x + bw / 2:.0f}" y="{H - 12}" text-anchor="middle" '
                f'font-size="11" fill="#7C8FA8">{_esc(m.get("label") or "")}</text>'
                if show_lab else ""))
+        if link and not dense:
+            # 柱子够粗（≤14 根）时才做成可点：30 根柱只有 9px 宽，
+            # 手指根本点不准，宁可让下面的周期行去承担这个交互。
+            # 再铺一层整列透明热区：没跑的月份柱子只有 6px 高，
+            # 光靠它当点击目标，等于让人去点一根头发丝。
+            hit = (f'<rect x="{x:.0f}" y="{pad_t - 12:.0f}" width="{bw:.0f}" '
+                   f'height="{H - pad_b - pad_t + 12:.0f}" fill="transparent" '
+                   f'pointer-events="all"/>')
+            href = link.format(key=str(m.get("key") or ""))
+            bars[-1] = (f'<a href="{_esc(href)}" data-nopush>{hit}'
+                        f'{bars[-1]}</a>')
     return (f'<svg viewBox="0 0 {W} {H}" width="100%" '
             f'xmlns="http://www.w3.org/2000/svg" '
             f'style="display:block;max-width:520px;margin:0 auto">'
@@ -175,26 +188,67 @@ def _month_bars(months: list[dict]) -> str:
             f'</linearGradient></defs>{"".join(bars)}</svg>')
 
 
-def _bucket_rows(items: list[dict], mode: str, kind: str) -> str:
-    """周/月/年分组列表：每行是一个周期汇总，点进去看该周期的活动明细。"""
+def _week_span(key: str) -> tuple[str, str]:
+    """`2026-W45` → 该 ISO 周的周一 / 周日。
+
+    不能直接用活动里的 min/max 日期：那只是「这周有跑的那几天」，
+    周视图的柱状图要的是完整一周（没跑的日子也该占一根空柱）。
+    """
+    try:
+        y, w = int(str(key)[:4]), int(str(key)[6:])
+        mon = dt.date.fromisocalendar(y, w, 1)
+    except (TypeError, ValueError):
+        return "", ""
+    return mon.isoformat(), (mon + dt.timedelta(days=6)).isoformat()
+
+
+_WEEKDAY = "一二三四五六日"
+
+
+def _weekday_series(days: list[dict]) -> list[dict]:
+    """逐日序列的刻度从「8」换成「日」：周视图里光看数字读不出星期几。"""
+    out = []
+    for d in days:
+        try:
+            i = dt.date.fromisoformat(str(d.get("key"))).weekday()
+        except (TypeError, ValueError):
+            out.append(d)
+            continue
+        out.append({**d, "label": _WEEKDAY[i]})
+    return out
+
+
+def _bucket_rows(items: list[dict], mode: str, kind: str, sel: str = "") -> str:
+    """周/月/年分组列表：每行是一个周期汇总。
+
+    点一行**留在当前粒度**、把柱状图和汇总切到那个周期（`sel`），
+    不再直接跳去活动明细 —— 以前一律 `mode=list`，于是「点哪个月都只看到
+    最新那个月的图」。明细改成周期卡片上的「看这 N 次活动」按钮。
+    """
     if not items:
         return '<div class="empty">这个范围里还没有活动。</div>'
     rows = []
     for b in items:
+        key = str(b.get("key") or "")
         if mode == "week":
-            title = f"{b['key']} · {b.get('label') or ''}"
+            # 行的日期用**完整 ISO 周**（周一到周日），不用活动里的 min/max：
+            # 某一周只跑了周二、周四时，min/max 会显示成「11-03~11-05」，
+            # 看着像这周只有三天，和柱状图的 7 根对不上。
+            ws, we = _week_span(key)
+            span = f"{ws[5:]}~{we[5:]}" if ws and we else (b.get("label") or "")
+            title = f"{key} · {span}"
             icon = "▤"
         elif mode == "month":
-            title = f"{b['key']} · {int(str(b['key'])[5:7])} 月"
+            title = f"{key} · {int(key[5:7])} 月"
             icon = "▦"
         else:
-            title = f"{b['key']} 年"
+            title = f"{key} 年"
             icon = "▣"
         desc = (f"{b.get('count') or 0} 次 · {float(b.get('km') or 0):.1f} km"
                 f" · {float(b.get('dur_h') or 0):.1f} 小时")
-        href = f"/history?{_q(start=b.get('start') or '', end=b.get('end') or '',
-                              type=kind, mode='list')}"
-        rows.append(ui.row(icon, title, desc, href=href, tone="b"))
+        href = f"/history?{_q(mode=mode, sel=key, type=kind)}"
+        rows.append(ui.row(icon, title, desc, href=href, tone="b",
+                           on=bool(sel) and key == sel, nopush=True))
     return "".join(rows)
 
 
@@ -242,12 +296,15 @@ def history_page(qs: dict) -> str:
             ui.stat("累计跑量", f"{float(total.get('km') or 0):.0f} km",
                     f"{total.get('count') or 0} 次 · {float(total.get('dur_h') or 0):.0f} 小时") +
             '</div>')
-    def chart_card(title: str, series: list) -> str:
+    today = dt.date.today().isoformat()
+
+    def chart_card(title: str, series: list, hot: str = "", foot: str = "",
+                   link: str = "") -> str:
         """柱状图卡片。series 为空（例如这段确实没数据）就不占位置。"""
         if not series:
             return ""
         return (f'<div class="card" style="margin-bottom:10px">'
-                f'<h3>{_esc(title)}</h3>{_month_bars(series)}</div>')
+                f'<h3>{_esc(title)}</h3>{_month_bars(series, hot, link)}{foot}</div>')
 
     def range_stats(rs: str, re_: str) -> dict:
         """按周期范围再取一次统计；取不到就用空序列。"""
@@ -256,7 +313,24 @@ def history_page(qs: dict) -> str:
         got = A.history_stats(rs, re_, "run" if kind in ("", "run") else "")
         return got if got.get("ok") else {}
 
-    _types = "run" if kind in ("", "run") else ""
+    def period_foot(rs: str, re_: str, count, km, dur_h) -> str:
+        """柱状图下面那行「这个周期跑了多少」+ 进明细的按钮。
+
+        以前「点月份」就是进明细；现在点行是**选中**这个月，
+        进明细挪到这个按钮上，两条路都还在。
+        """
+        if not (rs and re_):
+            return ""
+        if not count:
+            return (f'<div class="note" style="margin-top:8px">'
+                    f'这个周期没有活动 · {rs} ~ {re_}</div>')
+        href = f"/history?{_q(mode='list', start=rs, end=re_, type=kind)}"
+        return (f'<div class="note" style="margin-top:8px">'
+                f'{float(km or 0):.1f} km · {count} 次 · '
+                f'{float(dur_h or 0):.1f} 小时 · {rs} ~ {re_}</div>'
+                f'<div class="pager" style="margin-top:8px">'
+                f'<a class="btn primary" href="{href}" data-nopush>'
+                f'看这 {count} 次活动的明细</a></div>')
 
     # ---- 视图切换
     def mchip(label: str, m: str) -> str:
@@ -269,41 +343,72 @@ def history_page(qs: dict) -> str:
               mchip("按年", "year") + '</div>')
 
     # ---- 分组视图
+    # `sel` 是「当前选中的周期 key」。点下面任意一行都会带着它回到本粒度，
+    # 柱状图/汇总跟着它走；不传就默认最新一期。旧版没有这个参数，
+    # 于是无论点哪个月，图上永远是最近那个月。
     if mode == "week":
-        base = (stats.get("weeks") or [{}])[-1]
-        rs = start or str(base.get("start") or "")
-        re_ = end or str(base.get("end") or "")
+        weeks = list(stats.get("weeks") or [])        # 旧 → 新
+        keys = [str(w.get("key") or "") for w in weeks]
+        sel = _one(qs, "sel")
+        if sel not in keys:
+            sel = keys[-1] if keys else ""
+        cur = next((w for w in weeks if str(w.get("key")) == sel), {})
+        rs, re_ = _week_span(sel) if sel else ("", "")
+        if re_ and re_ > today:
+            re_ = today                               # 本周不画未来的空柱
         bs = range_stats(rs, re_)
-        chart = chart_card(f"{rs[5:]}~{re_[5:]} 每日跑量（km）" if rs and re_
-                           else "本周每日跑量（km）", bs.get("days") or [])
-        groups = _bucket_rows(stats.get("weeks") or [], "week", kind)
+        chart = chart_card(f"{sel} 每日跑量（km）" if sel else "本周每日跑量（km）",
+                           _weekday_series(bs.get("days") or []),
+                           hot=today,
+                           foot=period_foot(rs, re_, cur.get("count"),
+                                            cur.get("km"), cur.get("dur_h")))
+        groups = _bucket_rows(list(reversed(weeks)), "week", kind, sel)
         grouping = ui.sec("最近 12 周", switch + chart
                           + '<div style="margin-top:10px">' + groups + '</div>')
     elif mode == "month":
-        key = str((months or [{}])[-1].get("key") or "")
-        rs = start or (f"{key}-01" if key else "")
-        re_ = end or (_month_end(key) if key else "")
+        keys = [str(m.get("key") or "") for m in months]
+        sel = _one(qs, "sel")
+        if sel not in keys:
+            sel = keys[-1] if keys else ""
+        cur = next((m for m in months if str(m.get("key")) == sel), {})
+        rs = f"{sel}-01" if sel else ""
+        re_ = _month_end(sel) if sel else ""
+        if re_ and re_ > today:
+            re_ = today                               # 本月只画到今天
         bs = range_stats(rs, re_)
-        chart = chart_card(f"{key} 每日跑量（km）" if key else "本月每日跑量（km）",
-                           bs.get("days") or [])
+        chart = chart_card(f"{sel} 每日跑量（km）" if sel else "本月每日跑量（km）",
+                           bs.get("days") or [], hot=today,
+                           foot=period_foot(rs, re_, cur.get("count"),
+                                            cur.get("km"), cur.get("dur_h")))
         groups = _bucket_rows(
-            [{"key": m["key"], "count": m["count"], "km": m["km"], "dur_h": 0,
+            [{"key": m["key"], "count": m["count"], "km": m["km"],
+              "dur_h": m.get("dur_h") or 0,
               "start": m["key"] + "-01", "end": _month_end(m["key"])}
-             for m in reversed(months)], "month", kind)
+             for m in reversed(months)], "month", kind, sel)
         grouping = ui.sec("最近 12 个月", switch + chart
                           + '<div style="margin-top:10px">' + groups + '</div>')
     elif mode == "year":
-        key = str((stats.get("years") or [{}])[0].get("key") or "")
-        rs = start or (f"{key}-01-01" if key else "")
-        re_ = end or (f"{key}-12-31" if key else "")
+        years = list(stats.get("years") or [])        # 新 → 旧
+        keys = [str(y.get("key") or "") for y in years]
+        sel = _one(qs, "sel")
+        if sel not in keys:
+            sel = keys[0] if keys else ""
+        cur = next((y for y in years if str(y.get("key")) == sel), {})
+        rs = f"{sel}-01-01" if sel else ""
+        re_ = f"{sel}-12-31" if sel else ""
         bs = range_stats(rs, re_)
-        chart = chart_card(f"{key} 年各月跑量（km）" if key else "本年各月跑量（km）",
-                           bs.get("months") or [])
+        # 年视图固定 12 根：当年没到的月份是空柱，不裁剪，
+        # 否则「1~11 月」和「1~12 月」的图长得不一样，反而不易横向比较。
+        chart = chart_card(f"{sel} 年各月跑量（km）" if sel else "本年各月跑量（km）",
+                           bs.get("months") or [], hot=today[:7],
+                           link="/history?mode=month&sel={key}",
+                           foot=period_foot(rs, re_, cur.get("count"),
+                                            cur.get("km"), cur.get("dur_h")))
         groups = _bucket_rows(
             [{"key": y["key"], "count": y["count"], "km": y["km"],
               "dur_h": y.get("dur_h") or 0, "start": y["key"] + "-01-01",
               "end": y["key"] + "-12-31"}
-             for y in (stats.get("years") or [])], "year", kind)
+             for y in years], "year", kind, sel)
         grouping = ui.sec("按年份", switch + chart
                           + '<div style="margin-top:10px">' + groups + '</div>')
     else:
@@ -363,7 +468,10 @@ def history_page(qs: dict) -> str:
                      '<div class="btn primary" data-act="historySync">补拉更早的数据</div>'
                      '<div class="btn" data-act="historySyncAll">一键拉全部历史</div>'
                      '</div>')
-        chart = chart_card("近 12 个月跑量（km）", months)
+        # 柱子可点：点哪个月就切到「按月」并选中它，省得先去按月再翻。
+        chart = chart_card("近 12 个月跑量（km） · 点柱子看当月", months,
+                           hot=str((stats.get("month") or {}).get("key") or ""),
+                           link="/history?mode=month&sel={key}")
         detail = (ui.sec("活动", chart + rows + pager +
                          '<div class="note" style="margin-top:8px">'
                          f'当前 {offset + 1}~{offset + len(items)} 条 · 共 {r.get("total", 0)} 条 · {_esc(scope)}'
@@ -372,4 +480,4 @@ def history_page(qs: dict) -> str:
 
     body = ui.sec("概览", hero) + grouping + detail
     return ui.page("HISTORY · 历史", "历史数据",
-                   "按周 / 月 / 年管理，页首看月度跑量", body, chips)
+                   "点周期看当期柱状图，按周 / 月 / 年管理", body, chips)

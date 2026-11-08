@@ -828,7 +828,9 @@ def history_stats(start: str | None = None, end: str | None = None,
             keys.append(f"{yy:04d}-{mm:02d}")
     months_out = [{"key": k, "label": f"{int(k[5:7])}月",
                    "km": round(months.get(k, {}).get("km", 0), 1),
-                   "count": months.get(k, {}).get("count", 0)} for k in keys]
+                   "count": months.get(k, {}).get("count", 0),
+                   "dur_h": round(months.get(k, {}).get("dur_h", 0), 1)}
+                  for k in keys]
 
     # 周用 start 排序（ISO 周号跨年会回绕，字符串排序不可靠）
     wk_sorted = sorted(weeks.items(), key=lambda kv: kv[1]["start"], reverse=True)[:12]

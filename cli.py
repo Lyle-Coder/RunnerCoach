@@ -3073,7 +3073,8 @@ def cmd_selftest(args) -> int:
             "start": "2026-11-01", "end": "2026-11-30", "key": "2026-11", "label": "11月"}
     _html = _H._bucket_rows([_sec], "month", "run")
     assert "100.0 km" in _html and "8 次" in _html, "周期汇总行没带上跑量/次数"
-    assert 'href="/history?start=2026-11-01' in _html, "周期行没链到明细"
+    assert 'href="/history?mode=month&amp;sel=2026-11&amp;type=run"' in _html, \
+        "周期行没链回本粒度并带上选中的周期"
     # 柱状图：12 根柱 + 当月实色
     _bars = _H._month_bars(_hs["months"])
     assert _bars.count("<rect ") == 12, "柱状图不是 12 根柱"
@@ -3094,8 +3095,11 @@ def cmd_selftest(args) -> int:
     for _m in ("week", "month", "year"):
         assert "<svg" in _H.history_page({"mode": [_m]}), f"{_m} 视图没有柱状图"
     # 31 根柱要密排：不标数值、轴标签每 5 格一次
+    # 30 根柱只该有 8 个刻度（首、每 5 格、末）；逐根标就是 30 个，
+    # 柱子上挤一堆字反而读不出来。以前只看「有没有高亮色」，
+    # 自 high 改成按 hot 匹配后那条断言就失效了。
     _dense = _H._month_bars([{"label": str(i), "km": 1.0} for i in range(1, 31)])
-    assert _dense.count("<rect ") == 30 and 'fill="#8CC2FF"' not in _dense, \
+    assert _dense.count("<rect ") == 30 and _dense.count("<text ") <= 12, \
         "30 根柱仍逐根标数值，会挤成一团"
     # 下拉刷新（原生）也要深色，否则一拉就闪白
     _pull = (Path(__file__).parent
@@ -3103,6 +3107,85 @@ def cmd_selftest(args) -> int:
              ).read_text(encoding="utf-8")
     assert "0xFF070B12.toInt()" in _pull and "0xFF5A6B5E" not in _pull, \
         "下拉刷新还是浅色"
+
+    # ---- v57：点周期要「选中该周期」，不能永远画最新那期 -------------------
+    assert _H._week_span("2026-W45") == ("2026-11-02", "2026-11-08"), \
+        "ISO 周跨度算错（ISOCALENDAR 不是周一起？）"
+    _ms = [m["key"] for m in _hs["months"]]
+    _new_m, _old_m = _ms[-1], _ms[0]
+    _days_old = len(_AA2.history_stats(
+        f"{_old_m}-01", _H._month_end(_old_m)).get("days") or [])
+    _pg_old = _H.history_page({"mode": ["month"], "sel": [_old_m]})
+    _pg_new = _H.history_page({"mode": ["month"], "sel": [_new_m]})
+    assert f"{_old_m} 每日跑量" in _pg_old and f"{_new_m} 每日跑量" in _pg_new, \
+        "柱状图标题没跟着选中的月份走"
+    assert _pg_old.count("<rect ") == _days_old, \
+        "选中历史月份后柱状图不是那个月的天数（还在画最近 12 个月？）"
+    assert 'class="row on"' in _pg_old and f"sel={_old_m}" in _pg_old, \
+        "选中的周期行没有高亮"
+    # 非法/过期的 sel 要回落到最新一期，不能空图或报错
+    _pg_bad = _H.history_page({"mode": ["month"], "sel": ["1999-01"]})
+    assert f"{_new_m} 每日跑量" in _pg_bad and "<svg" in _pg_bad, \
+        "sel 越界时没有回落到最新一期"
+    # 周视图：7 根柱（含没跑的日子），刻度是星期而不是日期数字。
+    # 必须挑「活动只覆盖 6 天」的那一周来验 —— 拿最新一周（正好 7 天）测，
+    # 就算用活动首末日期算范围也照样是 7 根，等于没测。
+    _wk_part = next((w for w in (_hs.get("weeks") or [])
+                     if w.get("start") and w.get("end")
+                     and (w["start"], w["end"]) != _H._week_span(str(w["key"]))),
+                    None) or (_hs.get("weeks") or [{}])[-1]
+    _wk_key = str(_wk_part.get("key") or "")
+    _pg_wk = _H.history_page({"mode": ["week"], "sel": [_wk_key]})
+    assert _pg_wk.count("<rect ") == 7, "周视图不是 7 根柱（只画了有跑的日子）"
+    assert ">一</text>" in _pg_wk and ">日</text>" in _pg_wk, "周视图刻度不是星期"
+    # 行的日期也必须是完整 ISO 周，否则「11-03~11-05」和 7 根柱对不上
+    _ws, _we = _H._week_span(_wk_key)
+    assert f"{_ws[5:]}~{_we[5:]}" in _H._bucket_rows([_wk_part], "week", "run", _wk_key), \
+        "周行显示的是活动首末日期，不是完整的一周"
+    # 年视图：选中旧年份要出那一年的 12 根
+    _ys = [y["key"] for y in (_hs.get("years") or [])]
+    if len(_ys) > 1:
+        _pg_y = _H.history_page({"mode": ["year"], "sel": [_ys[-1]]})
+        assert f"{_ys[-1]} 年各月跑量" in _pg_y and \
+            _pg_y.count('fill="url(#mb)"') == 12, \
+            "点旧年份没有切到那一年的 12 个月"
+    # hot：只有「今天那一根」是实色，历史柱不该也实色
+    # hot 指第一根：必须第一根实色、第二根半透明（反过来就说明还在按「最后一根」高亮）
+    _hb = _H._month_bars([{"key": "2026-09", "label": "9月", "km": 5.0},
+                          {"key": "2026-10", "label": "10月", "km": 9.0}],
+                         hot="2026-09")
+    assert _hb.count('opacity="1"') == 1 and _hb.count('opacity="0.52"') == 1, \
+        "柱状图高亮不是「唯一一根实色」"
+    assert _hb.index('opacity="1"') < _hb.index('opacity="0.52"'), \
+        "柱状图的高亮仍是「最后一根」而不是 hot 指定的那一根"
+    # 月分组行要带真实时长（以前恒为 0.0 小时）
+    assert any(float(m.get("dur_h") or 0) > 0 for m in _AA2.history_stats()["months"]), \
+        "月份统计没有 dur_h，月分组行只能显示 0.0 小时"
+    assert "def _weekday_series(" in _h_src and "def _week_span(" in _h_src, \
+        "历史页缺周跨度/星期刻度辅助函数"
+    # 柱子可点：列表页 12 个月、年视图 12 个月都该链到「按月 + 那一个月」；
+    # 30/31 根的密排图不给链接（9px 宽点不准）。
+    def _svg_only(doc: str) -> str:
+        a = doc.find("<svg")
+        return doc[a:doc.find("</svg>", a) + 6] if a >= 0 else ""
+
+    _pg_list2 = _H.history_page({"mode": ["list"]})
+    assert _svg_only(_pg_list2).count('href="/history?mode=month&amp;sel=') == 12, \
+        "列表页柱状图的柱子不能点进对应月份"
+    assert "点柱子看当月" in _pg_list2, "柱状图没提示可以点"
+    # 月视图是 28~31 根密排 → 柱子不做链接（9px 宽，手指点不准反而误触）
+    _dense_doc = _svg_only(_H.history_page({"mode": ["month"],
+                                           "sel": [_ms[0]]}))
+    assert 'href="/history?mode=month' not in _dense_doc, \
+        "30 根柱也做了链接，手指点不准反而误触"
+    # 点周期行用 replace 导航：不往历史栈里堆条目
+    assert "data-nopush" in _H._bucket_rows([_sec], "month", "run", "2026-11"), \
+        "周期行没走 replace 导航，连点几个月返回键要按很多次"
+    # 空周期不能给「看 0 次活动的明细」这种死链
+    _empty = _H.history_page({"mode": ["month"], "sel": [_ms[0]]})
+    if not any(m["count"] for m in _hs["months"] if m["key"] == _ms[0]):
+        assert "看这 0 次活动的明细" not in _empty and "这个周期没有活动" in _empty, \
+            "空周期仍给了一个点进去什么都没有的明细链接"
     assert "putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)" in _main, \
         "相册不能多选，批量添加不成立"
     assert "val u = pendingVideos.removeFirstOrNull()" in _main and \
