@@ -2961,12 +2961,19 @@ def cmd_selftest(args) -> int:
     from garmin_cn import actcard as _AC
     _ac_src = Path(_AC.__file__).read_text(encoding="utf-8")
     _clip_dlg = (_kt_dir / "ClipTrimDialog.kt").read_text(encoding="utf-8")
-    assert ".hleft{flex:1;min-width:0}" in _ac_src, \
+    assert ".hleft{flex:1 1 520px;min-width:0}" in _ac_src, \
         "活动图标题列没有 min-width:0，长标题会把标签挤出卡片"
-    assert ".hname{font-size:38px" in _ac_src and "-webkit-line-clamp:2" in _ac_src, \
-        "标题没缩小或没限行，长标题仍会溢出"
+    assert ".hname{font-size:36px" in _ac_src and \
+        "max-height:calc(36px * 1.3 * 2)" in _ac_src, \
+        "标题没缩小或没限高，长标题仍会溢出"
+    assert "flex-wrap:wrap" in _ac_src, \
+        "标题行不会回绕，标签还是会被挤出卡片"
     assert ".htag{flex:none;white-space:nowrap" in _ac_src, \
         "标签会被长标题压缩/换行"
+    # 列表行：标题从单行省略改成最多两行，参数本来就换行
+    assert "display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2" \
+        in _ui_src, \
+        "活动列表标题仍是单行省略，长活动名看不全"
     # 2) 登录态：Garmin 会在普通请求里轮换 JWT，只登录时落盘 = 关掉再开就过期
     from garmin_cn import net as _NET
     _net_src = Path(_NET.__file__).read_text(encoding="utf-8")

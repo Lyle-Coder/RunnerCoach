@@ -375,18 +375,41 @@ class MainActivity : Activity() {
     /** 只有「补拉」需要联网和账号，仍走原生对话框；查询历史已经全部网页化。 */
     private fun showSyncRangeDialog() {
         val end = todayISO()
+        // 先把本地覆盖范围读出来再弹框：只写「最近 90 天」，如果这 90 天早已
+        // 在本地，跑完只是「跳过 N 天」，用户就会觉得「点了没效果」。
+        thread {
+            val st = try {
+                apiCall("status")
+            } catch (t: Throwable) {
+                JSONObject().put("error", t.message ?: "")
+            }
+            ui { buildSyncRangeDialog(end, st.optString("first"), st.optString("last")) }
+        }
+    }
+
+    private fun buildSyncRangeDialog(end: String, first: String, last: String) {
+        val covered = if (first.isNotBlank() && last.isNotBlank())
+            "本地已覆盖 $first ~ $last。" else "本地还没有数据。"
+        val items = mutableListOf("最近 90 天", "最近 180 天", "最近 365 天")
+        if (first.isNotBlank()) items.add("从 $first 往前补 90 天")
+        items.add("自定义日期区间…（最多 3 年）")
         AlertDialog.Builder(this)
             .setTitle("拉取更多历史数据（增量补齐）")
-            .setMessage("已有且稳定的日子会跳过，活动列表自动翻页补齐。\n" +
-                "范围越大请求越多，请保持网络畅通。")
-            .setItems(arrayOf<CharSequence>(
-                "最近 90 天", "最近 180 天", "最近 365 天",
-                "自定义日期区间…（最多 3 年）")) { _, which ->
-                if (which < 3) {
-                    val n = intArrayOf(90, 180, 365)[which]
-                    runHistorySync(shiftISO(end, -(n - 1)), end)
-                } else {
-                    pickDateRange { a, b -> runHistorySync(a, b) }
+            .setMessage("$covered\n" +
+                "已有且稳定的日子会跳过，只补缺口；活动列表自动翻页补齐。\n" +
+                "要拉更早的数据，选「从最早日期往前补」。")
+            .setItems(items.toTypedArray()) { _, which ->
+                when (which) {
+                    0 -> runHistorySync(shiftISO(end, -89), end)
+                    1 -> runHistorySync(shiftISO(end, -179), end)
+                    2 -> runHistorySync(shiftISO(end, -364), end)
+                    3 -> if (first.isNotBlank()) {
+                        val base = first
+                        runHistorySync(shiftISO(base, -89), shiftISO(base, -1))
+                    } else {
+                        pickDateRange { a, b -> runHistorySync(a, b) }
+                    }
+                    else -> pickDateRange { a, b -> runHistorySync(a, b) }
                 }
             }
             .setNegativeButton("取消", null)
@@ -405,6 +428,10 @@ class MainActivity : Activity() {
         thread {
             // with_body=false 不顺带拉小米秤；force=false 走增量，避免重复请求
             val r = apiCall("sync_range", start, end, email, pwd, false, false)
+            // 真机排查「点了没反应」：区间、是否成功、新拉/跳过各几天都落一条
+            Log.i(TAG, "history sync $start~$end -> ok=${r.optBoolean("ok")} " +
+                "fetched=${r.optInt("fetched")} skipped=${r.optInt("skipped")} " +
+                "activities=${r.optInt("activities")} err=${r.optString("error")}")
             ui {
                 busy(false)
                 if (!r.optBoolean("ok")) {
@@ -418,8 +445,14 @@ class MainActivity : Activity() {
                     }
                     return@ui
                 }
-                toast("已补 ${r.optString("range")}：新拉 ${r.optInt("fetched")} 天、" +
-                    "跳过 ${r.optInt("skipped")} 天缓存、活动 ${r.optInt("activities")} 条")
+                val fetched = r.optInt("fetched")
+                val skipped = r.optInt("skipped")
+                toast(if (fetched > 0)
+                    "已补 $start ~ $end：新拉 $fetched 天、跳过 $skipped 天缓存、" +
+                        "活动 ${r.optInt("activities")} 条"
+                else
+                    "这段时间已经在本地了（跳过 $skipped 天）；" +
+                        "要更早的数据请选「从最早日期往前补」")
                 thread {
                     apiCall("dashboard")
                     setStatus(apiCall("status"))

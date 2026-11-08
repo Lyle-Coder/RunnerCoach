@@ -1162,19 +1162,22 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
    之前是 1910，各家长图预览/分享缩略图对非标比例的裁切规则不一致，
    统一到标准竖屏尺寸后，微信/相册/分享面板都不会再多切一刀。 */
 /* 标题与参数都可能很长（比赛名 + 日期 + 时段 + 天气）。旧版 .hleft 没有
-   min-width:0，flex 子项按 max-content 撑开，右侧标签被直接挤出卡片；
-   字号也从 44 降到 38，让两行中文标题有换行余地而不是硬撑。 */
-.head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px}
-.hleft{flex:1;min-width:0}
-.hname{font-size:38px;font-weight:700;letter-spacing:.5px;line-height:1.28;
-  overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;
-  -webkit-line-clamp:2;overflow:hidden}
-.hsub{font-size:22px;color:#939FAD;margin-top:10px;line-height:1.45;
-  overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;
-  -webkit-line-clamp:2;overflow:hidden}
-.htag{flex:none;white-space:nowrap;font-size:20px;color:var(--tagfg);
+   min-width:0，flex 子项按 max-content 撑开，右侧标签被直接挤出卡片。
+   这里不用 -webkit-line-clamp（个别 WebView 版本上 display:-webkit-box 会让
+   行高/换行表现不一致），改成 max-height + overflow:hidden，行为稳定；
+   flex-wrap 兜底：标签实在放不下就自己换到下一行，绝不越界。 */
+.head{display:flex;align-items:flex-end;justify-content:space-between;
+  gap:20px;flex-wrap:wrap}
+.hleft{flex:1 1 520px;min-width:0}
+.hname{font-size:36px;font-weight:700;letter-spacing:.5px;line-height:1.3;
+  overflow-wrap:anywhere;word-break:break-word;
+  max-height:calc(36px * 1.3 * 2);overflow:hidden}
+.hsub{font-size:21px;color:#939FAD;margin-top:10px;line-height:1.5;
+  overflow-wrap:anywhere;word-break:break-word;
+  max-height:calc(21px * 1.5 * 2);overflow:hidden}
+.htag{flex:none;white-space:nowrap;font-size:19px;color:var(--tagfg);
   border:1px solid var(--tagbd);background:var(--tagbg);
-  padding:8px 18px;border-radius:24px}
+  padding:7px 16px;border-radius:24px}
 /* hero 内部一律按 --hs 缩放：左上大数字宽度随距离/配速的位数变化，
    42.54 + 3:14:53 这种长值会把右上六格挤到换行（「步幅 cm」折成两行）。
    截图前用一小段脚本量一次 scrollWidth，撑了就调小 --hs，见页尾 autofit。 */

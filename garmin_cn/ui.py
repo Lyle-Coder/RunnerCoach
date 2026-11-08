@@ -86,7 +86,11 @@ a{color:var(--brand);text-decoration:none}
 .row .ic.b{background:var(--blue-soft);color:var(--blue)}
 .row .ic.a{background:var(--amber-soft);color:var(--amber)}
 .row .tx{min-width:0;flex:1}
-.row .t{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 标题最多两行：活动名是「日期 时间 · 名称」拼出来的，长一点就被截成
+   省略号，看不出是哪次。参数行本来就会换行，不用 nowrap。 */
+.row .t{font-size:14px;font-weight:600;line-height:1.35;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+  overflow:hidden;word-break:break-word}
 .row .d{font-size:11.5px;color:var(--muted);margin-top:2px;font-variant-numeric:tabular-nums}
 .row .go{margin-left:auto;color:var(--faint);font-size:17px;flex:0 0 auto}
 .acts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
