@@ -3000,6 +3000,13 @@ def cmd_selftest(args) -> int:
     assert "clipDialog?.dismiss()" in _main, \
         "重建素材列表前没关旧对话框，「删完还能看见旧列表」"
     assert "val cb = CheckBox(this)" in _main, "素材行没有多选勾选框"
+    # 素材列表必须是固定高度的可滚列表：AlertDialog.customPanel 在部分机型上
+    # 只放得下七八行，看着就像「只显示最新的 8 个」。
+    assert "ScrollView(this).apply" in _main and \
+        "(dm.heightPixels * 0.8f)" in _main, \
+        "素材列表没换成固定高度的可滚列表，条数一多就看不全"
+    assert "clipTitle?.text" in _main and "clipDialog: Dialog?" in _main, \
+        "素材列表还是 AlertDialog，没有可更新的标题"
     assert "putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)" in _main, \
         "相册不能多选，批量添加不成立"
     assert "val u = pendingVideos.removeFirstOrNull()" in _main and \

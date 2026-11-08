@@ -3,6 +3,7 @@ package com.garmincoach.app
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.DatePickerDialog
+import android.app.Dialog
 import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Bitmap
@@ -19,6 +20,7 @@ import android.util.Base64
 import android.text.InputType
 import android.util.Log
 import android.view.Gravity
+import android.view.Window
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -32,6 +34,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.chaquo.python.PyObject
@@ -950,7 +953,9 @@ class MainActivity : Activity() {
     /** 当前列表数据；缩略图线程回来时要用，所以挂在类上而不是闭包里。 */
     private var clipArray: JSONArray = JSONArray()
     /** 当前素材对话框。重建前必须先关掉它，否则会一层层叠起来。 */
-    private var clipDialog: AlertDialog? = null
+    private var clipDialog: Dialog? = null
+    /** 标题在列表里要动态改成「已选 N 个」，所以单独留个引用。 */
+    private var clipTitle: TextView? = null
     private var clipSelecting = false
     private val clipChecked = linkedSetOf<String>()
 
@@ -959,6 +964,7 @@ class MainActivity : Activity() {
         // 删完素材还能看见旧列表 —— 用户说的「多保留历史界面」就是这个。
         clipDialog?.dismiss()
         clipDialog = null
+        clipTitle = null
         val arr = clipArray
         if (arr.length() == 0) {
             clipSelecting = false
@@ -978,7 +984,7 @@ class MainActivity : Activity() {
 
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(6), dp(10), 0)
+            setPadding(dp(8), dp(4), dp(8), dp(8))
         }
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: JSONObject()
@@ -991,23 +997,82 @@ class MainActivity : Activity() {
             }
         }
 
-        // 不再自己套 ScrollView：AlertDialog 的 customPanel 本来就在滚动容器里，
-        // 嵌套一层反而让触摸事件在两层滚动之间抢。
-        val dlg = AlertDialog.Builder(this)
-            .setTitle(if (clipSelecting) "已选 ${clipChecked.size} 个" else "素材（${arr.length()}）")
-            .setView(box)
-            .setPositiveButton(if (clipSelecting) "删除选中" else "添加") { _, _ ->
-                if (clipSelecting) deleteCheckedClips() else pickMedia()
+        // 固定高度的 Dialog + 自己的 ScrollView。
+        // 旧版走 AlertDialog.setView()，customPanel 在不少机型上会被压到只剩
+        // 七八行 —— 列表看着像「只显示最新的 8 个」，其实是滚不动。
+        // 这里把中间那块做成明确可滚（weight=1），标题写总数，一眼能确认条数。
+        val title = TextView(this).apply {
+            text = if (clipSelecting) "已选 ${clipChecked.size} 个" else "素材（${arr.length()}）"
+            textSize = 17f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTextColor(0xFF1A1F1B.toInt())
+            setPadding(dp(18), dp(14), dp(18), dp(10))
+        }
+        clipTitle = title
+
+        val sv = ScrollView(this).apply {
+            isFillViewport = false
+            addView(box, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        }
+
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            setPadding(dp(8), dp(4), dp(8), dp(6))
+        }
+        fun btn(txt: String, color: Int, cb: () -> Unit): TextView =
+            TextView(this).apply {
+                text = txt
+                textSize = 14f
+                setTextColor(color)
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                isClickable = true
+                setOnClickListener { cb() }
             }
-            .setNeutralButton(if (clipSelecting) "退出选择" else "批量管理") { _, _ ->
-                clipSelecting = !clipSelecting
-                if (!clipSelecting) clipChecked.clear()
-                renderClipList()
+        btnRow.addView(btn("关闭", 0xFF485046.toInt()) { clipDialog?.dismiss() })
+        btnRow.addView(btn(if (clipSelecting) "退出选择" else "批量管理",
+            0xFF2E5A8A.toInt()) {
+            clipSelecting = !clipSelecting
+            if (!clipSelecting) clipChecked.clear()
+            renderClipList()
+        })
+        btnRow.addView(btn(if (clipSelecting) "删除选中" else "添加",
+            0xFF17845F.toInt()) {
+            if (clipSelecting) {
+                deleteCheckedClips()
+            } else {
+                clipDialog?.dismiss()
+                pickMedia()
             }
-            .setNegativeButton("关闭", null)
-            .create()
-        // 只认当前这一版：按钮回调里会重建新框，旧框的 dismiss 不能把新引用清掉
-        dlg.setOnDismissListener { if (clipDialog === dlg) clipDialog = null }
+        })
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = dp(16).toFloat()
+                setColor(0xFFFFFFFF.toInt())
+            }
+        }
+        val line = { View(this).apply { setBackgroundColor(0xFFEDEFEA.toInt()) } }
+        root.addView(title, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        root.addView(line(), LinearLayout.LayoutParams(MATCH_PARENT, 1))
+        root.addView(sv, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        root.addView(line(), LinearLayout.LayoutParams(MATCH_PARENT, 1))
+        root.addView(btnRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+
+        val dlg = Dialog(this)
+        dlg.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        dlg.setContentView(root)
+        val dm = resources.displayMetrics
+        dlg.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dlg.window?.setLayout((dm.widthPixels * 0.94f).toInt(),
+            (dm.heightPixels * 0.8f).toInt())
+        dlg.setOnDismissListener {
+            if (clipDialog === dlg) {
+                clipDialog = null
+                clipTitle = null
+            }
+        }
         clipDialog = dlg
         dlg.show()
     }
@@ -1061,7 +1126,8 @@ class MainActivity : Activity() {
                 isChecked = clipChecked.contains(id)
                 setOnCheckedChangeListener { _, on ->
                     if (on) clipChecked.add(id) else clipChecked.remove(id)
-                    clipDialog?.setTitle("已选 ${clipChecked.size} 个")
+                    clipTitle?.text = if (clipChecked.isEmpty())
+                        "素材（${clipArray.length()}）" else "已选 ${clipChecked.size} 个"
                 }
             }
             row.addView(cb, LinearLayout.LayoutParams(dp(40), dp(40)))
@@ -1121,8 +1187,13 @@ class MainActivity : Activity() {
         // 一行「加入 xx」猜到底有没有问题。
         row.setOnClickListener {
             if (clipSelecting) {
-                if (clipChecked.contains(id)) clipChecked.remove(id) else clipChecked.add(id)
-                renderClipList()      // 重建一次，标题计数和勾选状态一起刷新
+                val on = !clipChecked.contains(id)
+                if (on) clipChecked.add(id) else clipChecked.remove(id)
+                // 只同步这一行，不重建列表 —— 重建会把滚动位置打回顶部，
+                // 勾到第 10 条时特别难受。
+                (row.getChildAt(0) as? CheckBox)?.isChecked = on
+                clipTitle?.text = if (clipChecked.isEmpty())
+                    "素材（${clipArray.length()}）" else "已选 ${clipChecked.size} 个"
                 return@setOnClickListener
             }
             showClipActions(o)
