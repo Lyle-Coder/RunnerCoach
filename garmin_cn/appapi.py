@@ -764,6 +764,7 @@ def history_stats(start: str | None = None, end: str | None = None,
     months: dict[str, dict] = {}
     years: dict[str, dict] = {}
     weeks: dict[str, dict] = {}
+    days: dict[str, dict] = {}
 
     def bump(bucket: dict, key: str, km: float, dur: float) -> dict:
         b = bucket.get(key)
@@ -782,6 +783,7 @@ def history_stats(start: str | None = None, end: str | None = None,
         dur = float(r.get("duration_s") or 0) / 3600.0
         bump(months, d[:7], km, dur)
         bump(years, d[:4], km, dur)
+        bump(days, d, km, dur)
         try:
             iso = dt.date.fromisoformat(d).isocalendar()
         except ValueError:
@@ -800,14 +802,30 @@ def history_stats(start: str | None = None, end: str | None = None,
             b["end"] = d
 
     today = dt.date.fromisoformat(e)
-    # 近 12 个月要连续：没跑的月份也得占一根柱子，否则读不出「哪个月断了」
+    ds = de = None
+    if start and end:
+        try:
+            ds, de = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
+        except ValueError:
+            ds = de = None
+    # 月份序列：给了范围就按范围铺（年视图要正好 12 根），
+    # 没给就是「近 12 个月」——两种都连续，没跑的月份占一根空柱
     keys: list[str] = []
-    for i in range(11, -1, -1):
-        mm, yy = today.month - i, today.year
-        while mm <= 0:
-            mm += 12
-            yy -= 1
-        keys.append(f"{yy:04d}-{mm:02d}")
+    if ds and de:
+        yy, mm = ds.year, ds.month
+        while (yy, mm) <= (de.year, de.month):
+            keys.append(f"{yy:04d}-{mm:02d}")
+            mm += 1
+            if mm > 12:
+                mm = 1
+                yy += 1
+    else:
+        for i in range(11, -1, -1):
+            mm, yy = today.month - i, today.year
+            while mm <= 0:
+                mm += 12
+                yy -= 1
+            keys.append(f"{yy:04d}-{mm:02d}")
     months_out = [{"key": k, "label": f"{int(k[5:7])}月",
                    "km": round(months.get(k, {}).get("km", 0), 1),
                    "count": months.get(k, {}).get("count", 0)} for k in keys]
@@ -824,6 +842,18 @@ def history_stats(start: str | None = None, end: str | None = None,
                   "dur_h": round(v["dur_h"], 1)}
                  for k, v in sorted(years.items(), key=lambda kv: kv[0], reverse=True)]
 
+    # 逐日序列只给周/月视图用：范围上限 400 天，误传 3 年也不会把页面撑爆
+    days_out: list[dict] = []
+    if ds and de and 0 < (de - ds).days + 1 <= 400:
+        cur = ds
+        while cur <= de:
+            k = cur.isoformat()
+            b = days.get(k, {})
+            days_out.append({"key": k, "label": str(cur.day),
+                             "km": round(b.get("km", 0), 1),
+                             "count": b.get("count", 0)})
+            cur += dt.timedelta(days=1)
+
     cur_m = months.get(today.strftime("%Y-%m"), {})
     cur_y = years.get(today.strftime("%Y"), {})
     total_km = sum(v["km"] for v in months.values())
@@ -839,6 +869,7 @@ def history_stats(start: str | None = None, end: str | None = None,
                  "km": round(cur_y.get("km", 0), 1),
                  "count": cur_y.get("count", 0)},
         "months": months_out,
+        "days": days_out,
         "weeks": weeks_out,
         "years": years_out,
         "range": {"first": min((r["date"] for r in picked), default=""),

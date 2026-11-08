@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import os
 import shutil
 import sys
@@ -3077,6 +3078,31 @@ def cmd_selftest(args) -> int:
     _bars = _H._month_bars(_hs["months"])
     assert _bars.count("<rect ") == 12, "柱状图不是 12 根柱"
     assert 'viewBox="0 0 400 210"' in _bars, "柱状图 viewBox 变了，字号会被缩没"
+
+    # ---- v56：柱状图跟着周/月/年切粒度，并挪进「活动」章节 -----------------
+    assert _H._month_end("2026-11") == "2026-11-30", "11 月月末算错"
+    assert _H._month_end("2026-02") == "2026-02-28", "2 月月末算错"
+    _wk = _AA2.history_stats("2026-11-02", "2026-11-08")
+    assert len(_wk.get("days") or []) == 7, "周视图没给出 7 天序列"
+    _yr = _AA2.history_stats("2026-01-01", "2026-12-31")
+    assert len(_yr.get("months") or []) == 12, "年视图没给出 12 个月"
+    # 活动列表视图：柱状图必须在「活动」章节里（不在页首概览）
+    _pg_list = _H.history_page({"mode": ["list"]})
+    _pos_act = _pg_list.find(">活动</h2>")
+    assert _pos_act > 0 and _pg_list.find("<svg") > _pos_act, \
+        "活动列表章节没有柱状图（被挪回页首了）"
+    for _m in ("week", "month", "year"):
+        assert "<svg" in _H.history_page({"mode": [_m]}), f"{_m} 视图没有柱状图"
+    # 31 根柱要密排：不标数值、轴标签每 5 格一次
+    _dense = _H._month_bars([{"label": str(i), "km": 1.0} for i in range(1, 31)])
+    assert _dense.count("<rect ") == 30 and 'fill="#8CC2FF"' not in _dense, \
+        "30 根柱仍逐根标数值，会挤成一团"
+    # 下拉刷新（原生）也要深色，否则一拉就闪白
+    _pull = (Path(__file__).parent
+             / "android/app/src/main/java/com/garmincoach/app/PullRefreshLayout.kt"
+             ).read_text(encoding="utf-8")
+    assert "0xFF070B12.toInt()" in _pull and "0xFF5A6B5E" not in _pull, \
+        "下拉刷新还是浅色"
     assert "putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)" in _main, \
         "相册不能多选，批量添加不成立"
     assert "val u = pendingVideos.removeFirstOrNull()" in _main and \

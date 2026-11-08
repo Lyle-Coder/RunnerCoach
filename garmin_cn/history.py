@@ -120,6 +120,18 @@ def view_page(qs: dict) -> str:
         "<body>", "<body>" + ui.nav_html(day, cov, from_), 1)
 
 
+def _month_end(key: str) -> str:
+    """`2026-11` → `2026-11-30`。月长度不一致，不能一律拼 -31。"""
+    try:
+        y, m = int(key[:4]), int(key[5:7])
+    except (ValueError, IndexError):
+        return key
+    d = dt.date(y, m, 28)
+    while (d + dt.timedelta(days=1)).month == m:
+        d += dt.timedelta(days=1)
+    return d.isoformat()
+
+
 def _month_bars(months: list[dict]) -> str:
     """近 12 个月跑量柱状图（纯 SVG，不引第三方库，离线可用）。
 
@@ -129,11 +141,14 @@ def _month_bars(months: list[dict]) -> str:
     if not months:
         return '<div class="empty">还没有活动，先同步或补拉历史</div>'
     n = len(months)
+    # 周/月视图会给到 28~31 根：密排时隐藏数值、轴标签每 5 格标一次，
+    # 否则 9px 宽的柱子上挤一堆字比柱子本身还乱。
+    dense = n > 14
     vapor = max((float(m.get("km") or 0) for m in months), default=0.0) or 1.0
     # viewBox 按手机实际宽度设计（不是 792）：按 792 画再缩到 420 屏，
     # 11px 的刻度字会被缩成 6px，等于没标。桌面端用 max-width 兜住。
     W, H = 400, 210
-    pad_b, pad_t, gap = 38, 24, 6
+    pad_b, pad_t, gap = 38, 24, (3 if dense else 6)
     bw = (W - gap * (n - 1)) / n
     bars = []
     for i, m in enumerate(months):
@@ -142,14 +157,16 @@ def _month_bars(months: list[dict]) -> str:
         x = i * (bw + gap)
         y = H - pad_b - h
         cur = i == n - 1
+        show_lab = (not dense) or i == 0 or (i + 1) % 5 == 0 or cur
         bars.append(
             f'<rect x="{x:.0f}" y="{y:.0f}" width="{bw:.0f}" height="{h:.0f}" rx="4" '
             f'fill="url(#mb)" opacity="{1 if cur else 0.52}"/>'
             + (f'<text x="{x + bw / 2:.0f}" y="{y - 7:.0f}" text-anchor="middle" '
                f'font-size="11" fill="{"#8CC2FF" if cur else "#7C8FA8"}">{km:.0f}</text>'
-               if km > 0 else "")
-            + f'<text x="{x + bw / 2:.0f}" y="{H - 12}" text-anchor="middle" '
-              f'font-size="11" fill="#7C8FA8">{_esc(m.get("label") or "")}</text>')
+               if km > 0 and not dense else "")
+            + (f'<text x="{x + bw / 2:.0f}" y="{H - 12}" text-anchor="middle" '
+               f'font-size="11" fill="#7C8FA8">{_esc(m.get("label") or "")}</text>'
+               if show_lab else ""))
     return (f'<svg viewBox="0 0 {W} {H}" width="100%" '
             f'xmlns="http://www.w3.org/2000/svg" '
             f'style="display:block;max-width:520px;margin:0 auto">'
@@ -225,8 +242,21 @@ def history_page(qs: dict) -> str:
             ui.stat("累计跑量", f"{float(total.get('km') or 0):.0f} km",
                     f"{total.get('count') or 0} 次 · {float(total.get('dur_h') or 0):.0f} 小时") +
             '</div>')
-    chart = (f'<div class="card" style="margin-top:10px">'
-             f'<h3>近 12 个月跑量（km）</h3>{_month_bars(months)}</div>')
+    def chart_card(title: str, series: list) -> str:
+        """柱状图卡片。series 为空（例如这段确实没数据）就不占位置。"""
+        if not series:
+            return ""
+        return (f'<div class="card" style="margin-bottom:10px">'
+                f'<h3>{_esc(title)}</h3>{_month_bars(series)}</div>')
+
+    def range_stats(rs: str, re_: str) -> dict:
+        """按周期范围再取一次统计；取不到就用空序列。"""
+        if not (rs and re_):
+            return {}
+        got = A.history_stats(rs, re_, "run" if kind in ("", "run") else "")
+        return got if got.get("ok") else {}
+
+    _types = "run" if kind in ("", "run") else ""
 
     # ---- 视图切换
     def mchip(label: str, m: str) -> str:
@@ -240,24 +270,42 @@ def history_page(qs: dict) -> str:
 
     # ---- 分组视图
     if mode == "week":
+        base = (stats.get("weeks") or [{}])[-1]
+        rs = start or str(base.get("start") or "")
+        re_ = end or str(base.get("end") or "")
+        bs = range_stats(rs, re_)
+        chart = chart_card(f"{rs[5:]}~{re_[5:]} 每日跑量（km）" if rs and re_
+                           else "本周每日跑量（km）", bs.get("days") or [])
         groups = _bucket_rows(stats.get("weeks") or [], "week", kind)
-        grouping = ui.sec("最近 12 周", switch + '<div style="margin-top:10px">'
-                          + groups + '</div>')
+        grouping = ui.sec("最近 12 周", switch + chart
+                          + '<div style="margin-top:10px">' + groups + '</div>')
     elif mode == "month":
+        key = str((months or [{}])[-1].get("key") or "")
+        rs = start or (f"{key}-01" if key else "")
+        re_ = end or (_month_end(key) if key else "")
+        bs = range_stats(rs, re_)
+        chart = chart_card(f"{key} 每日跑量（km）" if key else "本月每日跑量（km）",
+                           bs.get("days") or [])
         groups = _bucket_rows(
             [{"key": m["key"], "count": m["count"], "km": m["km"], "dur_h": 0,
-              "start": m["key"] + "-01", "end": m["key"] + "-31"}
+              "start": m["key"] + "-01", "end": _month_end(m["key"])}
              for m in reversed(months)], "month", kind)
-        grouping = ui.sec("最近 12 个月", switch + '<div style="margin-top:10px">'
-                          + groups + '</div>')
+        grouping = ui.sec("最近 12 个月", switch + chart
+                          + '<div style="margin-top:10px">' + groups + '</div>')
     elif mode == "year":
+        key = str((stats.get("years") or [{}])[0].get("key") or "")
+        rs = start or (f"{key}-01-01" if key else "")
+        re_ = end or (f"{key}-12-31" if key else "")
+        bs = range_stats(rs, re_)
+        chart = chart_card(f"{key} 年各月跑量（km）" if key else "本年各月跑量（km）",
+                           bs.get("months") or [])
         groups = _bucket_rows(
             [{"key": y["key"], "count": y["count"], "km": y["km"],
               "dur_h": y.get("dur_h") or 0, "start": y["key"] + "-01-01",
               "end": y["key"] + "-12-31"}
              for y in (stats.get("years") or [])], "year", kind)
-        grouping = ui.sec("按年份", switch + '<div style="margin-top:10px">'
-                          + groups + '</div>')
+        grouping = ui.sec("按年份", switch + chart
+                          + '<div style="margin-top:10px">' + groups + '</div>')
     else:
         grouping = ui.sec("按周期查看", switch)
 
@@ -315,12 +363,13 @@ def history_page(qs: dict) -> str:
                      '<div class="btn primary" data-act="historySync">补拉更早的数据</div>'
                      '<div class="btn" data-act="historySyncAll">一键拉全部历史</div>'
                      '</div>')
-        detail = (ui.sec("筛选", form + more_data) +
-                  ui.sec("活动", rows + pager) +
-                  '<div class="note" style="margin-top:8px">'
-                  f'当前 {offset + 1}~{offset + len(items)} 条 · 共 {r.get("total", 0)} 条 · {_esc(scope)}'
-                  '</div>')
+        chart = chart_card("近 12 个月跑量（km）", months)
+        detail = (ui.sec("活动", chart + rows + pager +
+                         '<div class="note" style="margin-top:8px">'
+                         f'当前 {offset + 1}~{offset + len(items)} 条 · 共 {r.get("total", 0)} 条 · {_esc(scope)}'
+                         '</div>') +
+                  ui.sec("筛选", form + more_data))
 
-    body = ui.sec("概览", hero + chart) + grouping + detail
+    body = ui.sec("概览", hero) + grouping + detail
     return ui.page("HISTORY · 历史", "历史数据",
                    "按周 / 月 / 年管理，页首看月度跑量", body, chips)

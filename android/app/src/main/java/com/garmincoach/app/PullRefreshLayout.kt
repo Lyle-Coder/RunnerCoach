@@ -34,9 +34,9 @@ class PullRefreshLayout(context: Context, attrs: AttributeSet? = null) :
     private val hint = TextView(context).apply {
         text = "↓ 下拉同步"
         textSize = 13f
-        setTextColor(0xFF5A6B5E.toInt())
+        setTextColor(0xFF8CC2FF.toInt())
         gravity = Gravity.CENTER
-        setBackgroundColor(0xFFF6F7F4.toInt())
+        setBackgroundColor(0xFF0B1220.toInt())
         elevation = 8f
         translationY = -hintH.toFloat()
     }
@@ -53,7 +53,7 @@ class PullRefreshLayout(context: Context, attrs: AttributeSet? = null) :
     var onRefresh: (() -> Unit)? = null
 
     init {
-        setBackgroundColor(0xFFF6F7F4.toInt())
+        setBackgroundColor(0xFF070B12.toInt())
         addView(hint, LayoutParams(LayoutParams.MATCH_PARENT, hintH, Gravity.TOP))
     }
 
