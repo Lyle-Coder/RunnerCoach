@@ -37,7 +37,7 @@ LIVE_MAX_SEC = 30.0
 # 上限只防呆：60 分钟以上基本是误选了整段电影。
 MAX_VIDEO_SEC = 3600.0
 # 转码参数版本号：改了转码逻辑就 +1，缓存键随之变化，旧产物自然作废。
-TRANSCODE_VER = 2
+TRANSCODE_VER = 3
 _CONTAINERS = {"moov", "trak", "mdia", "minf", "stbl", "udta", "meta", "ilst", "dinf", "edts"}
 
 
@@ -580,9 +580,12 @@ def ensure_playable(info: dict, cache: Path) -> str:
     cmd = [exe, "-y", "-loglevel", "error", "-i", str(path),
            "-vf",
            "scale='if(gt(iw\\,ih)\\,min(1080\\,iw)\\,-2)':'if(gt(iw\\,ih)\\,-2\\,min(1080\\,ih))'",
-           "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-           "-g", "15", "-pix_fmt", "yuv420p",
-           "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(dst)]
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+           # GOP 1 秒：seek 还在 20~50 ms 量级，但码率和解码压力比 -g 15 低一截。
+           # 导出成片时是多路 Chrome 并行解码，每路都要扛全部素材的解码量，
+           # 码率压下来才不会「有些视频 loadeddata 迟迟不来」→ 成片里黑屏。
+           "-g", "30", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(dst)]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0 or not dst.exists():
         info["error"] = (info.get("error") or "") + " 转码失败"

@@ -109,8 +109,16 @@ def render_frames(html: Path, total: int, fps: int, *, workers: int = 2,
             # `/__done` 的 body 是空的 → 首帧被写成 0 字节，成片从第 1 帧开始。
             if self.path.startswith(("/__done", "/__diag")):
                 n = int(self.headers.get("Content-Length") or 0)
-                if n:
-                    self.rfile.read(n)
+                body = self.rfile.read(n) if n else b""
+                if self.path.startswith("/__diag") and body:
+                    # 诊断信息要留下来：视频没解码出来时，成片里表现为
+                    # 「视频卡片黑屏」，但帧数照样齐，导出端根本发现不了。
+                    try:
+                        diag = json.loads(body)
+                    except Exception:
+                        diag = {"raw": body[:200].decode("utf-8", "ignore")}
+                    with lock:
+                        state.setdefault("diag", diag)
                 self.send_response(204)
                 self.end_headers()
                 return
@@ -255,6 +263,17 @@ def render_frames(html: Path, total: int, fps: int, *, workers: int = 2,
         missing = total - len(got)
         if missing > 0:
             raise RuntimeError(f"还有 {missing} 帧没渲染出来（浏览器反复卡住或被关掉）")
+        # 页面自报的诊断：视频解码失败时成片里只是黑屏，帧数却是齐的，
+        # 光看「渲染成功」会误以为片子没问题。
+        diag = state.get("diag") or {}
+        if diag:
+            bad = diag.get("names") or []
+            if not diag.get("vidOk", True) or bad:
+                log("! 有视频没解码出来，成片里这几处会是黑屏："
+                    + "、".join(bad[:6]))
+            if diag.get("missing"):
+                log(f"! 有 {diag['missing']} 张图片没加载："
+                    + "、".join((diag.get("missingOne") or [])[:3]))
     finally:
         for p in procs:
             kill(p)

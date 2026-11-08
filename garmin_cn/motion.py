@@ -949,14 +949,34 @@ const VLAST = new Map();          // src -> {c, w, h}
 const VPROBE = document.createElement('canvas');
 VPROBE.width = 24; VPROBE.height = 24;
 const vpctx = VPROBE.getContext('2d', {willReadFrequently: true});
+
+// 首帧兜底：视频元素 loadeddata 之后先抓一帧存住。
+// 导出时是多路 Chrome 并行渲染，每路进程各自维护 VLAST——某一路的
+// 视频元素还没解出当前帧时，VLAST 里是空的，videoFrame 返回 null，
+// 卡片就画成空框（成片里表现为「某几处视频黑屏」）。
+// 首帧兜底保证任何时刻都有画面可画，最差也只是画面停在开头那一帧。
+const VFIRST = new Map();         // src -> {c, w, h}
+function grabFirst(v, src) {
+  try {
+    const w = v.videoWidth || 1080, h = v.videoHeight || 1920;
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(v, 0, 0, w, h);
+    if (!VFIRST.has(src)) VFIRST.set(src, {c: c, w: w, h: h});
+  } catch (e) { /* 首帧抓不到就等后面的兜底 */ }
+}
+
 function videoFrame(src, v, w, h) {
   let lit = false;
   try {
-    vpctx.drawImage(v, 0, 0, 24, 24);
-    const d = vpctx.getImageData(0, 0, 24, 24).data;
-    let sum = 0;
-    for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
-    lit = sum > 24 * 24 * 3 * 8;   // 平均亮度 > 8/255 才算有画面
+    // readyState < 2 时 drawImage 会抛，或画出一张空图——两种都当「没画面」
+    if (v.readyState >= 2) {
+      vpctx.drawImage(v, 0, 0, 24, 24);
+      const d = vpctx.getImageData(0, 0, 24, 24).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+      lit = sum > 24 * 24 * 3 * 8;   // 平均亮度 > 8/255 才算有画面
+    }
   } catch (e) { lit = false; }
   if (lit) {
     let rec = VLAST.get(src);
@@ -967,9 +987,22 @@ function videoFrame(src, v, w, h) {
       VLAST.set(src, rec);
     }
     rec.c.getContext('2d').drawImage(v, 0, 0, w, h);
+    return rec.c;
   }
   const rec = VLAST.get(src);
-  return rec ? rec.c : null;
+  if (rec) return rec.c;           // 沿用上一张有效画面
+  const first = VFIRST.get(src);
+  if (first) {
+    // 首帧按目标尺寸重画一遍：首帧画布是原始分辨率，直接拉伸会变形
+    if (first.w !== w || first.h !== h) {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(first.c, 0, 0, w, h);
+      return c;
+    }
+    return first.c;
+  }
+  return null;
 }
 
 function popLayout(p) {
@@ -1053,8 +1086,9 @@ function drawPop(p, e) {
       else { ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h); }
     } else {
       const v = VIDS.get(p.clip.src);
-      const frame = (v && v.readyState >= 2)
-        ? videoFrame(p.clip.src, v, w, h) : null;
+      // readyState < 2 也不直接画空框：videoFrame 还有首帧兜底，
+      // 画出来总比空框好（空框在成片里就是一处黑屏）。
+      const frame = v ? videoFrame(p.clip.src, v, w, h) : null;
       if (frame) ctx.drawImage(frame, left + pad, top + pad, w, h);
       else { ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h); }
     }
@@ -1125,13 +1159,34 @@ function drawPop(p, e) {
 // 导出走"精确 seek"，播放走"让视频自己跑"——每帧都 seek 的话播放会卡成幻灯
 let videoDriven = false;
 let lastClipSrc = null;
+
+// 等视频能出画面（readyState >= 2）。
+// 以前 readyState < 2 就直接返回，结果是：不 seek → 画不出帧 → 下一帧继续
+// 这么等，循环往复到 60 秒超时。表现就是「某一段帧一直渲不出来」，
+// 而页面诊断里 vidOk 还是 true（就绪检查是在 boot 时做的，早就过了）。
+function waitReady(v, ms) {
+  if (!v || v.readyState >= 2) return Promise.resolve();
+  return new Promise(res => {
+    let hit = false;
+    const done = () => { if (!hit) { hit = true; res(); } };
+    v.addEventListener('loadeddata', done, { once: true });
+    v.addEventListener('canplay', done, { once: true });
+    v.addEventListener('error', done, { once: true });
+    setTimeout(done, ms || 4000);
+    try { if (v.networkState === 3) v.load(); } catch (e) { done(); }
+  });
+}
+
 async function syncVideo(p) {
   for (const [src, v] of VIDS) {
     if (!p || !p.clip || p.clip.src !== src) { if (!v.paused) v.pause(); }
   }
   if (!p || !p.clip) return;
   const v = VIDS.get(p.clip.src);
-  if (!v || v.readyState < 2) return;
+  if (!v) return;
+  // 视频还没解出画面：先等它就绪，否则后面的 seek 无从谈起
+  if (v.readyState < 2) await waitReady(v, 4000);
+  if (v.readyState < 2) return;
   const rel = playT - p.a - (p.clip.lead || 0);
   const want = Math.max(0, Math.min(rel, (p.clip.dur || 1) - 0.02));
   if (Math.abs(v.currentTime - want) <= 0.04) return;
@@ -1316,7 +1371,12 @@ window.__motion = {
   // 视频走 <video>，不能混在图片队列里：只等到能出画面（loadeddata）为止
   await Promise.all(clips.map(c => new Promise(res => {
     const v = ensureVideo(c.src);
-    if (!v || v.readyState >= 2) return res();
+    if (!v) return res();
+    // loadeddata 一到就抓首帧存住：多路并行渲染时，某一路进程可能还没
+    // 解出当前帧，没有首帧兜底那几处卡片就会画成空框（成片里是黑屏）。
+    v.addEventListener('loadeddata', () => grabFirst(v, c.src), { once: true });
+    v.addEventListener('canplay', () => grabFirst(v, c.src), { once: true });
+    if (v.readyState >= 2) { grabFirst(v, c.src); return res(); }
     let hit = false;
     const done = () => { if (!hit) { hit = true; res(); } };
     v.addEventListener('loadeddata', done, { once: true });
