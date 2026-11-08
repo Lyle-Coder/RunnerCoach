@@ -1161,10 +1161,19 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 /* 底部补 10px：成图正好 1080×1920，和每日看板同一个 9:16 画幅。
    之前是 1910，各家长图预览/分享缩略图对非标比例的裁切规则不一致，
    统一到标准竖屏尺寸后，微信/相册/分享面板都不会再多切一刀。 */
-.head{display:flex;align-items:flex-end;justify-content:space-between}
-.hname{font-size:44px;font-weight:700;letter-spacing:.5px}
-.hsub{font-size:23px;color:#939FAD;margin-top:10px}
-.htag{font-size:20px;color:var(--tagfg);border:1px solid var(--tagbd);background:var(--tagbg);
+/* 标题与参数都可能很长（比赛名 + 日期 + 时段 + 天气）。旧版 .hleft 没有
+   min-width:0，flex 子项按 max-content 撑开，右侧标签被直接挤出卡片；
+   字号也从 44 降到 38，让两行中文标题有换行余地而不是硬撑。 */
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px}
+.hleft{flex:1;min-width:0}
+.hname{font-size:38px;font-weight:700;letter-spacing:.5px;line-height:1.28;
+  overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;
+  -webkit-line-clamp:2;overflow:hidden}
+.hsub{font-size:22px;color:#939FAD;margin-top:10px;line-height:1.45;
+  overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;
+  -webkit-line-clamp:2;overflow:hidden}
+.htag{flex:none;white-space:nowrap;font-size:20px;color:var(--tagfg);
+  border:1px solid var(--tagbd);background:var(--tagbg);
   padding:8px 18px;border-radius:24px}
 /* hero 内部一律按 --hs 缩放：左上大数字宽度随距离/配速的位数变化，
    42.54 + 3:14:53 这种长值会把右上六格挤到换行（「步幅 cm」折成两行）。

@@ -100,6 +100,9 @@ class Net:
         self._last = 0.0
         self.count = 0
         self.trace = trace
+        # 上一次落盘时的 Cookie 快照。Garmin 会在请求过程中轮换 JWT_WEB，
+        # 只有变化了才写盘，避免每个请求都落一次。
+        self._sig: tuple | None = None
         if session_path and session_path.exists():
             try:
                 self.load_session()
@@ -164,6 +167,29 @@ class Net:
             self.set_cookie(
                 item["name"], item["value"], item.get("domain", ".garmin.cn"), item.get("path", "/")
             )
+        self._sig = self._cookie_sig()
+
+    def _cookie_sig(self) -> tuple:
+        return tuple(sorted((c.name, c.value) for c in self.jar))
+
+    def _save_if_changed(self) -> None:
+        """Cookie 有变化就落盘。
+
+        Garmin 的 `JWT_WEB` 会在普通请求里被服务端轮换。旧版只在「登录成功」
+        和「刷新 csrf」时保存，轮换出来的新票据一直留在内存里 —— 程序一关，
+        磁盘上还是那张旧票据，下次启动校验必然失效。表现就是「关掉再开、
+        或者隔一会儿刷新一下，又要重新输密码」。这里按快照比对，变了就写。
+        """
+        if not self.session_path:
+            return
+        sig = self._cookie_sig()
+        if sig == self._sig:
+            return
+        self._sig = sig
+        try:
+            self.save_session()
+        except Exception:
+            pass
 
     # ---------- 请求 ----------
     def _throttle(self) -> None:
@@ -196,46 +222,50 @@ class Net:
             hdrs.update(headers)
 
         last_err: Exception | None = None
-        for attempt in range(retries):
-            self._throttle()
-            self.count += 1
-            req = urllib.request.Request(url, data=body, headers=hdrs, method=method)
-            try:
-                with self.opener.open(req, timeout=timeout) as resp:
-                    text = resp.read().decode("utf-8", "replace")
-                    if self.trace:
-                        self.trace(f"    {resp.status} {method} {_short(url)}")
-                    return resp.status, text
-            except urllib.error.HTTPError as e:
-                text = ""
+        try:
+            for attempt in range(retries):
+                self._throttle()
+                self.count += 1
+                req = urllib.request.Request(url, data=body, headers=hdrs, method=method)
                 try:
-                    text = e.read().decode("utf-8", "replace")
-                except Exception:
-                    pass
-                if e.code == 429:
-                    # 被限流就把节奏整体放慢，后面的请求都按新间隔走
-                    self.min_interval = min(3.0, max(self.min_interval, 0.5) * 1.5)
+                    with self.opener.open(req, timeout=timeout) as resp:
+                        text = resp.read().decode("utf-8", "replace")
+                        if self.trace:
+                            self.trace(f"    {resp.status} {method} {_short(url)}")
+                        return resp.status, text
+                except urllib.error.HTTPError as e:
+                    text = ""
+                    try:
+                        text = e.read().decode("utf-8", "replace")
+                    except Exception:
+                        pass
+                    if e.code == 429:
+                        # 被限流就把节奏整体放慢，后面的请求都按新间隔走
+                        self.min_interval = min(3.0, max(self.min_interval, 0.5) * 1.5)
+                        if self.trace:
+                            self.trace(f"    429 限流，间隔调到 {self.min_interval:.2f}s")
+                    if e.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
+                        if self.trace:
+                            self.trace(f"    {e.code} {method} {_short(url)}  (重试)")
+                        time.sleep(2 * (attempt + 1))
+                        last_err = HttpError(e.code, url, text)
+                        continue
                     if self.trace:
-                        self.trace(f"    429 限流，间隔调到 {self.min_interval:.2f}s")
-                if e.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
-                    if self.trace:
-                        self.trace(f"    {e.code} {method} {_short(url)}  (重试)")
-                    time.sleep(2 * (attempt + 1))
-                    last_err = HttpError(e.code, url, text)
-                    continue
-                if self.trace:
-                    self.trace(f"    {e.code} {method} {_short(url)}  len={len(text)}")
-                if raise_for_status:
-                    raise HttpError(e.code, url, text) from None
-                return e.code, text
-            except Exception as e:  # 网络层错误
-                last_err = e
-                if attempt < retries - 1:
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                if raise_for_status:
-                    raise
-        raise last_err if last_err else RuntimeError("request failed")
+                        self.trace(f"    {e.code} {method} {_short(url)}  len={len(text)}")
+                    if raise_for_status:
+                        raise HttpError(e.code, url, text) from None
+                    return e.code, text
+                except Exception as e:  # 网络层错误
+                    last_err = e
+                    if attempt < retries - 1:
+                        time.sleep(2 * (attempt + 1))
+                        continue
+                    if raise_for_status:
+                        raise
+            raise last_err if last_err else RuntimeError("request failed")
+        finally:
+            # 成功、失败、重试都要走：服务端轮换的 Cookie 必须马上落盘
+            self._save_if_changed()
 
     def get_json(self, url: str, *, headers: dict | None = None, retries: int = 3):
         status, text = self.request("GET", url, headers=headers, retries=retries)

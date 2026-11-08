@@ -421,6 +421,9 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                 "dur": round(float(pick["dur"]), 2), "name": pick["name"],
                 "gap": pick["gap_m"], "approx": bool(pick.get("approx")),
                 "lead": CLIP_LEAD,
+                # 显示旋转（0/90/180/270）：无损剪辑不重新编码，竖拍被压成横屏
+                # 或者用户手动转过的，都靠这个字段在绘制端兑现。
+                "rotate": int(pick.get("rotate") or 0) % 360,
             }
             # 素材下标：App 端原生抽帧按这个下标建目录 c<ci>/，
             # 页面再用 `_clips.json` 里的同一下标取图。必须和 out_clips
@@ -1268,8 +1271,13 @@ function videoFrame(src, v, w, h) {
 function popLayout(p) {
   if (p.clip) {
     const c = p.clip;
-    const k = Math.min(840 / c.w, 780 / c.h, 1.5);
-    return { cells: [[Math.round(c.w * k), Math.round(c.h * k)]], crop: false };
+    // 旋转 90/270 时卡片要竖着放：w/h 是原画幅，外接框得交换，
+    // 否则竖拍素材会被压进横卡片里（真机上「竖屏被压成横屏」就是这个）。
+    const rot = (c.rotate || 0) % 360;
+    const rw = (rot === 90 || rot === 270) ? c.h : c.w;
+    const rh = (rot === 90 || rot === 270) ? c.w : c.h;
+    const k = Math.min(840 / rw, 780 / rh, 1.5);
+    return { cells: [[Math.round(rw * k), Math.round(rh * k)]], crop: false };
   }
   const shots = (p.shots || []).slice(0, 2);
   // 单张等比完整显示（裁掉内容最可惜）；两张统一成同样大小的格子 + 中心裁切，
@@ -1312,6 +1320,20 @@ function drawCell(im, s, x, y, w, h, crop) {
   ctx.drawImage(cellOf(s, im, w, h, crop), x, y);
 }
 
+// 按素材的显示旋转把一帧画进 (x,y,w,h)。w/h 已经是**旋转后**的外接框，
+// 所以 90/270 时要画一个 (h,w) 的矩形才能正好填满；不旋转时零开销。
+function drawRotated(im, clip, x, y, w, h) {
+  const rot = (((clip && clip.rotate) || 0) % 360 + 360) % 360;
+  if (!rot) { ctx.drawImage(im, x, y, w, h); return; }
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2);
+  ctx.rotate(rot * Math.PI / 180);
+  const dw = (rot === 90 || rot === 270) ? h : w;
+  const dh = (rot === 90 || rot === 270) ? w : h;
+  ctx.drawImage(im, -dw / 2, -dh / 2, dw, dh);
+  ctx.restore();
+}
+
 function drawPop(p, e) {
   const isClip = !!(p.clip);
   const shots = isClip ? [] : (p.shots || []).slice(0, 2);
@@ -1349,7 +1371,7 @@ function drawPop(p, e) {
       // readyState < 2 也不直接画空框：videoFrame 还有首帧兜底，
       // 画出来总比空框好（空框在成片里就是一处黑屏）。
       const frame = v ? videoFrame(p.clip.src, v, w, h) : null;
-      if (frame) ctx.drawImage(frame, left + pad, top + pad, w, h);
+      if (frame) drawRotated(frame, p.clip, left + pad, top + pad, w, h);
       else { ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h); }
     }
   } else {

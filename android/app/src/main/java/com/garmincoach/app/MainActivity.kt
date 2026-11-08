@@ -26,6 +26,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -393,13 +394,12 @@ class MainActivity : Activity() {
     }
 
     private fun runHistorySync(start: String, end: String) {
-        val email = secrets.email()
-        val pwd = secrets.password()
-        if (email.isNullOrBlank() || pwd.isNullOrBlank()) {
-            toast("补历史需要佳明账号，请先在「账号登录」里登录")
-            showLoginPicker()
-            return
-        }
+        // 不再用「本地有没有密码」决定能不能补：多数时候会话本身就是有效的，
+        // 旧版一看到密码为空就弹登录，等于把补拉入口彻底堵死（用户看到的就是
+        // 「有按钮但没反应」）。现在直接交给 Python 用现有 Cookie 跑，
+        // 只有它明确回 need_login 才去登录。
+        val email = secrets.email() ?: ""
+        val pwd = secrets.password() ?: ""
         busy(true)
         subtitle.text = "正在补历史 $start ~ $end…"
         thread {
@@ -916,10 +916,20 @@ class MainActivity : Activity() {
 
     /** 当前列表数据；缩略图线程回来时要用，所以挂在类上而不是闭包里。 */
     private var clipArray: JSONArray = JSONArray()
+    /** 当前素材对话框。重建前必须先关掉它，否则会一层层叠起来。 */
+    private var clipDialog: AlertDialog? = null
+    private var clipSelecting = false
+    private val clipChecked = linkedSetOf<String>()
 
     private fun renderClipList() {
+        // 每次重建都先关掉上一版：不关就会一层层叠上去，
+        // 删完素材还能看见旧列表 —— 用户说的「多保留历史界面」就是这个。
+        clipDialog?.dismiss()
+        clipDialog = null
         val arr = clipArray
         if (arr.length() == 0) {
+            clipSelecting = false
+            clipChecked.clear()
             AlertDialog.Builder(this)
                 .setTitle("素材")
                 .setMessage("还没有素材。\n\n" +
@@ -950,16 +960,54 @@ class MainActivity : Activity() {
 
         // 不再自己套 ScrollView：AlertDialog 的 customPanel 本来就在滚动容器里，
         // 嵌套一层反而让触摸事件在两层滚动之间抢。
-        AlertDialog.Builder(this)
-            .setTitle("素材（${arr.length()}）")
+        val dlg = AlertDialog.Builder(this)
+            .setTitle(if (clipSelecting) "已选 ${clipChecked.size} 个" else "素材（${arr.length()}）")
             .setView(box)
-            .setPositiveButton("添加") { _, _ -> pickMedia() }
+            .setPositiveButton(if (clipSelecting) "删除选中" else "添加") { _, _ ->
+                if (clipSelecting) deleteCheckedClips() else pickMedia()
+            }
+            .setNeutralButton(if (clipSelecting) "退出选择" else "批量管理") { _, _ ->
+                clipSelecting = !clipSelecting
+                if (!clipSelecting) clipChecked.clear()
+                renderClipList()
+            }
             .setNegativeButton("关闭", null)
+            .create()
+        // 只认当前这一版：按钮回调里会重建新框，旧框的 dismiss 不能把新引用清掉
+        dlg.setOnDismissListener { if (clipDialog === dlg) clipDialog = null }
+        clipDialog = dlg
+        dlg.show()
+    }
+
+    private fun deleteCheckedClips() {
+        val ids = clipChecked.toList()
+        if (ids.isEmpty()) {
+            toast("先勾选要删的素材")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("删除 ${ids.size} 个素材")
+            .setMessage("成品和「再次剪辑」用的原始片都会一起删掉，不能恢复。")
+            .setPositiveButton("删除") { _, _ ->
+                clipSelecting = false
+                thread {
+                    val r = apiCall("clips_remove_many", ids)
+                    ui {
+                        clipChecked.clear()
+                        toast(if (r.optBoolean("ok"))
+                            "已删除 ${r.optInt("removed")} 个"
+                        else r.optString("error", "删除失败"))
+                        showClips()
+                    }
+                }
+            }
+            .setNegativeButton("取消", null)
             .show()
     }
 
     /** 一行：56dp 缩略图 + 两行文字。 */
     private fun clipRow(o: JSONObject): View {
+        val id = o.optString("id", "")
         val path = o.optString("path", "")
         val name = o.optString("name", "素材")
         val kind = o.optString("kind", "video")
@@ -973,6 +1021,17 @@ class MainActivity : Activity() {
             isClickable = true
             // 给点击一点反馈，否则按下去像是没反应
             setBackgroundResource(android.R.drawable.list_selector_background)
+        }
+
+        if (clipSelecting) {
+            val cb = CheckBox(this).apply {
+                isChecked = clipChecked.contains(id)
+                setOnCheckedChangeListener { _, on ->
+                    if (on) clipChecked.add(id) else clipChecked.remove(id)
+                    clipDialog?.setTitle("已选 ${clipChecked.size} 个")
+                }
+            }
+            row.addView(cb, LinearLayout.LayoutParams(dp(40), dp(40)))
         }
 
         val thumb = ImageView(this).apply {
@@ -1028,34 +1087,12 @@ class MainActivity : Activity() {
         // 没有拍摄时间的那条额外给「重新读取」和「为什么」，别让人对着
         // 一行「加入 xx」猜到底有没有问题。
         row.setOnClickListener {
-            val noTime = o.optLong("t_utc", 0L) <= 0L
-            val actions: Array<CharSequence> = if (noTime)
-                arrayOf("预览", "重新读取时间", "为什么没有拍摄时间？", "删除")
-            else
-                arrayOf("预览", "删除")
-            AlertDialog.Builder(this)
-                .setTitle(name)
-                .setItems(actions) { _, which ->
-                    when {
-                        which == 0 -> previewClip(o)
-                        noTime && which == 1 -> {
-                            toast("正在重新读取…")
-                            thread {
-                                val r = apiCall("clips_reprobe", o.optString("id"))
-                                val got = r.optLong("t_utc", 0L)
-                                ui {
-                                    toast(if (got > 0) "已补到拍摄时间"
-                                    else r.optString("error", "还是读不到拍摄时间"))
-                                    showClips()
-                                }
-                            }
-                        }
-                        noTime && which == 2 -> explainMissingTime(o)
-                        else -> confirmDeleteClip(o.optString("id"), name)
-                    }
-                }
-                .setNegativeButton("取消", null)
-                .show()
+            if (clipSelecting) {
+                if (clipChecked.contains(id)) clipChecked.remove(id) else clipChecked.add(id)
+                renderClipList()      // 重建一次，标题计数和勾选状态一起刷新
+                return@setOnClickListener
+            }
+            showClipActions(o)
         }
 
         if (exists) loadClipThumb(path, kind, dp(56)) { bmp ->
@@ -1067,7 +1104,105 @@ class MainActivity : Activity() {
         return row
     }
 
-    /** 副标题：类型 + 时长 + 时间。没拍摄时间要写明，不能只丢一句「加入」。 */
+    /**
+     * 点一条素材的动作菜单。
+     *
+     * 以前只有「预览 / 删除」；现在要能再次剪辑和旋转：视频会留一份原始片
+     * （`src`），有它才能回到未裁的原片重新选起止点，而不是在已经裁过的
+     * 成品上二次裁（首段永远找不回来）。
+     */
+    private fun showClipActions(o: JSONObject) {
+        val id = o.optString("id", "")
+        val name = o.optString("name", "素材")
+        val kind = o.optString("kind", "video")
+        val src = o.optString("src", "")
+        val canReedit = kind == "video" && src.isNotBlank() && File(src).isFile()
+        val noTime = o.optLong("t_utc", 0L) <= 0L
+        val acts = mutableListOf<String>()
+        acts.add("预览")
+        if (canReedit) acts.add("重新剪辑")
+        if (kind == "video") acts.add("旋转 90°（当前 ${o.optInt("rotate", 0)}°）")
+        acts.add("重新读取时间")
+        if (noTime) acts.add("为什么没有拍摄时间？")
+        acts.add("删除")
+        AlertDialog.Builder(this)
+            .setTitle(name)
+            .setItems(acts.toTypedArray()) { _, which ->
+                val a = acts[which]
+                when {
+                    a == "预览" -> previewClip(o)
+                    a == "重新剪辑" -> reeditClip(o)
+                    a.startsWith("旋转") -> rotateClip(o)
+                    a == "重新读取时间" -> reprobeClip(o)
+                    a == "为什么没有拍摄时间？" -> explainMissingTime(o)
+                    else -> confirmDeleteClip(id, name)
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun reprobeClip(o: JSONObject) {
+        toast("正在重新读取…")
+        thread {
+            val r = apiCall("clips_reprobe", o.optString("id"))
+            val got = r.optLong("t_utc", 0L)
+            ui {
+                toast(if (got > 0) "已补到拍摄时间"
+                else r.optString("error", "还是读不到拍摄时间"))
+                showClips()
+            }
+        }
+    }
+
+    /** 每次 90° 循环。无损剪辑不转码，角度只记在素材上，绘制/抽帧时兑现。 */
+    private fun rotateClip(o: JSONObject) {
+        val id = o.optString("id", "")
+        val next = (o.optInt("rotate", 0) + 90) % 360
+        thread {
+            val r = apiCall("clips_update", id, 0.0, 0, 0, next)
+            ui {
+                if (r.optBoolean("ok")) {
+                    toast("已旋转到 $next°")
+                    showClips()
+                } else {
+                    toast(r.optString("error", "旋转失败"))
+                }
+            }
+        }
+    }
+
+    private fun reeditClip(o: JSONObject) {
+        val src = File(o.optString("src", ""))
+        if (!src.isFile) {
+            toast("原始片已经不在了，没法重新剪辑；删掉这条重新从相册添加")
+            return
+        }
+        val durMs = (o.optDouble("dur", 0.0) * 1000).toLong()
+        if (durMs < 1500) {
+            toast("这段视频太短，没法再剪")
+            return
+        }
+        showTrimUi(src, durMs, o.optString("name", "素材"),
+            o.optLong("t_utc", 0L), editId = o.optString("id"),
+            userRotate = o.optInt("rotate", 0))
+    }
+
+    /** 视频自带的 tkhd 旋转（竖拍常见 90）。编码宽高要靠它换成显示宽高。 */
+    private fun readRotation(f: File): Int {
+        val mmr = android.media.MediaMetadataRetriever()
+        return try {
+            mmr.setDataSource(f.absolutePath)
+            (mmr.extractMetadata(
+                android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                ?.toIntOrNull() ?: 0)
+        } catch (t: Throwable) {
+            0
+        } finally {
+            try { mmr.release() } catch (_: Throwable) {}
+        }
+    }
+
     private fun clipSubtitle(o: JSONObject, kind: String, dur: Double, exists: Boolean): String {
         if (!exists) return "文件已丢失，建议删除"
         val kindTxt = if (kind == "image") "图片" else "视频"
@@ -1158,7 +1293,7 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 相册里图片和视频都能选：图片直接入库，视频走裁剪。 */
+    /** 相册里图片和视频都能选：图片直接入库，视频走裁剪。支持批量选择。 */
     private fun pickMedia() {
         try {
             startActivityForResult(
@@ -1166,6 +1301,8 @@ class MainActivity : Activity() {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     type = "*/*"
                     putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("video/*", "image/*"))
+                    // 图片可以一次全入库；视频排队逐个裁剪（每段都要人确认起止点）
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                 },
                 REQ_VIDEO,
             )
@@ -1174,17 +1311,49 @@ class MainActivity : Activity() {
         }
     }
 
+    /** 批量选中的视频队列：一段剪完自动弹下一段。 */
+    private val pendingVideos = ArrayDeque<Uri>()
+
+    private fun nextPendingVideo() {
+        val u = pendingVideos.removeFirstOrNull()
+        if (u == null) {
+            showClips()
+            return
+        }
+        trimDialog(u)
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_VIDEO && resultCode == android.app.Activity.RESULT_OK) {
-            val uri = data?.data ?: return
-            val mime = try {
-                contentResolver.getType(uri) ?: ""
-            } catch (t: Throwable) {
-                ""
+            val got = data ?: return
+            val uris = mutableListOf<Uri>()
+            val cd = got.clipData
+            if (cd != null && cd.itemCount > 0) {
+                for (i in 0 until cd.itemCount) cd.getItemAt(i)?.uri?.let { uris.add(it) }
+            } else {
+                got.data?.let { uris.add(it) }
             }
-            if (mime.startsWith("image/")) addImage(uri, mime) else trimDialog(uri)
+            if (uris.isEmpty()) return
+            val vids = mutableListOf<Uri>()
+            val imgs = mutableListOf<Pair<Uri, String>>()
+            for (u in uris) {
+                val mime = try {
+                    contentResolver.getType(u) ?: ""
+                } catch (t: Throwable) {
+                    ""
+                }
+                if (mime.startsWith("image/")) imgs.add(u to mime) else vids.add(u)
+            }
+            // 多张图片：全部加完再刷新列表，别每张都重建一次对话框
+            val left = java.util.concurrent.atomic.AtomicInteger(imgs.size)
+            for ((u, m) in imgs) addImage(u, m, left)
+            if (vids.isNotEmpty()) {
+                pendingVideos.clear()
+                pendingVideos.addAll(vids)
+                nextPendingVideo()
+            }
         }
     }
 
@@ -1194,7 +1363,8 @@ class MainActivity : Activity() {
      * 常见格式**原样**拷，保留 EXIF 的拍摄时间与坐标——回放靠它把素材放到正确位置。
      * HEIC 之类浏览器解不了的，解码重编成 JPEG（会丢 EXIF，位置由后端均匀铺开兜底）。
      */
-    private fun addImage(src: Uri, mime: String) {
+    private fun addImage(src: Uri, mime: String,
+                         left: java.util.concurrent.atomic.AtomicInteger? = null) {
         busy(true)
         subtitle.text = "加入素材…"
         thread {
@@ -1242,12 +1412,14 @@ class MainActivity : Activity() {
             ui {
                 busy(false)
                 updateSubtitle()
+                val done = left == null || left.decrementAndGet() == 0
                 if (add.optBoolean("ok")) {
                     toast("已加入素材（图片）")
-                    showClips()          // 回到列表，能立刻看到刚加的那条
                 } else {
                     toast(add.optString("error", "登记失败"))
                 }
+                // 批量时等最后一张再加完刷新，否则每张都重建一次列表对话框
+                if (done) showClips()
             }
         }
     }
@@ -1331,7 +1503,11 @@ class MainActivity : Activity() {
                     tmp.outputStream().use { o -> i.copyTo(o) }
                 }
             } catch (t: Throwable) {
-                ui { busy(false); toast("读取视频失败：${t.message}") }
+                ui {
+                    busy(false)
+                    toast("读取视频失败：${t.message}")
+                    if (pendingVideos.isNotEmpty()) nextPendingVideo() else showClips()
+                }
                 return@thread
             }
             var durMs = 0L
@@ -1357,6 +1533,7 @@ class MainActivity : Activity() {
                 if (durMs < 1500) {
                     tmp.delete()
                     toast("这段视频太短（不足 1.5 秒）")
+                    if (pendingVideos.isNotEmpty()) nextPendingVideo() else showClips()
                 } else {
                     showTrimUi(tmp, durMs, displayName, takenMs)
                 }
@@ -1364,47 +1541,100 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showTrimUi(src: File, durMs: Long, displayName: String, takenMs: Long) {
+    private fun showTrimUi(src: File, durMs: Long, displayName: String, takenMs: Long,
+                           editId: String? = null, userRotate: Int = 0) {
         // 预览 + 关键帧胶片条：光有两个滑块根本不知道第几秒拍的是什么，
         // 也没法知道落刀会不会被吸附到别处。见 ClipTrimDialog。
-        ClipTrimDialog.show(this, src, durMs,
-            onPick = { s, e -> saveClip(src, s, e, displayName, takenMs) },
-            onCancel = { src.delete() })
+        ClipTrimDialog.show(this, src, durMs, userRotate,
+            onPick = { s, e, rot ->
+                saveClip(src, s, e, displayName, takenMs, editId, rot)
+            },
+            onCancel = {
+                // 再次剪辑的 src 是长期保留的原始片，取消时绝不能删
+                if (editId == null) src.delete()
+                if (pendingVideos.isNotEmpty()) nextPendingVideo() else showClips()
+            })
     }
 
     private fun saveClip(src: File, startMs: Long, endMs: Long,
-                         displayName: String, takenMs: Long) {
+                         displayName: String, takenMs: Long,
+                         editId: String? = null, userRotate: Int = 0) {
         busy(true)
         subtitle.text = "剪辑中…"
         thread {
-            val dst = File(File(filesDir, "data/media"),
-                "clip-" + System.currentTimeMillis() + ".mp4")
+            val outDir = File(filesDir, "data/media").apply { mkdirs() }
+            val dst = File(outDir, "clip-" + System.currentTimeMillis() + ".mp4")
             val r = ClipTrimmer.trim(src, dst, startMs, endMs)
             if (!r.ok) {
-                src.delete()
-                ui { busy(false); updateSubtitle(); toast("剪辑失败：${r.message}") }
+                if (editId == null) src.delete()
+                ui {
+                    busy(false); updateSubtitle()
+                    toast("剪辑失败：${r.message}")
+                    if (pendingVideos.isNotEmpty()) nextPendingVideo() else showClips()
+                }
                 return@thread
             }
-            // 关键：把**源文件**和**相册拍摄时间**都传过去。MediaMuxer 重封装会丢
-            // creation_time；不少手机把拍摄时间只写在 MediaStore / 解码器日期标签里，
-            // 裁完的成品和拷进 cache 的源片都读不出来，只能在选片这一刻取走。
-            // name 是相册原始文件名，最后还能从 VID_20261103_180036 兜一层。
-            val add = apiCall("clips_add", dst.absolutePath, displayName,
-                r.durMs / 1000.0, r.width, r.height, "video", src.absolutePath, takenMs)
-            src.delete()
+            // 编码宽高是「横向」的：竖拍视频 tkhd 带 rotation=90，播放器会自己转，
+            // 但回放卡片是按登记尺寸布局的 —— 不换过来就会被压成横屏。
+            // MediaMuxer 偶尔会丢掉 rotation，那就退回读源片。
+            val rot = readRotation(dst).takeIf { it != 0 } ?: readRotation(src)
+            val dw = if (rot == 90 || rot == 270) r.height else r.width
+            val dh = if (rot == 90 || rot == 270) r.width else r.height
+
+            val call: JSONObject
+            if (editId != null) {
+                // 覆盖原成品：先把新裁的挪到它现在的路径上，再回写记录
+                val oldPath = (0 until clipArray.length())
+                    .mapNotNull { clipArray.optJSONObject(it) }
+                    .firstOrNull { it.optString("id") == editId }
+                    ?.optString("path") ?: ""
+                val target = if (oldPath.isNotBlank()) File(oldPath) else dst
+                if (target.absolutePath != dst.absolutePath) {
+                    try {
+                        target.delete()
+                        if (!dst.renameTo(target)) {
+                            dst.copyTo(target, overwrite = true)
+                            dst.delete()
+                        }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "replace clip", t)
+                    }
+                }
+                call = apiCall("clips_update", editId, r.durMs / 1000.0,
+                    dw, dh, userRotate)
+            } else {
+                // 留一份原始片，供「重新剪辑」回到未裁的版本
+                var keep = ""
+                try {
+                    val k = File(outDir, "src-" + System.currentTimeMillis() + ".mp4")
+                    src.copyTo(k, overwrite = true)
+                    if (k.length() > 0) keep = k.absolutePath
+                } catch (t: Throwable) {
+                    Log.w(TAG, "keep src", t)
+                }
+                // 关键：把**源文件**和**相册拍摄时间**都传过去。MediaMuxer 重封装会丢
+                // creation_time；不少手机把拍摄时间只写在 MediaStore / 解码器日期标签里，
+                // 裁完的成品和拷进 cache 的源片都读不出来，只能在选片这一刻取走。
+                call = apiCall("clips_add", dst.absolutePath, displayName,
+                    r.durMs / 1000.0, dw, dh, "video", src.absolutePath, takenMs,
+                    userRotate, keep)
+            }
+            if (editId == null) src.delete()   // 临时 cache 可以删，长期保留片不能
             ui {
                 busy(false)
                 updateSubtitle()
-                if (add.optBoolean("ok")) {
+                if (call.optBoolean("ok")) {
                     // 实际落刀点可能比选定的早（吸附到关键帧），说出来免得以为剪错了
                     val drift = startMs - r.startMs
                     val extra = if (drift > 200) "，实际从 ${r.startMs / 1000.0} 秒开始" else ""
-                    val noTime = if (add.optLong("t_utc", 0L) <= 0L) "，⚠ 没读到拍摄时间" else ""
-                    toast("已加入素材（${r.durMs / 1000} 秒$extra）$noTime")
-                    showClips()          // 回到列表，能立刻看到刚剪的那条
+                    val noTime = if (editId == null && call.optLong("t_utc", 0L) <= 0L)
+                        "，⚠ 没读到拍摄时间" else ""
+                    toast((if (editId != null) "已更新素材" else "已加入素材") +
+                        "（${r.durMs / 1000} 秒$extra）$noTime")
                 } else {
-                    toast(add.optString("error", "登记失败"))
+                    toast(call.optString("error", "登记失败"))
                 }
+                if (pendingVideos.isNotEmpty()) nextPendingVideo() else showClips()
             }
         }
     }
@@ -1822,7 +2052,8 @@ class MainActivity : Activity() {
             ui { subtitle.text = "准备素材画面 ${i + 1}/${arr.length()}" }
             val t0 = System.currentTimeMillis()
             val info = MotionClips.extract(
-                c.optString("file"), java.io.File(root, "c$ci"), 12, 150, 480)
+                c.optString("file"), java.io.File(root, "c$ci"), 12, 150, 480,
+                c.optInt("rotate", 0))
             try {
                 index.put(ci.toString(), org.json.JSONObject()
                     .put("n", info.n).put("fps", info.fps)

@@ -660,6 +660,9 @@ def me_page() -> str:
         ai_txt = "未配置"
 
     more = (row("◫", "产物文件", "看板 / 图片 / 视频清单", href="/files") +
+            row("↻", "补拉更多历史",
+                f"已覆盖 {cov['first']} ~ {cov['last']}，可再往前补",
+                act="historySync", tone="a") +
             row("◍", "AI 模型服务", f"{ai_txt} · 在「教练」页右上角设置", tone="b", go=False) +
             row("⌖", "地图底图",
                 ("已配置 · 活动图带高德底图" if _map_on()

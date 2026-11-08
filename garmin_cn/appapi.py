@@ -77,12 +77,24 @@ def _remember_email(email: str) -> None:
         pass
 
 
-def _client(email: str | None = None, password: str | None = None) -> GarminCNClient:
+def _client(email: str | None = None, password: str | None = None,
+            revalidate: bool = False) -> GarminCNClient:
     from .net import Net
 
     auth = GarminCNAuth(HOME)
     net = Net(auth.session_path, min_interval=0.5)
     ok = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
+
+    # 有票据不等于票据还有效：Garmin 的 JWT 几小时就会失效，服务端直接 401。
+    # 旧版只看「有没有」，于是带着死票据跑完整轮同步才失败，用户看到的就是
+    # 「关掉再开一刷新就要重新登录」。这里先花一次轻量请求验一下，失效且
+    # 本地存了凭据就当场续期，不用再让用户手输密码。
+    if ok and revalidate:
+        if not auth.ensure_session():
+            ok = False
+        else:
+            # 校验过程中服务端可能轮换过 Cookie，重新从磁盘读一次最新值
+            net = Net(auth.session_path, min_interval=0.5)
 
     if not ok and email and password:
         auth.login(email, password)      # 可能要验证码，交给上层处理
@@ -124,6 +136,7 @@ _API = {
     "plan", "set_amap_key", "start_server", "recent", "read_html",
     "motion_html", "motion_status", "motion_cleanup", "motion_audio",
     "clips_list", "clips_add", "clips_remove", "clips_reprobe",
+    "clips_remove_many", "clips_update",
     "set_llm_config", "get_llm_config", "ai",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
@@ -511,7 +524,7 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
                 pass
 
     try:
-        client = _client(email, password)
+        client = _client(email, password, revalidate=True)
     except MfaRequired:
         return {"ok": False, "need_mfa": True, "error": "续期需要邮箱验证码，请重新登录"}
     except AuthError as e:
@@ -1080,7 +1093,8 @@ def motion_html(activity_id: str, fps: int = 24, duration: int = 30,
                       "file": p["clip"].get("local") or "",
                       "dur": float(p["clip"].get("dur") or 0),
                       "w": int(p["clip"].get("w") or 0),
-                      "h": int(p["clip"].get("h") or 0)}
+                      "h": int(p["clip"].get("h") or 0),
+                      "rotate": int(p["clip"].get("rotate") or 0) % 360}
                      for p in (pl.get("photos") or [])
                      if p.get("clip") and p["clip"].get("kind") != "image"]
         return {"ok": True, "html": str(out), "run": run,
@@ -1168,6 +1182,9 @@ def _clips_for_motion(rt: dict | None = None,
             "lon": _meta_val(it, info, "lon"),
             "codec": info.get("codec") or "",
             "bytes": info.get("bytes") or 0,
+            # 显示旋转：无损剪辑不转码，方向只能在绘制/抽帧时兑现。
+            # 0/90/180/270，只影响呈现，不影响锚定。
+            "rotate": int(it.get("rotate") or 0) % 360,
         })
     return out
 
@@ -1447,7 +1464,8 @@ def clips_reprobe(clip_id: str) -> dict:
 
 def clips_add(path: str, name: str = "", dur: float = 0,
               w: int = 0, h: int = 0, kind: str = "",
-              probe_from: str = "", taken_ms: float = 0) -> dict:
+              probe_from: str = "", taken_ms: float = 0,
+              rotate: int = 0, keep_src: str = "") -> dict:
     """登记一段素材。视频的剪辑由原生侧用 MediaExtractor/Muxer 无损完成，
     图片直接拷进来即可；这里只记录结果（文件应落在 `data/media/` 下）。
 
@@ -1459,6 +1477,12 @@ def clips_add(path: str, name: str = "", dur: float = 0,
     明明显示拍摄时间、App 里却是无拍摄时间」多半就是这个：时间只存在于
     MediaStore 的 DATE_TAKEN 或 MediaMetadataRetriever 的日期标签里，
     拷进 cache 的 mp4、以及裁出来的成品都不带它。所以必须在一开始就取出来。
+
+    `rotate` 是显示旋转（0/90/180/270）。无损剪辑不能真的转码旋转，所以
+    记在素材上，回放绘制和原生抽帧时再转 —— 竖拍视频才不会在卡片里被压成横屏。
+
+    `keep_src` 是**保留下来**的原始文件（不是临时 cache）：再次剪辑要回到
+    未裁的原片，否则只能在已经裁过的成品上二次裁，首段永远找不回来。
     """
     p = Path(str(path or ""))
     if not p.is_file():
@@ -1492,6 +1516,12 @@ def clips_add(path: str, name: str = "", dur: float = 0,
     if t_utc and k == "video":
         from . import clip as clip_mod
         clip_mod.stamp_creation(p, int(t_utc))
+    try:
+        rot = int(rotate or 0) % 360
+    except (TypeError, ValueError):
+        rot = 0
+    if rot not in (0, 90, 180, 270):
+        rot = 0
     items.append({
         "id": cid, "path": str(p), "name": (name or p.stem)[:60],
         "kind": k,
@@ -1502,6 +1532,10 @@ def clips_add(path: str, name: str = "", dur: float = 0,
         "lat": meta.get("lat") if meta.get("lat") is not None else fallback.get("lat"),
         "lon": meta.get("lon") if meta.get("lon") is not None else fallback.get("lon"),
         "added_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # 显示旋转：无损剪辑不转码，方向只能在绘制端兑现
+        "rotate": rot,
+        # 原始文件（再次剪辑用）。为空表示这条是旧记录或图片，不能再改起点
+        "src": str(Path(keep_src)) if keep_src else "",
     })
     _clips_write(items)
     return {"ok": True, "id": cid, "t_utc": t_utc, "t_source": t_src,
@@ -1509,21 +1543,72 @@ def clips_add(path: str, name: str = "", dur: float = 0,
 
 
 def clips_remove(clip_id: str) -> dict:
+    r = clips_remove_many([clip_id])
+    if not r.get("ok"):
+        return {"ok": False, "error": "没有这段素材"}
+    return {"ok": True, "items": r.get("items") or []}
+
+
+def clips_remove_many(ids: list) -> dict:
+    """一次删多条：写一次盘、删一批文件。
+
+    批量删除时逐条调 `clips_remove` 会写 N 次 clips.json，几十条就明显卡；
+    而且要删的文件里还有「保留的原始片」，不一起删会一直占着几百 MB。
+    """
+    want = {str(x) for x in (ids or []) if x}
+    if not want:
+        return {"ok": False, "error": "没有选中素材"}
     items = _clips_read()
-    keep, gone = [], None
+    keep, gone = [], []
     for it in items:
-        if it.get("id") == clip_id:
-            gone = it
+        if str(it.get("id") or "") in want:
+            gone.append(it)
         else:
             keep.append(it)
-    if gone is None:
-        return {"ok": False, "error": "没有这段素材"}
+    if not gone:
+        return {"ok": False, "error": "选中的素材已经不在列表里"}
     _clips_write(keep)
-    try:
-        Path(str(gone.get("path") or "")).unlink()
-    except OSError:
-        pass
-    return {"ok": True, "items": keep}
+    for it in gone:
+        for key in ("path", "src"):
+            try:
+                fp = Path(str(it.get(key) or ""))
+                if fp.is_file():
+                    fp.unlink()
+            except OSError:
+                pass
+    return {"ok": True, "removed": len(gone), "items": keep}
+
+
+def clips_update(clip_id: str, dur: float = 0, w: int = 0, h: int = 0,
+                 rotate: int = -1, name: str = "") -> dict:
+    """再次剪辑 / 手动旋转后回写记录（成品文件已由原生侧替换好）。
+
+    `rotate=-1` 表示这次不动旋转，避免只想改时长时把方向写回 0。
+    """
+    items = _clips_read()
+    hit = None
+    for it in items:
+        if str(it.get("id") or "") == str(clip_id):
+            hit = it
+            break
+    if hit is None:
+        return {"ok": False, "error": "没有这段素材"}
+    if dur > 0:
+        hit["dur"] = round(float(dur), 2)
+    if w > 0:
+        hit["w"] = int(w)
+    if h > 0:
+        hit["h"] = int(h)
+    if name:
+        hit["name"] = str(name)[:60]
+    if rotate is not None and int(rotate) >= 0:
+        try:
+            rot = int(rotate) % 360
+        except (TypeError, ValueError):
+            rot = 0
+        hit["rotate"] = rot if rot in (0, 90, 180, 270) else 0
+    _clips_write(items)
+    return {"ok": True, "item": hit, "items": items}
 
 
 def read_html(path: str) -> dict:

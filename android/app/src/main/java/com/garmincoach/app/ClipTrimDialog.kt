@@ -320,15 +320,38 @@ class ClipTrimDialog(
     private val act: Activity,
     private val src: File,
     private val durMs: Long,
-    private val onPick: (Long, Long) -> Unit,
+    private val onPick: (Long, Long, Int) -> Unit,
     /** 用户取消时调用：源文件是从相册拷到 cacheDir 的临时文件，得清掉。 */
     private val onCancel: () -> Unit = {},
+    /** 已记录的显示旋转，进界面时先按它预览。 */
+    private val rotate0: Int = 0,
 ) {
 
     private val main = Handler(Looper.getMainLooper())
     private val density = act.resources.displayMetrics.density
 
     private fun dp(v: Int) = (v * density).roundToInt()
+
+    /** 视频显示宽高（已按 tkhd rotation 交换），读不到就给竖屏兜底。 */
+    private fun readSize(): Pair<Int, Int> {
+        val mmr = MediaMetadataRetriever()
+        return try {
+            mmr.setDataSource(src.absolutePath)
+            val w = mmr.extractMetadata(
+                MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+            val h = mmr.extractMetadata(
+                MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+            val r = mmr.extractMetadata(
+                MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+            val sw = if (r == 90 || r == 270) h else w
+            val sh = if (r == 90 || r == 270) w else h
+            if (sw > 0 && sh > 0) sw to sh else 1080 to 1920
+        } catch (t: Throwable) {
+            1080 to 1920
+        } finally {
+            try { mmr.release() } catch (_: Throwable) {}
+        }
+    }
 
     private var keys: List<Long> = emptyList()
     private var thumbs: List<Bitmap> = emptyList()
@@ -341,6 +364,8 @@ class ClipTrimDialog(
     private var surface: Surface? = null
     private var prepared = false
     private var playing = false
+    /** 当前显示旋转（0/90/180/270）。无损剪辑不转码，角度回传给登记端。 */
+    private var curRotate = ((rotate0 % 360) + 360) % 360
     /** 已经点了确定：这时不能再删源文件，saveClip 还要拿它去剪。 */
     private var picked = false
 
@@ -353,9 +378,9 @@ class ClipTrimDialog(
     private lateinit var loading: ProgressBar
 
     companion object {
-        fun show(act: Activity, src: File, durMs: Long,
-                 onPick: (Long, Long) -> Unit, onCancel: () -> Unit = {}) {
-            ClipTrimDialog(act, src, durMs, onPick, onCancel).show()
+        fun show(act: Activity, src: File, durMs: Long, rotate0: Int = 0,
+                 onPick: (Long, Long, Int) -> Unit, onCancel: () -> Unit = {}) {
+            ClipTrimDialog(act, src, durMs, onPick, onCancel, rotate0).show()
         }
     }
 
@@ -366,6 +391,17 @@ class ClipTrimDialog(
         }
 
         // ---- 预览区
+        // 按素材真实宽高比摆：竖屏给竖向的框，横屏给横向的。旧版固定 200dp 高
+        // + MATCH_PARENT 宽 + CENTER_CROP，竖拍视频会被裁成一截横条。
+        val (vw, vh) = readSize()
+        val maxW = (act.resources.displayMetrics.widthPixels - dp(32)).toFloat()
+        val maxH = dp(if (vh > vw) 300 else 200).toFloat()
+        var fw = maxW
+        var fh = fw * vh.toFloat() / max(1, vw)
+        if (fh > maxH) {
+            fh = maxH
+            fw = fh * vw.toFloat() / max(1, vh)
+        }
         val frame = FrameLayout(act).apply {
             setBackgroundColor(0xFF12161B.toInt())
         }
@@ -374,7 +410,7 @@ class ClipTrimDialog(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         still = ImageView(act).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
+            scaleType = ImageView.ScaleType.FIT_CENTER
             visibility = View.GONE
         }
         frame.addView(still, FrameLayout.LayoutParams(
@@ -394,8 +430,28 @@ class ClipTrimDialog(
         frame.addView(playBtn, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START))
 
+        // 旋转：无损剪辑不转码，角度随素材一起登记，回放绘制/抽帧时兑现。
+        val rotBtn = TextView(act).apply {
+            text = if (curRotate == 0) "⟳ 旋转" else "⟳ ${curRotate}°"
+            textSize = 12.5f
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(dp(10), dp(5), dp(10), dp(5))
+            setBackgroundColor(0x99000000.toInt())
+            setOnClickListener {
+                curRotate = (curRotate + 90) % 360
+                tex.rotation = curRotate.toFloat()
+                still.rotation = curRotate.toFloat()
+                text = "⟳ ${curRotate}°"
+            }
+        }
+        frame.addView(rotBtn, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.END))
+
         root.addView(frame, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(200)))
+            fw.roundToInt(), fh.roundToInt()).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+        })
 
         // ---- 选区信息
         info = TextView(act).apply {
@@ -686,7 +742,7 @@ class ClipTrimDialog(
             return
         }
         picked = true
-        onPick(startMs, endMs)
+        onPick(startMs, endMs, curRotate)
         dlg.dismiss()
     }
 

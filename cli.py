@@ -2222,7 +2222,11 @@ def cmd_selftest(args) -> int:
     me = U.me_page()
     assert "page-head" in me and 'data-act="login:garmin"' in me
     assert 'data-act="login:coros"' in me, "数据源行要直达对应登录"
-    assert 'data-act="historySync"' not in me and 'data-act="settings"' not in me
+    # 「补拉历史」主入口在历史页；「我的」页再给一处明确入口（用户反馈在
+    # 历史页找不到），今日页仍然不放。settings 是 AI 设置，只许在教练页齿轮里。
+    assert 'data-act="historySync"' in me, "我的页要有补拉历史入口"
+    assert 'data-act="settings"' not in me
+    assert 'data-act="historySync"' not in home, "今日页不该重复放补拉入口"
     assert 'href="/files"' in me
     assert 'data-act="amap"' in me and "地图底图" in me, "我的页要有底图 Key 入口"
     # 看板导航只剩「回来源 tab + 前后翻日期」，不再有横向 tab 入口
@@ -2873,7 +2877,7 @@ def cmd_selftest(args) -> int:
         "原生抽帧没用缩略帧 API（精确帧 + 关键帧两条都要）"
     assert "OPTION_CLOSEST" in _ck and "OPTION_CLOSEST_SYNC" in _ck, \
         "精确帧失败没有退回关键帧，个别编码器上会整段抽不到"
-    assert "bmp.recycle()" in _ck and "FileOutputStream" in _ck, \
+    assert _ck.count("bmp.recycle()") >= 2 and "FileOutputStream" in _ck, \
         "抽帧没有逐帧回收 Bitmap / 落盘 JPEG，几十张原图就 OOM"
     assert "METADATA_KEY_VIDEO_ROTATION" in _ck, \
         "竖拍视频没按 rotation 交换宽高，卡片里会横过来"
@@ -2950,6 +2954,94 @@ def cmd_selftest(args) -> int:
                                            "duration_s": 3600}])
     assert "week_min" in _ld49 and abs(float(_ld49["week_min"]) - 60) < 0.1, \
         "training_status 没给 week_min，AI 教练的周训练分钟数还是空"
+
+    # ---- v50：活动图标题溢出 / 登录态 / 补拉入口 / 素材管理 -----------------
+    # 1) 活动图：长标题 + 长天气会把右侧标签挤出卡片。flex 子项默认
+    #    min-width:auto，必须显式给 0 才允许换行；标题 44→38 并限两行。
+    from garmin_cn import actcard as _AC
+    _ac_src = Path(_AC.__file__).read_text(encoding="utf-8")
+    _clip_dlg = (_kt_dir / "ClipTrimDialog.kt").read_text(encoding="utf-8")
+    assert ".hleft{flex:1;min-width:0}" in _ac_src, \
+        "活动图标题列没有 min-width:0，长标题会把标签挤出卡片"
+    assert ".hname{font-size:38px" in _ac_src and "-webkit-line-clamp:2" in _ac_src, \
+        "标题没缩小或没限行，长标题仍会溢出"
+    assert ".htag{flex:none;white-space:nowrap" in _ac_src, \
+        "标签会被长标题压缩/换行"
+    # 2) 登录态：Garmin 会在普通请求里轮换 JWT，只登录时落盘 = 关掉再开就过期
+    from garmin_cn import net as _NET
+    _net_src = Path(_NET.__file__).read_text(encoding="utf-8")
+    assert "self._save_if_changed()" in _net_src and "_cookie_sig" in _net_src, \
+        "Cookie 轮换后没有落盘，关掉再开就会要求重新输密码"
+    assert "finally:\n            # 成功、失败、重试都要走" in _net_src, \
+        "request 的 finally 里没保存会话，失败重试路径仍会丢新票据"
+    from garmin_cn import appapi as _AA2
+    _aa_src = Path(_AA2.__file__).read_text(encoding="utf-8")
+    assert "def _client(email: str | None = None, password: str | None = None,\n" \
+        "            revalidate: bool = False)" in _aa_src, \
+        "_client 没有 revalidate，会带着死票据跑完整轮同步才失败"
+    assert "client = _client(email, password, revalidate=True)" in _aa_src, \
+        "同步入口没有先校验会话"
+    # 3) 补拉：旧版拿「本地有没有密码」当门槛，密码为空时按钮点了只弹登录
+    assert 'row("↻", "补拉更多历史"' in _ui_src, "我的页没有补拉入口"
+    assert "if (email.isNullOrBlank() || pwd.isNullOrBlank())" not in _main, \
+        "补拉仍被本地密码拦截，点了只会弹登录"
+    # 4) 素材：多选批量删除 / 批量添加 / 再次剪辑 / 旋转 / 竖横屏
+    assert "def clips_remove_many(" in _aa_src and "def clips_update(" in _aa_src, \
+        "没有批量删除/更新接口"
+    assert '"clips_remove_many", "clips_update",' in _aa_src, \
+        "新接口没注册到 _API，App 调不到"
+    assert "clipDialog?.dismiss()" in _main, \
+        "重建素材列表前没关旧对话框，「删完还能看见旧列表」"
+    assert "val cb = CheckBox(this)" in _main, "素材行没有多选勾选框"
+    assert "putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)" in _main, \
+        "相册不能多选，批量添加不成立"
+    assert "val u = pendingVideos.removeFirstOrNull()" in _main and \
+        "nextPendingVideo()" in _main, \
+        "批量选视频没有队列，只会处理第一个"
+    assert 'src.copyTo(k, overwrite = true)' in _main and "keep" in _main, \
+        "没保留原始片，再次剪辑只能裁二次成品"
+    assert "private fun readRotation(" in _main and \
+        "val dw = if (rot == 90 || rot == 270) r.height else r.width" in _main, \
+        "没按 tkhd rotation 换算显示宽高，竖屏仍会被压成横屏"
+    assert "private fun rotateClip(" in _main and "clips_update" in _main, \
+        "素材没有旋转入口"
+    assert "curRotate" in _clip_dlg and "onPick(startMs, endMs, curRotate)" in _clip_dlg, \
+        "裁剪界面没有旋转状态或没回传角度"
+    assert "readSize()" in _clip_dlg and "if (fh > maxH) {" in _clip_dlg, \
+        "裁剪预览没按素材宽高比摆放，竖屏会被裁成横条"
+    assert "function drawRotated(" in _msrc and "drawRotated(frame, p.clip" in _msrc, \
+        "回放绘制没处理 rotate，登记了角度也不生效"
+    assert "const rot = (c.rotate || 0) % 360;" in _msrc and \
+        "(rot === 90 || rot === 270) ? c.h : c.w" in _msrc, \
+        "卡片布局没按旋转交换宽高"
+    assert '"rotate": int(pick.get("rotate") or 0) % 360,' in _msrc, \
+        "payload 没带 rotate"
+    assert '"rotate": int(it.get("rotate") or 0) % 360,' in _aa_src, \
+        "素材清单没把 rotate 传给回放"
+    # 批量删除/更新语义（用内存替身，不碰真 clips.json）
+    _orig_r, _orig_w = _AA2._clips_read, _AA2._clips_write
+    _bucket = {"items": [{"id": "a", "path": "/nope/a.mp4", "src": "/nope/a-src.mp4"},
+                         {"id": "b", "path": "/nope/b.mp4"},
+                         {"id": "c", "path": "/nope/c.mp4"}]}
+    _AA2._clips_read = lambda: [dict(x) for x in _bucket["items"]]
+    _AA2._clips_write = lambda xs: _bucket.__setitem__("items", [dict(x) for x in xs])
+    try:
+        _rm = _AA2.clips_remove_many(["a", "c"])
+        assert _rm["ok"] and _rm["removed"] == 2, "批量删除没有一次删掉选中项"
+        assert [x["id"] for x in _bucket["items"]] == ["b"], "批量删除删错了记录"
+        _up = _AA2.clips_update("b", dur=8.5, w=1080, h=1920, rotate=90)
+        assert _up["ok"] and _bucket["items"][0]["rotate"] == 90, \
+            "旋转/时长回写没生效"
+        assert _AA2.clips_update("b", rotate=-1)["ok"] and \
+            _bucket["items"][0]["rotate"] == 90, "rotate=-1 不该把角度写回 0"
+        assert not _AA2.clips_remove_many([])["ok"], "空选择也当成删除成功"
+    finally:
+        _AA2._clips_read, _AA2._clips_write = _orig_r, _orig_w
+    # 旋转后的外接框：90/270 必须交换，否则竖屏素材被压进横卡片
+    for _deg, _want in ((0, (1920, 1080)), (90, (1080, 1920)),
+                        (180, (1920, 1080)), (270, (1080, 1920))):
+        _rw, _rh = (1080, 1920) if _deg in (90, 270) else (1920, 1080)
+        assert (_rw, _rh) == _want, f"rotate={_deg} 的显示宽高算错了"
 
     # 数值模拟（不依赖外部 DB）：稀疏 + 重复时间戳的路线，新旧算法逐帧对比。
     _pt = [0, 10, 25, 25, 40, 66, 80, 100, 100, 130, 150,

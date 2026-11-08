@@ -27,7 +27,7 @@ object MotionClips {
     data class Info(val n: Int, val fps: Double, val w: Int, val h: Int)
 
     fun extract(src: String, outDir: File, targetFps: Int, maxFrames: Int,
-                longEdge: Int,
+                longEdge: Int, rotate: Int = 0,
                 cancelled: () -> Boolean = { false }): Info {
         if (src.isBlank()) return Info(0, 0.0, 0, 0)
         val f = File(src)
@@ -49,6 +49,9 @@ object MotionClips {
             val cw = if (swap) h0 else w0
             val ch = if (swap) w0 else h0
             val (tw, th) = targetSize(cw, ch, longEdge)
+            // 显示旋转：无损剪辑不能转码，方向在这里兑现。抽帧按原图比例缩，
+            // 出来再转 —— 转完宽高互换，正好对上页面 popLayout 的竖卡片。
+            val deg = ((rotate % 360) + 360) % 360
             val n = max(1, min(maxFrames,
                 ceil(durMs / 1000.0 * targetFps).toInt()))
             val fps = n * 1000.0 / durMs
@@ -59,7 +62,8 @@ object MotionClips {
             for (i in 0 until n) {
                 if (cancelled()) break
                 val us = (i * 1_000_000L / max(0.001, fps)).toLong()
-                val bmp = frame(mmr, us, tw, th) ?: continue
+                val raw = frame(mmr, us, tw, th) ?: continue
+                val bmp = if (deg == 0) raw else rotateBmp(raw, deg)
                 if (i == 0) { outW = bmp.width; outH = bmp.height }
                 try {
                     FileOutputStream(File(outDir, "$i.jpg")).use {
@@ -86,6 +90,19 @@ object MotionClips {
         val s = min(1.0, longEdge.toDouble() / max(w, h))
         return Pair(max(2, (w * s).toInt() / 2 * 2),
                     max(2, (h * s).toInt() / 2 * 2))
+    }
+
+    /** 90/270 度旋转；0 原样返回，调用方统一负责 recycle。 */
+    private fun rotateBmp(bmp: Bitmap, deg: Int): Bitmap {
+        if (deg % 360 == 0) return bmp
+        return try {
+            val m = android.graphics.Matrix().apply { postRotate(deg.toFloat()) }
+            val out = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+            if (out !== bmp) bmp.recycle()
+            out
+        } catch (t: Throwable) {
+            bmp
+        }
     }
 
     /**
