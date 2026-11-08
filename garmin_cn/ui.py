@@ -287,6 +287,26 @@ def chip(text: str, tone: str = "") -> str:
     return f'<span class="{cls}">{esc(text)}</span>'
 
 
+def _today_load_txt(load: dict, day: str) -> str:
+    """当天训练负荷。
+
+    `derive()` 里的 `load` 是 `metrics.training_status()` 的结果，字段是
+    `loads`（按日期）/ `ctl` / `atl` / `tsb` / `acute_7d` …，**没有 `load`
+    这个键**。首页以前读 `load["load"]`，取到的永远是 None，于是「今日负荷」
+    一直渲染成「—」。历史里一天都没有才显示「—」；没练的那天就该显示 0。
+    """
+    loads = load.get("loads") or {}
+    if not loads and load.get("acute_7d") is None:
+        return "—"
+    return f"{(loads.get(day) or 0):.0f}"
+
+
+def _week_load_txt(load: dict) -> str:
+    """近 7 天累计负荷（就是 training_status 的 acute_7d）。"""
+    v = load.get("acute_7d")
+    return "—" if v is None else f"{v:.0f}"
+
+
 def stat(label: str, value, note: str = "", unit: str = "") -> str:
     u = f'<small style="font-size:12px;color:var(--muted)"> {esc(unit)}</small>' if unit else ""
     return (f'<div class="card"><div class="lab">{esc(label)}</div>'
@@ -397,7 +417,8 @@ def home_page() -> str:
     </div><div class="bar"><i style="width:{max(0, min(100, int(score or 0)))}%"></i></div></div>"""
 
     stats = ('<div class="grid three">' +
-             stat("今日负荷", load.get("load") or "—", "近 7 天累计") +
+             stat("今日负荷", _today_load_txt(load, day),
+                  "近 7 天累计 " + _week_load_txt(load)) +
              stat("CTL 体能", load.get("ctl") or "—", "42 天指数均线") +
              stat("TSB 状态", load.get("tsb") or "—", "体能 − 疲劳") +
              '</div>')

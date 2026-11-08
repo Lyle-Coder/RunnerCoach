@@ -2920,6 +2920,37 @@ def cmd_selftest(args) -> int:
         assert all(b >= a for a, b in zip(_seq48, _seq48[1:])), \
             f"{_dur48}s 素材的原生帧索引会倒退，成片里视频倒放"
 
+    # ---- v49：首页「今日负荷」始终显示 —（键名写错） ------------------------
+    # `derive()["load"]` 是 `training_status()` 的结果，字段是 loads / ctl /
+    # atl / tsb / acute_7d …，**没有 `load`**。首页读 `load["load"]` 永远拿到
+    # None，于是「今日负荷」一直是「—」；同一处还读了一个不存在的 week_min。
+    from garmin_cn import ui as _UI
+    from garmin_cn import metrics as _MT
+
+    _ui_src = Path(_UI.__file__).read_text(encoding="utf-8")
+    assert 'load.get("load")' not in _ui_src, \
+        "首页还在读 training_status 里不存在的 load 键，「今日负荷」永远是 —"
+    assert "_today_load_txt" in _ui_src and "loads.get(day)" in _ui_src, \
+        "今日负荷没按日期从 loads 里取"
+    assert "_week_load_txt" in _ui_src and "acute_7d" in _ui_src, \
+        "近 7 天累计没取 acute_7d"
+    # 语义模拟：有历史时没练的那天就是 0；一天历史都没有才显示 —
+    _L49 = {"loads": {"2026-11-08": 542.3, "2026-11-07": 0.0},
+            "acute_7d": 1129.2}
+    assert _UI._today_load_txt(_L49, "2026-11-08") == "542", "今日负荷取错日期"
+    assert _UI._today_load_txt(_L49, "2026-11-07") == "0", \
+        "没练的那天应该显示 0，不是「—」"
+    assert _UI._today_load_txt({}, "2026-11-08") == "—", \
+        "完全没有历史时应该显示「—」"
+    assert _UI._week_load_txt(_L49) == "1129" and _UI._week_load_txt({}) == "—", \
+        "近 7 天累计取值/缺数据兜底不对"
+    # week_min：AI 教练读的就是这个键，以前 training_status 里没有 → 永远 None
+    _rows49 = [{"date": f"2026-11-{d:02d}"} for d in range(1, 9)]
+    _ld49 = _MT.training_status(_rows49, [{"date": "2026-11-08",
+                                           "duration_s": 3600}])
+    assert "week_min" in _ld49 and abs(float(_ld49["week_min"]) - 60) < 0.1, \
+        "training_status 没给 week_min，AI 教练的周训练分钟数还是空"
+
     # 数值模拟（不依赖外部 DB）：稀疏 + 重复时间戳的路线，新旧算法逐帧对比。
     _pt = [0, 10, 25, 25, 40, 66, 80, 100, 100, 130, 150,
            180, 200, 200, 230, 260, 300]

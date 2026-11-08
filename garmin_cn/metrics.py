@@ -217,6 +217,12 @@ def training_status(rows: list[dict], activities: list[dict], max_hr: int = MAX_
 
     tsb = (ctl[-1] - atl[-1]) if ctl else 0
 
+    # 最近 7 天训练总分钟：AI 教练的上下文要判断「这周练了多少」，
+    # 以前它读 `training_status()["week_min"]`，这里根本没这个键 → 永远是 None。
+    last7 = set(dates[-7:])
+    week_min = round(sum((num(a.get("duration_s"), 0) or 0)
+                         for a in activities if a.get("date") in last7) / 60, 1)
+
     if acwr is None:
         acwr_state = "样本不足"
     elif acwr > 1.5:
@@ -237,6 +243,7 @@ def training_status(rows: list[dict], activities: list[dict], max_hr: int = MAX_
         "acwr_state": acwr_state,
         "acute_7d": round(acute, 1),
         "chronic_28d": round(chronic28, 1),
+        "week_min": week_min,
         "ctl_series": [round(x, 1) for x in ctl],
         "atl_series": [round(x, 1) for x in atl],
     }
