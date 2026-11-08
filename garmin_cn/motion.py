@@ -233,6 +233,14 @@ RAMP = 0.70             # 每处素材「停住」前后各 0.7s 加减速（播
 # （页面时长标签写的是原时长，实际只播了前面一段，两边对不上）。
 HOLD_MIN, HOLD_MAX = 0.6, 3600.0
 
+# 素材与活动时间窗的容差（秒）。
+# 口径不是「严格落在活动时段内」，而是「必须是**同一次活动附近**的素材」：
+# 差几小时的素材照旧保留（贴到最近一端，用户加的东西不许凭空消失），
+# 但差好几天的——上一次跑步/上一次比赛加的视频还留在素材库里——
+# 必须剔除，否则会被贴到这次活动两端，看着像放错了片子。
+CLIP_TOL_PRE_S = 24 * 3600.0    # 活动开始前 24 小时
+CLIP_TOL_POST_S = 24 * 3600.0   # 活动结束后 24 小时
+
 
 def _timeline_total(play: float, photos: list[dict]) -> float:
     """页面时间轴的真实总时长，算法必须与 JS 里的 `TL` / `holdsSum` 逐字一致。
@@ -348,10 +356,30 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
     out_clips = 0
     if clips:
         clips = _spread_clips(clips, rt)
+        # 先按**活动时间附近**剔除明显不属于这次活动的素材。
+        # 素材库是全局的：上一次跑步/上一次比赛加的视频还留在里面，
+        # 不先筛掉的话 clamp_ends 会把它们强行贴到这次活动的两端塞进成片——
+        # 表现是「上次比赛（11-03）的视频混进了这次（11-08）的回放」。
+        # 容差 24 小时：差几小时的照旧保留（用户加的素材不许凭空消失），
+        # 差好几天的才剔除。读不到拍摄时间的素材一律保留（无法判定归属）。
+        t0_ms = rt.get("t0")
+        ts = rt.get("t") or []
+        act_dur = float(ts[-1]) if ts else 0.0
+        if t0_ms and act_dur:
+            keep = []
+            for c in clips:
+                t_utc = c.get("t_utc")
+                if not t_utc:
+                    keep.append(c)
+                    continue
+                rel = (float(t_utc) - float(t0_ms)) / 1000.0
+                if -CLIP_TOL_PRE_S <= rel <= act_dur + CLIP_TOL_POST_S:
+                    keep.append(c)
+            clips = keep
         # cluster_m=0：素材**不合并**。两段视频拍在同一地点很常见（同路口前后各
         # 一段），合并后只会保留最长的一段，另一段就凭空消失了——用户要的是
-        # 「素材完整插入」。clamp_ends：时间明显不在这次活动里的也贴到最近的
-        # 一端，不许丢。
+        # 「素材完整插入」。clamp_ends：时间**接近**这次活动但落在外面的
+        # （比如起跑前拍的几秒）也贴到最近的一端，不许丢。
         cg = photo_mod.match(clips, rt, t0_ms=rt.get("t0"),
                              cluster_m=0.0, clamp_ends=True,
                              keep=("dur", "codec", "bytes", "kind"))

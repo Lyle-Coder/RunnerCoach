@@ -1058,7 +1058,9 @@ def motion_html(activity_id: str, fps: int = 24, duration: int = 30,
         # run 远没到这个年龄，不会被误删。
         _sweep_motion_frames()
         out = OUT / f"motion-{aid}.html"
-        clips = _clips_for_motion()
+        # 传 rt 进去：素材按这次活动的时间窗过滤，库里残留的旧素材
+        # （上一次跑步加的）不会被贴到活动两端混进成片
+        clips = _clips_for_motion(rt)
         pl: dict = {}
         # web=True：App 里的播放器走 http，必须把底图/照片/视频换成本源 URL，
         # 否则真机上绝对路径 404 → 页面 ready=false → 一帧都不推
@@ -1095,7 +1097,8 @@ def _meta_val(it: dict, info: dict, key: str):
     return v if v is not None else info.get(key)
 
 
-def _clips_for_motion() -> list[dict]:
+def _clips_for_motion(rt: dict | None = None,
+                      pre_s: float = 24 * 3600, post_s: float = 24 * 3600) -> list[dict]:
     """素材（视频 / 图片）→ motion.build_payload 要的 shot 结构。
 
     必须带上 `t_utc`：`photo.match` 靠拍摄时间把素材挂到轨迹上。
@@ -1108,7 +1111,20 @@ def _clips_for_motion() -> list[dict]:
     登记时传的 dur 可能为 0（原生侧还没量出来），这里如果照用就退化成
     3 秒——用户加了一段 51 秒的视频，回放里只播 3 秒，等于被裁掉了。
     所以视频一律重新探文件，读不到才退回登记值。
+
+    `rt` 是这次活动的路线（带 t0 与时序）。给了它就按**活动时间附近**过滤：
+    素材登记在手机上是全局的，上一次跑步/上一次比赛加的素材还留在库里，
+    不筛的话 `photo.match(clamp_ends=True)` 会把那些「时间离这次活动很远的」
+    素材强行贴到活动两端塞进成片——上次比赛（11-03）的视频就混进了这次
+    （11-08）的回放，看着像放错了片子。
+    容差取 24 小时：差几小时的素材照旧保留（用户加的不许凭空消失），
+    差好几天的才剔除。读不到拍摄时间的素材一律保留（无法判定归属）。
     """
+    t0 = (rt or {}).get("t0")
+    dur = 0.0
+    ts = (rt or {}).get("t") or []
+    if ts:
+        dur = float(ts[-1])
     out = []
     for it in _clips_read():
         p = Path(str(it.get("path") or ""))
@@ -1120,6 +1136,12 @@ def _clips_for_motion() -> list[dict]:
         dur = float(info.get("dur") or 0) or float(it.get("dur") or 0)
         if dur <= 0:
             dur = STILL_SEC if kind == "image" else 3.0
+        t_utc = _meta_val(it, info, "t_utc")
+        if t0 and t_utc:
+            rel = (float(t_utc) - float(t0)) / 1000.0
+            if rel < -pre_s or rel > dur + post_s:
+                # 时间明确不在这次活动里 → 跳过，别让它贴到活动两端
+                continue
         out.append({
             "path": str(p),
             "name": it.get("name") or p.stem,
@@ -1128,7 +1150,7 @@ def _clips_for_motion() -> list[dict]:
             "w": int(it.get("w") or info.get("w") or 1080),
             "h": int(it.get("h") or info.get("h") or 1920),
             "orientation": int(info.get("orientation") or 1),
-            "t_utc": _meta_val(it, info, "t_utc"),
+            "t_utc": t_utc,
             "lat": _meta_val(it, info, "lat"),
             "lon": _meta_val(it, info, "lon"),
             "codec": info.get("codec") or "",
