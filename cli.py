@@ -3007,6 +3007,31 @@ def cmd_selftest(args) -> int:
         "素材列表没换成固定高度的可滚列表，条数一多就看不全"
     assert "clipTitle?.text" in _main and "clipDialog: Dialog?" in _main, \
         "素材列表还是 AlertDialog，没有可更新的标题"
+
+    # ---- v53：深色科技风主题（近黑 + 科技蓝 + 辉光） ----------------------
+    from garmin_cn import aiui as _AI
+    _ai_src = Path(_AI.__file__).read_text(encoding="utf-8")
+    _man = (Path(__file__).parent / "android/app/src/main/AndroidManifest.xml") \
+        .read_text(encoding="utf-8")
+    assert "--bg:#070B12" in _ui_src and "--brand:#3B82F6" in _ui_src, \
+        "页面主色不是深空蓝，科技风主题丢了"
+    assert "--cyan:#22D3EE" in _ui_src and "radial-gradient(900px 520px" in _ui_src, \
+        "缺青色高光或背景径向渐变"
+    assert ".card.brand" in _ui_src and "box-shadow:var(--glow)" in _ui_src, \
+        "品牌卡没有辉光"
+    assert "-webkit-text-fill-color:transparent" in _ui_src and \
+        "filter:drop-shadow(0 0 16px" in _ui_src, \
+        "大数字没有渐变/辉光"
+    assert ".sec-head h2::before" in _ui_src and ".row .ic{" in _ui_src, \
+        "分节标记/图标底座丢了科技风样式"
+    assert "--bg:#070B12" in _ai_src, "AI 页还是浅色，和 App 不一致"
+    assert 'theme-color" content="#070B12"' in _ui_src, "移动端主题色没换"
+    assert "0xFF070B12.toInt()" in _main and "0xFF4DA3FF.toInt()" in _main, \
+        "原生顶栏/底栏还是浅色"
+    assert "Theme.Material.NoActionBar" in _man, "原生主题还是 Light"
+    # 浅色 token 不许回来：这几处是整套暗色主题的锚点
+    for _bad in ("--bg:#F6F7F4", "--brand:#17845F", "background:#FFFFFF"):
+        assert _bad not in _ui_src, f"浅色 token 又回来了：{_bad}"
     assert "putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)" in _main, \
         "相册不能多选，批量添加不成立"
     assert "val u = pendingVideos.removeFirstOrNull()" in _main and \

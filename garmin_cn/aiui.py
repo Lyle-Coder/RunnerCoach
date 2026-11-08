@@ -24,13 +24,22 @@ import json
 
 CSS = """
 :root{
-  --bg:#F6F7F4; --card:#FFFFFF; --line:#E4E8E1; --line-2:#EEF1EB;
-  --ink:#1A1F1B; --ink-2:#485046; --muted:#78806F; --faint:#A3AA9C;
-  --green:#17845F; --green-soft:#E5F3ED; --amber:#B8860B; --amber-soft:#FBF2DC;
-  --red:#C0453F; --red-soft:#FAE7E5; --blue:#35688F; --blue-soft:#E9F1F8;
+  /* 与 ui.py 同一套深空 token：AI 页也走蓝青辉光，不在深色 App 里留一块白 */
+  --bg:#070B12; --card:#0F1622; --line:rgba(96,165,250,.16); --line-2:rgba(96,165,250,.09);
+  --ink:#E8F0FB; --ink-2:#B7C7DD; --muted:#7C8FA8; --faint:#4E6076;
+  --green:#3B82F6; --green-soft:rgba(59,130,246,.14);
+  --amber:#F5A524; --amber-soft:rgba(245,165,36,.14);
+  --red:#F2555A; --red-soft:rgba(242,85,90,.14);
+  --blue:#5EA0FF; --blue-soft:rgba(94,160,255,.14);
+  --cyan:#22D3EE;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-body{margin:0;background:var(--bg);color:var(--ink);
+body{margin:0;color:var(--ink);
+  background:
+    radial-gradient(900px 520px at 78% -8%, rgba(59,130,246,.17), transparent 62%),
+    radial-gradient(680px 420px at 6% 2%, rgba(34,211,238,.10), transparent 60%),
+    var(--bg);
+  background-attachment:fixed;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
   -webkit-font-smoothing:antialiased;line-height:1.6;font-size:14px;
   padding-bottom:env(safe-area-inset-bottom)}
@@ -40,7 +49,7 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .top .sub{font-size:11.5px;color:var(--muted);margin-top:2px}
 .gear{width:34px;height:34px;border-radius:10px;border:1px solid var(--line);background:var(--card);
   display:flex;align-items:center;justify-content:center;font-size:16px;color:var(--ink-2);cursor:pointer}
-.tabs{display:flex;gap:6px;background:#EDF1EA;border-radius:12px;padding:4px;margin-bottom:14px}
+.tabs{display:flex;gap:6px;background:rgba(9,14,22,.9);border:1px solid rgba(96,165,250,.12);border-radius:12px;padding:4px;margin-bottom:14px}
 .tabs button{flex:1;border:0;background:transparent;color:var(--ink-2);font-size:13px;font-weight:500;
   padding:8px 0;border-radius:9px;font-family:inherit;cursor:pointer;transition:.15s}
 .tabs button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.06)}
@@ -49,9 +58,9 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .head{font-size:21px;font-weight:600;line-height:1.35;letter-spacing:.2px}
 .focus{font-size:13.5px;color:var(--ink-2);margin-top:6px}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
-.chip{font-size:11.5px;padding:3px 9px;border-radius:999px;background:var(--green-soft);color:#0C6349}
+.chip{font-size:11.5px;padding:3px 9px;border-radius:999px;background:var(--green-soft);color:#8CC2FF}
 .chip.gray{background:var(--line-2);color:var(--ink-2)}
-.chip.amber{background:var(--amber-soft);color:#8A6410}
+.chip.amber{background:var(--amber-soft);color:#F5C26B}
 ul.list{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:9px}
 ul.list li{display:flex;gap:9px;font-size:13.5px;line-height:1.6;color:var(--ink-2)}
 ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:11px;
@@ -66,11 +75,11 @@ ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:
   gap:8px;align-items:center;flex-wrap:wrap}
 .btn{border:1px solid var(--line);background:var(--card);color:var(--ink-2);border-radius:10px;
   padding:8px 13px;font-size:12.5px;font-family:inherit;cursor:pointer;white-space:nowrap;flex:0 0 auto}
-.btn:active{background:#F1F4EE}
-.btn.primary{background:var(--green);border-color:var(--green);color:#fff}
-.btn.primary:active{background:#126B4E}
+.btn:active{background:rgba(59,130,246,.14)}
+.btn.primary{background:linear-gradient(135deg,#3B82F6,#22D3EE);border-color:transparent;color:#04121F;font-weight:650}
+.btn.primary:active{background:#2A6FE0}
 .btn:disabled{opacity:.5}
-.skel{height:14px;border-radius:6px;background:linear-gradient(90deg,#EEF1EB 25%,#F6F8F4 37%,#EEF1EB 63%);
+.skel{height:14px;border-radius:6px;background:linear-gradient(90deg,#16202F 25%,#22304A 37%,#16202F 63%);
   background-size:400% 100%;animation:sh 1.2s ease infinite;margin-bottom:9px}
 @keyframes sh{0%{background-position:100% 50%}100%{background-position:0 50%}}
 .empty{text-align:center;padding:22px 10px;color:var(--muted);font-size:13px;line-height:1.7}
@@ -78,34 +87,34 @@ ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:
 .err{border-left:3px solid var(--red);background:var(--red-soft);border-radius:10px;padding:12px 14px;
   font-size:13px;color:#8C2F2A;line-height:1.65}
 .err b{display:block;margin-bottom:4px}
-.quote{font-size:12px;color:var(--muted);background:#FAFBF8;border-radius:8px;padding:8px 10px;
+.quote{font-size:12px;color:var(--muted);background:rgba(9,14,22,.9);border-radius:8px;padding:8px 10px;
   margin-top:8px;white-space:pre-wrap;max-height:160px;overflow:auto}
 .kv{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:4px}
-.kv div{background:#FAFBF8;border-radius:10px;padding:9px 8px;text-align:center}
+.kv div{background:rgba(9,14,22,.9);border-radius:10px;padding:9px 8px;text-align:center}
 .kv .v{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
 .kv .k{font-size:10.5px;color:var(--muted);margin-top:2px}
 /* 聊天 */
 .chat{display:flex;flex-direction:column;gap:10px;min-height:40vh}
 .msg{max-width:86%;padding:10px 13px;border-radius:14px;font-size:13.5px;line-height:1.65;
   white-space:pre-wrap;word-break:break-word}
-.msg.u{align-self:flex-end;background:var(--green);color:#fff;border-bottom-right-radius:5px}
+.msg.u{align-self:flex-end;background:linear-gradient(135deg,#3B82F6,#2A6FE0);color:#F2F8FF;border-bottom-right-radius:5px}
 .msg.a{align-self:flex-start;background:var(--card);border:1px solid var(--line);
   border-bottom-left-radius:5px}
 .msg.a.think{color:var(--muted);font-style:normal}
 .quick{display:flex;gap:7px;flex-wrap:wrap;margin-top:4px}
 .quick button{border:1px solid var(--line);background:var(--card);border-radius:999px;
   padding:7px 12px;font-size:12.5px;color:var(--ink-2);font-family:inherit}
-.composer{position:sticky;bottom:0;background:linear-gradient(180deg,rgba(244,246,242,0) 0%,var(--bg) 28%);
+.composer{position:sticky;bottom:0;background:linear-gradient(180deg,rgba(7,11,18,0) 0%,var(--bg) 30%);
   padding:10px 0 calc(10px + env(safe-area-inset-bottom))}
 .composer .row{display:flex;gap:8px;align-items:flex-end;background:var(--card);border:1px solid var(--line);
   border-radius:14px;padding:7px 7px 7px 12px}
 .composer textarea{flex:1;border:0;outline:0;resize:none;font-family:inherit;font-size:14px;
   line-height:1.5;max-height:110px;background:transparent;color:var(--ink);padding:6px 0}
-.composer .send{width:34px;height:34px;border-radius:10px;border:0;background:var(--green);color:#fff;
+.composer .send{width:34px;height:34px;border-radius:10px;border:0;background:linear-gradient(135deg,#3B82F6,#22D3EE);color:#04121F;
   font-size:15px;flex:0 0 auto;cursor:pointer}
-.composer .send:disabled{background:#C9D6CD}
+.composer .send:disabled{background:#243246}
 /* 设置抽屉 */
-.sheet{position:fixed;inset:0;background:rgba(20,28,22,.36);display:none;z-index:40}
+.sheet{position:fixed;inset:0;background:rgba(3,6,11,.62);display:none;z-index:40}
 .sheet.on{display:block}
 .panel{position:absolute;left:0;right:0;bottom:0;max-height:88vh;overflow:auto;background:var(--bg);
   border-radius:20px 20px 0 0;padding:18px 16px calc(24px + env(safe-area-inset-bottom));
@@ -113,7 +122,7 @@ ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:
 @keyframes up{from{transform:translateY(18px);opacity:.6}to{transform:none;opacity:1}}
 .panel h2{margin:0 0 4px;font-size:16px;font-weight:600}
 .panel .hint{font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:14px}
-.seg{display:flex;gap:6px;background:#EDF1EA;border-radius:11px;padding:4px;margin-bottom:14px}
+.seg{display:flex;gap:6px;background:rgba(9,14,22,.9);border:1px solid rgba(96,165,250,.12);border-radius:11px;padding:4px;margin-bottom:14px}
 .seg button{flex:1;border:0;background:transparent;padding:8px 0;border-radius:8px;font-size:13px;
   font-family:inherit;color:var(--ink-2);font-weight:500}
 .seg button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.06)}
@@ -135,7 +144,7 @@ details.adv[open] summary{margin-bottom:8px}
 .step{display:inline-block;min-width:18px;height:18px;line-height:18px;text-align:center;
   border-radius:9px;background:var(--green-soft);color:var(--green);font-size:11px;margin-right:6px}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,.4);
-  border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px}
+  border-top-color:#8CC2FF;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px}
 @keyframes sp{to{transform:rotate(360deg)}}
 svg.spark{width:100%;height:96px;display:block;margin:2px 0 6px}
 .foot{text-align:center;font-size:11px;color:var(--faint);line-height:1.7;margin-top:18px}
@@ -919,7 +928,7 @@ def render(state: dict | None = None) -> str:
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#F6F7F4">
+<meta name="theme-color" content="#070B12">
 <title>{_h.escape(title)}</title>
 <style>{CSS}</style>
 </head><body>

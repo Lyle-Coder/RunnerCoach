@@ -124,7 +124,7 @@ class MainActivity : Activity() {
         val toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0xFF070B12.toInt())
             setPadding(dp(18), 0, dp(6), 0)
         }
         val titles = LinearLayout(this).apply {
@@ -133,13 +133,13 @@ class MainActivity : Activity() {
         titles.addView(TextView(this).apply {
             text = "RunnerCoach"
             textSize = 16f
-            setTextColor(0xFF1A1F1B.toInt())
+            setTextColor(0xFFE8F0FB.toInt())
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         subtitle = TextView(this).apply {
             text = "今日 · 下拉同步"
             textSize = 11f
-            setTextColor(0xFF78806F.toInt())
+            setTextColor(0xFF7C8FA8.toInt())
         }
         titles.addView(subtitle)
         toolbar.addView(titles, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
@@ -148,7 +148,7 @@ class MainActivity : Activity() {
         shell.addView(toolbar, LinearLayout.LayoutParams(MATCH_PARENT, toolH))
 
         // 一条极细的分割线，比阴影轻，看板滚到底时也不会糊成一片
-        shell.addView(View(this).apply { setBackgroundColor(0xFFE4E8E1.toInt()) },
+        shell.addView(View(this).apply { setBackgroundColor(0xFF16202F.toInt()) },
             LinearLayout.LayoutParams(MATCH_PARENT, 1))
 
         pull = PullRefreshLayout(this)
@@ -187,7 +187,7 @@ class MainActivity : Activity() {
                     return true
                 }
             }
-            setBackgroundColor(0xFFF6F7F4.toInt())
+            setBackgroundColor(0xFF070B12.toInt())
         }
         pull.addView(web, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         pull.attach(web)
@@ -202,7 +202,7 @@ class MainActivity : Activity() {
         bar.visibility = View.GONE
 
         shell.addView(pull, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
-        shell.addView(View(this).apply { setBackgroundColor(0xFFE4E8E1.toInt()) },
+        shell.addView(View(this).apply { setBackgroundColor(0xFF16202F.toInt()) },
             LinearLayout.LayoutParams(MATCH_PARENT, 1))
         shell.addView(buildTabBar(), LinearLayout.LayoutParams(MATCH_PARENT, dp(62)))
         setContentView(shell)
@@ -296,7 +296,7 @@ class MainActivity : Activity() {
     private fun buildTabBar(): LinearLayout {
         val nav = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0xFF080D15.toInt())
             setPadding(dp(4), dp(6), dp(4), dp(6))
         }
         for (i in TAB_NAMES.indices) {
@@ -331,13 +331,13 @@ class MainActivity : Activity() {
     private fun updateTabs() {
         for (i in tabRoots.indices) {
             val on = i == activeTab
-            val c = if (on) 0xFF17845F.toInt() else 0xFF78806F.toInt()
+            val c = if (on) 0xFF4DA3FF.toInt() else 0xFF4E6076.toInt()
             tabIcons[i].setColorFilter(c)
             tabLabels[i].setTextColor(c)
             tabLabels[i].setTypeface(
                 android.graphics.Typeface.DEFAULT,
                 if (on) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-            tabRoots[i].setBackgroundColor(if (on) 0xFFE5F3ED.toInt() else 0x00000000)
+            tabRoots[i].setBackgroundColor(if (on) 0x243B82F6.toInt() else 0x00000000)
         }
         if (this::subtitle.isInitialized) updateSubtitle()
     }
@@ -668,13 +668,13 @@ class MainActivity : Activity() {
                 addView(TextView(this@MainActivity).apply {
                     text = title
                     textSize = 15f
-                    setTextColor(0xFF1A1F1B.toInt())
+                    setTextColor(0xFFE8F0FB.toInt())
                     setTypeface(typeface, android.graphics.Typeface.BOLD)
                 })
                 addView(TextView(this@MainActivity).apply {
                     text = sub
                     textSize = 11.5f
-                    setTextColor(0xFF78806F.toInt())
+                    setTextColor(0xFF7C8FA8.toInt())
                 })
             }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             box.addView(r)
@@ -685,7 +685,7 @@ class MainActivity : Activity() {
         row(R.drawable.ic_logo_garmin, "Garmin 佳明国区",
             if (g.isNullOrBlank()) "邮箱密码 + 邮箱验证码" else "已登录 $g · 点击可重新登录"
         ) { askGarminLogin() }
-        box.addView(View(this).apply { setBackgroundColor(0xFFE4E8E1.toInt()) },
+        box.addView(View(this).apply { setBackgroundColor(0xFF16202F.toInt()) },
             LinearLayout.LayoutParams(MATCH_PARENT, 1))
         row(R.drawable.ic_logo_coros, "COROS 高驰",
             if (c.isNullOrBlank()) "邮箱密码（Training Hub）· token 自动续期" else "已登录 $c · 点击可重新登录"
@@ -812,7 +812,7 @@ class MainActivity : Activity() {
         val vRegion = TextView(this).apply {
             text = "账号区域：国内"
             textSize = 14f
-            setTextColor(0xFF485046.toInt())
+            setTextColor(0xFFB7C7DD.toInt())
             setPadding(0, dp(14), 0, dp(6))
             setOnClickListener {
                 AlertDialog.Builder(this@MainActivity)
@@ -878,7 +878,7 @@ class MainActivity : Activity() {
                    "换取底图时会把这次跑步的轨迹中心点发给高德；不填则只画矢量轨迹。\n" +
                    "Key 只保存在本机，不会上传。"
             textSize = 13f
-            setTextColor(0xFF485046.toInt())
+            setTextColor(0xFFB7C7DD.toInt())
             setLineSpacing(dp(3).toFloat(), 1f)
         })
         val input = EditText(this).apply {
@@ -990,7 +990,7 @@ class MainActivity : Activity() {
             val o = arr.optJSONObject(i) ?: JSONObject()
             box.addView(clipRow(o))
             if (i < arr.length() - 1) {
-                box.addView(View(this).apply { setBackgroundColor(0xFFEDEFEA.toInt()) },
+                box.addView(View(this).apply { setBackgroundColor(0xFF16202F.toInt()) },
                     LinearLayout.LayoutParams(MATCH_PARENT, 1).apply {
                         leftMargin = dp(66); topMargin = dp(2); bottomMargin = dp(2)
                     })
@@ -1005,7 +1005,7 @@ class MainActivity : Activity() {
             text = if (clipSelecting) "已选 ${clipChecked.size} 个" else "素材（${arr.length()}）"
             textSize = 17f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setTextColor(0xFF1A1F1B.toInt())
+            setTextColor(0xFFE8F0FB.toInt())
             setPadding(dp(18), dp(14), dp(18), dp(10))
         }
         clipTitle = title
@@ -1029,7 +1029,7 @@ class MainActivity : Activity() {
                 isClickable = true
                 setOnClickListener { cb() }
             }
-        btnRow.addView(btn("关闭", 0xFF485046.toInt()) { clipDialog?.dismiss() })
+        btnRow.addView(btn("关闭", 0xFFB7C7DD.toInt()) { clipDialog?.dismiss() })
         btnRow.addView(btn(if (clipSelecting) "退出选择" else "批量管理",
             0xFF2E5A8A.toInt()) {
             clipSelecting = !clipSelecting
@@ -1037,7 +1037,7 @@ class MainActivity : Activity() {
             renderClipList()
         })
         btnRow.addView(btn(if (clipSelecting) "删除选中" else "添加",
-            0xFF17845F.toInt()) {
+            0xFF4DA3FF.toInt()) {
             if (clipSelecting) {
                 deleteCheckedClips()
             } else {
@@ -1050,10 +1050,10 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             background = android.graphics.drawable.GradientDrawable().apply {
                 cornerRadius = dp(16).toFloat()
-                setColor(0xFFFFFFFF.toInt())
+                setColor(0xFF0F1622.toInt())
             }
         }
-        val line = { View(this).apply { setBackgroundColor(0xFFEDEFEA.toInt()) } }
+        val line = { View(this).apply { setBackgroundColor(0xFF16202F.toInt()) } }
         root.addView(title, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(line(), LinearLayout.LayoutParams(MATCH_PARENT, 1))
         root.addView(sv, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
@@ -1138,7 +1138,7 @@ class MainActivity : Activity() {
             // 圆角靠 outline 裁：给个圆角 drawable 当背景，再 clipToOutline
             background = android.graphics.drawable.GradientDrawable().apply {
                 cornerRadius = dp(8).toFloat()
-                setColor(0xFFE4E8E1.toInt())
+                setColor(0xFF1A2435.toInt())
             }
             clipToOutline = true
         }
@@ -1151,7 +1151,7 @@ class MainActivity : Activity() {
         val title = TextView(this).apply {
             text = name
             textSize = 14f
-            setTextColor(0xFF1A1F1B.toInt())
+            setTextColor(0xFFE8F0FB.toInt())
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
         }
@@ -1163,7 +1163,7 @@ class MainActivity : Activity() {
             setTextColor(when {
                 !exists -> 0xFFB3261E.toInt()
                 noTime -> 0xFFB26A00.toInt()      // 橙：不是坏了，但位置会不准
-                else -> 0xFF78806F.toInt()
+                else -> 0xFF7C8FA8.toInt()
             })
             setPadding(0, dp(3), 0, 0)
             maxLines = 1

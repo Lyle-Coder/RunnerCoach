@@ -25,66 +25,108 @@ from pathlib import Path
 # 颜色常量（docs/交互树.md 第五节有对照表）。
 CSS = """
 :root{
-  --bg:#F6F7F4; --surface:#FFFFFF; --line:#E4E8E1; --line2:#EEF1EB;
-  --ink:#1A1F1B; --ink2:#485046; --muted:#78806F; --faint:#A3AA9C;
-  --brand:#17845F; --brand-soft:#E5F3ED; --brand-ink:#0C6349;
-  --amber:#B8860B; --amber-soft:#FBF2DC;
-  --red:#C0453F; --red-soft:#FAE7E5;
-  --blue:#35688F; --blue-soft:#E9F1F8;
-  --r:18px;
-  --shadow:0 1px 2px rgba(22,38,29,.04), 0 10px 24px -18px rgba(22,38,29,.42);
+  /* 深空色：不用纯黑，带一点蓝，屏幕上有层次；辉光统一走 --glow */
+  --bg:#070B12; --surface:#0F1622; --surface2:#131C2B;
+  --line:rgba(96,165,250,.16); --line2:rgba(96,165,250,.09);
+  --ink:#E8F0FB; --ink2:#B7C7DD; --muted:#7C8FA8; --faint:#4E6076;
+  --brand:#3B82F6; --brand-soft:rgba(59,130,246,.14); --brand-ink:#8CC2FF;
+  --cyan:#22D3EE; --cyan-soft:rgba(34,211,238,.13);
+  --amber:#F5A524; --amber-soft:rgba(245,165,36,.14);
+  --red:#F2555A; --red-soft:rgba(242,85,90,.14);
+  --blue:#5EA0FF; --blue-soft:rgba(94,160,255,.14);
+  --r:16px;
+  --shadow:inset 0 1px 0 rgba(255,255,255,.035), 0 14px 34px -22px rgba(0,0,0,.9);
+  --glow:0 0 0 1px rgba(96,165,250,.10), 0 10px 30px -16px rgba(59,130,246,.55);
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--ink);line-height:1.6;font-size:14px;
+body{margin:0;color:var(--ink);line-height:1.6;font-size:14px;
+  background:
+    radial-gradient(900px 520px at 78% -8%, rgba(59,130,246,.17), transparent 62%),
+    radial-gradient(680px 420px at 6% 2%, rgba(34,211,238,.10), transparent 60%),
+    var(--bg);
+  background-attachment:fixed;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
   -webkit-font-smoothing:antialiased}
-a{color:var(--brand);text-decoration:none}
+a{color:var(--brand-ink);text-decoration:none}
 .app{max-width:820px;margin:0 auto;padding:0 14px calc(30px + env(safe-area-inset-bottom))}
 .back{display:inline-flex;align-items:center;gap:5px;margin:14px 0 -6px;
   font-size:12.5px;color:var(--brand-ink);text-decoration:none}
 .back:active{opacity:.6}
-.page-head{padding:20px 0 15px;border-bottom:1px solid var(--line);margin-bottom:4px}
+/* 页头只用一道渐隐的蓝线收尾，比整条实线更像仪表面板 */
+.page-head{padding:20px 0 15px;margin-bottom:4px;
+  background:linear-gradient(90deg,rgba(59,130,246,.60),rgba(34,211,238,.12) 46%,transparent)
+    bottom / 100% 1px no-repeat}
 .page-head.after-back{padding-top:14px}
-.kicker{font-size:11px;font-weight:700;letter-spacing:1.4px;color:var(--brand-ink)}
-.page-head h1{margin:6px 0 4px;font-size:24px;font-weight:650;letter-spacing:-.3px;line-height:1.3}
+.kicker{font-size:11px;font-weight:700;letter-spacing:2px;color:var(--cyan);
+  text-shadow:0 0 12px rgba(34,211,238,.45)}
+.page-head h1{margin:6px 0 4px;font-size:24px;font-weight:650;letter-spacing:-.5px;line-height:1.3}
 .lede{margin:0;font-size:13px;color:var(--muted)}
 .meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
 .chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:4px 10px;
-  border-radius:999px;background:var(--surface);border:1px solid var(--line);color:var(--ink2)}
-.chip.ok{background:var(--brand-soft);border-color:transparent;color:var(--brand-ink)}
-.chip.warn{background:var(--amber-soft);border-color:transparent;color:#8A6410}
+  border-radius:999px;background:rgba(15,22,34,.72);border:1px solid var(--line);color:var(--ink2)}
+.chip.ok{background:var(--brand-soft);border-color:rgba(59,130,246,.34);color:var(--brand-ink)}
+.chip.warn{background:var(--amber-soft);border-color:rgba(245,165,36,.32);color:#F5C26B}
 .sec{margin-top:24px}
 .sec-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:0 0 10px}
-.sec-head h2{margin:0;font-size:11.5px;font-weight:700;letter-spacing:1.2px;color:var(--muted)}
+.sec-head h2{margin:0;font-size:11.5px;font-weight:700;letter-spacing:1.4px;
+  color:var(--muted);position:relative;padding-left:12px}
+.sec-head h2::before{content:"";position:absolute;left:0;top:50%;width:3px;height:12px;
+  margin-top:-6px;border-radius:2px;
+  background:linear-gradient(180deg,var(--cyan),var(--brand));
+  box-shadow:0 0 10px rgba(34,211,238,.7)}
 .sec-head .more{font-size:12px;color:var(--brand-ink)}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}
 .grid.one{grid-template-columns:1fr}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
-  padding:16px;box-shadow:var(--shadow)}
+.card{background:linear-gradient(180deg,rgba(19,28,43,.92),rgba(14,21,33,.95));
+  border:1px solid var(--line);border-radius:var(--r);padding:16px;
+  box-shadow:var(--shadow);position:relative;overflow:hidden}
+/* 卡片顶沿一道高光：深色背景上不做这个，卡片会糊成一片 */
+.card::after{content:"";position:absolute;left:0;right:0;top:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(96,165,250,.48),transparent);
+  opacity:.75;pointer-events:none}
 .card.flat{background:transparent;border-style:dashed;box-shadow:none}
-.card.brand{background:var(--brand-soft);border-color:transparent}
-.card h3{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:1px;color:var(--muted)}
+.card.flat::after{display:none}
+.card.brand{background:
+  radial-gradient(340px 190px at 84% -10%, rgba(59,130,246,.32), transparent 70%),
+  linear-gradient(180deg,rgba(20,32,52,.96),rgba(12,19,31,.96));
+  border-color:rgba(96,165,250,.30);box-shadow:var(--glow)}
+.card h3{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:1.2px;color:var(--muted)}
 .hero{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap}
-.big{font-size:46px;font-weight:700;line-height:1;letter-spacing:-2px;font-variant-numeric:tabular-nums}
-.big small{font-size:14px;font-weight:500;letter-spacing:0;color:var(--muted);margin-left:6px}
+/* 大数字走「白→蓝」渐变 + 投影辉光，深色底上最抓眼 */
+.big{font-size:46px;font-weight:700;line-height:1;letter-spacing:-2px;
+  font-variant-numeric:tabular-nums;
+  background:linear-gradient(180deg,#FFFFFF,#8CC2FF 78%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  filter:drop-shadow(0 0 16px rgba(59,130,246,.45))}
+.big small{font-size:14px;font-weight:500;letter-spacing:0;color:var(--muted);
+  margin-left:6px;-webkit-text-fill-color:var(--muted);filter:none}
 .hero-side{text-align:right;font-size:12px;color:var(--muted)}
 .hero-side b{display:block;font-size:15px;color:var(--ink)}
-.bar{height:6px;border-radius:999px;background:var(--line2);overflow:hidden;margin-top:14px}
-.bar i{display:block;height:100%;border-radius:999px;background:var(--brand)}
-.lab{font-size:11.5px;color:var(--muted)}
-.val{font-size:23px;font-weight:650;line-height:1.2;margin-top:4px;font-variant-numeric:tabular-nums}
+.bar{height:6px;border-radius:999px;background:rgba(96,165,250,.12);overflow:hidden;margin-top:14px}
+.bar i{display:block;height:100%;border-radius:999px;
+  background:linear-gradient(90deg,var(--cyan),var(--brand));
+  box-shadow:0 0 14px rgba(59,130,246,.75)}
+.lab{font-size:11.5px;color:var(--muted);letter-spacing:.2px}
+.val{font-size:23px;font-weight:650;line-height:1.2;margin-top:4px;
+  font-variant-numeric:tabular-nums;color:var(--ink)}
 .note{font-size:11.5px;color:var(--faint);margin-top:3px}
-.row{display:flex;align-items:center;gap:12px;background:var(--surface);
+.row{display:flex;align-items:center;gap:12px;
+  background:linear-gradient(180deg,rgba(19,28,43,.88),rgba(14,21,33,.92));
   border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px;
   color:inherit;cursor:pointer;box-shadow:var(--shadow)}
-.row:active{background:var(--line2)}
+.row:active{background:rgba(59,130,246,.10);border-color:rgba(96,165,250,.34)}
+/* 图标底座：蓝青渐变 + 内发光，是整页「科技感」的主要来源 */
 .row .ic{flex:0 0 auto;width:36px;height:36px;border-radius:11px;display:flex;
-  align-items:center;justify-content:center;font-size:16px;
-  background:var(--brand-soft);color:var(--brand-ink)}
-.row .ic.b{background:var(--blue-soft);color:var(--blue)}
-.row .ic.a{background:var(--amber-soft);color:var(--amber)}
+  align-items:center;justify-content:center;font-size:15px;font-weight:600;
+  background:linear-gradient(160deg,rgba(59,130,246,.26),rgba(34,211,238,.10));
+  color:#9CCBFF;border:1px solid rgba(96,165,250,.24);
+  box-shadow:inset 0 0 12px rgba(59,130,246,.20)}
+.row .ic.b{background:linear-gradient(160deg,rgba(94,160,255,.28),rgba(59,130,246,.10));
+  color:#A8CDFF;border-color:rgba(94,160,255,.30)}
+.row .ic.a{background:linear-gradient(160deg,rgba(245,165,36,.24),rgba(245,165,36,.08));
+  color:#F5C26B;border-color:rgba(245,165,36,.28)}
 .row .tx{min-width:0;flex:1}
 /* 标题最多两行：活动名是「日期 时间 · 名称」拼出来的，长一点就被截成
    省略号，看不出是哪次。参数行本来就会换行，不用 nowrap。 */
@@ -94,48 +136,63 @@ a{color:var(--brand);text-decoration:none}
 .row .d{font-size:11.5px;color:var(--muted);margin-top:2px;font-variant-numeric:tabular-nums}
 .row .go{margin-left:auto;color:var(--faint);font-size:17px;flex:0 0 auto}
 .acts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.act{display:flex;flex-direction:column;gap:7px;background:var(--surface);
+.act{display:flex;flex-direction:column;gap:7px;
+  background:linear-gradient(180deg,rgba(19,28,43,.88),rgba(14,21,33,.92));
   border:1px solid var(--line);border-radius:var(--r);padding:15px;color:inherit;
   cursor:pointer;box-shadow:var(--shadow)}
-.act:active{background:var(--line2)}
+.act:active{background:rgba(59,130,246,.10);border-color:rgba(96,165,250,.34)}
 .act .ai{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;
-  justify-content:center;font-size:17px;background:var(--brand-soft);color:var(--brand-ink)}
-.act .at{font-size:13.5px;font-weight:600}
+  justify-content:center;font-size:16px;
+  background:linear-gradient(160deg,rgba(34,211,238,.22),rgba(59,130,246,.12));
+  color:#8FE7F5;border:1px solid rgba(34,211,238,.24);
+  box-shadow:inset 0 0 12px rgba(34,211,238,.18)}
+.act .at{font-size:13.5px;font-weight:600;color:var(--ink)}
 .act .ad{font-size:11.5px;color:var(--muted);line-height:1.5}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
-  border:1px solid var(--line);background:var(--surface);color:var(--ink2);
+  border:1px solid var(--line);background:rgba(15,22,34,.72);color:var(--ink2);
   border-radius:999px;padding:8px 14px;font-size:12.5px;font-family:inherit;cursor:pointer}
-.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn.primary{background:linear-gradient(135deg,#3B82F6,#22D3EE);border-color:transparent;
+  color:#04121F;font-weight:650;box-shadow:0 8px 22px -10px rgba(59,130,246,.85)}
 .btn:active{opacity:.85}
 .empty{padding:20px 4px;font-size:13px;color:var(--muted);line-height:1.8}
-.foot{margin-top:30px;padding-top:14px;border-top:1px solid var(--line);
+.foot{margin-top:30px;padding-top:14px;border-top:1px solid var(--line2);
   font-size:11px;color:var(--faint);line-height:1.8}
 form.filters{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
 form.filters label{display:inline-flex;gap:5px;align-items:center;font-size:11.5px;color:var(--muted)}
-input,select{font-family:inherit;font-size:12.5px;color:var(--ink);background:var(--surface);
-  border:1px solid var(--line);border-radius:9px;padding:7px 9px;max-width:100%}
+input,select{font-family:inherit;font-size:12.5px;color:var(--ink);
+  background:rgba(9,14,22,.9);border:1px solid var(--line);border-radius:9px;
+  padding:7px 9px;max-width:100%}
+input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
+  box-shadow:0 0 0 3px rgba(59,130,246,.16)}
 .pager{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
 .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 /* 训练计划：今日课表 + 本周 7 天 */
-.plan-hero{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
-  padding:18px;box-shadow:var(--shadow)}
+.plan-hero{background:linear-gradient(180deg,rgba(19,28,43,.92),rgba(14,21,33,.95));
+  border:1px solid var(--line);border-radius:var(--r);
+  padding:18px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.plan-hero::after{content:"";position:absolute;left:0;right:0;top:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(96,165,250,.48),transparent);opacity:.75}
 .plan-hero .t{font-size:20px;font-weight:650;line-height:1.35;letter-spacing:-.2px}
 .plan-hero .d{font-size:13px;color:var(--ink2);margin-top:6px;line-height:1.7}
 .plan-hero .n{font-size:11.5px;color:var(--muted);margin-top:10px}
 .plan-hero .n + .n{margin-top:4px}
 .wk{display:flex;flex-direction:column;gap:7px}
-.wrow{display:flex;align-items:center;gap:11px;background:var(--surface);
+.wrow{display:flex;align-items:center;gap:11px;
+  background:linear-gradient(180deg,rgba(19,28,43,.88),rgba(14,21,33,.92));
   border:1px solid var(--line);border-radius:14px;padding:11px 13px;box-shadow:var(--shadow)}
 .wrow .wd{flex:0 0 40px;font-size:12px;color:var(--muted)}
 .wrow .wb{flex:1;min-width:0;font-size:13.5px;font-weight:600;line-height:1.45}
 .wrow .wb em{display:block;font-style:normal;font-size:11.5px;color:var(--muted);
   font-weight:400;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.wrow.today{background:var(--brand-soft);border-color:transparent}
+.wrow.today{background:linear-gradient(90deg,rgba(59,130,246,.18),rgba(59,130,246,.04));
+  border-color:rgba(96,165,250,.34);box-shadow:0 0 24px -12px rgba(59,130,246,.9)}
 .wrow.today .wd{color:var(--brand-ink)}
-.wrow .now{flex:0 0 auto;font-size:10.5px;color:#fff;background:var(--brand);
+.wrow .now{flex:0 0 auto;font-size:10.5px;color:#04121F;font-weight:700;
+  background:linear-gradient(135deg,#3B82F6,#22D3EE);
+  border-radius:999px;padding:2px 8px;box-shadow:0 0 12px -2px rgba(59,130,246,.8)}
+.wrow .done{flex:0 0 auto;font-size:10.5px;color:var(--brand-ink);
+  background:rgba(59,130,246,.12);border:1px solid rgba(96,165,250,.26);
   border-radius:999px;padding:2px 8px}
-.wrow .done{flex:0 0 auto;font-size:10.5px;color:var(--brand-ink);background:var(--surface);
-  border:1px solid var(--line);border-radius:999px;padding:2px 8px}
 .wrow.rest .wb{color:var(--muted);font-weight:400}
 .kvline{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;
   color:var(--ink2);padding:7px 0;border-bottom:1px solid var(--line2)}
@@ -156,19 +213,20 @@ DASH_FIX = """
 .metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
 table{display:block;overflow-x:auto;white-space:nowrap}
 #gc-nav{margin:0 -14px 16px;padding:9px 14px;position:sticky;top:0;z-index:99;
-  background:rgba(246,247,244,.97);border-bottom:1px solid #E4E8E1;
+  background:rgba(7,11,18,.96);border-bottom:1px solid rgba(96,165,250,.18);
   display:flex;gap:7px;align-items:center;flex-wrap:wrap;
   font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
 #gc-nav a,#gc-nav span,#gc-nav button{font-size:12px;text-decoration:none;padding:5px 10px;
-  border-radius:999px;background:#fff;border:1px solid #E4E8E1;color:#1A1F1B;
-  font-family:inherit;cursor:pointer;white-space:nowrap}
-#gc-nav a.back{border:0;background:none;color:#0C6349;font-weight:600;padding-left:0}
-#gc-nav button{background:#E5F3ED;border-color:transparent;color:#0C6349;font-weight:600}
+  border-radius:999px;background:rgba(19,28,43,.9);border:1px solid rgba(96,165,250,.18);
+  color:#E8F0FB;font-family:inherit;cursor:pointer;white-space:nowrap}
+#gc-nav a.back{border:0;background:none;color:#8CC2FF;font-weight:600;padding-left:0}
+#gc-nav button{background:rgba(59,130,246,.16);border-color:rgba(96,165,250,.32);
+  color:#8CC2FF;font-weight:600}
 #gc-nav span.off{opacity:.38}
-#gc-nav input{font-size:12px;padding:5px 7px;border:1px solid #E4E8E1;
-  border-radius:8px;background:#fff;color:#1A1F1B;font-family:inherit}
+#gc-nav input{font-size:12px;padding:5px 7px;border:1px solid rgba(96,165,250,.20);
+  border-radius:8px;background:rgba(9,14,22,.9);color:#E8F0FB;font-family:inherit}
 #gc-nav form{display:inline-flex;gap:5px;align-items:center;margin:0}
-#gc-nav .tag{margin-left:auto;border:0;background:none;color:#78806F}
+#gc-nav .tag{margin-left:auto;border:0;background:none;color:#7C8FA8}
 """
 
 # AI 页自带完整 CSS，只统一外框、卡片层次与标题节奏，不动它内部的交互。
@@ -176,9 +234,11 @@ AI_FIX = """
 .wrap{max-width:820px;padding:0 14px calc(30px + env(safe-area-inset-bottom))}
 .top{padding-top:16px;margin-bottom:12px}
 .top h1{font-size:21px}
-.card{border-radius:18px;border-color:#E4E8E1;
-  box-shadow:0 1px 2px rgba(22,38,29,.04),0 10px 24px -18px rgba(22,38,29,.42)}
-.tabs{background:#EDF1EA}
+.card{border-radius:16px;border-color:rgba(96,165,250,.16);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.035),
+    0 14px 34px -22px rgba(0,0,0,.9)}
+/* tabs 槽底比页面再深一点，选中项才浮得起来 */
+.tabs{background:rgba(9,14,22,.9);border:1px solid rgba(96,165,250,.12)}
 """
 
 BRIDGE_JS = """<script>
@@ -258,7 +318,7 @@ def page(kicker: str, title: str, lede: str, body: str,
         head_cls = " after-back"
     return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#F6F7F4">
+<meta name="theme-color" content="#070B12">
 <title>{esc(title)} · RunnerCoach</title>
 <style>{CSS}</style></head><body><div class="app">
 {back_html}
