@@ -621,11 +621,55 @@ function idxAt(rt) {
   while (lo < hi) { const m = (lo + hi) >> 1; if (T[m] < rt) lo = m + 1; else hi = m; }
   return lo;
 }
+
+// ---- 配速：先按「轨迹秒」把累计距离重采样成均匀表，再算窗口平均
+// 千万别直接在 T 上取索引差算窗口时间：回放的 T 是 _synth_route 按里程
+// 现场合成的 —— 420 个点覆盖 5312 秒（平均 12.6 秒才一个点），还带着几十处
+// 重复时间戳。原来取索引两端的时间戳相减当窗口时间，窗口里经常 ia === ib，
+// dt = 0 → paceAt 返回 null → fmtPace 画 '—'；下一帧 ib 挪一格又正常。
+// 实测一条真实活动 720 帧里 180 帧是 '—'、交替 207 次，就是角标一直在闪。
+// 现在窗口时间用 rt 本身的差值（恒成立），距离用重采样表插值（单调、连续），
+// 再加轻度平滑与上一有效值兜底，静止/无数据也只是保持不变，绝不闪空值。
+const PACE_DT = 2;                       // 重采样步长（轨迹秒）
+const PACE_WIN = 15;                     // 平均配速窗口（轨迹秒）
+const PACE_N = Math.max(2, Math.ceil(D.dur / PACE_DT) + 1);
+const PACE_D = new Float64Array(PACE_N);
+(function buildPaceTable() {
+  let k = 0;
+  for (let i = 0; i < PACE_N; i++) {
+    const t = i * PACE_DT;
+    while (k + 1 < N && T[k + 1] <= t) k++;
+    let v;
+    if (k + 1 >= N) v = DIST[N - 1];
+    else if (T[k + 1] <= T[k]) v = DIST[k + 1];      // 重复时间戳：直接取后一点
+    else {
+      const f = Math.min(1, Math.max(0, (t - T[k]) / (T[k + 1] - T[k])));
+      v = DIST[k] + (DIST[k + 1] - DIST[k]) * f;
+    }
+    PACE_D[i] = v;
+  }
+})();
+function paceDist(t) {
+  const x = Math.min(Math.max(t / PACE_DT, 0), PACE_N - 1);
+  const i = Math.floor(x), f = x - i;
+  const j = Math.min(i + 1, PACE_N - 1);
+  return PACE_D[i] + (PACE_D[j] - PACE_D[i]) * f;
+}
+// 起点第一帧还没攒够窗口：拿全段平均配速起步，别一上来先闪一下 '—'
+let lastPace = (D.dur > 0 && DIST[N - 1] > 0)
+  ? D.dur / DIST[N - 1] * 1000 : 300;
 function paceAt(rt) {
-  // 15 秒窗口：1Hz 瞬时配速在 ±40s/km 抖，直接用角标会跳成噪音
-  const a = Math.max(rt - 15, 0), ia = idxAt(a), ib = idxAt(rt);
-  const dd = DIST[ib] - DIST[ia], dt = T[ib] - T[ia];
-  return (dd > 5 && dt > 0) ? dt / dd * 1000 : null;
+  const b = Math.min(Math.max(rt, 0), D.dur);
+  const a = Math.max(b - PACE_WIN, 0);
+  const dt = b - a, dd = paceDist(b) - paceDist(a);
+  if (dt > 0 && dd > 1) {
+    const p = dt / dd * 1000;                        // s/km
+    // 60s/km ~ 40min/km 之外是 GPS 漂移或站定不动，不拿来污染角标
+    if (isFinite(p) && p > 60 && p < 2400) {
+      lastPace = lastPace == null ? p : lastPace + (p - lastPace) * 0.30;
+    }
+  }
+  return lastPace;
 }
 
 // ---- 时间轴：给「速度」设计曲线，再积分成位置
@@ -974,6 +1018,13 @@ function ensureVideo(src) {
 // 每帧先用 24×24 小画布探一下平均亮度，只有确实有画面才更新缓存；
 // 黑帧一律复用上一张有效画面 —— 最坏是短暂停住，绝不会闪黑。
 const VLAST = new Map();          // src -> {c, w, h}
+// 导出时的视频抽帧状态：VSTEP 是「当前落在哪一格」，VDONE 是「这一格
+// 已经抓过画面」。播放模式不走 syncVideo，两个 Map 都是空的，于是
+// videoFrame 每帧正常抓新画面，不受影响。
+const CLIP_FPS = 12;              // 卡片画面最多每秒更新 12 次（成片仍 24fps）
+const VSTEP = new Map();          // src -> 抽帧格号
+const VDONE = new Map();          // src -> 已完成抓帧的格号
+const WAITED = new Set();         // src -> 已经等过「视频就绪」，别每帧等
 const VPROBE = document.createElement('canvas');
 VPROBE.width = 24; VPROBE.height = 24;
 const vpctx = VPROBE.getContext('2d', {willReadFrequently: true});
@@ -984,9 +1035,15 @@ const vpctx = VPROBE.getContext('2d', {willReadFrequently: true});
 // 卡片就画成空框（成片里表现为「某几处视频黑屏」）。
 // 首帧兜底保证任何时刻都有画面可画，最差也只是画面停在开头那一帧。
 const VFIRST = new Map();         // src -> {c, w, h}
+// 只存卡片大小的缩略图：按 v.videoWidth/Height 存原分辨率的话，11 段
+// 1080p/4K 素材就是几百 MB RGBA 常驻 WebView，导出全程在 GC。兜底帧在
+// videoFrame 里本来也会按目标尺寸重画一遍，存小图不损失任何画质。
 function grabFirst(v, src) {
   try {
-    const w = v.videoWidth || 1080, h = v.videoHeight || 1920;
+    const iw = v.videoWidth || 1080, ih = v.videoHeight || 1920;
+    const k = Math.min(840 / iw, 780 / ih, 1);
+    const w = Math.max(1, Math.round(iw * k));
+    const h = Math.max(1, Math.round(ih * k));
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
     c.getContext('2d').drawImage(v, 0, 0, w, h);
@@ -994,7 +1051,30 @@ function grabFirst(v, src) {
   } catch (e) { /* 首帧抓不到就等后面的兜底 */ }
 }
 
+// 没有新画面可抓时统一走这里：上一张有效画面 → 首帧缩略图 → 空框。
+// 首帧按目标尺寸重画一遍并且就地缓存，别每帧新建画布。
+function fallbackFrame(src, w, h) {
+  const rec = VLAST.get(src);
+  if (rec) return rec.c;
+  const first = VFIRST.get(src);
+  if (first) {
+    if (first.w !== w || first.h !== h) {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(first.c, 0, 0, w, h);
+      first.c = c; first.w = w; first.h = h;
+    }
+    return first.c;
+  }
+  return null;
+}
 function videoFrame(src, v, w, h) {
+  // 同一抽帧格里不再探测亮度、不再把视频帧重画到 w×h 离屏画布：
+  // 旧版每帧一次 24×24 getImageData + 840×780 drawImage，几千帧下来
+  // 比编码本身还慢。复用缓存即可，成片里卡片画面 12fps 足够跟得上。
+  // 「同格已处理」连黑帧也要算数，否则视频一直解不出画面时会每帧重探。
+  const step = VSTEP.get(src);
+  if (step != null && VDONE.get(src) === step) return fallbackFrame(src, w, h);
   let lit = false;
   try {
     // readyState < 2 时 drawImage 会抛，或画出一张空图——两种都当「没画面」
@@ -1006,6 +1086,7 @@ function videoFrame(src, v, w, h) {
       lit = sum > 24 * 24 * 3 * 8;   // 平均亮度 > 8/255 才算有画面
     }
   } catch (e) { lit = false; }
+  VDONE.set(src, step == null ? -1 : step);
   if (lit) {
     let rec = VLAST.get(src);
     if (!rec || rec.w !== w || rec.h !== h) {
@@ -1017,20 +1098,7 @@ function videoFrame(src, v, w, h) {
     rec.c.getContext('2d').drawImage(v, 0, 0, w, h);
     return rec.c;
   }
-  const rec = VLAST.get(src);
-  if (rec) return rec.c;           // 沿用上一张有效画面
-  const first = VFIRST.get(src);
-  if (first) {
-    // 首帧按目标尺寸重画一遍：首帧画布是原始分辨率，直接拉伸会变形
-    if (first.w !== w || first.h !== h) {
-      const c = document.createElement('canvas');
-      c.width = w; c.height = h;
-      c.getContext('2d').drawImage(first.c, 0, 0, w, h);
-      return c;
-    }
-    return first.c;
-  }
-  return null;
+  return fallbackFrame(src, w, h);   // 黑帧沿用上一张有效画面
 }
 
 function popLayout(p) {
@@ -1210,18 +1278,33 @@ async function syncVideo(p) {
     if (!p || !p.clip || p.clip.src !== src) { if (!v.paused) v.pause(); }
   }
   if (!p || !p.clip) return;
-  const v = VIDS.get(p.clip.src);
+  const src = p.clip.src;
+  const v = VIDS.get(src);
   if (!v) return;
-  // 视频还没解出画面：先等它就绪，否则后面的 seek 无从谈起
-  if (v.readyState < 2) await waitReady(v, 4000);
-  if (v.readyState < 2) return;
+  // 把目标时间量化到 1/CLIP_FPS 的格子上：成片仍是 24fps，但卡片画面
+  // 每 2 帧才换一张。随机 seek 是整条流水线最贵的一步（长 GOP 要从
+  // 最近关键帧解码几十帧），旧版 `0.04` 的省 seek 阈值在 24fps 下
+  // （帧间隔 0.0417s）永远不命中，等于每帧都 seek 一次。
   const rel = playT - p.a - (p.clip.lead || 0);
-  const want = Math.max(0, Math.min(rel, (p.clip.dur || 1) - 0.02));
-  if (Math.abs(v.currentTime - want) <= 0.04) return;
+  const step = Math.floor(Math.max(0, rel) * CLIP_FPS);
+  if (VSTEP.get(src) === step) return;
+  // 视频还没解出画面：只在这个素材第一次要用时等一次，上限 1.5 秒。
+  // 旧版每帧都可能 await waitReady(4000)，几千帧就是小时级空等。
+  if (v.readyState < 2) {
+    if (!WAITED.has(src)) { WAITED.add(src); await waitReady(v, 1500); }
+    if (v.readyState < 2) return;   // 不推进 VSTEP：下一帧再试，用兜底帧顶住
+  }
+  VSTEP.set(src, step);
+  const want = Math.max(0, Math.min(step / CLIP_FPS, (p.clip.dur || 1) - 0.02));
+  if (Math.abs(v.currentTime - want) <= 0.02) return;
   await new Promise(res => {
     let tm = null;
-    const done = () => { if (tm) clearTimeout(tm); res(); };
-    tm = setTimeout(done, 350);
+    const done = () => {
+      if (tm) { clearTimeout(tm); tm = null; }
+      v.removeEventListener('seeked', done);   // 超时后别把 once 监听堆在元素上
+      res();
+    };
+    tm = setTimeout(done, 120);
     v.addEventListener('seeked', done, { once: true });
     try { v.currentTime = want; } catch (err) { done(); }
   });
@@ -1302,7 +1385,10 @@ function drawFrame(playT) {
   // 换素材窗口（或退出窗口）时丢掉上一张缓存画面，否则新窗口第一帧
   // 若是黑的，会闪一下上一段素材的末帧。播放与导出都会走这里。
   const curClip = (pop.w && pop.w.clip) ? pop.w.clip.src : null;
-  if (curClip !== lastClipSrc) { VLAST.clear(); lastClipSrc = curClip; }
+  if (curClip !== lastClipSrc) {
+    VLAST.clear(); VSTEP.clear(); VDONE.clear();
+    lastClipSrc = curClip;
+  }
   if (videoDriven) driveVideo(pop.w);
   if (pop.w && pop.k > 0) drawPop(pop.w, smooth(pop.k));
 }

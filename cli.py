@@ -2741,6 +2741,124 @@ def cmd_selftest(args) -> int:
     assert "VLAST.clear()" in _msrc and "lastClipSrc" in _msrc, \
         "切换素材窗口没清缓存，会闪上一段的末帧"
 
+    # ---- v46：配速角标频闪 + 视频段逐帧 seek 拖垮导出 ----------------------
+    # 回放的 T 是 _synth_route 按里程现场合成的：420 点覆盖 5312 秒、还有
+    # 几十处重复时间戳。旧 paceAt 拿 `T[ib]-T[ia]` 当 15 秒窗口，窗口里
+    # 经常 ia === ib → dt=0 → fmtPace(null) 画 '—'，下一帧又有值，于是
+    # 720 帧里 180 帧是 '—'、交替 207 次，看起来就是配速一直在闪。
+    assert "const PACE_DT = 2" in _msrc and "const PACE_WIN = 15" in _msrc, \
+        "没有按轨迹秒重采样累计距离"
+    assert "buildPaceTable" in _msrc and "Float64Array" in _msrc, \
+        "配速距离表没建出来"
+    assert "T[ib] - T[ia]" not in _msrc, \
+        "还在用稀疏时间戳的索引差当窗口时间，配速必然闪 '—'"
+    assert "dt = b - a, dd = paceDist(b) - paceDist(a)" in _msrc, \
+        "窗口时间没用 rt 本身、距离没用插值表"
+    assert "return lastPace" in _msrc and "lastPace + (p - lastPace) * 0.30" in _msrc, \
+        "缺上一有效值兜底与平滑，静止/GPS 漂移时还是会跳空值"
+    assert "D.dur / DIST[N - 1] * 1000" in _msrc, \
+        "首帧没有用全段平均配速起步，会先闪一下 '—'"
+    # 视频段：随机 seek 是整条流水线最贵的一步，而旧阈值 0.04 在 24fps
+    # （帧间隔 0.0417s）下永远不命中，等于每帧都 seek 一次；另有
+    # waitReady(4000) 每帧最多空等 4 秒、11 段视频各存一张全分辨率首帧。
+    assert "const CLIP_FPS = 12" in _msrc and "const VSTEP = new Map()" in _msrc, \
+        "视频卡片没有抽帧网格，导出仍会逐帧 seek"
+    assert "const VDONE = new Map()" in _msrc and "const WAITED = new Set()" in _msrc, \
+        "缺「同格只抓一次 / 只等一次就绪」的状态"
+    assert "Math.floor(Math.max(0, rel) * CLIP_FPS)" in _msrc, \
+        "seek 目标没量化到抽帧网格"
+    assert "if (VSTEP.get(src) === step) return;" in _msrc, \
+        "同一抽帧格里还是会重复 seek"
+    assert "VDONE.get(src) === step" in _msrc, \
+        "同一抽帧格里还是会每帧做亮度探测 + 全尺寸重绘"
+    assert "function fallbackFrame(" in _msrc and \
+        "return fallbackFrame(src, w, h);   // 黑帧沿用上一张有效画面" in _msrc, \
+        "黑帧（没有缓存）时同格仍会反复探测，视频解不出画面就又拖慢导出"
+    assert "setTimeout(done, 350)" not in _msrc and "setTimeout(done, 120)" in _msrc, \
+        "seek 超时仍是 350ms，几千帧会积成几十分钟"
+    assert "removeEventListener('seeked', done)" in _msrc, \
+        "超时后 once 监听会堆在 video 元素上"
+    assert "waitReady(v, 4000)" not in _msrc and "waitReady(v, 1500)" in _msrc, \
+        "还在每帧等最多 4 秒视频就绪"
+    assert "Math.min(840 / iw, 780 / ih, 1)" in _msrc, \
+        "首帧兜底没缩到卡片尺寸，11 段原分辨率 canvas 会吃满 WebView 内存"
+    assert "const w = v.videoWidth || 1080, h = v.videoHeight || 1920" not in _msrc, \
+        "首帧兜底还在按视频原始分辨率建常驻画布"
+    assert "VSTEP.clear(); VDONE.clear();" in _msrc, \
+        "切换素材窗口没重置抽帧格，会串到上一段"
+
+    # 数值模拟（不依赖外部 DB）：稀疏 + 重复时间戳的路线，新旧算法逐帧对比。
+    _pt = [0, 10, 25, 25, 40, 66, 80, 100, 100, 130, 150,
+           180, 200, 200, 230, 260, 300]
+    _pd = [0, 15, 35, 35, 60, 95, 120, 155, 155, 200, 230,
+           275, 305, 305, 350, 395, 455]
+    _dur, _play, _n = 300, 30, len(_pt)
+
+    def _idx(t):
+        _lo, _hi = 0, _n - 1
+        while _lo < _hi:
+            _m = (_lo + _hi) >> 1
+            if _pt[_m] < t:
+                _lo = _m + 1
+            else:
+                _hi = _m
+        return _lo
+
+    def _pace_old(rt):
+        _a, _ia, _ib = max(rt - 15, 0), _idx(max(rt - 15, 0)), _idx(rt)
+        _dd, _dt = _pd[_ib] - _pd[_ia], _pt[_ib] - _pt[_ia]
+        return (_dt / _dd * 1000) if (_dd > 5 and _dt > 0) else None
+
+    _PDN = max(2, -(-_dur // 2) + 1)
+    _table, _k = [], 0
+    for _i in range(_PDN):
+        _t = _i * 2
+        while _k + 1 < _n and _pt[_k + 1] <= _t:
+            _k += 1
+        if _k + 1 >= _n:
+            _v = _pd[_n - 1]
+        elif _pt[_k + 1] <= _pt[_k]:
+            _v = _pd[_k + 1]
+        else:
+            _f = min(1, max(0, (_t - _pt[_k]) / (_pt[_k + 1] - _pt[_k])))
+            _v = _pd[_k] + (_pd[_k + 1] - _pd[_k]) * _f
+        _table.append(_v)
+
+    def _dist(t):
+        _x = min(max(t / 2, 0), _PDN - 1)
+        _i, _f = int(_x), _x - int(_x)
+        _j = min(int(_x) + 1, _PDN - 1)
+        return _table[_i] + (_table[_j] - _table[_i]) * _f
+
+    _last = _dur / _pd[-1] * 1000
+
+    def _pace_new(rt):
+        nonlocal _last
+        _b, _a = min(max(rt, 0), _dur), max(min(max(rt, 0), _dur) - 15, 0)
+        _dt, _dd = _b - _a, _dist(_b) - _dist(_a)
+        if _dt > 0 and _dd > 1:
+            _p = _dt / _dd * 1000
+            if 60 < _p < 2400:
+                _last = _last + (_p - _last) * 0.30
+        return _last
+
+    _seq_old = [_pace_old(min(i / 24 * (_dur / _play), _dur))
+                for i in range(_play * 24)]
+    _seq_new = [_pace_new(min(i / 24 * (_dur / _play), _dur))
+                for i in range(_play * 24)]
+    _flips_old = sum(1 for a, b in zip(_seq_old, _seq_old[1:])
+                     if (a is None) != (b is None))
+    assert sum(1 for v in _seq_old if v is None) > 0 and _flips_old > 0, \
+        "模拟样本没复现旧算法的 '—' 交替，断言失去意义"
+    assert all(v is not None and 60 < v < 2400 for v in _seq_new), \
+        "新算法仍会出现空值或离谱配速"
+    assert all(abs(b - a) < 60 for a, b in zip(_seq_new, _seq_new[1:])), \
+        "新配速逐帧跳变过大，还是会看出闪"
+    # 抽帧网格：24fps 下连续 24 帧只应落到 12 个不同的 seek 目标
+    _wants_old = [i / 24 for i in range(24)]
+    _wants_new = [_w // (24 // 12) / 12 for _w in range(24)]
+    assert len(set(_wants_old)) == 24 and len(set(_wants_new)) == 12, \
+        "抽帧网格没把 seek 次数减半"
     # 黑帧语义模拟：亮帧更新、黑帧复用、切窗口清空
     def _vframes(seq, switch_at=None):
         cache, out = None, []
