@@ -3044,6 +3044,39 @@ def cmd_selftest(args) -> int:
     # 浅色 token 不许回来：这几处是整套暗色主题的锚点
     for _bad in ("--bg:#F6F7F4", "--brand:#17845F", "background:#FFFFFF"):
         assert _bad not in _ui_src, f"浅色 token 又回来了：{_bad}"
+
+    # ---- v55：历史页重构（周/月/年 + 页首柱状图 + 一键补全） ----------------
+    from garmin_cn import history as _H
+    _h_src = Path(_H.__file__).read_text(encoding="utf-8")
+    assert "def history_stats(" in _aa_src and '"history_stats",' in _aa_src, \
+        "没有历史统计接口，或没注册到 _API"
+    assert "def _month_bars(" in _h_src and "def _bucket_rows(" in _h_src, \
+        "历史页缺柱状图/周期分组渲染"
+    for _kw in ("本月跑量", "本年跑量", "累计跑量", "近 12 个月跑量"):
+        assert _kw in _h_src, f"历史页首缺统计项：{_kw}"
+    assert 'mchip("按周", "week")' in _h_src and 'mchip("按月", "month")' in _h_src \
+        and 'mchip("按年", "year")' in _h_src, "没有周/月/年切换"
+    assert 'data-act="historySyncAll"' in _h_src, "历史页缺「一键拉全部历史」入口"
+    assert '"historySyncAll" -> runHistorySyncAll()' in _main and \
+        "private fun runHistorySyncAll()" in _main, "App 没接一键补全"
+    assert '"sync_range", start, end, email, pwd, false, false, 40' in _main, \
+        "一键补全没把活动翻页数拉满，3 年历史只能补到前 1200 条"
+    # 统计接口的实际输出：必须是连续 12 个月（缺月补 0），周/年各是列表
+    _hs = _AA2.history_stats()
+    assert _hs.get("ok"), f"history_stats 失败：{_hs.get('error')}"
+    assert len(_hs.get("months") or []) == 12, "柱状图不是连续 12 个月"
+    assert all("km" in m and "label" in m for m in _hs["months"]), "月份缺 km/label"
+    assert isinstance(_hs.get("weeks"), list) and isinstance(_hs.get("years"), list), \
+        "周/年分组不是列表"
+    _sec = {"km": 100.0, "count": 8, "dur_h": 9.5,
+            "start": "2026-11-01", "end": "2026-11-30", "key": "2026-11", "label": "11月"}
+    _html = _H._bucket_rows([_sec], "month", "run")
+    assert "100.0 km" in _html and "8 次" in _html, "周期汇总行没带上跑量/次数"
+    assert 'href="/history?start=2026-11-01' in _html, "周期行没链到明细"
+    # 柱状图：12 根柱 + 当月实色
+    _bars = _H._month_bars(_hs["months"])
+    assert _bars.count("<rect ") == 12, "柱状图不是 12 根柱"
+    assert 'viewBox="0 0 400 210"' in _bars, "柱状图 viewBox 变了，字号会被缩没"
     assert "putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)" in _main, \
         "相册不能多选，批量添加不成立"
     assert "val u = pendingVideos.removeFirstOrNull()" in _main and \

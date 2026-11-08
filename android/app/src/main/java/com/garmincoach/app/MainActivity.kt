@@ -272,6 +272,7 @@ class MainActivity : Activity() {
                 when (name) {
                     "export" -> exportCard()
                     "historySync" -> showSyncRangeDialog()
+                    "historySyncAll" -> runHistorySyncAll()
                     // 数据源行直接进对应登录，不再先弹「佳明还是高驰」的二层选择器
                     "login:garmin" -> askGarminLogin()
                     "login:coros" -> askCorosLogin()
@@ -393,7 +394,8 @@ class MainActivity : Activity() {
     private fun buildSyncRangeDialog(end: String, first: String, last: String) {
         val covered = if (first.isNotBlank() && last.isNotBlank())
             "本地已覆盖 $first ~ $last。" else "本地还没有数据。"
-        val items = mutableListOf("最近 90 天", "最近 180 天", "最近 365 天")
+        val items = mutableListOf("自动补齐全部历史（最多回溯 3 年）",
+                                  "最近 90 天", "最近 180 天", "最近 365 天")
         if (first.isNotBlank()) items.add("从 $first 往前补 90 天")
         items.add("自定义日期区间…（最多 3 年）")
         AlertDialog.Builder(this)
@@ -403,10 +405,11 @@ class MainActivity : Activity() {
                 "要拉更早的数据，选「从最早日期往前补」。")
             .setItems(items.toTypedArray()) { _, which ->
                 when (which) {
-                    0 -> runHistorySync(shiftISO(end, -89), end)
-                    1 -> runHistorySync(shiftISO(end, -179), end)
-                    2 -> runHistorySync(shiftISO(end, -364), end)
-                    3 -> if (first.isNotBlank()) {
+                    0 -> runHistorySyncAll()
+                    1 -> runHistorySync(shiftISO(end, -89), end)
+                    2 -> runHistorySync(shiftISO(end, -179), end)
+                    3 -> runHistorySync(shiftISO(end, -364), end)
+                    4 -> if (first.isNotBlank()) {
                         val base = first
                         runHistorySync(shiftISO(base, -89), shiftISO(base, -1))
                     } else {
@@ -456,6 +459,61 @@ class MainActivity : Activity() {
                 else
                     "这段时间已经在本地了（跳过 $skipped 天）；" +
                         "要更早的数据请选「从最早日期往前补」")
+                thread {
+                    apiCall("dashboard")
+                    setStatus(apiCall("status"))
+                    ui { reload() }
+                }
+            }
+        }
+    }
+
+    /**
+     * 一键补齐全部历史：从今天往前按 365 天一段循环，最多 3 段（`sync_range` 的上限）。
+     *
+     * 一次拉 3 年的话中间没有任何反馈，用户只会觉得卡死；按年分段可以在标题栏
+     * 显示「第 2/3 段」，而且某一段全是缓存就提前停（说明更早的也都在本地了）。
+     */
+    private fun runHistorySyncAll() {
+        val email = secrets.email() ?: ""
+        val pwd = secrets.password() ?: ""
+        busy(true)
+        subtitle.text = "补全历史 准备中…"
+        thread {
+            var end = todayISO()
+            var seg = 0
+            var fetched = 0
+            var skipped = 0
+            var lastErr = ""
+            while (seg < 3) {
+                val start = shiftISO(end, -364)
+                ui { subtitle.text = "补全历史 第 ${seg + 1}/3 段：$start ~ $end" }
+                val r = apiCall("sync_range", start, end, email, pwd, false, false, 40)
+                Log.i(TAG, "history sync-all seg=${seg + 1} $start~$end " +
+                    "ok=${r.optBoolean("ok")} fetched=${r.optInt("fetched")} " +
+                    "skipped=${r.optInt("skipped")} err=${r.optString("error")}")
+                if (!r.optBoolean("ok")) {
+                    lastErr = r.optString("error")
+                    if (r.optBoolean("need_login") || r.optBoolean("need_mfa")) {
+                        ui { busy(false); toast("登录已失效：$lastErr"); askGarminLogin() }
+                        return@thread
+                    }
+                    break
+                }
+                fetched += r.optInt("fetched")
+                skipped += r.optInt("skipped")
+                // 整段都是缓存：更早的也大概率有了，不用再往前跑
+                if (r.optInt("fetched") == 0) break
+                end = shiftISO(start, -1)
+                seg++
+            }
+            ui {
+                busy(false)
+                updateSubtitle()
+                toast(if (lastErr.isNotEmpty())
+                    "补全历史中断：$lastErr（已补 $fetched 天）"
+                else
+                    "补全历史完成：新拉 $fetched 天、跳过 $skipped 天（最多回溯 3 年）")
                 thread {
                     apiCall("dashboard")
                     setStatus(apiCall("status"))

@@ -120,8 +120,73 @@ def view_page(qs: dict) -> str:
         "<body>", "<body>" + ui.nav_html(day, cov, from_), 1)
 
 
+def _month_bars(months: list[dict]) -> str:
+    """近 12 个月跑量柱状图（纯 SVG，不引第三方库，离线可用）。
+
+    当前月用实色、历史月半透明：一眼能看出「这个月还没跑完」。
+    没跑的月份也画一根 8px 的底座，否则中间断档读不出来。
+    """
+    if not months:
+        return '<div class="empty">还没有活动，先同步或补拉历史</div>'
+    n = len(months)
+    vapor = max((float(m.get("km") or 0) for m in months), default=0.0) or 1.0
+    # viewBox 按手机实际宽度设计（不是 792）：按 792 画再缩到 420 屏，
+    # 11px 的刻度字会被缩成 6px，等于没标。桌面端用 max-width 兜住。
+    W, H = 400, 210
+    pad_b, pad_t, gap = 38, 24, 6
+    bw = (W - gap * (n - 1)) / n
+    bars = []
+    for i, m in enumerate(months):
+        km = float(m.get("km") or 0)
+        h = 6 + (H - pad_b - pad_t) * (km / vapor)
+        x = i * (bw + gap)
+        y = H - pad_b - h
+        cur = i == n - 1
+        bars.append(
+            f'<rect x="{x:.0f}" y="{y:.0f}" width="{bw:.0f}" height="{h:.0f}" rx="4" '
+            f'fill="url(#mb)" opacity="{1 if cur else 0.52}"/>'
+            + (f'<text x="{x + bw / 2:.0f}" y="{y - 7:.0f}" text-anchor="middle" '
+               f'font-size="11" fill="{"#8CC2FF" if cur else "#7C8FA8"}">{km:.0f}</text>'
+               if km > 0 else "")
+            + f'<text x="{x + bw / 2:.0f}" y="{H - 12}" text-anchor="middle" '
+              f'font-size="11" fill="#7C8FA8">{_esc(m.get("label") or "")}</text>')
+    return (f'<svg viewBox="0 0 {W} {H}" width="100%" '
+            f'xmlns="http://www.w3.org/2000/svg" '
+            f'style="display:block;max-width:520px;margin:0 auto">'
+            f'<defs><linearGradient id="mb" x1="0" y1="1" x2="0" y2="0">'
+            f'<stop offset="0" stop-color="#1D5FC4"/><stop offset="1" stop-color="#22D3EE"/>'
+            f'</linearGradient></defs>{"".join(bars)}</svg>')
+
+
+def _bucket_rows(items: list[dict], mode: str, kind: str) -> str:
+    """周/月/年分组列表：每行是一个周期汇总，点进去看该周期的活动明细。"""
+    if not items:
+        return '<div class="empty">这个范围里还没有活动。</div>'
+    rows = []
+    for b in items:
+        if mode == "week":
+            title = f"{b['key']} · {b.get('label') or ''}"
+            icon = "▤"
+        elif mode == "month":
+            title = f"{b['key']} · {int(str(b['key'])[5:7])} 月"
+            icon = "▦"
+        else:
+            title = f"{b['key']} 年"
+            icon = "▣"
+        desc = (f"{b.get('count') or 0} 次 · {float(b.get('km') or 0):.1f} km"
+                f" · {float(b.get('dur_h') or 0):.1f} 小时")
+        href = f"/history?{_q(start=b.get('start') or '', end=b.get('end') or '',
+                              type=kind, mode='list')}"
+        rows.append(ui.row(icon, title, desc, href=href, tone="b"))
+    return "".join(rows)
+
+
 def history_page(qs: dict) -> str:
-    """历史活动列表：本地库分页查询，点一行交给 App 的 JS 桥出活动图。"""
+    """历史页：页首月度跑量统计 + 按周/月/年管理 + 活动明细列表。
+
+    三种视图共用同一个 `mode` 参数：`list` 是原来的活动分页列表；
+    `week` / `month` / `year` 显示周期汇总，点一行再回到该周期的明细。
+    """
     from . import appapi as A
 
     cov = coverage()
@@ -130,26 +195,87 @@ def history_page(qs: dict) -> str:
     kind = _one(qs, "type")
     if kind not in ("", "run"):
         kind = ""
+    mode = _one(qs, "mode", "list")
+    if mode not in ("list", "week", "month", "year"):
+        mode = "list"
     try:
         offset = max(0, int(_one(qs, "offset", "0") or 0))
     except ValueError:
         offset = 0
 
-    r = A.activities(start or None, end or None, kind or None, PAGE, offset)
-    if not r.get("ok"):
-        return _message("历史活动查询失败", str(r.get("error") or "未知错误"), cov)
-    items = r.get("items") or []
-    s = r.get("start") or cov.get("act_first") or ""
-    e = r.get("end") or dt.date.today().isoformat()
-    scope = f"{s} ~ {e}" if s else "全部"
-    chips = (ui.chip(f"{r.get('total', 0)} 条活动", "ok") +
-             ui.chip(scope) +
-             ui.chip("只看跑步" if kind == "run" else "全部类型") +
-             ui.chip(f"第 {offset + 1}~{offset + len(items)} 条"))
+    stats = A.history_stats(None, None, "run" if kind in ("", "run") else "")
+    if not stats.get("ok"):
+        stats = {}
+    total = stats.get("total") or {}
+    cur_m = stats.get("month") or {}
+    cur_y = stats.get("year") or {}
+    months = stats.get("months") or []
 
-    selected_all = " selected" if not kind else ""
-    selected_run = " selected" if kind == "run" else ""
-    form = f"""<form class="card filters" method="get" action="/history" data-nopush>
+    chips = (ui.chip(f"{total.get('count', 0)} 次跑步", "ok") +
+             ui.chip(f"累计 {float(total.get('km') or 0):.0f} km") +
+             ui.chip(f"{(stats.get('range') or {}).get('first') or '—'} 起") +
+             ui.chip("本机 · 离线可用"))
+
+    # ---- 页首：三个数和一张柱状图
+    hero = ('<div class="grid three">' +
+            ui.stat("本月跑量", f"{float(cur_m.get('km') or 0):.1f} km",
+                    f"{cur_m.get('count') or 0} 次 · {cur_m.get('key') or ''}") +
+            ui.stat("本年跑量", f"{float(cur_y.get('km') or 0):.0f} km",
+                    f"{cur_y.get('count') or 0} 次 · {cur_y.get('key') or ''}") +
+            ui.stat("累计跑量", f"{float(total.get('km') or 0):.0f} km",
+                    f"{total.get('count') or 0} 次 · {float(total.get('dur_h') or 0):.0f} 小时") +
+            '</div>')
+    chart = (f'<div class="card" style="margin-top:10px">'
+             f'<h3>近 12 个月跑量（km）</h3>{_month_bars(months)}</div>')
+
+    # ---- 视图切换
+    def mchip(label: str, m: str) -> str:
+        on = " ok" if mode == m else ""
+        return (f'<a class="chip{on}" href="/history?{_q(mode=m, type=kind)}" '
+                f'data-nopush>{label}</a>')
+
+    switch = ('<div class="tags">' + mchip("活动列表", "list") +
+              mchip("按周", "week") + mchip("按月", "month") +
+              mchip("按年", "year") + '</div>')
+
+    # ---- 分组视图
+    if mode == "week":
+        groups = _bucket_rows(stats.get("weeks") or [], "week", kind)
+        grouping = ui.sec("最近 12 周", switch + '<div style="margin-top:10px">'
+                          + groups + '</div>')
+    elif mode == "month":
+        groups = _bucket_rows(
+            [{"key": m["key"], "count": m["count"], "km": m["km"], "dur_h": 0,
+              "start": m["key"] + "-01", "end": m["key"] + "-31"}
+             for m in reversed(months)], "month", kind)
+        grouping = ui.sec("最近 12 个月", switch + '<div style="margin-top:10px">'
+                          + groups + '</div>')
+    elif mode == "year":
+        groups = _bucket_rows(
+            [{"key": y["key"], "count": y["count"], "km": y["km"],
+              "dur_h": y.get("dur_h") or 0, "start": y["key"] + "-01-01",
+              "end": y["key"] + "-12-31"}
+             for y in (stats.get("years") or [])], "year", kind)
+        grouping = ui.sec("按年份", switch + '<div style="margin-top:10px">'
+                          + groups + '</div>')
+    else:
+        grouping = ui.sec("按周期查看", switch)
+
+    # ---- 活动明细（mode == list）
+    detail = ""
+    if mode == "list":
+        r = A.activities(start or None, end or None, kind or None, PAGE, offset)
+        if not r.get("ok"):
+            return _message("历史活动查询失败", str(r.get("error") or "未知错误"), cov)
+        items = r.get("items") or []
+        s = r.get("start") or cov.get("act_first") or ""
+        e = r.get("end") or dt.date.today().isoformat()
+        scope = f"{s} ~ {e}" if s else "全部"
+
+        selected_all = " selected" if not kind else ""
+        selected_run = " selected" if kind == "run" else ""
+        form = f"""<form class="card filters" method="get" action="/history" data-nopush>
+      <input type="hidden" name="mode" value="list">
       <label>起 <input type="date" name="start" value="{_esc(start)}"></label>
       <label>止 <input type="date" name="end" value="{_esc(end)}"></label>
       <label>类型 <select name="type">
@@ -158,40 +284,43 @@ def history_page(qs: dict) -> str:
       </select></label>
       <button class="btn primary" type="submit">筛选</button>
       <div class="tags" style="width:100%">
-        <a class="chip" href="/history?{_q(type=kind, start=_shift(e, -29), end=e)}" data-nopush>近 30 天</a>
-        <a class="chip" href="/history?{_q(type=kind, start=_shift(e, -89), end=e)}" data-nopush>近 90 天</a>
-        <a class="chip" href="/history?{_q(type=kind, start=_shift(e, -364), end=e)}" data-nopush>近 365 天</a>
-        <a class="chip" href="/history?{_q(type=kind)}" data-nopush>全部</a>
+        <a class="chip" href="/history?{_q(mode='list', type=kind, start=_shift(e, -29), end=e)}" data-nopush>近 30 天</a>
+        <a class="chip" href="/history?{_q(mode='list', type=kind, start=_shift(e, -89), end=e)}" data-nopush>近 90 天</a>
+        <a class="chip" href="/history?{_q(mode='list', type=kind, start=_shift(e, -364), end=e)}" data-nopush>近 365 天</a>
+        <a class="chip" href="/history?{_q(mode='list', type=kind)}" data-nopush>全部</a>
       </div></form>"""
 
-    rows = "".join(
-        ui.row("▶", f"{i.get('date')} {i.get('start')} · {i.get('name')}",
-               f"{i.get('dist', 0):.2f} km · 配速 {i.get('pace')} · "
-               f"时长 {i.get('dur')} · 心率 {i.get('hr') or '—'} · 点这行出图",
-               aid=str(i.get("id") or ""), tone="b")
-        for i in items)
-    if not rows:
-        rows = ('<div class="empty">这个区间没有活动。可以放宽日期，'
-                '或用「补拉更多历史」同步更早的数据。</div>')
+        rows = "".join(
+            ui.row("▶", f"{i.get('date')} {i.get('start')} · {i.get('name')}",
+                   f"{i.get('dist', 0):.2f} km · 配速 {i.get('pace')} · "
+                   f"时长 {i.get('dur')} · 心率 {i.get('hr') or '—'} · 点这行出图",
+                   aid=str(i.get("id") or ""), tone="b")
+            for i in items)
+        if not rows:
+            rows = ('<div class="empty">这个区间没有活动。可以放宽日期，'
+                    '或用「补拉更早的数据」同步更早的区间。</div>')
 
-    pager = '<div class="pager">'
-    if offset:
-        pager += (f'<a class="btn" href="/history?'
-                  f'{_q(start=start, end=end, type=kind, offset=max(0, offset - PAGE))}" '
-                  f'data-nopush>↑ 较新的活动</a>')
-    if r.get("has_more"):
-        pager += (f'<a class="btn primary" href="/history?'
-                  f'{_q(start=start, end=end, type=kind, offset=offset + PAGE)}" '
-                  f'data-nopush>↓ 加载更早的活动</a>')
-    pager += '</div>'
+        pager = '<div class="pager">'
+        if offset:
+            pager += (f'<a class="btn" href="/history?'
+                      f'{_q(mode="list", start=start, end=end, type=kind, offset=max(0, offset - PAGE))}" '
+                      f'data-nopush>↑ 较新的活动</a>')
+        if r.get("has_more"):
+            pager += (f'<a class="btn primary" href="/history?'
+                      f'{_q(mode="list", start=start, end=end, type=kind, offset=offset + PAGE)}" '
+                      f'data-nopush>↓ 加载更早的活动</a>')
+        pager += '</div>'
 
-    # 「补拉历史」只在这里出现一次：今日页和我的页都不再重复放这个动作
-    more_data = ('<div class="pager">'
-                 '<div class="btn primary" data-act="historySync">补拉更早的数据</div>'
-                 '</div>')
+        more_data = ('<div class="pager">'
+                     '<div class="btn primary" data-act="historySync">补拉更早的数据</div>'
+                     '<div class="btn" data-act="historySyncAll">一键拉全部历史</div>'
+                     '</div>')
+        detail = (ui.sec("筛选", form + more_data) +
+                  ui.sec("活动", rows + pager) +
+                  '<div class="note" style="margin-top:8px">'
+                  f'当前 {offset + 1}~{offset + len(items)} 条 · 共 {r.get("total", 0)} 条 · {_esc(scope)}'
+                  '</div>')
 
-    body = (ui.sec("覆盖范围与日期", index_section(cov)) +
-            ui.sec("筛选", form + more_data) +
-            ui.sec("活动", rows + pager))
-    return ui.page("HISTORY · 历史", "历史活动", "按区间、类型分页查本地库，点一条出活动图",
-                   body, chips)
+    body = ui.sec("概览", hero + chart) + grouping + detail
+    return ui.page("HISTORY · 历史", "历史数据",
+                   "按周 / 月 / 年管理，页首看月度跑量", body, chips)

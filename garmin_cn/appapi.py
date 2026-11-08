@@ -133,6 +133,7 @@ def _today(store: Store) -> dict:
 _API = {
     "env_info", "status", "login", "submit_mfa", "sync", "sync_range",
     "dashboard", "card_html", "act_card_html", "runs", "activities", "days_index",
+    "history_stats",
     "plan", "set_amap_key", "start_server", "recent", "read_html",
     "motion_html", "motion_status", "motion_cleanup", "motion_audio",
     "clips_list", "clips_add", "clips_remove", "clips_reprobe",
@@ -730,6 +731,119 @@ def runs(limit: int = 30, days: int = 180) -> dict:
         return {"ok": True, "items": out}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def history_stats(start: str | None = None, end: str | None = None,
+                  types: str = "run") -> dict:
+    """历史页首的统计：本月 / 本年 / 累计 + 近 12 个月柱状图 + 周/月/年分组。
+
+    一次把活动表全读出来在 Python 里聚合（几千行也就几十毫秒），比在 SQL 里
+    拼 ISO 周函数干净——SQLite 没有 `isocalendar()`，而周分组是用户明确要的。
+    `types="run"` 只看跑步（和列表的「只看跑步」同一套 `_RUN_TYPES`）；
+    传空串则统计全部运动。
+    """
+    try:
+        store = Store(DB)
+        try:
+            e = end or dt.date.today().isoformat()
+            try:
+                dt.date.fromisoformat(e)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "日期格式应为 YYYY-MM-DD"}
+            # 起点不设上限：活动表里最早那条就是全部家当
+            rows = store.activities(start or "2000-01-01", e)
+        finally:
+            store.conn.close()
+    except Exception as ex:
+        return {"ok": False, "error": f"{type(ex).__name__}: {ex}"}
+
+    kind = (types or "").strip().lower()
+    allow = set(_RUN_TYPES) if kind == "run" else None
+    picked = [r for r in rows if allow is None or (r.get("type") or "") in allow]
+
+    months: dict[str, dict] = {}
+    years: dict[str, dict] = {}
+    weeks: dict[str, dict] = {}
+
+    def bump(bucket: dict, key: str, km: float, dur: float) -> dict:
+        b = bucket.get(key)
+        if b is None:
+            b = bucket[key] = {"km": 0.0, "count": 0, "dur_h": 0.0}
+        b["km"] += km
+        b["count"] += 1
+        b["dur_h"] += dur
+        return b
+
+    for r in picked:
+        d = str(r.get("date") or "")
+        if len(d) < 10:
+            continue
+        km = float(r.get("distance_m") or 0) / 1000.0
+        dur = float(r.get("duration_s") or 0) / 3600.0
+        bump(months, d[:7], km, dur)
+        bump(years, d[:4], km, dur)
+        try:
+            iso = dt.date.fromisoformat(d).isocalendar()
+        except ValueError:
+            continue
+        wk = f"{iso[0]}-W{iso[1]:02d}"
+        b = weeks.get(wk)
+        if b is None:
+            b = weeks[wk] = {"km": 0.0, "count": 0, "dur_h": 0.0,
+                             "start": d, "end": d}
+        b["km"] += km
+        b["count"] += 1
+        b["dur_h"] += dur
+        if d < b["start"]:
+            b["start"] = d
+        if d > b["end"]:
+            b["end"] = d
+
+    today = dt.date.fromisoformat(e)
+    # 近 12 个月要连续：没跑的月份也得占一根柱子，否则读不出「哪个月断了」
+    keys: list[str] = []
+    for i in range(11, -1, -1):
+        mm, yy = today.month - i, today.year
+        while mm <= 0:
+            mm += 12
+            yy -= 1
+        keys.append(f"{yy:04d}-{mm:02d}")
+    months_out = [{"key": k, "label": f"{int(k[5:7])}月",
+                   "km": round(months.get(k, {}).get("km", 0), 1),
+                   "count": months.get(k, {}).get("count", 0)} for k in keys]
+
+    # 周用 start 排序（ISO 周号跨年会回绕，字符串排序不可靠）
+    wk_sorted = sorted(weeks.items(), key=lambda kv: kv[1]["start"], reverse=True)[:12]
+    wk_sorted.reverse()
+    weeks_out = [{"key": k, "label": f"{v['start'][5:]}~{v['end'][5:]}",
+                  "start": v["start"], "end": v["end"],
+                  "km": round(v["km"], 1), "count": v["count"],
+                  "dur_h": round(v["dur_h"], 1)} for k, v in wk_sorted]
+
+    years_out = [{"key": k, "km": round(v["km"], 1), "count": v["count"],
+                  "dur_h": round(v["dur_h"], 1)}
+                 for k, v in sorted(years.items(), key=lambda kv: kv[0], reverse=True)]
+
+    cur_m = months.get(today.strftime("%Y-%m"), {})
+    cur_y = years.get(today.strftime("%Y"), {})
+    total_km = sum(v["km"] for v in months.values())
+    total_h = sum(v["dur_h"] for v in months.values())
+    return {
+        "ok": True,
+        "total": {"km": round(total_km, 1), "count": len(picked),
+                  "dur_h": round(total_h, 1)},
+        "month": {"key": today.strftime("%Y-%m"),
+                  "km": round(cur_m.get("km", 0), 1),
+                  "count": cur_m.get("count", 0)},
+        "year": {"key": today.strftime("%Y"),
+                 "km": round(cur_y.get("km", 0), 1),
+                 "count": cur_y.get("count", 0)},
+        "months": months_out,
+        "weeks": weeks_out,
+        "years": years_out,
+        "range": {"first": min((r["date"] for r in picked), default=""),
+                  "last": max((r["date"] for r in picked), default="")},
+    }
 
 
 def activities(start: str | None = None, end: str | None = None,
