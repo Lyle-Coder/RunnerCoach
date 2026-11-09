@@ -42,13 +42,24 @@ body{margin:0;color:var(--ink);
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
   -webkit-font-smoothing:antialiased;line-height:1.6;font-size:14px}
 .wrap{max-width:1120px;margin:0 auto;padding:28px 20px 56px}
-.top{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:18px;flex-wrap:wrap}
+/* 页头只有标题 + 一个动作。以前这里是两个胶囊并排，390 宽下
+   「AI 教练」和「数据源 · 上次同步」加起来 402px，必然折成第二行还横向溢出；
+   现在数据源退成一行说明文字，动作始终在右上角，窄屏也只有一排。 */
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;
+  margin-bottom:18px}
+.top-main{min-width:0;flex:1 1 auto}
 .top h1{margin:0;font-size:22px;font-weight:600;letter-spacing:.2px}
-.top .sub{color:var(--muted);font-size:12.5px;margin-top:4px}
-.badge{display:inline-flex;align-items:center;gap:6px;background:rgba(9,14,22,.72);
-  border:1px solid var(--line);
-  border-radius:999px;padding:5px 12px;font-size:12px;color:var(--ink-2)}
-.dot{width:6px;height:6px;border-radius:50%;background:var(--green)}
+.top .sub{color:var(--muted);font-size:12.5px;margin-top:4px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.top .src{display:flex;align-items:center;gap:6px;margin-top:6px;
+  font-size:11.5px;color:var(--faint);min-width:0}
+.top .src span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.top-act{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+  gap:5px;min-height:40px;padding:0 14px;border-radius:999px;white-space:nowrap;
+  font-size:12.5px;font-weight:600;color:var(--blue);text-decoration:none;
+  background:var(--blue-soft);border:1px solid rgba(77,163,255,.34)}
+.top-act:active{background:rgba(77,163,255,.24)}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--green);flex:0 0 auto}
 .card{background:linear-gradient(180deg,#121B2A,#0F1622);
   border:1px solid var(--line);border-radius:16px;padding:18px;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 16px 40px -28px rgba(0,0,0,.9)}
@@ -57,6 +68,10 @@ body{margin:0;color:var(--ink);
 .two{display:grid;grid-template-columns:1.45fr 1fr;gap:14px;margin-bottom:14px}
 h2.sec{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:1.2px;
   margin:26px 0 10px;display:flex;align-items:center;gap:8px}
+/* 区块标题右侧的动作（教练点评 → AI 教练）：靠右、可点、别把标题撑成两行 */
+h2.sec .sec-act{margin-left:auto;display:inline-flex;align-items:center;
+  min-height:36px;font-size:11.5px;font-weight:500;letter-spacing:0;
+  color:var(--blue);text-decoration:none;white-space:nowrap}
 h2.sec:before{content:"";width:3px;height:12px;border-radius:2px;flex:0 0 auto;
   background:linear-gradient(180deg,var(--blue),var(--cyan));
   box-shadow:0 0 9px rgba(59,130,246,.85)}
@@ -99,6 +114,10 @@ td.name{color:var(--ink);max-width:220px;overflow:hidden;text-overflow:ellipsis;
   background:var(--blue-soft);color:#8CC2FF}
 .note{font-size:13.5px;line-height:1.8;color:var(--ink-2);white-space:pre-wrap}
 .note-meta{font-size:11.5px;color:var(--faint);margin-top:12px}
+.note-act{display:inline-flex;align-items:center;min-height:40px;margin-top:4px;
+  font-size:12.5px;color:var(--blue);text-decoration:none}
+.placeholder.live{border-style:solid;border-color:rgba(77,163,255,.30)}
+.placeholder.live b{color:var(--blue)}
 .empty{color:var(--faint);font-size:13px}
 .placeholder{border:1px dashed rgba(96,165,250,.28);border-radius:12px;padding:22px;
   text-align:center;background:rgba(9,14,22,.55)}
@@ -156,6 +175,63 @@ td.name{color:var(--ink);max-width:220px;overflow:hidden;text-overflow:ellipsis;
   /* 窄屏让活动名换成两行而不是硬撑宽度：多数日子不再需要横向滚动 */
   td.name{max-width:150px;white-space:normal;word-break:break-word;line-height:1.45}
 }
+"""
+
+# 「教练点评」的异步补全脚本。看板是服务端渲染的静态页，配好模型后
+# 点评要现写（一次几秒），所以先给占位、再由页面轮询 /ai/note 把文字换进来。
+# 用 textContent 写入，不拼 HTML —— 模型输出里带尖括号也不会变成标签。
+NOTE_POLL_JS = """
+<script>
+(function(){
+  var box = document.getElementById('note-live');
+  if (!box || !window.fetch) return;
+  var date = box.getAttribute('data-date') || '', n = 0, dead = false;
+  function fail(msg){
+    if (dead) return;
+    dead = true;
+    box.className = 'placeholder';
+    box.innerHTML = '';
+    var b = document.createElement('b');
+    b.textContent = '这次没能自动生成';
+    var s = document.createElement('span');
+    s.textContent = msg;
+    var a = document.createElement('a');
+    a.className = 'note-act'; a.href = '/ai'; a.textContent = '打开 AI 教练 →';
+    box.appendChild(b); box.appendChild(s); box.appendChild(a);
+  }
+  function paint(j){
+    dead = true;
+    var t = document.createElement('div');
+    t.className = 'note'; t.textContent = j.text;
+    var m = document.createElement('div');
+    m.className = 'note-meta';
+    m.textContent = ['AI 教练', j.at, j.model, '按今日数据自动生成']
+      .filter(function(x){ return !!x; }).join(' · ');
+    box.className = '';
+    box.innerHTML = '';
+    box.appendChild(t); box.appendChild(m);
+  }
+  function tick(){
+    if (dead) return;
+    if (n++ > 24) return fail('等了 60 秒还没结果，检查网络或模型额度。');
+    fetch('/ai/note', {method: 'POST', cache: 'no-store',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({date: date})})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        if (!j || !j.ok) {
+          if (j && j.error) return fail(j.error);
+          return setTimeout(tick, 2500);
+        }
+        if (j.ready && j.text) return paint(j);
+        if (!j.configured) return fail('还没配置模型服务。');
+        setTimeout(tick, 2500);
+      })
+      .catch(function(){ fail('自动生成要在 App 或本地服务里才可用。'); });
+  }
+  setTimeout(tick, 600);
+})();
+</script>
 """
 
 
@@ -712,14 +788,49 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     )
 
     sess = b["session"]
-    note = store.latest_note()
+    # 点评优先级：人工写的 > AI 已生成（缓存）> AI 正在写（轮询）> 还没配模型
+    day = d.isoformat()
+    try:
+        note = store.note_for(day)
+    except Exception:
+        note = None
+    ai = None
+    # 只有近 7 天自动生成：翻旧日历时每打开一天就发一次请求，既费钱也慢。
+    # 更早的日期只认缓存，没缓存就空着。
+    auto = (dt.date.today() - d).days <= 6
+    if not note:
+        try:
+            from . import aicoach
+
+            # wait=0：页面不等模型。命中缓存立刻用，没命中就丢后台，
+            # 下面那段脚本轮询 /ai/note 把结果填进来。
+            ai = aicoach.coach_note(day) if auto else aicoach.cached_note(day)
+        except Exception:
+            ai = None
+
     if note:
-        note_html = f'<div class="note">{esc(note["text"])}</div><div class="note-meta">由 {esc(note["source"])} 生成 · {esc(note["created_at"])}</div>'
+        note_html = (f'<div class="note">{esc(note["text"])}</div>'
+                     f'<div class="note-meta">由 {esc(note["source"])} 生成 · '
+                     f'{esc(note["created_at"])}</div>')
+    elif ai and ai.get("ready"):
+        meta = " · ".join(x for x in ("AI 教练", ai.get("at") or "",
+                                      ai.get("model") or "") if x)
+        note_html = (f'<div class="note">{esc(ai["text"])}</div>'
+                     f'<div class="note-meta">{esc(meta)} · 按今日数据自动生成</div>')
+    elif ai and ai.get("configured"):
+        note_html = (
+            f'<div class="placeholder live" id="note-live" data-date="{esc(day)}">'
+            '<b>AI 教练正在写这天的点评</b>'
+            '<span>首次生成约 10 秒，写好会直接出现在这里，不用刷新。</span>'
+            '<a class="note-act" href="/ai">也可以去 AI 教练看 →</a></div>'
+            + NOTE_POLL_JS)
     else:
-        # 以前这里写着「在外部助手里说…」——那是作者自己的用法，
-        # 对装着 App 的人等于指了一条不存在的路。空态只说事实。
+        # 没配模型时别假装能自动生成：说清「配了才有」。
+        hint = ("在 AI 教练里配好模型后，这里每天会按当天数据自动补一段。"
+                if auto else "历史日期不自动生成点评，只有当天写好的会留在这里。")
         note_html = ('<div class="placeholder"><b>还没有教练点评</b>'
-                     '<span>这块只是一句附加总结，不影响上面的指标与今日处方。</span></div>')
+                     f'<span>{hint}</span>'
+                     '<a class="note-act" href="/ai">打开 AI 教练 →</a></div>')
 
     rows = []
     for a in res["activities"][:10]:
@@ -810,6 +921,11 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     <p class="m-delta" style="margin-top:6px">当前数据源未提供睡眠分期，此栏显示体能指标</p>
   </div>"""
 
+    # 秒对读者没用，截到分钟；「尚未同步」这类文案原样保留
+    src_line = esc(src_label)
+    if src_ts:
+        src_line += " · 同步于 " + esc(str(src_ts)[:16])
+
     html_doc = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -817,14 +933,12 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
 <style>{CSS}</style></head><body><div class="wrap">
 
 <div class="top">
-  <div>
+  <div class="top-main">
     <h1>每日看板</h1>
     <div class="sub">{esc(d)} {WEEK_CN[d.weekday()]} · 睡眠/恢复/负荷综合分析</div>
+    <div class="src"><i class="dot"></i><span>{src_line}</span></div>
   </div>
-  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-    <a class="badge" href="ai" style="text-decoration:none">AI 教练 · 今日建议</a>
-    <div class="badge"><i class="dot"></i>{esc(src_label)} · 上次同步 {esc(src_ts)}</div>
-  </div>
+  <a class="top-act" href="/ai"><span aria-hidden="true">✦</span>AI 教练</a>
 </div>
 
 <div class="hero">
@@ -890,7 +1004,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
   {right_panel}
 </div>
 
-<h2 class="sec">教练点评</h2>
+<h2 class="sec">教练点评<a class="sec-act" href="/ai">AI 教练 →</a></h2>
 <div class="card">{note_html}</div>
 
 <h2 class="sec">最近活动</h2>

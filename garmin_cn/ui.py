@@ -280,7 +280,10 @@ DASH_FIX = """
 .hero,.two{grid-template-columns:1fr}
 .metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
 table{display:block;overflow-x:auto;white-space:nowrap}
-#gc-nav{margin:0 -14px 16px;padding:9px 14px;position:sticky;top:0;z-index:99;
+/* nav 挂在 <body> 下（不是 .wrap 里），本身已经是整屏宽；
+   以前用 -14px 抵消 .wrap 的内边距，结果在 body 上反而多出 14px，
+   整页能横向拖动一小截。 */
+#gc-nav{margin:0 0 16px;padding:9px 14px;position:sticky;top:0;z-index:99;
   background:rgba(7,11,18,.96);border-bottom:1px solid rgba(96,165,250,.18);
   display:flex;gap:7px;align-items:center;flex-wrap:wrap;
   font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}

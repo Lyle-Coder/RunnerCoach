@@ -420,7 +420,7 @@ def bb_state(t: dict) -> dict:
 
 
 def build_html(res: dict, sync_at: str | None = None,
-               src: str = "Garmin 国区") -> str:
+               src: str = "Garmin 国区", ai_note: str = "") -> str:
     d = dt.date.fromisoformat(res["date"])
     t = res["today"]
     r = res["readiness"]
@@ -640,6 +640,13 @@ def build_html(res: dict, sync_at: str | None = None,
     hrv_spark = _spark(hrv_pts[-14:], h=42, color="#5FA8E0", label="HRV", unit=" ms")
     rhr_spark = _spark(rhr_pts[-14:], h=42, color="#E06A5F", label="静息心率", unit=" bpm")
 
+    # AI 点评：只有拿到现成文本才画。限两行——一图流高度写死 1080×1920，
+    # 多三行就会把底部挤出画幅。
+    ai_html = ""
+    if (ai_note or "").strip():
+        ai_html = (f'<div class="ai"><span>✦ AI 教练</span>'
+                   f'{esc(ai_note.strip())}</div>')
+
     if rpi:
         # 备赛卡自带「本周主题」，不再放 rp_line，避免同一句话出现两次
         rp_line = ""
@@ -691,6 +698,10 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .chip.gray{{background:#202932;color:#A8B4C0}}
 .sess .why{{font-size:21px;line-height:1.45;color:#B9C3CE;display:-webkit-box;
   -webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}}
+.sess .ai{{margin-top:12px;padding-top:10px;border-top:1px solid #262E38;
+  font-size:18px;line-height:1.45;color:#93A3B5;display:-webkit-box;
+  -webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}}
+.sess .ai span{{color:#5FA8E0;font-weight:700;margin-right:8px}}
 .row4{{display:flex;gap:14px;margin-top:14px}}
 .kpi{{flex:1;background:#1A2027;border:1px solid #262E38;border-radius:16px;
   padding:13px 8px;text-align:center}}
@@ -846,6 +857,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
   <div class="st">{esc(s["type"])}</div>
   <div class="chips"><span class="chip main">{esc(s["duration"])}</span><span class="chip">{esc(s["intensity"])}</span></div>
   <div class="why">{esc(s["why"])}</div>
+  {ai_html}
   {nutri_chips}
   {rp_line}
 </div>

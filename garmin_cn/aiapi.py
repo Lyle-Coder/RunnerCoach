@@ -65,6 +65,11 @@ def dispatch(action: str, payload: dict | None = None) -> dict:
 
         if action == "daily":
             return aicoach.daily_advice(force=_truthy(p.get("force")))
+        if action == "note":
+            # 看板的「教练点评」用它轮询：没写好就返回 pending，页面继续等。
+            return aicoach.coach_note(
+                str(p.get("date") or "").strip() or None,
+                force=_truthy(p.get("force")))
         if action == "weight":
             try:
                 days = max(14, min(365, int(p.get("days") or 60)))

@@ -715,10 +715,21 @@ def card_html(date: str | None = None) -> dict:
         res = attach(derive(store, d))
         from .report import source_badge
 
+        # 一图流是「点一下就要出图」的场景，等太久会显得卡住。
+        # 这里最多等 6 秒把 AI 点评补上；等不到就不放这段文字，
+        # 图本身照常出——点评是锦上添花，不能拖累出图。
+        ai_note = ""
+        try:
+            from . import aicoach
+
+            ai_note = (aicoach.coach_note(d, wait=6) or {}).get("text") or ""
+        except Exception:
+            ai_note = ""
+
         _label, _ts = source_badge(store)
         html = build_html(res,
                           sync_at=store.get_meta("last_sync") or store.get_meta("last_sync_coros"),
-                          src=_label)
+                          src=_label, ai_note=ai_note)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 

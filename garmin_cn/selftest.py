@@ -2281,6 +2281,58 @@ def run() -> int:
     # 看板里不该再让用户「去 WorkBuddy 说一句」——装在手机上的人没有那个入口
     assert "WorkBuddy" not in (ROOT / "garmin_cn/report.py").read_text(encoding="utf-8"), \
         "教练点评空态又把用户指到 WorkBuddy 了"
+
+    # ---- 看板页头：一个动作，一行放得下 ----
+    # 以前是两个胶囊并排（AI + 数据源），390 宽下组宽 402px，必折成第二行，
+    # 还会把整页撑出 14px 横向滚动。现在数据源退成说明文字、动作固定在右上。
+    _rep_src = (ROOT / "garmin_cn/report.py").read_text(encoding="utf-8")
+    _top_css = _rep_src.split(".top{", 1)[1].split("}", 1)[0]
+    assert "flex-wrap" not in _top_css, "看板页头又允许换行了，窄屏会分成两排"
+    assert 'class="top-act"' in _rep_src and 'class="top-main"' in _rep_src, \
+        "看板页头结构退了：动作与说明没有分开"
+    assert 'class="src"' in _rep_src, "数据源/同步时间没退成说明文字"
+
+    # ---- 教练点评：人工 > AI 缓存 > AI 生成中 > 未配置 ----
+    _note_block = _rep_src.split("note = store.note_for(day)", 1)
+    assert len(_note_block) == 2, "点评取的不是「当天的」，翻历史会看到别的日子的结论"
+    assert "aicoach.coach_note(day)" in _rep_src, "看板没接 AI 教练的自动点评"
+    assert "id=\"note-live\"" in _rep_src and "/ai/note" in _rep_src, \
+        "点评占位没有轮询脚本，配好模型也不会自己填上"
+    assert "打开 AI 教练" in _rep_src, "未配置模型时没有指到 AI 教练的入口"
+    assert 'action == "note"' in (ROOT / "garmin_cn/aiapi.py").read_text(encoding="utf-8"), \
+        "aiapi 没有 note 动作，页面轮询会 404"
+
+    from garmin_cn import aicoach as _AC
+
+    # 模型爱写「**教练点评：** 正文」，清洗后不能留着前缀和星号
+    assert _AC._clean_note("**教练点评：** 恢复度 78。\n") == "恢复度 78。", \
+        "点评清洗没去掉 markdown 前缀"
+    _old_cache = _AC.CACHE_DIR
+    _tmp_cache = Path(tempfile.mkdtemp())
+    _AC.CACHE_DIR = _tmp_cache
+    try:
+        _today = dt.date.today().isoformat()
+        assert _AC.cached_note(_today) is None, "缓存里没有却报「已生成」"
+        _fp = _AC._ctx_fingerprint(_AC._note_ctx(_today))
+        _AC._cache_write("note", _today, _fp,
+                         {"text": "测试点评", "model": "fake", "at": "01-01 09:00"})
+        _hit = _AC.cached_note(_today) or {}
+        assert _hit.get("text") == "测试点评" and _hit.get("ready") is True, \
+            "缓存写进去读不出来，看板会一直显示「正在写」"
+        # 上下文变了（同步到新活动）就不该再命中旧点评
+        assert _AC._cache_read("note", _today, _fp + "x") is None, "指纹失效机制坏了"
+    finally:
+        _AC.CACHE_DIR = _old_cache
+        import shutil as _sh
+
+        _sh.rmtree(_tmp_cache, ignore_errors=True)
+
+    # ---- 一图流也要能吃到同一段 AI 点评 ----
+    _card_src = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
+    assert "{ai_html}" in _card_src and ".sess .ai" in _card_src, \
+        "一图流没有 AI 点评位"
+    assert "aicoach.coach_note(d, wait=6)" in (ROOT / "garmin_cn/appapi.py").read_text(
+        encoding="utf-8"), "一图流出图时没去补 AI 点评（等太久或压根没调）"
     # 本地兜底课表必须自报家门，不能静默降级成佳明课表
     assert "本地推算" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
         "本地兜底课表没有标注，用户会以为那是手表里的计划"
