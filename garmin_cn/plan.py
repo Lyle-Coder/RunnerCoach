@@ -73,7 +73,7 @@ def normalize(detail: dict, today: str | None = None) -> dict:
             "detail": w.get("workoutDescription"),
             "sport": SPORT.get(((w.get("sportType") or {}).get("sportTypeKey")), None),
             "sport_key": (w.get("sportType") or {}).get("sportTypeKey"),
-            "minutes": round((w.get("estimatedDurationInSecs") or 0) / 60) or None,
+            "minutes": round(_as_seconds(_num(w.get("estimatedDurationInSecs"))) / 60) or None,
             "effect": EFFECT.get(w.get("trainingEffectLabel") or "", None),
             "rest": bool(w.get("restDay")),
             "status": w.get("adaptiveCoachingWorkoutStatus"),
@@ -147,10 +147,46 @@ _SKIP_TYPES = {"note", "goal", "badge", "event", "health",
                "weighin", "measurement"}
 
 
+MAX_SESSION_S = 24 * 3600          # 单次训练超过一天就不正常了（超马另算）
+
+
+def _as_seconds(raw: float, *, race: bool = False) -> float:
+    """把「耗时」统一成秒，并挡住单位错误。
+
+    Garmin 的字段单位并不统一：`estimatedDurationInSecs` 明确是秒，但日历项里的
+    `duration` 在部分端（网页端 / 新版本的「计划活动」）给的是**毫秒**。
+    旧代码一律按秒读，于是 1,072,560 毫秒 —— 一次 17 分 52 秒的骑行 ——
+    被显示成 **17876 分钟**（12 天）。这不是数据脏，是单位没判。
+
+    规则：≤ 上限就按秒；超了但除以 1000 落回合理区间，说明原来是毫秒；
+    两种读法都离谱就当没给（宁可显示「—」，也不要摆一个 12 天）。
+    比赛不受 24 小时限制（100 英里越野能跑 30 小时）。
+    """
+    if raw <= 0:
+        return 0.0
+    limit = 72 * 3600 if race else MAX_SESSION_S
+    if raw <= limit:
+        return raw
+    alt = raw / 1000.0
+    if 60 <= alt <= limit:
+        return alt
+    return 0.0
+
+
+def _dur_seconds(it: dict, *, race: bool = False) -> float:
+    """按可信度取耗时字段：带单位语义的优先，其余依次兜底。"""
+    for key in ("estimatedDurationInSecs", "duration", "elapsedDuration"):
+        raw = _num(it.get(key))
+        if raw > 0:
+            return _as_seconds(raw, race=race)
+    return 0.0
+
+
 def _cal_item(it: dict) -> dict:
     """把一个日历项折成课表行。字段名各地区略有差异，这里都兜一遍。"""
-    dur = _num(it.get("duration") or it.get("estimatedDurationInSecs")
-               or it.get("elapsedDuration"))
+    is_race = (bool(it.get("isRace"))
+               or str(it.get("itemType") or "").lower() == "race")
+    dur = _dur_seconds(it, race=is_race)
     dist = _num(it.get("distance") or it.get("estimatedDistanceInMeters"))
     sport_key = it.get("sportTypeKey") or (it.get("activityType") or {}).get("typeKey")
     return {
@@ -162,7 +198,7 @@ def _cal_item(it: dict) -> dict:
         "km": round(dist / 1000, 1) or None,
         "effect": EFFECT.get(it.get("trainingEffectLabel") or ""),
         "rest": False,
-        "race": bool(it.get("isRace")) or str(it.get("itemType") or "").lower() == "race",
+        "race": is_race,
         "workout_id": it.get("workoutId"),
         "status": None,
     }
@@ -317,10 +353,22 @@ def diag(client, today: str | None = None) -> dict:
                               if isinstance(it, dict)) if d)
     out["dates"] = [days[0], days[-1]] if days else []
     out["count"] = len(items)
-    out["samples"] = [
-        {k: it.get(k) for k in ("date", "itemType", "title", "duration",
-                                "distance", "workoutId", "sportTypeKey", "isRace")}
-        for it in items[:12] if isinstance(it, dict)]
+    # 样例里同时给「原始 duration」和「解析出来的分钟」：单位错了一眼能看出来
+    out["samples"] = []
+    for it in items[:12]:
+        if not isinstance(it, dict):
+            continue
+        item = _cal_item(it)
+        out["samples"].append({
+            "date": it.get("date"), "itemType": it.get("itemType"),
+            "title": it.get("title"), "sportTypeKey": it.get("sportTypeKey"),
+            "duration": it.get("duration"),
+            "estimatedDurationInSecs": it.get("estimatedDurationInSecs"),
+            "distance": it.get("distance"), "workoutId": it.get("workoutId"),
+            "isRace": it.get("isRace"),
+            "parsed_minutes": item.get("minutes"),
+            "parsed_km": item.get("km"),
+        })
     parsed = from_calendar(items, today)
     out["parsed"] = {
         "today": [i.get("name") for i in parsed["today"]["items"]],
@@ -417,6 +465,7 @@ def item_line(item: dict) -> str:
         bits.append(f"{item['minutes']} 分钟")
     if item.get("effect"):
         bits.append(item["effect"])
-    if item.get("sport") and item.get("sport") != "跑步":
-        bits.append(item["sport"])
+    _sp = str(item.get("sport") or "")
+    if _sp and _sp != "跑步" and _sp not in str(item.get("name") or ""):
+        bits.append(_sp)
     return " · ".join(bits)

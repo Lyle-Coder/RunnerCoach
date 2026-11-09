@@ -1102,7 +1102,7 @@ def cmd_plan(args) -> int:
             return 2
         from garmin_cn.plan import diag
 
-        print(_json.dumps(diag(client, today), ensure_ascii=False, indent=1))
+        print(json.dumps(diag(client, today), ensure_ascii=False, indent=1))
         return 0
     if args.cached:
         data = load(HOME / "data" / "plan.json")
@@ -3269,6 +3269,40 @@ def cmd_selftest(args) -> int:
         "回放没有无底图底板，没配高德 Key 的用户看到的是纯黑"
     assert 'os.environ.get("GARMIN_MAP", "1") == "0"' in _msrc, \
         "回放底图不认 GARMIN_MAP=0，demo 出图会去抓真实地图瓦片"
+
+    # ---- v60：训练计划的耗时单位 ------------------------------------------
+    # 日历里 `duration` 有的是秒、有的是毫秒。按秒读毫秒会把一次 18 分钟的
+    # 骑行显示成 17876 分钟（12 天）——用户看到的就是这个。
+    from garmin_cn import plan as _PL
+    assert _PL._as_seconds(3600) == 3600, "正常秒被改坏"
+    assert abs(_PL._as_seconds(1_072_560) - 1072.56) < 0.01, \
+        "毫秒当秒读：一次 18 分钟的骑行会显示成 17876 分钟"
+    assert _PL._as_seconds(108_000, race=True) == 108_000, \
+        "超马（30 小时）被误判成毫秒"
+    assert _PL._as_seconds(999_999_999_999) == 0, "离谱耗时没被挡住，会显示成天文数字"
+    _pl_mm = _PL._cal_item({"title": "骑行", "duration": 1_072_560, "workoutId": 1})
+    assert _pl_mm["minutes"] == 18, f"日历耗时解析错：{_pl_mm['minutes']} 分钟"
+    _pl_mm2 = _PL._cal_item({"title": "跑", "estimatedDurationInSecs": 3600,
+                             "duration": 999_999_999})
+    assert _pl_mm2["minutes"] == 60, "带单位语义的 estimatedDurationInSecs 没优先"
+    _pl_week = _PL.from_calendar(
+        [{"itemType": "workout", "date": dt.date.today().isoformat(),
+          "title": "骑行 恢复", "duration": 1_072_560, "workoutId": 1}])
+    assert _pl_week["today"]["items"][0]["minutes"] == 18, \
+        "整条链路（日历→今日课表）分钟数仍然不对"
+    # 课名里已经写了「骑行」，副标题就别再补一次运动类型；
+    # 名字里没有时才补，否则「力量 A」这类看不出是什么运动
+    _meta = U._plan_meta({"name": "骑行 恢复", "sport": "骑行", "minutes": 18})
+    assert "骑行" not in _meta and "18 分钟" in _meta, f"副标题重复了运动类型：{_meta}"
+    _meta2 = U._plan_meta({"name": "晚间放松", "sport": "骑行", "minutes": 18})
+    assert "骑行" in _meta2, "名字里没写运动类型时反而丢了"
+    # `plan --diag` 以前一跑就 NameError（`_json` 只在自检里 import 过），
+    # 而那正是排查计划问题的唯一入口，等于把诊断能力也一起弄丢了。
+    _cli_src = Path(__file__).read_text(encoding="utf-8")
+    _cmd_plan = _cli_src[_cli_src.find("def cmd_plan("):][:2600]
+    assert "json.dumps(diag(client, today)" in _cmd_plan, \
+        "plan --diag 没有正确输出诊断 JSON"
+    assert "_json" not in _cmd_plan, "plan --diag 里还在用未定义的 _json"
 
     # ---- 发布脚本：快照只保留最近 5 个 APK ---------------------------------
     _snap = Path(__file__).parent / "tools/snapshot.py"

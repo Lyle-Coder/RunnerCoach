@@ -567,8 +567,10 @@ def _plan_meta(item: dict) -> str:
         bits.append(f'{item["minutes"]} 分钟')
     if item.get("effect"):
         bits.append(str(item["effect"]))
-    if item.get("sport") and item.get("sport") != "跑步":
-        bits.append(str(item["sport"]))
+    # 名字里已经带了这个词（「骑行 恢复」+ 骑行）就别再补一遍，副标题会重复
+    _sp = str(item.get("sport") or "")
+    if _sp and _sp != "跑步" and _sp not in str(item.get("name") or ""):
+        bits.append(_sp)
     return " · ".join(bits) or "未标注强度"
 
 
