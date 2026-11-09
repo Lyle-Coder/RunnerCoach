@@ -610,15 +610,33 @@ def _refresh_live(store, date: str) -> None:
     快照；「此刻还剩多少」只存在于 bodyBattery 的日内序列里。CLI 出图前本来
     就会拉，App 侧以前没拉 —— 于是手机上一图流的身体电量永远是「未测量」。
     没登录 / 离线都静默跳过，退回库里上一次的值。
+
+    两次提前退出，都是为了别让出图白等一次网络往返（实测一次约 280ms）：
+    - **历史日期**：昨天以前的卡不存在「此刻」，库里已有曲线就直接用；
+    - **TTL 内**：刚刚拉过（连点两次导出最常见），连客户端都不建。
     """
+    from . import live as L
+
+    if date < dt.date.today().isoformat():
+        if L._load_series((store.day(date) or {}).get("bb_series")):
+            return
+
+    last = store.get_meta(f"bb_fetch:{date}")
+    if last:
+        try:
+            age = (dt.datetime.now()
+                   - dt.datetime.strptime(last, "%Y-%m-%d %H:%M:%S")).total_seconds()
+            if 0 <= age < L.TTL:
+                return
+        except ValueError:
+            pass
+
     client = None
     try:
         client = _client()
     except Exception:
         client = None
     try:
-        from . import live as L
-
         L.body_battery(store, date, client)
     except Exception:
         pass

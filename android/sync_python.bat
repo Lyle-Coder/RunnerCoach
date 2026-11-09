@@ -17,6 +17,10 @@ if errorlevel 1 (
 
 for /d /r "app\src\main\python" %%D in (__pycache__) do @if exist "%%D" rmdir /s /q "%%D"
 
+rem selftest runs on desktop only (run.bat selftest); the app never calls it.
+rem Shipping ~1900 assertion lines just wastes APK size.
+if exist "app\src\main\python\garmin_cn\selftest.py" del /q "app\src\main\python\garmin_cn\selftest.py"
+
 set N=0
 for /f %%F in ('dir /b /s "app\src\main\python\*.py" 2^>nul') do set /a N+=1
 echo   staged %N% .py files

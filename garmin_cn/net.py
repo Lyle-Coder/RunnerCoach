@@ -10,6 +10,8 @@ import urllib.request
 from http.cookiejar import Cookie, CookieJar
 from pathlib import Path
 
+from .tls import https_handler
+
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -94,7 +96,8 @@ class Net:
         self.jar = CookieJar()
         self.session_path = session_path
         self.opener = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(self.jar)
+            urllib.request.HTTPCookieProcessor(self.jar),
+            https_handler(),
         )
         self.min_interval = min_interval
         self._last = 0.0

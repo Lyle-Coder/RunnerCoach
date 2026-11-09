@@ -13,7 +13,7 @@ android {
         // 29 起 MediaStore 才有 RELATIVE_PATH，分享一图流不用再写一堆分支
         minSdk = 29
         targetSdk = 34
-        versionCode = 61
+        versionCode = 62
         versionName = "0.5.1-dev"
 
         // 只留 arm64：Python 3.12+ 就不再支持 32 位 ABI，
@@ -23,7 +23,13 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8：dex 从 2.2MB 压到约 1.1MB，启动时类加载也少一截。
+            // 规则见 proguard-rules.pro —— 网页桥是反射调用的，必须显式保留。
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android.txt"),
+                "proguard-rules.pro",
+            )
             // 朋友之间互传，用 debug 签名就够；要正经分发再换自己的 keystore
             signingConfig = signingConfigs.getByName("debug")
         }

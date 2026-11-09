@@ -199,16 +199,20 @@ run.bat coros sync --days 30
 - **手机端**用 [Chaquopy](https://chaquo.com/chaquopy/) 内嵌 CPython + WebView，
   出图不走无头浏览器而是离屏 WebView；[`garmin_cn/exportspec.py`](garmin_cn/exportspec.py)
   统一了桌面与手机 1080×1920 的画幅。
-- **可回归**：`selftest` 覆盖解析、指标、渲染、UI 结构，改完先跑它。
+- **可回归**：`selftest` 覆盖解析、指标、渲染、UI 结构，改完先跑它；
+  断言在 `garmin_cn/selftest.py`，入口只留薄包装（不进 APK）。
 
 目录结构（只列主干）：
 
 ```
 RunnerCoach/
-├─ cli.py                命令行入口
+├─ cli.py                命令行入口（命令实现，逻辑都在 garmin_cn/）
 ├─ garmin_cn/            接入 / 计算 / 产出 / 集成
-├─ android/              安卓 App（Kotlin + WebView）
-├─ tools/                开发期工具（含 README 截图脚本）
+│   ├─ selftest.py       离线自检（桌面端）
+│   ├─ housekeeping.py   缓存上限与磁盘清理
+│   └─ tls.py            共享 SSL context
+├─ android/              安卓 App（Kotlin + WebView，release 走 R8）
+├─ tools/                开发期工具（发版、截图、校验）
 ├─ docs/                 手册、字段清单、方案与截图
 ├─ data/ output/         本机数据与产物（不提交）
 ```
