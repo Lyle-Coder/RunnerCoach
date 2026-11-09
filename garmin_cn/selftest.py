@@ -2361,6 +2361,24 @@ def run() -> int:
     assert re.search(r"val swap = rot == 90 \|\| rot == 270\s*\n\s*val visW", _main), \
         "素材预览没有按显示旋转算外接框，和成片卡片对不上"
 
+    # rotate 必须穿过 photo.match。它会重建 item dict，不在 keep 白名单里的
+    # 字段一律丢 —— 漏掉 rotate 时，回放拿到的永远是 0，
+    # 表现就是「不管怎么旋转，插进成片都还是同一个方向」。
+    from garmin_cn import photo as _ph
+    _T0 = 1_700_000_000_000
+    _rt = {"t0": _T0, "n": 2, "t": [0.0, 20.0],
+           "lat": [34.0, 34.001], "lon": [108.0, 108.001], "d": [0.0, 150.0]}
+    _cl = [{"name": "x", "path": "C:/x.mp4", "t_utc": _T0 + 5000, "w": 1920,
+            "h": 1080, "dur": 6.0, "kind": "video",
+            "lat": 34.001, "lon": 108.001, "rotate": 90}]
+    _hit = _ph.match(_cl, _rt, t0_ms=_T0, cluster_m=0.0, clamp_ends=True,
+                     keep=("dur", "kind", "rotate"))
+    assert _hit["points"] and _hit["points"][0]["shots"][0].get("rotate") == 90, \
+        "rotate 在 photo.match 里被吃掉了，回放会按原始方向画"
+    assert 'keep=("dur", "codec", "bytes", "kind", "rotate")' in \
+        (ROOT / "garmin_cn/motion.py").read_text(encoding="utf-8"), \
+        "motion 调 match 时没把 rotate 放进 keep"
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):
