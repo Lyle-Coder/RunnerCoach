@@ -1077,9 +1077,10 @@ def files_page(root: Path) -> str:
                 href = "/view?date=" + d
             except ValueError:
                 pass
-        # 行本身是 <label>：点整行 = 勾选；右侧箭头单独是链接，点它才打开文件。
-        # 以前整行是 <a>，一碰就跳走，没法做多选。
-        rows += (f'<div class="row pick">'
+        # 默认是「普通列表」：点整行打开文件；点右上角「管理」才进选择态，
+        # 那时左侧才出现勾选框、点行变成勾选。一上来就给一堆方框，
+        # 想打开文件还得躲着它们点，是这套交互最别扭的地方。
+        rows += (f'<div class="row pick" data-href="{esc(href)}">'
                  f'<input type="checkbox" class="ck" value="{esc(p.name)}">'
                  f'<span class="ic b">▤</span>'
                  f'<span class="tx"><span class="t">{esc(title)}</span>'
@@ -1093,8 +1094,13 @@ def files_page(root: Path) -> str:
     # 不用 window.confirm —— WebView 没挂 WebChromeClient，confirm 点了没反应。
     picker = f"""
 <style>
-.row.pick{{cursor:default;gap:10px}}
-.row.pick .ck{{width:18px;height:18px;flex:0 0 auto;margin:0;accent-color:#3B82F6}}
+.row.pick{{cursor:pointer;gap:10px}}
+.row.pick .ck{{display:none;width:18px;height:18px;flex:0 0 auto;margin:0;
+  accent-color:#3B82F6}}
+/* 管理态：左侧让出勾选框，箭头变淡（仍可点开文件） */
+body.manage .row.pick{{cursor:default;background:rgba(59,130,246,.05)}}
+body.manage .row.pick .ck{{display:block}}
+body.manage .row.pick .go{{opacity:.35}}
 .row.pick .go{{text-decoration:none;font-size:20px;line-height:1;color:var(--muted);
   padding:0 4px;flex:0 0 auto}}
 .row.pick .go:active{{color:var(--brand-ink)}}
@@ -1103,6 +1109,7 @@ def files_page(root: Path) -> str:
   background:rgba(15,22,34,.97);border:1px solid var(--line);
   box-shadow:0 18px 40px -18px rgba(0,0,0,.92)}}
 .pickbar.on{{display:flex}}
+.manage-btn{{font-size:11.5px;padding:5px 12px;line-height:1.2}}
 .pickbar .n{{flex:1;font-size:12.5px;color:var(--ink2);min-width:0}}
 .btn.danger{{border-color:rgba(242,85,90,.45);color:#FF9AA0}}
 .btn.danger.armed{{background:rgba(242,85,90,.92);color:#1A0708;border-color:transparent;
@@ -1140,13 +1147,32 @@ body.has-pick{{padding-bottom:74px}}
     document.body.classList.toggle('has-pick', n > 0);
     if (!n) reset();
   }}
+  // 默认不是选择态：点整行打开文件。点右上角「管理」才进选择态。
+  var modeBtn = document.getElementById('pickmode');
+  var managing = false;
+  function setManage(on) {{
+    managing = on;
+    document.body.classList.toggle('manage', on);
+    if (modeBtn) modeBtn.textContent = on ? '完成' : '管理';
+    if (!on) {{
+      boxes.forEach(function(b) {{ b.checked = false; }});
+      sync();
+    }}
+  }}
+  if (modeBtn) modeBtn.addEventListener('click', function() {{ setManage(!managing); }});
+
   boxes.forEach(function(b) {{
-    b.addEventListener('change', sync);
-    // 整行点击 = 勾选；点右侧箭头是「打开文件」，不跟着勾。
+    b.addEventListener('change', function() {{ if (managing) sync(); }});
     var r = b.closest('.row');
     if (!r) return;
     r.addEventListener('click', function(e) {{
+      // 箭头任何时候都是「打开文件」；管理态下也不劫持它
       if (e.target.closest('a')) return;
+      if (!managing) {{
+        var href = r.getAttribute('data-href');
+        if (href) location.href = href;
+        return;
+      }}
       b.checked = !b.checked;
       sync();
     }});
@@ -1226,6 +1252,8 @@ body.has-pick{{padding-bottom:74px}}
   setInterval(tick, 2000);
 })();</script>
 """
+    manage_btn = ('<button class="btn manage-btn" id="pickmode" type="button">'
+                  '管理</button>' if files else "")
     return page("FILES · 产物", "本机产物文件", "看板、图片、视频都只存在这台设备上",
-                jobs + sec("最近生成", rows) + picker,
+                jobs + sec("最近生成", rows, manage_btn) + picker,
                 chip(f"{len(files)} 个"), back=("返回我的", "/me"))

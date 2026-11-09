@@ -2306,6 +2306,12 @@ def run() -> int:
     assert "pickbar" in _fp and "/__files/delete" in _fp, "产物页没有批量删除条"
     # 行必须是 div 不是 label：label 会把「点右侧箭头」也转发成勾选
     assert '<label class="row pick"' not in _fp, "行又变回 label，点箭头会误勾"
+    # 默认态是普通列表（点行打开），点右上角「管理」才展开勾选框
+    assert 'id="pickmode"' in _fp, "产物页没有「管理」入口"
+    assert "data-href=" in _fp, "行没带打开地址，退出管理态后点行打不开文件"
+    assert "body.manage .row.pick .ck" in _fp, "勾选框没按管理态显隐"
+    assert "setManage" in _fp and "location.href = href" in _fp, \
+        "管理态切换或「默认点行打开」的逻辑缺失"
     _srv_src = (ROOT / "garmin_cn/serve.py").read_text(encoding="utf-8")
     assert "def _files_delete" in _srv_src and '"/__files/delete"' in _srv_src, \
         "服务端没有删除接口"
