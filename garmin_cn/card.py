@@ -542,7 +542,7 @@ def build_html(res: dict, sync_at: str | None = None,
             + "</div>"
         )
 
-    # 体重 / 体成分：一图流固定一行四格。数值来自小米秤（body 表），缺项留「—」，
+    # 体重 / 体成分：一图流固定一行四格。数值来自 body 表的首选来源，缺项留「—」，
     # 不整块隐藏——每天都摆在那儿，才看得出「掉的是水还是脂肪」。
     bd = res.get("body") or {}
     body_row = ""
@@ -556,6 +556,8 @@ def build_html(res: dict, sync_at: str | None = None,
         stale = bd.get("stale_days")
         wsub = (f'7 天{_delta(bd.get("delta_w"))}' if bd.get("delta_w") is not None
                 else (f'{stale} 天前' if stale else "今天"))
+        if bd.get("source_label"):
+            wsub += " · " + html.escape(str(bd["source_label"]))
         fat_sub = (f'脂肪 {bd["fat_mass"]:.1f} kg' if bd.get("fat_mass") else "体脂率")
         mus_sub = (f'瘦体重 {bd["lean_mass"]:.1f} kg' if bd.get("lean_mass") else "肌肉量")
         wat_sub = (f'内脏 {bd["visceral"]} 级' if bd.get("visceral") is not None else "水分率")

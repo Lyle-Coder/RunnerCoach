@@ -222,7 +222,7 @@ def save(store, records: list[dict], source: str) -> int:
     return n
 
 
-def fill_daily(store, days: int = 365) -> int:
+def fill_daily(store, days: int | None = 365) -> int:
     """把体成分按日合并进 daily 表，让「每日」记录自己带上体重。
 
     为什么回写 daily 而不是让看板现算：教练上下文、MCP、活动的联合分析都只读
@@ -230,9 +230,10 @@ def fill_daily(store, days: int = 365) -> int:
     只覆盖这两张表都有的日期，不新增只称重、没有任何日汇总的空行。
     """
     ensure(store)
-    cur = store.conn.execute(
-        "SELECT date, weight_kg, body_fat_pct, muscle_kg, water_pct FROM daily "
-        "WHERE date >= date('now', ?) ", (f"-{int(days)} days",))
+    preferred = preferred_source(store)
+    query = "SELECT date FROM daily"
+    cur = (store.conn.execute(query) if days is None else store.conn.execute(
+        query + " WHERE date >= date('now', ?)", (f"-{int(days)} days",)))
     dates = [r["date"] for r in cur.fetchall()]
     if not dates:
         return 0
@@ -242,7 +243,7 @@ def fill_daily(store, days: int = 365) -> int:
             "SELECT * FROM body WHERE date = ?", (d,)).fetchall()
         if not rs:
             continue
-        rs = _prefer([dict(r) for r in rs])
+        rs = _prefer([dict(r) for r in rs], preferred)
         w = [r["weight_kg"] for r in rs if r.get("weight_kg")]
         fat = [r["body_fat_pct"] for r in rs if r.get("body_fat_pct")]
         mus = [r["muscle_kg"] for r in rs if r.get("muscle_kg")]
@@ -301,10 +302,44 @@ def rows(store, end: str | None = None, days: int = 60) -> list[dict]:
     return [dict(r) for r in cur.fetchall()]
 
 
-SRC_RANK = {"mi": 0, "ble": 0, "csv": 1, "garmin": 2}
+SRC_RANK = {"mi": 0, "ble": 1, "huawei": 2, "csv": 3, "garmin": 4}
+SOURCE_LABELS = {"mi": "小米", "huawei": "华为", "ble": "蓝牙秤",
+                 "csv": "文件导入", "garmin": "佳明"}
+_PREFERRED_SOURCE_KEY = "body.preferred_source"
 
 
-def _prefer(rs: list[dict]) -> list[dict]:
+def preferred_source(store) -> str:
+    return store.get_meta(_PREFERRED_SOURCE_KEY) or "auto"
+
+
+def source_settings(store) -> dict:
+    """只读取本地记录，不表示某个云服务已连接或已支持。"""
+    ensure(store)
+    available = [r[0] for r in store.conn.execute(
+        "SELECT DISTINCT source FROM body WHERE source IS NOT NULL ORDER BY source")]
+    return {"preferred": preferred_source(store), "available": available,
+            "labels": SOURCE_LABELS.copy()}
+
+
+def set_preferred_source(store, source: str) -> None:
+    available = source_settings(store)["available"]
+    if source != "auto" and source not in SOURCE_LABELS and source not in available:
+        raise ValueError("不认识的体重来源")
+    store.set_meta(_PREFERRED_SOURCE_KEY, source)
+    # 切换口径时重算全部已有日汇总，不留下旧年份的混合口径。
+    fill_daily(store, days=None)
+
+
+def selected_rows(store, end: str | None = None, days: int = 60) -> list[dict]:
+    """趋势、最新指标和 AI 共用：逐日只保留一个来源的所有称重。"""
+    grouped: dict[str, list[dict]] = {}
+    for r in rows(store, end, days):
+        grouped.setdefault(r["date"], []).append(r)
+    preferred = preferred_source(store)
+    return [r for group in grouped.values() for r in _prefer(group, preferred)]
+
+
+def _prefer(rs: list[dict], preferred: str = "auto") -> list[dict]:
     """同一天多来源时只认最可信的那一个。
 
     典型冲突：秤记了 65.15，同时佳明里有一笔手动录的 66.3（往往是隔天补记）。
@@ -312,8 +347,10 @@ def _prefer(rs: list[dict]) -> list[dict]:
     """
     if not rs:
         return rs
-    best = min(SRC_RANK.get(r.get("source"), 3) for r in rs)
-    return [r for r in rs if SRC_RANK.get(r.get("source"), 3) == best]
+    sources = {r.get("source") for r in rs}
+    best = preferred if preferred in sources else min(
+        sources, key=lambda s: (SRC_RANK.get(s, 99), str(s or "")))
+    return [r for r in rs if r.get("source") == best]
 
 
 def _daily(rows: list[dict]) -> list[tuple[str, float]]:
@@ -384,12 +421,15 @@ def _last(rs: list[dict], key: str):
 
 def stats(store, end: str | None = None, days: int = 28) -> dict:
     """体重趋势 + 体成分最新值 + 各指标变化。数据太少时判断留空，不硬编结论。"""
-    rs = rows(store, end, days + 14)
+    rs = selected_rows(store, end, days + 14)
     series = _daily(rs)
     fat_series = _daily_key(rs, "body_fat_pct")
     muscle_series = _daily_key(rs, "muscle_kg", 2)
     water_series = _daily_key(rs, "water_pct")
     out = {
+        "preferred_source": preferred_source(store),
+        "source": rs[-1].get("source") if rs else None,
+        "source_label": SOURCE_LABELS.get(rs[-1].get("source"), rs[-1].get("source")) if rs else None,
         "count": len(series),
         "span_days": (len(series) and (dt.date.fromisoformat(series[-1][0])
                                        - dt.date.fromisoformat(series[0][0])).days) or 0,

@@ -279,6 +279,7 @@ class MainActivity : Activity() {
                     "login:coros" -> askCorosLogin()
                     "login" -> showLoginPicker()
                     "mi" -> showMiPanel()
+                    "bodySource" -> showBodySourcePicker()
                     "planRefresh" -> refreshPlan()
                     "amap" -> showAmapDialog()
                     "clips" -> showClips()
@@ -1718,6 +1719,48 @@ class MainActivity : Activity() {
             }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    private fun showBodySourcePicker() {
+        thread {
+            val s = apiCall("body_sources")
+            ui {
+                if (!s.optBoolean("ok")) {
+                    toast("读取体重来源失败：${s.optString("error")}")
+                    return@ui
+                }
+                val ids = mutableListOf("auto")
+                val available = s.optJSONArray("available")
+                if (available != null) {
+                    for (i in 0 until available.length()) {
+                        val id = available.optString(i)
+                        if (id.isNotBlank() && id !in ids) ids.add(id)
+                    }
+                }
+                val preferred = s.optString("preferred", "auto")
+                if (preferred !in ids) ids.add(preferred)
+                val names = ids.map { id ->
+                    if (id == "auto") "自动（同日小米优先于华为）"
+                    else s.optJSONObject("labels")?.optString(id, id) ?: id
+                }.toTypedArray()
+                AlertDialog.Builder(this)
+                    .setTitle("首选体重来源")
+                    .setSingleChoiceItems(names, ids.indexOf(preferred)) { dialog, which ->
+                        dialog.dismiss()
+                        thread {
+                            val r = apiCall("body_set_source", ids[which])
+                            ui {
+                                if (r.optBoolean("ok")) {
+                                    toast("已更新体重来源；无记录的日期自动使用其他来源")
+                                    web.reload()
+                                } else toast("设置失败：${r.optString("error")}")
+                            }
+                        }
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
+        }
     }
 
     private fun showMiPanel() {

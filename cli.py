@@ -361,7 +361,8 @@ def _refresh_live(store, date: str) -> None:
     sc = live.scale(store, HOME)
     if sc.get("live") and sc.get("latest"):
         w = f"{sc['weight']:.2f} kg" if sc.get("weight") else ""
-        print(f"· 体重已刷新：{w}（{sc['latest']}）")
+        name = {"huawei": "华为", "mi": "小米"}.get(str(sc.get("source") or ""), "")
+        print(f"· 体重已刷新：{w}（{sc['latest']}{(' · ' + name) if name else ''}）")
 
 
 def _build_report(date: str | None, out: Path) -> Path:
@@ -1478,6 +1479,14 @@ def cmd_body(args) -> int:
     store = Store(DB)
     B.ensure(store)
 
+    if getattr(args, "prefer_source", None):
+        try:
+            B.set_preferred_source(store, args.prefer_source)
+        except ValueError as e:
+            print(f"× {e}")
+            return 2
+        print(f"√ 首选体重来源：{B.SOURCE_LABELS.get(args.prefer_source, args.prefer_source)}")
+
     if getattr(args, "import_file", None):
         p = Path(args.import_file)
         if not p.exists():
@@ -2360,6 +2369,8 @@ def main() -> int:
     q.add_argument("--garmin", action="store_true", help="从佳明拉取 weigh-in")
     q.add_argument("--mi", action="store_true", help="从小米健康云拉体脂秤数据")
     q.add_argument("--mi-days", type=int, default=120, help="往小米云端回溯多少天，默认 120")
+    q.add_argument("--prefer-source", metavar="来源",
+                   help="保存首选体重来源：auto/mi/huawei/ble/csv/garmin 或已有来源；不执行云端登录")
     q.add_argument("--huawei", action="store_true", help="从华为运动健康拉体重（需先跑 hw probe）")
     q.add_argument("--huawei-days", type=int, default=0,
                    help="往华为云端回溯多少天，0=全量（默认）")

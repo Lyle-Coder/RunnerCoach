@@ -146,6 +146,7 @@ _API = {
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
     "hw_status", "hw_import", "hw_login", "hw_probe", "hw_sync", "hw_logout",
+    "body_sources", "body_set_source",
     "coros_status", "coros_login", "coros_logout", "coros_sync",
 }
 
@@ -331,6 +332,27 @@ _MI: dict = {"cloud": None, "lock": threading.Lock()}
 def _mask_uid(uid: str) -> str:
     s = str(uid or "")
     return (s[:3] + "****" + s[-2:]) if len(s) > 7 else (s or "未知")
+
+
+def body_sources() -> dict:
+    from . import body as B
+    store = Store(DB)
+    try:
+        return {"ok": True, **B.source_settings(store)}
+    finally:
+        store.conn.close()
+
+
+def body_set_source(source: str) -> dict:
+    from . import body as B
+    store = Store(DB)
+    try:
+        B.set_preferred_source(store, source)
+        return {"ok": True, **B.source_settings(store)}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        store.conn.close()
 
 
 def mi_status() -> dict:

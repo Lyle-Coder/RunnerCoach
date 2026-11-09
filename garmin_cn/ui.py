@@ -935,13 +935,18 @@ def me_page() -> str:
     g = "已登录" if st.get("logged_in") else "未登录"
     c_ok = "已登录" if c.get("logged_in") else "未连接"
     m_ok = "已登录" if m.get("logged_in") else "未连接"
+    bs = A.body_sources()
+    pref = bs.get("preferred", "auto")
+    pref_label = "自动" if pref == "auto" else bs.get("labels", {}).get(pref, pref)
     chips = (chip("本机数据", "ok") + chip(f"v{VER}") + chip("零第三方依赖"))
 
     # 每个数据源一行、点了直接进对应登录，不再先弹「选哪个账号」的二级选择器
     sources = (row("G", "佳明 Garmin", f"{g} · {esc(st.get('email') or '未设置账号')}",
                    act="login:garmin") +
                row("C", "高驰 COROS", f"{c_ok} · 可独立同步活动", act="login:coros", tone="b") +
-               row("W", "小米体重", f"{m_ok} · 体脂秤数据", act="mi", tone="a"))
+               row("W", "小米体重", f"{m_ok} · 体脂秤数据", act="mi", tone="a") +
+               row("W", "体重来源偏好", f"{esc(pref_label)} · 同日只使用一个来源",
+                   act="bodySource", tone="a"))
 
     # AI 设置只在教练页齿轮里改；这里只读展示，避免同一抽屉出现第二个入口
     try:
