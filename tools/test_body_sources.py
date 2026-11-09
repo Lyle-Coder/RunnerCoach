@@ -44,7 +44,7 @@ class BodySourcesTest(unittest.TestCase):
         self.assertEqual((s["latest"], s["body_fat"]), (65, 18))
         self.assertEqual(s["fat_series"], [(self.today, 18)])
         self.assertEqual(self.store.day(self.today)["body_fat_pct"], 18)
-        B.set_preferred_source(self.store, "auto")
+        B.set_preferred_source(self.store, "mi")
         self.assertEqual(B.stats(self.store)["latest"], 70)
 
     def test_no_fat_from_rejected_same_day_source(self):
@@ -85,10 +85,31 @@ class BodySourcesTest(unittest.TestCase):
 
     def test_unknown_source_and_invalid_preference(self):
         self.add("custom-scale", 65)
-        B.set_preferred_source(self.store, "custom-scale")
-        with self.assertRaises(ValueError):
-            B.set_preferred_source(self.store, "typo")
-        self.assertEqual(B.preferred_source(self.store), "custom-scale")
+        for source in ("auto", "ble", "csv", "garmin", "custom-scale", "typo"):
+            with self.assertRaises(ValueError):
+                B.set_preferred_source(self.store, source)
+        self.assertEqual(B.preferred_source(self.store), "mi")
+
+    def test_choices_and_legacy_preference(self):
+        self.add("custom-scale", 65)
+        for old in ("auto", "ble", "csv", "garmin", ""):
+            self.store.set_meta("body.preferred_source", old)
+            settings = B.source_settings(self.store)
+            self.assertEqual(settings["choices"], ["mi", "huawei"])
+            self.assertEqual(settings["preferred"], "mi")
+
+    def test_sync_routes_to_selected_cloud(self):
+        from garmin_cn import mi, huawei, live
+        for source, cloud, other in (("mi", mi, huawei), ("huawei", huawei, mi)):
+            B.set_preferred_source(self.store, source)
+            with patch.object(cloud, "sync", return_value=(0, [])) as selected, \
+                 patch.object(other, "sync") as rejected:
+                B.sync_preferred(self.store, Path(self.temp.name), days=30)
+                selected.assert_called_once_with(self.store, Path(self.temp.name), days=30)
+                self.assertTrue(live.scale(self.store, Path(self.temp.name))["live"])
+                self.assertFalse(live.scale(self.store, Path(self.temp.name))["live"])
+                self.assertEqual(selected.call_count, 2)
+                rejected.assert_not_called()
 
     def test_existing_source_order_and_no_same_rank_mixing(self):
         self.add("garmin", 80)
@@ -96,6 +117,26 @@ class BodySourcesTest(unittest.TestCase):
         self.add("ble", 71)
         self.add("mi", 70)
         self.assertEqual(B.stats(self.store)["latest"], 70)
+
+    def test_app_refresh_syncs_huawei_and_tolerates_cloud_failure(self):
+        from garmin_cn import appapi, huawei, mi
+        B.set_preferred_source(self.store, "huawei")
+        result = {"range": [self.today, self.today], "days": 1,
+                  "activities": 0, "errors": []}
+        with patch.object(appapi, "Store", return_value=self.store), \
+             patch.object(appapi, "_client"), \
+             patch("garmin_cn.sync.SyncService.sync", return_value=result), \
+             patch.object(huawei, "sync", return_value=(1, [{"date": self.today}])) as hw, \
+             patch.object(mi, "sync") as rejected:
+            response = appapi.sync(days=3)
+            self.assertTrue(response["ok"])
+            self.assertEqual(response["body"]["count"], 1)
+            self.assertEqual(hw.call_args.kwargs["days"], 7)
+            rejected.assert_not_called()
+            hw.side_effect = huawei.HwAuthError("expired")
+            response = appapi.sync(days=3)
+            self.assertTrue(response["ok"])
+            self.assertIn("expired", response["body"]["error"])
 
     def test_empty_save_preserves_existing_data(self):
         self.add("huawei", 65)

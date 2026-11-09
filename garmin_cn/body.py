@@ -309,30 +309,37 @@ _PREFERRED_SOURCE_KEY = "body.preferred_source"
 
 
 def preferred_source(store) -> str:
-    return store.get_meta(_PREFERRED_SOURCE_KEY) or "auto"
+    source = store.get_meta(_PREFERRED_SOURCE_KEY)
+    return source if source in ("mi", "huawei") else "mi"
+
+
+def sync_preferred(store, home, days: int = 30):
+    """所有自动同步入口共用用户选择的体重云服务。"""
+    if preferred_source(store) == "huawei":
+        from . import huawei as cloud
+    else:
+        from . import mi as cloud
+    return cloud.sync(store, home, days=days)
 
 
 def source_settings(store) -> dict:
     """只读取本地记录，不表示某个云服务已连接或已支持。
 
     `available` 是库里实际有数据的来源；`choices` 是偏好弹窗该展示的
-    全量候选——没数据的来源也要能预设，否则用户永远等不到「能切换」的那天
+    小米和华为候选——没数据的来源也要能预设，否则用户永远等不到「能切换」的那天
     （典型：先选华为，再在电脑上导入会话，数据到账自动生效）。
     """
     ensure(store)
     available = [r[0] for r in store.conn.execute(
         "SELECT DISTINCT source FROM body WHERE source IS NOT NULL ORDER BY source")]
-    ranked = sorted(set(SOURCE_LABELS) | set(available),
-                    key=lambda s: (SRC_RANK.get(s, 99), str(s)))
     return {"preferred": preferred_source(store), "available": available,
-            "choices": ["auto"] + ranked,
+            "choices": ["mi", "huawei"],
             "labels": SOURCE_LABELS.copy()}
 
 
 def set_preferred_source(store, source: str) -> None:
-    available = source_settings(store)["available"]
-    if source != "auto" and source not in SOURCE_LABELS and source not in available:
-        raise ValueError("不认识的体重来源")
+    if source not in ("mi", "huawei"):
+        raise ValueError("首选体重来源仅支持小米或华为")
     store.set_meta(_PREFERRED_SOURCE_KEY, source)
     # 切换口径时重算全部已有日汇总，不留下旧年份的混合口径。
     fill_daily(store, days=None)

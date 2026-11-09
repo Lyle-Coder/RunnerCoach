@@ -32,6 +32,11 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- 常量
 APP_ID = "10414141"                     # 运动健康自己的华为 OAuth App ID
+AUTHORIZE_URL = "https://oauth-login.cloud.huawei.com/oauth2/v3/authorize"
+# 运动健康 ThirdPartyLoginManager.thirdPartyPhoneLogin 的 HMS Lite 回调。
+# authorize 接受 redirect_uri 不代表 obtain 能兑换该回调签发的 code。
+LOGIN_REDIRECT = "hms://redirect_url"
+LOGIN_SCOPES = ("openid", "https://www.huawei.com/auth/account/base.profile")
 APP_PKG = "com.huawei.health"
 APP_VER = "and_health_17.0.8.300"
 UA = (f"com.huawei.health/17.0.8.300 (Linux; Android 12; 2211133C) "
@@ -64,6 +69,41 @@ class HwError(RuntimeError):
 
 class HwAuthError(HwError):
     """会话相关：没登录、过期且续不上、被拒。"""
+
+
+def login_url(state: str) -> str:
+    """在华为自己的页面完成账号密码、短信和风控验证。"""
+    import secrets
+
+    return AUTHORIZE_URL + "?" + urllib.parse.urlencode({
+        "client_id": APP_ID, "response_type": "code",
+        "redirect_uri": LOGIN_REDIRECT, "scope": " ".join(LOGIN_SCOPES),
+        "access_type": "offline", "display": "touch", "ui_locales": "zh-cn",
+        "state": state, "nonce": secrets.token_urlsafe(24),
+        "include_granted_scopes": "true",
+    })
+
+
+def login_code(callback: str, expected_state: str) -> str:
+    """只接受当前登录窗口的回调，不把授权码或完整 URL 放进错误信息。"""
+    import hmac
+
+    url = urllib.parse.urlsplit(callback)
+    target = urllib.parse.urlsplit(LOGIN_REDIRECT)
+    if ((url.scheme, url.netloc) != (target.scheme, target.netloc)
+            or url.path not in ("", "/") or url.fragment):
+        raise HwAuthError("登录回调地址不正确，请重新登录")
+    query = urllib.parse.parse_qs(url.query, keep_blank_values=True)
+    state = query.get("state", [])
+    if (not expected_state or len(state) != 1 or
+            not hmac.compare_digest(state[0].encode(), expected_state.encode())):
+        raise HwAuthError("登录校验失效，请重新登录")
+    if "error" in query:
+        raise HwAuthError("华为登录未完成或已取消授权，请重新登录")
+    code = query.get("code", [])
+    if len(code) != 1 or not code[0].strip():
+        raise HwAuthError("华为未返回授权码，请重新登录")
+    return code[0]
 
 
 def _now_ms() -> int:
@@ -185,9 +225,20 @@ class HuaweiCloud:
                             headers={"x-ts": str(_now_ms())})
         self.diag = json.dumps(res, ensure_ascii=False)[:300]
         if res.get("resultCode") != 0 or not res.get("accessToken"):
-            raise HwAuthError(f"授权码换 token 失败（HTTP {status}）：{self.diag}")
+            if str(res.get("resultCode")) == "20020001":
+                raise HwAuthError(
+                    "华为健康接口拒绝了本次授权码（20020001：invalid code）。"
+                    "这不是密码错误提示；可能涉及授权参数不匹配、授权码过期或已使用。"
+                    "请从本应用重新发起登录；若仍出现，请反馈此错误码。")
+            raise HwAuthError(f"华为健康授权失败（HTTP {status}，错误码 {res.get('resultCode')}），请重新登录")
         self._take(res)
         return res
+
+    def login(self, authorization_code: str) -> None:
+        self.obtain(authorization_code)
+        if not self.uid or not self.access_token:
+            raise HwAuthError("华为未返回完整健康会话，请重新登录")
+        self.save(note="account-login")
 
     def refresh(self) -> bool:
         """用 refreshToken 续期。实测服务端不轮换 refreshToken，可与 App 共存。"""
@@ -202,6 +253,7 @@ class HuaweiCloud:
         if res.get("resultCode") != 0 or not res.get("accessToken"):
             raise HwAuthError(f"续期失败（HTTP {status}）：{self.diag}")
         self._take(res)
+        self.save(note="refresh")
         return True
 
     def _take(self, res: dict) -> None:

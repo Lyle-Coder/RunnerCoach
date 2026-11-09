@@ -33,13 +33,13 @@ TOOLS = [
     },
     {
         "name": "garmin_sync",
-        "description": "从 Garmin Connect 国区同步最近 N 天的健康与活动数据到本地库，并顺手拉一次小米秤的体重/体成分。返回同步范围、活动条数、体重条数与异常。",
+        "description": "从 Garmin Connect 国区同步最近 N 天的健康与活动数据到本地库，并顺手拉一次首选体重秤（小米或华为）的体重/体成分。返回同步范围、活动条数、体重条数与异常。",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "days": {"type": "integer", "description": "同步最近多少天，默认 14", "default": 14},
                 "extras": {"type": "boolean", "description": "是否额外拉取压力/身体电量明细（更慢）", "default": False},
-                "body": {"type": "boolean", "description": "是否同时同步体重/体成分（小米秤），默认 true", "default": True},
+                "body": {"type": "boolean", "description": "是否同时同步体重/体成分（首选体重秤（小米或华为）），默认 true", "default": True},
                 "body_days": {"type": "integer", "description": "体重回看天数，默认 30", "default": 30},
             },
             "additionalProperties": False,
@@ -230,9 +230,9 @@ def tool_sync(args) -> str:
     # 体重 / 体成分：秤的数据不在佳明云里，顺手带一次；失败只记一句，不影响已同步的数据
     if args.get("body", True):
         try:
-            from garmin_cn import mi as mi_mod
+            from garmin_cn import body as body_mod
 
-            n, recs = mi_mod.sync(svc.store, HOME, days=int(args.get("body_days", 30)))
+            n, recs = body_mod.sync_preferred(svc.store, HOME, days=int(args.get("body_days", 30)))
             out.append(f"体重/体成分 {n} 条（最新 {recs[-1]['date']}）" if n
                        else "体重：云端这段时间没有新记录")
         except Exception as e:
@@ -332,7 +332,7 @@ def tool_card(args) -> str:
     store = _store()
     if store.stats()["days"] == 0:
         return "库里还没有数据，先调用 garmin_sync 同步。"
-    # 出图前刷新「会随时间变」的两项：身体电量（佳明日内序列）、体重（小米秤）
+    # 出图前刷新「会随时间变」的两项：身体电量（佳明日内序列）、体重（首选体重秤（小米或华为））
     try:
         from garmin_cn import live as livemod
 
