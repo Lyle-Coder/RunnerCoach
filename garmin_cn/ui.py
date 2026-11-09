@@ -928,6 +928,10 @@ def me_page() -> str:
     except Exception:
         m = {}
     try:
+        h = A.hw_status()
+    except Exception:
+        h = {}
+    try:
         from . import __version__ as VER
     except Exception:
         VER = "—"
@@ -935,6 +939,7 @@ def me_page() -> str:
     g = "已登录" if st.get("logged_in") else "未登录"
     c_ok = "已登录" if c.get("logged_in") else "未连接"
     m_ok = "已登录" if m.get("logged_in") else "未连接"
+    h_ok = "已导入" if h.get("logged_in") else "未导入"
     bs = A.body_sources()
     pref = bs.get("preferred", "auto")
     pref_label = "自动" if pref == "auto" else bs.get("labels", {}).get(pref, pref)
@@ -945,6 +950,7 @@ def me_page() -> str:
                    act="login:garmin") +
                row("C", "高驰 COROS", f"{c_ok} · 可独立同步活动", act="login:coros", tone="b") +
                row("W", "小米体重", f"{m_ok} · 体脂秤数据", act="mi", tone="a") +
+               row("H", "华为体重", f"{h_ok} · 运动健康体成分", act="hw", tone="b") +
                row("W", "体重来源偏好", f"{esc(pref_label)} · 同日只使用一个来源",
                    act="bodySource", tone="a"))
 
