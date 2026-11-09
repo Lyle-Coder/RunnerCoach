@@ -193,11 +193,16 @@ class MainActivity : Activity() {
         // 同步不再有按钮：页面到顶后继续下拉就是「同步 + 重出看板」
         pull.onRefresh = { onSync() }
 
-        bar = ProgressBar(this, null, android.R.attr.progressBarStyleLarge)
-        pull.addView(
-            bar,
-            FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER),
-        )
+        // 顶栏下面一条 2dp 的进度线，不再用居中大圆圈盖住内容 ——
+        // 出视频要跑几分钟，中间那圈转着，页面看得见却点不动，像卡死了。
+        // 有真实进度就 determinate（busy(true, pct)），没有就跑马灯。
+        bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            isIndeterminate = true
+            progressTintList = android.content.res.ColorStateList.valueOf(0xFF3B82F6.toInt())
+            backgroundTintList = android.content.res.ColorStateList.valueOf(0x1A60A5FA)
+        }
+        shell.addView(bar, LinearLayout.LayoutParams(MATCH_PARENT, dp(2)))
         bar.visibility = View.GONE
 
         shell.addView(pull, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
@@ -2041,12 +2046,17 @@ class MainActivity : Activity() {
                 val days = c?.optInt("daily", 0) ?: 0
                 val acts = c?.optInt("activities", 0) ?: 0
                 val mb = String.format(Locale.US, "%.1f", src.length() / 1048576.0)
+                // 「没带什么」由 Python 侧给，避免两边各写一份、改一处漏一处
+                val excl = r.optJSONArray("excluded")?.let { a ->
+                    (0 until a.length()).joinToString("\n") { "· " + a.optString(it) }
+                } ?: ""
                 AlertDialog.Builder(this)
                     .setTitle("已导出")
                     .setMessage(
                         "$days 天日汇总 / $acts 条活动，共 $mb MB。\n\n" +
                             "已存到「下载/RunnerCoach/$name」，也可以直接分享出去。\n\n" +
-                            "包里不含账号密码、会话与照片原文件。"
+                            (if (excl.isEmpty()) "" else
+                                "为了安全，包里不含：\n$excl\n\n换机后重新登录 / 重填即可。")
                     )
                     .setPositiveButton("分享") { _, _ -> shareZip(uri) }
                     .setNegativeButton("知道了", null)
@@ -2208,10 +2218,12 @@ class MainActivity : Activity() {
                 "这张活动图含你的 GPS 轨迹，起终点可能暴露住址或常跑路线。\n" +
                     "选好档位后才会生成图片并分享；原图会先存进相册。\n" +
                     "配过地图 Key 时，「原图」和「裁剪」会铺地图底图（裁剪档只用中间段取景），" +
-                    "「隐藏轨迹」不显示地图。"
+                    "「隐藏轨迹」不显示地图。\n\n" +
+                    "回放视频在后台生成（通常一两分钟），可以先切到别的页面，"
+                    + "进度看「我的 → 产物文件」。"
             )
             .setSingleChoiceItems(PRIVACY_LABELS, checked) { _, which -> checked = which }
-            .setNeutralButton("回放视频") { _, _ ->
+            .setNeutralButton("回放视频（后台）") { _, _ ->
                 val mode = PRIVACY_MODES[checked]
                 prefs.edit().putString("share_privacy", mode).apply()
                 exportMotion(id, mode, 30)
@@ -2384,7 +2396,15 @@ class MainActivity : Activity() {
                     v
                 }
             }
-            if (show >= 0) ui { subtitle.text = "生成回放 $show%" }
+            if (show >= 0) {
+                ui {
+                    subtitle.text = "生成回放 $show%"
+                    busy(true, show)   // 顶部细线跟着真实进度走
+                }
+                // 同时落一份到磁盘：「我的 → 产物文件」靠它显示进度条，
+                // 用户切走、锁屏回来也还能看到「还在生成」。
+                writeJob(run, title, show, "生成回放")
+            }
         }
         fun detach() {
             if (!detached.compareAndSet(false, true)) return
@@ -2457,6 +2477,7 @@ class MainActivity : Activity() {
                 cancel.set(true)
                 apiCall("motion_cleanup", run)
                 detach()
+                clearJob(run)
                 ui { busy(false); updateSubtitle(); toast(msg) }
                 break
             }
@@ -2474,8 +2495,45 @@ class MainActivity : Activity() {
             encoded.set(true)
             if (ok) report(100)   // 只有成功才强制到 100%，超时后别显示满格
             detach()
-            // 统一收尾：不管成功、失败、诊断取消还是超时，进度圈都得关掉
-            ui { busy(false); updateSubtitle() }
+            clearJob(run)
+            // 统一收尾：成功、失败、诊断取消还是超时，都得把进度线收掉
+            ui {
+                busy(false)
+                updateSubtitle()
+                // 生成完成的提示由 encodeMotion 给（带耗时与编码方式）；
+                // 这里只负责一件事：人在产物页时把列表刷出来。
+                if (ok && web.url?.contains("/files") == true) reload()
+            }
+        }
+    }
+
+    /**
+     * 把回放生成进度写到 `output/_progress/<run>.json`。
+     *
+     * 为什么落盘而不是只在内存：生成要跑几分钟，用户会切 tab、锁屏、去翻别的页面。
+     * 「我的 → 产物文件」每 2 秒拉一次 `/__progress`，读的就是这些文件，
+     * 所以切走再回来仍然能看到「还在生成 42%」。
+     */
+    private fun writeJob(run: String, name: String, pct: Int, stage: String) {
+        try {
+            val d = File(filesDir, "output/_progress").apply { mkdirs() }
+            val obj = JSONObject()
+                .put("run", run)
+                .put("name", name)
+                .put("pct", pct)
+                .put("stage", stage)
+                .put("at", System.currentTimeMillis())
+            File(d, "$run.json").writeText(obj.toString(), Charsets.UTF_8)
+        } catch (t: Throwable) {
+            Log.w(TAG, "write job progress failed", t)
+        }
+    }
+
+    private fun clearJob(run: String) {
+        try {
+            File(File(filesDir, "output/_progress"), "$run.json").delete()
+        } catch (t: Throwable) {
+            Log.w(TAG, "clear job progress failed", t)
         }
     }
 
@@ -2569,8 +2627,10 @@ class MainActivity : Activity() {
             }
             val tail = if (r.audioSegments > 0)
                 "（含 ${r.audioSegments} 段素材原声）" else ""
-            toast("回放已存相册/GarminCoach · ${seconds}s · ${r.via} 编码$tail")
-            shareVideo(uri, "分享回放：$title")
+            toast("回放已存相册 · ${seconds}s · ${r.via} 编码$tail")
+            // 不再自动弹分享面板：生成已经改成后台任务，这几分钟里用户很可能
+            // 切到了别的页面，突然盖一层分享面板等于打断。要分享去相册，
+            // 或到「我的 → 产物文件」找到这个 mp4。
         }
         return r.ok && !cancel.get()     // 只有真的成了才把进度推到 100%
     }
@@ -2935,8 +2995,25 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------ 小工具
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    private fun busy(on: Boolean) {
-        bar.visibility = if (on) View.VISIBLE else View.GONE
+    /**
+     * 顶部进度线。`pct` 给了就走确定进度，没给就是跑马灯。
+     *
+     * 以前是居中大圆圈：出回放要几分钟，页面被盖住、点不动，看着像死机。
+     * 现在它只占 2dp，用户该干嘛干嘛，进度靠「产物」页和标题栏看。
+     */
+    private fun busy(on: Boolean, pct: Int = -1) {
+        if (!on) {
+            bar.visibility = View.GONE
+            bar.isIndeterminate = true
+            return
+        }
+        bar.visibility = View.VISIBLE
+        if (pct in 0..100) {
+            bar.isIndeterminate = false
+            bar.progress = pct
+        } else {
+            bar.isIndeterminate = true
+        }
     }
 
     private fun toast(msg: String) {

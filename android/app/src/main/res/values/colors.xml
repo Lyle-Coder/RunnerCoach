@@ -1,4 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- 色板与 garmin_cn/ui.py 的 :root 一一对应。
+         原生侧改色只改这里，别在 Kotlin 里再写一遍十六进制。 -->
+    <color name="bg">#070B12</color>
+    <color name="surface">#0F1622</color>
+    <color name="surface2">#131C2B</color>
+    <!-- 16% 透明度的科技蓝，用作 1dp 描边/分隔 -->
+    <color name="line">#2960A5FA</color>
+    <color name="ink">#E8F0FB</color>
+    <color name="ink2">#B7C7DD</color>
+    <color name="muted">#7C8FA8</color>
+    <color name="brand">#3B82F6</color>
+    <color name="brand_ink">#8CC2FF</color>
+
     <color name="ic_launcher_bg">#0F1B2A</color>
 </resources>

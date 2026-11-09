@@ -716,8 +716,10 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     if note:
         note_html = f'<div class="note">{esc(note["text"])}</div><div class="note-meta">由 {esc(note["source"])} 生成 · {esc(note["created_at"])}</div>'
     else:
+        # 以前这里写着「在外部助手里说…」——那是作者自己的用法，
+        # 对装着 App 的人等于指了一条不存在的路。空态只说事实。
         note_html = ('<div class="placeholder"><b>还没有教练点评</b>'
-                     '<span>在 WorkBuddy 里说「写今天的教练点评」，我会读完上面的指标，把结论写回这里。</span></div>')
+                     '<span>这块只是一句附加总结，不影响上面的指标与今日处方。</span></div>')
 
     rows = []
     for a in res["activities"][:10]:
