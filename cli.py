@@ -478,7 +478,7 @@ def auto_cards(store, client, days: int = 7) -> list[Path]:
         if out.exists():
             continue
         try:
-            detail = act.ensure(store, client, row["activity_id"])
+            detail = _detail_ensure(store, client, row)
             render_act(row, detail, out)
             shutil.copyfile(out, OUT / "act.png")
             made.append(out)
@@ -498,8 +498,7 @@ def cmd_act(args) -> int:
         print(f"× 库里没有找到活动（{hint}），先运行：run.bat sync --days 7")
         return 2
     try:
-        client = get_client(require=True)
-        detail = act.ensure(store, client, row["activity_id"], force=args.force)
+        detail = _detail_ensure(store, None, row, force=args.force)
     except Exception as e:
         print(f"× 抓取明细失败：{type(e).__name__}: {e}")
         return 3
@@ -656,8 +655,8 @@ def cmd_motion(args) -> int:
         if detail and not has_route:
             print("· 这条活动的明细是旧格式（没有轨迹时间轴），重抓一次…")
         try:
-            client = get_client(require=True)
-            detail = act.ensure(store, client, aid, force=True)
+            client = get_client(require=False)
+            detail = _detail_ensure(store, client, row, force=True)
         except Exception as e:
             print(f"× 抓取明细失败：{type(e).__name__}: {e}")
             return 3
@@ -954,7 +953,7 @@ def cmd_backfill(args) -> int:
     ok = fail = 0
     for i, r in enumerate(rows, 1):
         try:
-            act.ensure(store, client, r["activity_id"], force=args.force)
+            _detail_ensure(store, client, r, force=args.force)
             ok += 1
             print(f"  [{i}/{len(rows)}] √ {r['date']} {r['name']}")
         except Exception as e:
@@ -1175,10 +1174,23 @@ def _pick_activities(store, args) -> list[dict]:
     return rows[:max(1, getattr(args, "last", 1) or 1)]
 
 
-def _detail_of(store, client, row: dict) -> dict:
-    from garmin_cn import activity as act
+def _detail_ensure(store, client, row: dict, force: bool = False) -> dict:
+    """按活动来源抓明细：高驰走 coros_activity，佳明走 activity。
 
-    return act.ensure(store, client, row["activity_id"])
+    高驰明细不需要佳明登录，所以 client 允许为 None（用到时再懒加载），
+    否则只有高驰账号的用户在 CLI 里永远拿不到图。
+    """
+    from garmin_cn import activity as act
+    from garmin_cn import coros_activity as CA
+
+    if CA.source(row) == "coros":
+        return CA.ensure(store, HOME, row, force=force)
+    return act.ensure(store, client or get_client(require=True),
+                      row["activity_id"], force=force)
+
+
+def _detail_of(store, client, row: dict) -> dict:
+    return _detail_ensure(store, client, row)
 
 
 def _card_of(row: dict, detail: dict) -> Path:
@@ -1703,7 +1715,7 @@ def cmd_watch(args) -> int:
         try:
             if client is None:
                 client = get_client(require=True)
-            detail = act.ensure(store, client, row["activity_id"])
+            detail = _detail_ensure(store, client, row)
         except Exception as e:
             print(f"× {row.get('date')} 明细失败：{type(e).__name__}: {e}")
             continue
@@ -2366,11 +2378,11 @@ def main() -> int:
     q.add_argument("--import", dest="import_file", metavar="文件",
                    help="导入 CSV/JSON（小米运动健康数据副本、Zepp Life 导出）")
     q.add_argument("--source", help="标记来源，默认 csv（mifitness/zepp/ble）")
+    q.add_argument("--prefer-source", metavar="来源",
+                   help="保存首选体重来源：auto/mi/huawei/ble/csv/garmin 或已有来源；不执行云端登录")
     q.add_argument("--garmin", action="store_true", help="从佳明拉取 weigh-in")
     q.add_argument("--mi", action="store_true", help="从小米健康云拉体脂秤数据")
     q.add_argument("--mi-days", type=int, default=120, help="往小米云端回溯多少天，默认 120")
-    q.add_argument("--prefer-source", metavar="来源",
-                   help="保存首选体重来源：auto/mi/huawei/ble/csv/garmin 或已有来源；不执行云端登录")
     q.add_argument("--huawei", action="store_true", help="从华为运动健康拉体重（需先跑 hw probe）")
     q.add_argument("--huawei-days", type=int, default=0,
                    help="往华为云端回溯多少天，0=全量（默认）")

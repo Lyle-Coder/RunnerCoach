@@ -62,11 +62,22 @@ BASE_URLS = {
 REGION_CN = {"asia": "国内", "cn": "国内", "eu": "欧洲", "us": "美国"}
 
 # 高驰 sportType → 项目里的活动类型串（garmin typeKey 口径，看板/图都认它）
+# 高驰 sportType 码表（社区整理，与 102/103/104、200/201、400/402 已实测吻合）：
+#   100 户外跑 / 101 室内跑（跑步机）/ 102 越野跑 / 103 场地跑 / 104 徒步
+#   200 公路骑 / 201 室内骑 / 202 电助力 / 203 碎石骑 / 204 山地骑
+#   300 泳池 / 301 公开水域 / 400 健身房有氧 / 401 GPS 有氧 / 402 力量
+#   500 双板 / 501 单板 / 502 越野滑雪 / 700 划船 / 701 划船机 / 900 健走 / 904 瑜伽
+# 之前缺 101，跑步机被归成 other，卡片上标签写「运动」、也没有步频步幅。
 SPORT_TYPE = {
-    100: "running", 102: "trail_running", 103: "track_running", 104: "hiking",
-    200: "road_biking", 201: "indoor_cycling", 203: "road_biking", 204: "mountain_biking",
-    400: "indoor_cardio", 402: "strength_training", 403: "yoga",
-    900: "walking", 9807: "road_biking",
+    100: "running", 101: "treadmill_running", 102: "trail_running",
+    103: "track_running", 104: "hiking",
+    200: "road_biking", 201: "indoor_cycling", 203: "gravel_cycling",
+    204: "mountain_biking",
+    300: "lap_swimming", 301: "open_water_swimming",
+    400: "indoor_cardio", 401: "indoor_cardio", 402: "strength_training",
+    500: "skiing", 501: "skiing", 502: "skiing",
+    700: "rowing", 701: "indoor_rowing",
+    900: "walking", 904: "yoga",
 }
 
 
@@ -417,111 +428,15 @@ def _gpx_track(gpx_bytes: bytes) -> list[list[float]]:
 
 
 def detail_to_payload(data: dict, track: list[list[float]], row: dict) -> dict:
-    """高驰明细 → actcard 的明细契约（与 garmin activity.fetch 同构）。
+    """兼容旧入口：单位换算与统计统一交给 coros_activity.normalize。
 
-    产物键：summary / laps / series.points / track / route / weather。
-    时序从 frequencyList 派生：速度由相邻距离差分，步幅 = 速度/步频换算，
-    步频沿用佳明侧的「单侧值翻倍」修正。分圈直接映射 lapList（时间是厘秒）。
+    历史上这里有一份独立实现，把 lap 的厘米值当米用（1 km 圈显示成
+    100.00 km、配速 0'06"），时序 distance 也没换算导致速度全被判成漂移。
+    现在只保留 coros_activity 一份，两处入口不会再漂移。
     """
-    from .activity import CAD_HI, CAD_LO, STRIDE_HI, STRIDE_LO, _thin, aggregate
+    from . import coros_activity as CA
 
-    raw_sum = data.get("summary") or {}
-    freq = data.get("frequencyList") or []
-    lap_list = data.get("lapList") or []
-
-    total_dist = (_num(raw_sum.get("distance")) or _num(row.get("distance_m")) or 0)
-
-    # ---------- 时序 ----------
-    # distance 列表到底是累计还是增量：总量能对上活动距离就是累计，否则增量求和
-    dists = [_num(it.get("distance")) for it in freq]
-    known = [d for d in dists if d is not None]
-    cumulative = bool(known) and max(known) >= total_dist * 0.5 and \
-        all((a or 0) <= (b or 0) + 1 for a, b in zip(known, known[1:]))
-
-    rows: list[dict] = []
-    run_cum = 0.0
-    prev_t = prev_d = None
-    for it, d_raw in zip(freq, dists):
-        t = _tsec(it.get("timestamp"))
-        hr = _num(it.get("heart"))
-        cad = _num(it.get("cadence"))
-        if cumulative:
-            d = d_raw
-        else:
-            run_cum += (d_raw or 0)
-            d = run_cum
-        # 速度（m/s）：相邻点距离差 / 时间差，起停段噪声交给后面的离群修正
-        spd = None
-        if t and prev_t and d is not None and prev_d is not None and t > prev_t:
-            v = (d - prev_d) / (t - prev_t)
-            if 0.2 <= v <= 12:            # 0.7~43 km/h，超出当漂移丢掉
-                spd = round(v, 3)
-        if d is not None:
-            prev_d = d
-        if t:
-            prev_t = t
-        # 步频修正：高驰给的是总步频，但个别固件也出单侧值——沿用佳明侧双保险
-        fixed = False
-        if cad is not None and cad < CAD_LO and (spd or 0) >= 2.5:
-            cad, fixed = cad * 2, True
-        if cad is not None and not (CAD_LO <= cad <= CAD_HI):
-            cad = None
-        stride = None
-        if spd and cad:
-            stride = spd * 60.0 / cad * 100.0
-            if not (STRIDE_LO <= stride <= STRIDE_HI):
-                stride = None
-        rows.append({"t": t, "spd": spd, "hr": hr, "cad": cad, "stride": stride,
-                     "ele": None, "dist": d, "pwr": _num(it.get("power")),
-                     "bb": None, "gap": None, **({"fixed": True} if fixed else {})})
-
-    summary = aggregate(rows) if rows else {}
-    summary["repaired"] = 0
-    summary["rescaled"] = 0
-
-    # ---------- 分圈 ----------
-    laps: list[dict] = []
-    for grp in lap_list or []:
-        for lap in (grp.get("lapItemList") or []):
-            t0, t1 = _tsec(lap.get("startTimestamp")), _tsec(lap.get("endTimestamp"))
-            dur = round(t1 - t0, 1) if (t0 and t1 and t1 > t0) else None
-            d = _num(lap.get("distance")) or 0
-            cad = _num(lap.get("avgCadence"))
-            if cad is not None and cad < CAD_LO:
-                cad *= 2
-            st = _num(lap.get("avgStrideLength"))
-            if st is not None and st > STRIDE_HI:     # 毫米口径 → 厘米
-                st = st / 10
-            laps.append({
-                "idx": lap.get("lapIndex") or (len(laps) + 1),
-                "dist_m": round(d, 1),
-                "dur_s": dur,
-                "pace_s": round(dur / (d / 1000)) if (dur and d > 50) else None,
-                "hr_avg": _num(lap.get("avgHr")),
-                "hr_max": _num(lap.get("maxHr")),
-                "cad": round(cad, 1) if cad else None,
-                "stride": round(st, 1) if st else None,
-                "ele_gain": _num(lap.get("ascent") or lap.get("elevationGain")),
-                "cad_server": _num(lap.get("avgCadence")),
-                "stride_server": _num(lap.get("avgStrideLength")),
-                "is_partial": d < 100,
-            })
-
-    if len(track) > 420:
-        step = len(track) / 420
-        track = [track[min(int(i * step), len(track) - 1)] for i in range(420)]
-
-    return {
-        "activity_id": str(row.get("activity_id") or ""),
-        "fetched_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "source": "coros",
-        "summary": summary,
-        "laps": laps,
-        "series": {"points": _thin(rows, 600)},
-        "track": track,
-        "route": {},
-        "weather": None,
-    }
+    return CA.normalize(data, str(row.get("activity_id") or ""), track=track or None)
 
 
 def fetch_detail(store, home: Path, row: dict,
