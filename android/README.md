@@ -98,7 +98,7 @@ adb install -r dist\garmin-coach-<version>-debug.apk
 5. 之后**在页面顶部下拉**即可同步最近 30 天 + 重出看板；浏览与设置走底部
    4 个 tab（今日 / 历史 / 教练 / 我的），右上角只留一个刷新按钮。
 
-数据在 `/data/data/com.garmincoach.app/files/`，卸载即清空；
+数据在 `/data/data/mm.runnercoach.app/files/`，卸载即清空；
 密码用 Android Keystore 加密存在 SharedPreferences，Python 侧不落密码。
 
 ### 界面交互（下拉同步 / 底部导航 / 统一主题）

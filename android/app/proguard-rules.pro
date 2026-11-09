@@ -9,7 +9,7 @@
 -keepclassmembers class * {
     @android.webkit.JavascriptInterface <methods>;
 }
--keep class com.garmincoach.app.MainActivity$Bridge { *; }
+-keep class mm.runnercoach.app.MainActivity$Bridge { *; }
 
 # Chaquopy：Python 运行时通过 JNI + 反射访问这些类
 -keep class com.chaquo.python.** { *; }

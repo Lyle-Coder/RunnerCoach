@@ -1,4 +1,4 @@
-package com.garmincoach.app
+package mm.runnercoach.app
 
 import android.app.Activity
 import android.app.AlertDialog

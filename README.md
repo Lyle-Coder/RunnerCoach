@@ -249,7 +249,7 @@ RunnerCoach/
 | [`docs/activity-data-inventory.md`](docs/activity-data-inventory.md) | 国区接口分层与字段清单 |
 | [`docs/发布流程.md`](docs/发布流程.md) | 版本规范、正式签名、打包校验、APK 分发与回滚 |
 | [`docs/隐私说明.md`](docs/隐私说明.md) | 收集什么、存在哪、什么时候出网、怎么删 |
-| [`docs/1.0-checklist.md`](docs/1.0-checklist.md) | 1.0 发布清单与验收标准 |
+| [`docs/0.6.0-checklist.md`](docs/0.6.0-checklist.md) | 1.0 发布清单与验收标准 |
 
 ---
 

@@ -1,4 +1,4 @@
-package com.garmincoach.app
+package mm.runnercoach.app
 
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec

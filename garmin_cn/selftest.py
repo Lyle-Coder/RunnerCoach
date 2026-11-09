@@ -33,6 +33,8 @@ from .store import Store                                 # noqa: E402
 from .sync import SyncService                            # noqa: E402
 from .sysopen import open_any                            # noqa: E402
 
+# Kotlin 源码目录：改包名时只改这里，别在断言里散着写绝对路径
+KT = ROOT / "android" / "app" / "src" / "main" / "java" / "mm" / "runnercoach" / "app"
 CONFIG = ROOT / "config.json"
 DB = ROOT / "data" / "garmin.db"
 OUT = ROOT / "output"
@@ -402,7 +404,7 @@ def run() -> int:
     #   起点必须落在关键帧上，否则从 GOP 中间切过去开头花屏；
     #   两条轨必须共用同一个时间原点，否则音画差零点几秒就错位。
     # 这两条都是「改了看不出来、但结果就是不对」的坑，钉在自检里。
-    _kt = ROOT / "android" / "app" / "src" / "main" / "java" / "com" / "garmincoach" / "app"
+    _kt = KT
     _trim_src = (_kt / "ClipTrimmer.kt").read_text(encoding="utf-8")
     _dlg_src = (_kt / "ClipTrimDialog.kt").read_text(encoding="utf-8")
     # 剪辑器：视频轨用 PREVIOUS_SYNC 找起点（对齐到关键帧）
@@ -543,7 +545,7 @@ def run() -> int:
         _ca = _vid._clip_audio(_tl2)
         assert len(_ca) == 1 and _ca[0][0] == str(_av) and _ca[0][1] == 2.5, _ca
     # 手机端：解码混音 → AAC → 与视频交织写进同一个 MP4
-    _kt_dir = Path(AP.__file__).parent.parent / "android/app/src/main/java/com/garmincoach/app"
+    _kt_dir = KT
     if (_kt_dir / "MotionAudio.kt").is_file():
         _ma = (_kt_dir / "MotionAudio.kt").read_text(encoding="utf-8")
         _me = (_kt_dir / "MotionEncoder.kt").read_text(encoding="utf-8")
@@ -1177,8 +1179,7 @@ def run() -> int:
     assert _dense.count("<rect ") == 30 and _dense.count("<text ") <= 12, \
         "30 根柱仍逐根标数值，会挤成一团"
     # 下拉刷新（原生）也要深色，否则一拉就闪白
-    _pull = (ROOT
-             / "android/app/src/main/java/com/garmincoach/app/PullRefreshLayout.kt"
+    _pull = (KT / "PullRefreshLayout.kt"
              ).read_text(encoding="utf-8")
     assert "0xFF070B12.toInt()" in _pull and "0xFF5A6B5E" not in _pull, \
         "下拉刷新还是浅色"
@@ -1610,7 +1611,7 @@ def run() -> int:
     # 安卓侧：必须把相册原始文件名带进登记（相机名里常带拍摄时间），
     # 并且列表要说明「没有拍摄时间」的后果，不能只显示一行「加入 xx」。
     # 手机上没有 android/ 目录，这里只在桌面自检时校验。
-    _kt = Path(AP.__file__).parent.parent / "android/app/src/main/java/com/garmincoach/app/MainActivity.kt"
+    _kt = KT / "MainActivity.kt"
     if _kt.is_file():
         _kt_src = _kt.read_text(encoding="utf-8")
         assert "OpenableColumns.DISPLAY_NAME" in _kt_src, "安卓没读相册原始文件名"
@@ -2059,7 +2060,7 @@ def run() -> int:
     shutil.rmtree(_tmpbf.parent, ignore_errors=True)
 
     # App 侧：刷新后自动跑，进度写在标题栏，且不再弹选区间对话框
-    _main_src = (ROOT / "android/app/src/main/java/com/garmincoach/app/MainActivity.kt") \
+    _main_src = (KT / "MainActivity.kt") \
         .read_text(encoding="utf-8")
     assert "private fun runBackfill()" in _main_src and \
         _main_src.count("runBackfill()") >= 2, "刷新后没有触发后台补全"
@@ -2177,12 +2178,26 @@ def run() -> int:
 
     with _mock.patch.object(_rel, "_local_props", return_value={}):
         try:
-            _rel.signing_lines("1.0.0")
+            _rel.signing_lines("0.6.0")
             _blocked = False
         except _rel.ReleaseError:
             _blocked = True
-        assert _blocked, "1.0 起仍是 debug 签名却没被拦住"
-        assert _rel.signing_lines("0.9.0"), "0.x 不该因为签名就直接报错"
+        assert _blocked, "正式版仍是 debug 签名却没被拦住"
+        # 开发版（带 -dev）只提示不拦，自己用得快
+        assert _rel.signing_lines("0.6.0-dev"), "-dev 版本不该因为签名就直接报错"
+
+    # 包名只有一个来源：Kotlin 目录、package 声明、gradle、proguard 四处必须一致。
+    # 少改一处就是「装上是新应用、但 R8 把网页桥裁了」或「资源引用不到」这种
+    # 只在真机上才炸的问题。
+    _pkg = "mm.runnercoach.app"
+    _gradle = (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
+    assert f'namespace = "{_pkg}"' in _gradle, "namespace 与包名不一致"
+    assert f'applicationId = "{_pkg}"' in _gradle, "applicationId 与包名不一致"
+    assert f"package {_pkg}" in (KT / "MainActivity.kt").read_text(encoding="utf-8"), \
+        "Kotlin package 声明和 applicationId 不一致"
+    assert f"-keep class {_pkg}.MainActivity$Bridge" in \
+        (ROOT / "android/app/proguard-rules.pro").read_text(encoding="utf-8"), \
+        "proguard 还按旧包名 keep，网页桥会被 R8 裁掉"
 
     # 隐私说明：App 内可达，仓库里也有同一份
     _pv = U.privacy_page()

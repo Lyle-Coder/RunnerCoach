@@ -231,8 +231,19 @@ def signing_state() -> tuple[bool, str]:
     return True, f"{p.name}（别名 {props['rc.keyAlias']}）"
 
 
+def is_release_version(version: str) -> bool:
+    """是不是「正式版」：不带 -dev/-snapshot/-alpha/-beta/-rc 后缀的都算。
+
+    以前按「主版本号 >= 1」判，但 0.6.0 也可以是第一个对外正式版 ——
+    决定要不要正式签名的不是数字大小，而是「会不会发给别人用」。
+    """
+    v = str(version or "").strip().lower()
+    return not any(v.endswith(s) for s in
+                   ("-dev", "-snapshot", "-alpha", "-beta", "-rc"))
+
+
 def signing_lines(version: str) -> list[str]:
-    """签名检查：1.0 起必须正式签名，之前只提示。
+    """签名检查：正式版必须正式签名，开发版只提示。
 
     debug 签名每台机器不同、还带有效期，换签名后老用户无法覆盖安装，
     而 App 的 allowBackup=false —— 等于历史全丢。所以这条不能只是建议。
@@ -240,17 +251,13 @@ def signing_lines(version: str) -> list[str]:
     ok, detail = signing_state()
     if ok:
         return [f"√ 正式签名：{detail}"]
-    try:
-        major = int(str(version).split(".")[0])
-    except (TypeError, ValueError):
-        major = 0
-    if major >= 1:
+    if is_release_version(version):
         raise ReleaseError(
-            f"1.0 起必须用正式 keystore 签名，当前未就绪（{detail}）。\n"
+            f"正式版必须用正式 keystore 签名，当前未就绪（{detail}）。\n"
             "  在 android/local.properties 填 rc.storeFile / rc.storePassword /\n"
             "  rc.keyAlias / rc.keyPassword 四行，详见 docs/发布流程.md"
         )
-    return [f"! 仍是 debug 签名（{detail}）—— 打 1.0 之前必须换成正式签名"]
+    return [f"! 仍是 debug 签名（{detail}）—— 只用于自己的开发快照，别发给别人"]
 
 
 def apk_version() -> str:

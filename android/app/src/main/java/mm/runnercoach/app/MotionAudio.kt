@@ -1,4 +1,4 @@
-package com.garmincoach.app
+package mm.runnercoach.app
 
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
