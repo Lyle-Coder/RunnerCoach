@@ -179,6 +179,40 @@ def _as_seconds(raw: float, *, race: bool = False) -> float:
     return 0.0
 
 
+MAX_KM = 500.0            # 单次训练的距离上限（超马、长途骑行都在内）
+MAX_KMH = 130.0           # 合理时速上限：再快就不是人，是单位错了
+
+
+def _distance_km(raw, dur_s: float) -> float:
+    """把日历里的距离换算成公里，顺带挡住单位错误。
+
+    `distance` 和 `duration` 一样，不同端给的单位不一致：有米，也有**厘米**
+    （安卓上传的活动常见）。旧代码一律 `dist / 1000` 当米读，于是今早 4.09 km
+    的通勤被显示成 **409.3 公里**。
+
+    用「隐含时速」判比拍一个阈值靠谱：4 公里骑 18 分钟是 13 km/h，正常；
+    409 公里骑 18 分钟是 1364 km/h，物理上不可能 —— 那说明原值是厘米。
+    依次试 米 / 厘米 / 毫米，取第一个「距离合理且时速合理」的读法。
+    """
+    try:
+        v = float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if v <= 0:
+        return 0.0
+
+    hours = (dur_s or 0) / 3600.0
+    for div in (1.0, 100.0, 1000.0):        # 米 / 厘米 / 毫米
+        km = v / div / 1000.0
+        if km > MAX_KM:
+            continue
+        # 时间太短时算不准时速，只校验距离
+        if hours > 0.01 and km / hours > MAX_KMH:
+            continue
+        return km
+    return 0.0
+
+
 def _dur_seconds(it: dict, *, race: bool = False) -> float:
     """按可信度取耗时字段：带单位语义的优先，其余依次兜底。"""
     for key in ("estimatedDurationInSecs", "duration", "elapsedDuration"):
@@ -193,7 +227,9 @@ def _cal_item(it: dict) -> dict:
     is_race = (bool(it.get("isRace"))
                or str(it.get("itemType") or "").lower() == "race")
     dur = _dur_seconds(it, race=is_race)
-    dist = _num(it.get("distance") or it.get("estimatedDistanceInMeters"))
+    # 带单位的优先；否则按「米→厘米→毫米」挑一个物理上说得通的读法
+    dist = _num(it.get("estimatedDistanceInMeters"))
+    km = dist / 1000.0 if dist > 0 else _distance_km(it.get("distance"), dur)
     sport_key = it.get("sportTypeKey") or (it.get("activityType") or {}).get("typeKey")
     return {
         "name": it.get("title") or it.get("workoutName") or "训练",
@@ -201,7 +237,7 @@ def _cal_item(it: dict) -> dict:
         "sport": SPORT.get(sport_key),
         "sport_key": sport_key,
         "minutes": round(dur / 60) or None,
-        "km": round(dist / 1000, 1) or None,
+        "km": round(km, 1) or None,
         "effect": EFFECT.get(it.get("trainingEffectLabel") or ""),
         "rest": False,
         "race": is_race,
@@ -210,7 +246,11 @@ def _cal_item(it: dict) -> dict:
     }
 
 
-CLASSIFY_REV = 2      # 课表分类口径的版本号，见 annotate() 里的迁移说明
+# 课表分类口径的版本号。变更记录：
+#   1 — 按日期猜完成（错：过去即已完成）
+#   2 — 看 activityId + 本地库活动日，但把「无 id 的 activity」当计划活动（错）
+#   3 — `activity` 一律是已完成记录；计划只来自 workout / race
+CLASSIFY_REV = 3
 
 
 def annotate(data: dict, activity_days: set[str] | None = None,
@@ -282,19 +322,27 @@ def from_calendar(items: list[dict] | None, today: str | None = None,
         if kind in _SKIP_TYPES:
             continue
 
-        # 已经做完的活动：只当「完成证据」，不当排课
-        if kind == "activity" and (it.get("activityId") or it.get("activityUUID")):
+        # `activity` 一律是**已经做完的记录**（佳明日历会把当天上传的活动也列进来），
+        # 只当完成证据，绝不当排课。
+        #
+        # v61 曾把它按「有没有 activityId」二分：有 id → 已完成，没 id → 计划活动。
+        # 那个推断是错的 —— 今早 4 公里通勤没有 id，于是被当成「今日课表」，
+        # 课表本该是休息却显示一条骑行。原始实现「activity 一律 continue」才是对的。
+        if kind == "activity":
             done_ids.add(day)
             row = _cal_item(it)
             row["completed"] = True
             row["name"] = it.get("title") or row.get("name") or "已完成的训练"
-            seen_act = (day, row.get("name"), it.get("activityId"))
+            # 去重键：优先活动 id；没有就按「日期 + 名称 + 开始时间」
+            seen_act = (day, row.get("name"),
+                        it.get("activityId") or it.get("activityUUID")
+                        or it.get("startTimeLocal"))
             if seen_act not in seen:
                 seen.add(seen_act)
                 acts.setdefault(day, []).append(row)
             continue
 
-        # 其余都是「计划」：workout / race / 无 id 的 activity（计划活动）
+        # 其余才可能是「计划」：workout / race
         if not (it.get("title") or it.get("workoutId") or it.get("workoutUuid")):
             continue
         key = (day, str(it.get("title") or ""), it.get("workoutId"))
@@ -500,11 +548,22 @@ def fetch(client, today: str | None = None, out_path: Path | None = None,
 
 
 def load(path: Path) -> dict | None:
-    """读本地缓存的计划快照（看板/MCP 用，避免每次联网）。"""
+    """读本地缓存的计划快照（看板/MCP 用，避免每次联网）。
+
+    旧口径（classify < CLASSIFY_REV）的快照直接作废：那份里的 `items` / `acts`
+    是按老规则分的（把已完成的活动当成计划），而原始日历项没有存下来，
+    没法就地修正。宁可当作「没有计划」让上层重新拉一次，也不要拿错的课表
+    继续骗人 —— 手机上换版本后一直显示错数据，就是这个原因。
+    """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+    if not isinstance(data, dict):
+        return None
+    if int(data.get("classify") or 0) < CLASSIFY_REV:
+        return None
+    return data
 
 
 def _home() -> Path:

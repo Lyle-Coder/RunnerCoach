@@ -733,10 +733,15 @@ def _plan_items_line(items: list[dict]) -> str:
 
 
 def _today_plan_card(pl: dict) -> str:
-    """今日课表卡片：分开「今天要练的」和「今天已经练完的」。
+    """今日课表卡片：**课表**只说计划，实际练了什么单列一行。
 
-    旧版把「已完成」只做成一个小角标，主体还写着「今天休息」——日历里当天的
-    活动记录被丢掉了，看起来就像「练了但 App 不知道」。
+    这里有一条容易搞错的分界：日历里的 `activity` 是「已经做完的记录」，
+    不是排课。所以通勤骑车、临时去跑的五公里，都不该把「今天休息」顶掉。
+    以前把它当计划显示，结果课表上写着「骑行 409.3 公里 · 18 分钟」——
+    那是早上骑车上班，跟今天的训练安排没关系。
+
+    现在：没排课 → 标题就是「休息」；确实练过 → 底下加一行「今天已完成：…」，
+    数据仍可读，但不会被误当成课表。
     """
     t = pl.get("today") or {}
     items = t.get("items") or []
@@ -759,25 +764,27 @@ def _today_plan_card(pl: dict) -> str:
                 + (f'<div class="d">{esc(it.get("detail"))}</div>' if it.get("detail") else "")
                 + f'<div class="n">{esc(_plan_meta(it))}</div>{badge}{more}</div>')
 
-    if acts:                     # 今天没排课，但确实练了
-        a = acts[0]
-        more = "".join(
-            f'<div class="n">另：{esc(x.get("name"))} · {esc(_plan_meta(x))}</div>'
-            for x in acts[1:])
-        return (f'<div class="plan-hero"><div class="t">今天已完成</div>'
-                f'<div class="d">{esc(a.get("name") or "训练")}</div>'
-                f'<div class="n">{esc(_plan_meta(a))}</div>{more}</div>')
-
     nxt = pl.get("next_date")
-    if done:                     # 本地库有活动，但日历里没有对应记录
-        tip = "计划里今天没有排课，训练记录已经同步进来了（含高驰）。"
-    elif nxt:
+    if nxt:
         tip = f'下一次：{esc(nxt)} · {esc(_plan_items_line(pl.get("next_items") or []))}'
     else:
         tip = "本周没有排课，按恢复度安排轻松活动"
-    title = "今天已完成" if done else "今天休息"
-    return (f'<div class="plan-hero"><div class="t">{title}</div>'
-            f'<div class="d">{tip}</div></div>')
+
+    # 今天确实练过：单独列一行，语气是「记录」而不是「课表」
+    done_html = ""
+    if acts:
+        a = acts[0]
+        done_html = (f'<div class="n">今天已完成：{esc(a.get("name") or "训练")}'
+                     f' · {esc(_plan_meta(a))}</div>')
+        done_html += "".join(
+            f'<div class="n">另：{esc(x.get("name"))} · {esc(_plan_meta(x))}</div>'
+            for x in acts[1:3])
+    elif done:
+        # 本地库有活动但日历没有记录（高驰的活动不进佳明日历）
+        done_html = '<div class="n">今天已完成：训练记录已同步（含高驰）</div>'
+
+    return (f'<div class="plan-hero"><div class="t">今天休息</div>'
+            f'<div class="d">{tip}</div>{done_html}</div>')
 
 
 def plan_page(qs: dict | None = None) -> str:
@@ -825,10 +832,13 @@ def plan_page(qs: dict | None = None) -> str:
             wb = (f'<span class="wb">{esc(first.get("name") or "训练")}'
                   f'<em>{esc(_plan_meta(first))}</em></span>')
         elif act:
-            # 当天没排课、却有实际训练：显示「练了什么」，而不是「休息」
+            # 当天没排课、却有实际训练：**标题仍然是「休息」**（这是课表），
+            # 练了什么写在副行。以前直接把活动名顶上来，通勤骑车会看着像当天的课。
             a = act[0]
-            wb = (f'<span class="wb">{esc(a.get("name") or "训练")}'
-                  f'<em>{esc(_plan_meta(a))}</em></span>')
+            _more = f"（另 {len(act) - 1} 项）" if len(act) > 1 else ""
+            wb = (f'<span class="wb">休息'
+                  f'<em>已练：{esc(a.get("name") or "训练")} · '
+                  f'{esc(_plan_meta(a))}{esc(_more)}</em></span>')
         else:
             wb = '<span class="wb">休息</span>'
         if is_today:

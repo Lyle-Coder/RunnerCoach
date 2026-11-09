@@ -267,26 +267,49 @@ def run() -> int:
     assert cal["next_date"] == "2026-11-15", cal["next_date"]  # 11-09 是 note，跳过
     assert PL.from_calendar([], "2026-11-07")["scheduled"] is False
 
-    # 没有 activityId 的 activity 是「计划活动」，不能因为日期在过去就算完成
+    # `activity` 一律是「已经做完的记录」，**不管有没有 activityId**。
+    # v61 曾把「无 id 的 activity」当计划活动，结果用户早上骑车上班（日历里一条
+    # 没有 id 的 activity）被显示成「今日课表：骑行 409.3 公里」。
     plan_only = PL.from_calendar([
         {"itemType": "activity", "date": "2026-11-03", "title": "计划中的骑行",
          "sportTypeKey": "cycling", "duration": 3600}], "2026-11-07")
-    assert plan_only["week"][1]["items"], "无 id 的 activity 要当排课保留"
-    assert plan_only["week"][1]["done"] is False, "无 id 的 activity 不能算已完成"
-    assert plan_only["week"][1]["missed"] is True
+    assert not plan_only["week"][1]["items"], \
+        "无 id 的 activity 又变成排课了（通勤会被当成今日课表）"
+    assert plan_only["week"][1]["acts"], "无 id 的 activity 应该进「已完成记录」"
+    assert plan_only["week"][1]["done"] is True, "日历里的 activity 就是做完了"
+
+    # 距离单位：同 duration 一样，日历的 distance 也可能是厘米。
+    # 4.09 km 的通勤若按米读会变成 409.3 公里（一次 1364 km/h 的骑行）。
+    assert abs(PL._distance_km(409300, 1080) - 4.093) < 0.01, \
+        "厘米当米读了：4.09 km 会显示成 409.3 公里"
+    assert abs(PL._distance_km(4093, 1080) - 4.093) < 0.01, "正常米制被改坏"
+    assert abs(PL._distance_km(2128000, 5340) - 21.28) < 0.05, "半马距离算错"
+    assert PL._distance_km(99999999999, 600) == 0, "离谱距离没被挡住"
+    _commute = PL._cal_item({"title": "骑行", "duration": 1080, "distance": 409300})
+    assert _commute["km"] == 4.1, f"通勤距离不对：{_commute['km']}"
+    # 今日课表：没排课时标题必须是「休息」，练过的只单列一行
+    _cm = PL.from_calendar([
+        {"itemType": "activity", "date": dt.date.today().isoformat(), "title": "骑行",
+         "duration": 1080, "distance": 409300}])
+    _tc = U._today_plan_card(_cm)
+    assert "今天休息" in _tc, "没排课时课表应该是休息，而不是显示一条通勤"
+    assert "409" not in _tc, "课表里的通勤距离仍然是错的"
+    assert "4.1 km" in _tc and "今天已完成" in _tc, \
+        "练过的记录没有单列出来"
     # 本地库那天有活动（含高驰）也算完成
     with_local = PL.from_calendar([
         {"itemType": "workout", "date": "2026-11-03", "title": "轻松跑"}],
         "2026-11-07", {"2026-11-03"})
     assert with_local["week"][1]["done"] is True, \
         "本地库有活动应判完成（高驰的活动不在佳明日历里）"
-    # 今天没排课但已经练了：不能写成「今天休息」
+    # 今天没排课但已经练了：课表仍是「休息」，练过的单列一行（不冒充课表）
     today_act = PL.from_calendar([
         {"itemType": "activity", "date": "2026-11-07", "title": "晨跑",
          "activityId": 9, "duration": 1800, "distance": 5000}], "2026-11-07")
     assert today_act["today"]["acts"][0]["name"] == "晨跑"
     _tc = U._today_plan_card(today_act)
-    assert "今天已完成" in _tc and "晨跑" in _tc, "今天的完成记录被丢掉了，页面还写「今天休息」"
+    assert "今天休息" in _tc, "没排课时课表被实际活动顶掉了"
+    assert "今天已完成" in _tc and "晨跑" in _tc, "练过的记录没有单列出来"
     # 旧快照里「过去即已完成」的脏标记要丢掉重算
     _old_snap = {"available": True, "source": "calendar",
                  "today": {"date": "2026-11-07", "items": []},
@@ -298,6 +321,20 @@ def run() -> int:
         "旧快照里「过去即完成」的脏标记没被清掉"
     assert cal.get("classify") == PL.CLASSIFY_REV, \
         "课表分类口径没打版本号，旧快照没法学法迁移"
+    # 旧口径的快照必须作废：里面的 items/acts 是按老规则分的，就地修不了。
+    # 不作废的话，手机上换版本后还会一直显示「今日课表：骑行 409 公里」。
+    _snapdir = Path(tempfile.mkdtemp())
+    _old = _snapdir / "plan.json"
+    _old.write_text(json.dumps({"source": "calendar", "classify": 2,
+                                "today": {"date": "2026-11-09",
+                                          "items": [{"name": "骑行"}]}}),
+                    encoding="utf-8")
+    assert PL.load(_old) is None, "旧口径快照没被作废，错课表会一直显示"
+    _old.write_text(json.dumps({"source": "calendar", "classify": PL.CLASSIFY_REV,
+                                "today": {"date": "2026-11-09", "items": []}}),
+                    encoding="utf-8")
+    assert PL.load(_old) is not None, "新口径快照被误判成旧的了"
+    shutil.rmtree(_snapdir, ignore_errors=True)
     # 页面必须能把「未完成」标出来，也不能再把「已练」写成「今天休息」
     _ui_plan_src = Path(U.__file__).read_text(encoding="utf-8")
     assert 'class="miss">未完成' in _ui_plan_src, "周视图没有「未完成」标签"
