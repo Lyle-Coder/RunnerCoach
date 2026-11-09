@@ -982,7 +982,8 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
         hero_val = pace_txt(pace)
         chart_title, chart_lg = "配速与心率", "配速"
 
-    max_spd = num(raw.get("maxSpeed"))          # m/s
+    # 高驰活动列表的 maxSpeed 多数是 0，最快速度要从明细 summary 换算后注入 row
+    max_spd = num(row.get("max_speed_mps")) or num(raw.get("maxSpeed")) or None  # m/s
     kcal = num(row.get("calories")) or 0
     asc = num(row.get("ascent")) or 0
     if th["is_run"]:

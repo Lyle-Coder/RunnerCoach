@@ -1306,44 +1306,36 @@ def act_card_html(activity_id: str, title: str | None = None,
         if not row:
             return {"ok": False, "error": "库里没有这条活动，先同步一次"}
         aid = str(row["activity_id"])
-        src = (row.get("source") or "garmin")
 
         from . import coros_activity as CA
         from .coros import CorosAuthError
         provider = CA.source(row)
 
         detail = store.get_detail(aid)
-        if not detail and src == "coros":
-            from . import coros as C
-
+        if provider == "coros":
+            # 高驰明细走同一条链路：缓存版本不对（旧口径把 lap 距离当成米，
+            # 1 km 圈会显示成 100.00 km）就重抓一次，别让错数据一直留在库里。
             try:
-                detail = C.fetch_detail(store, HOME, row,
-                                        coros_email or None, coros_password or None)
-                store.save_detail(aid, detail)
-            except C.CorosAuthError as e:
+                detail = CA.ensure(store, HOME, row, coros_email or None,
+                                   coros_password or None)
+            except CorosAuthError as e:
                 return {"ok": False, "need_login": True, "source": "coros",
                         "error": f"{e}（高驰明细需联网抓一次）"}
             except Exception as e:
-                return {"ok": False,
+                return {"ok": False, "source": "coros",
                         "error": f"抓高驰明细失败（需要联网）：{type(e).__name__}: {e}"}
         elif not detail:
             try:
                 from . import activity as act
 
-                if provider == "coros":
-                    detail = CA.ensure(store, HOME, row, coros_email, coros_password)
-                else:
-                    detail = act.ensure(store, _client(email, password), aid)
-            except CorosAuthError:
-                return {"ok": False, "need_login": True, "source": "coros",
-                        "error": "高驰登录已失效，请登录高驰后获取活动明细"}
+                detail = act.ensure(store, _client(email, password), aid)
             except (AuthError, SessionExpired):
                 return {"ok": False, "need_login": True, "source": "garmin",
                         "error": "这条活动的明细还没缓存，需要联网登录后抓一次"}
             except Exception as e:
                 return {"ok": False,
                         "source": provider,
-                        "error": f"获取{'高驰' if provider == 'coros' else '佳明'}活动明细失败：{e}"}
+                        "error": f"获取佳明活动明细失败：{e}"}
         if not detail:
             return {"ok": False, "error": "没拿到活动明细"}
 
