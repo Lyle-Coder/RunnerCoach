@@ -219,7 +219,9 @@ def run() -> int:
     assert "page-head" in me and 'data-act="login:garmin"' in me
     assert 'data-act="login:coros"' in me, "数据源行要直达对应登录"
     # settings 是 AI 设置，只许在教练页齿轮里
-    assert 'data-act="historySync"' in me, "我的页要有补全历史入口"
+    assert 'data-act="historySync"' not in me, \
+        "补全历史不该再有按钮：它在后台自动跑（点开只有弹窗、看着像没效果）"
+    assert "后台自动补齐" in me, "我的页要说明历史是后台自动补的"
     assert 'data-act="settings"' not in me
     assert 'data-act="historySync"' not in home, "今日页不该重复放补拉入口"
     assert 'href="/files"' in me
@@ -1068,8 +1070,9 @@ def run() -> int:
         "_client 没有 revalidate，会带着死票据跑完整轮同步才失败"
     assert "client = _client(email, password, revalidate=True)" in _aa_src, \
         "同步入口没有先校验会话"
-    # 3) 补拉：旧版拿「本地有没有密码」当门槛，密码为空时按钮点了只弹登录
-    assert 'row("↻", "历史数据"' in _ui_src, "我的页没有补全历史入口"
+    # 3) 补拉：旧版拿「本地有没有密码」当门槛，密码为空时按钮点了只弹登录。
+    #    现在连按钮都没有了 —— 后台自动跑，这条只守「别再被密码拦住」。
+    assert 'act="historySync"' not in _ui_src, "补全历史又变回按钮了"
     assert "if (email.isNullOrBlank() || pwd.isNullOrBlank())" not in _main, \
         "补拉仍被本地密码拦截，点了只会弹登录"
     # 4) 素材：多选批量删除 / 批量添加 / 再次剪辑 / 旋转 / 竖横屏
@@ -1127,11 +1130,13 @@ def run() -> int:
     # 一键补全只从「我的 → 历史数据」的对话框进（也不在历史页）；
     # 正常情况它由登录后自动触发，按钮只是兜底重跑。
     assert 'data-act="historySyncAll"' not in _h_src, "历史页又放回一键补全了"
-    assert '"historySyncAll" -> runHistorySyncAll()' in _main and \
-        "private fun runHistorySyncAll(quiet: Boolean = false)" in _main, \
-        "App 没接一键补全"
-    assert '"sync_range", start, end, email, pwd, false, false, 40' in _main, \
-        "一键补全没把活动翻页数拉满，3 年历史只能补到前 1200 条"
+    assert "private fun runBackfill()" in _main and \
+        '"historySync", "historySyncAll" -> runBackfill()' in _main, \
+        "App 没接后台补全（旧页面缓存里的按钮也该转成它）"
+    # 翻页数现在由 Python 侧给（BACKFILL_PAGES），不再从 Kotlin 传参：
+    # 一段一年约 300 条活动，20 页足够，不至于只补到前 60 条。
+    assert _AA2.BACKFILL_PAGES >= 12, \
+        "补全的活动翻页数太小，一年历史补不全"
     # 统计接口的实际输出：必须是连续 12 个月（缺月补 0），周/年各是列表
     _hs = _AA2.history_stats()
     assert _hs.get("ok"), f"history_stats 失败：{_hs.get('error')}"
@@ -2024,27 +2029,45 @@ def run() -> int:
     # 「补全历史」是一次性动作：登录后后台跑一次，跑完落标记，之后不再触发。
     from garmin_cn import appapi as _AP2
 
-    assert "needs_backfill" in _AP2.status(), "status 没告诉 App 还欠不欠一次全量补全"
+    assert "needs_backfill" in _AP2.status(), "status 没告诉 App 还欠不欠补全"
+    # 游标式补全：每段一年往前挪，退到下限才算补完。
+    # 只测纯函数（_backfill_segment）+ 到头的短路，自检不联网。
+    from garmin_cn import appapi as _AP3
+
+    _cur = dt.date(2026, 11, 9)
+    _floor = _AP3._backfill_floor(_cur)
+    assert _floor.isoformat() == "2018-11-09", f"补全下限算错：{_floor}"
+    _a, _b, _nxt, _done = _AP3._backfill_segment(_cur, _floor)
+    assert (_a.isoformat(), _b.isoformat()) == ("2025-11-10", "2026-11-09"), \
+        f"第一段区间不对：{_a} ~ {_b}"
+    assert _nxt.isoformat() == "2025-11-09", "游标没有往前挪一天"
+    assert _done is False, "第一段就判定补完了"
+    # 正好退到下限：这一段补完就要说 done，否则会无限循环
+    _a2, _b2, _nxt2, _done2 = _AP3._backfill_segment(_floor + dt.timedelta(days=1),
+                                                     _floor)
+    assert _done2 is True and _nxt2 == _floor, "退到下限那一段没标 done"
+    # 到头之后不再发请求（backfill_next 在游标到下限时直接返回）
     _tmpbf = Path(tempfile.mkdtemp()) / "bf.db"
-    Store(_tmpbf).conn.close()
-    with _mock.patch.object(_AP2, "DB", _tmpbf):
-        assert _AP2.mark_backfill(False)["needs_backfill"] is True, \
-            "补全失败时不该落标记（下次登录要能重试）"
-        assert _AP2.mark_backfill(True)["ok"], "mark_backfill 写库失败"
-        assert _AP2.mark_backfill(True)["needs_backfill"] is False, \
-            "标记写进去了但状态没变，登录后会每次都重跑三年"
+    _st = Store(_tmpbf)
+    _st.set_meta(_AP3.BACKFILL_META, _floor.isoformat())
+    _st.conn.close()
+    with _mock.patch.object(_AP3, "DB", _tmpbf):
+        _ended = _AP3.backfill_next()
+        assert _ended.get("ok") and _ended.get("done") is True, "到头后没返回 done"
+        assert _ended.get("start") == "" and _ended.get("fetched") == 0, \
+            "补到头还在请求，会一直循环"
     shutil.rmtree(_tmpbf.parent, ignore_errors=True)
+
+    # App 侧：刷新后自动跑，进度写在标题栏，且不再弹选区间对话框
     _main_src = (ROOT / "android/app/src/main/java/com/garmincoach/app/MainActivity.kt") \
         .read_text(encoding="utf-8")
-    assert "private fun maybeAutoBackfill()" in _main_src and \
-        "maybeAutoBackfill()" in _main_src.replace(
-            "private fun maybeAutoBackfill()", ""), "登录后没有自动补全的调用"
-    # 两条登录路径（密码登录 / 验证码登录）都要置位：只改一处时另一处仍能绕过
-    assert _main_src.count("autoBackfillPending = true") >= 2, \
-        "登录成功没置位，自动补全永远不会触发"
-    assert 'apiCall("mark_backfill", true)' in _main_src and \
-        "if (lastErr.isEmpty()) apiCall(\"mark_backfill\", true)" in _main_src, \
-        "补全跑完没落标记，会被反复触发"
+    assert "private fun runBackfill()" in _main_src and \
+        _main_src.count("runBackfill()") >= 2, "刷新后没有触发后台补全"
+    assert 'apiCall("backfill_next")' in _main_src, "App 没调游标接口"
+    assert "subtitle.text = \"补齐历史 第 " in _main_src, "标题栏没有进度小字"
+    for _gone in ("showSyncRangeDialog", "buildSyncRangeDialog", "mark_backfill",
+                  "runHistorySync", "pickDateRange"):
+        assert _gone not in _main_src, f"旧的补拉入口还留着：{_gone}"
 
     # 首页：睡眠/体重卡 + 趋势线 + 页头小按钮，且不再有覆盖区块
     _home = U.home_page()

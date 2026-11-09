@@ -2,7 +2,6 @@ package com.garmincoach.app
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.DatePickerDialog
 import android.app.Dialog
 import android.content.ContentValues
 import android.content.Intent
@@ -271,8 +270,9 @@ class MainActivity : Activity() {
             ui {
                 when (name) {
                     "export" -> exportCard()
-                    "historySync" -> showSyncRangeDialog()
-                    "historySyncAll" -> runHistorySyncAll()
+                    // 旧页面缓存里可能还有这两个按钮：都转成后台补全，
+                    // 不再弹那个「选区间」的框（选了也没有任何可见效果）。
+                    "historySync", "historySyncAll" -> runBackfill()
                     // 数据源行直接进对应登录，不再先弹「佳明还是高驰」的二层选择器
                     "login:garmin" -> askGarminLogin()
                     "login:coros" -> askCorosLogin()
@@ -375,180 +375,56 @@ class MainActivity : Activity() {
         }
     }
 
-    // ------------------------------------------------------------ 历史补拉
-    /** 只有「补拉」需要联网和账号，仍走原生对话框；查询历史已经全部网页化。 */
-    private fun showSyncRangeDialog() {
-        val end = todayISO()
-        // 先把本地覆盖范围读出来再弹框：只写「最近 90 天」，如果这 90 天早已
-        // 在本地，跑完只是「跳过 N 天」，用户就会觉得「点了没效果」。
-        thread {
-            val st = try {
-                apiCall("status")
-            } catch (t: Throwable) {
-                JSONObject().put("error", t.message ?: "")
-            }
-            ui { buildSyncRangeDialog(end, st.optString("first"), st.optString("last")) }
-        }
-    }
-
-    private fun buildSyncRangeDialog(end: String, first: String, last: String) {
-        val covered = if (first.isNotBlank() && last.isNotBlank())
-            "本地已覆盖 $first ~ $last。" else "本地还没有数据。"
-        val items = mutableListOf("自动补齐全部历史（最多回溯 3 年）",
-                                  "最近 90 天", "最近 180 天", "最近 365 天")
-        if (first.isNotBlank()) items.add("从 $first 往前补 90 天")
-        items.add("自定义日期区间…（最多 3 年）")
-        AlertDialog.Builder(this)
-            .setTitle("拉取更多历史数据（增量补齐）")
-            .setMessage("$covered\n" +
-                "已有且稳定的日子会跳过，只补缺口；活动列表自动翻页补齐。\n" +
-                "要拉更早的数据，选「从最早日期往前补」。")
-            .setItems(items.toTypedArray()) { _, which ->
-                when (which) {
-                    0 -> runHistorySyncAll()
-                    1 -> runHistorySync(shiftISO(end, -89), end)
-                    2 -> runHistorySync(shiftISO(end, -179), end)
-                    3 -> runHistorySync(shiftISO(end, -364), end)
-                    4 -> if (first.isNotBlank()) {
-                        val base = first
-                        runHistorySync(shiftISO(base, -89), shiftISO(base, -1))
-                    } else {
-                        pickDateRange { a, b -> runHistorySync(a, b) }
-                    }
-                    else -> pickDateRange { a, b -> runHistorySync(a, b) }
-                }
-            }
-            .setNegativeButton("取消", null)
-            .show()
-    }
-
-    private fun runHistorySync(start: String, end: String) {
-        // 不再用「本地有没有密码」决定能不能补：多数时候会话本身就是有效的，
-        // 旧版一看到密码为空就弹登录，等于把补拉入口彻底堵死（用户看到的就是
-        // 「有按钮但没反应」）。现在直接交给 Python 用现有 Cookie 跑，
-        // 只有它明确回 need_login 才去登录。
-        val email = secrets.email() ?: ""
-        val pwd = secrets.password() ?: ""
-        busy(true)
-        subtitle.text = "正在补历史 $start ~ $end…"
-        thread {
-            // with_body=false 不顺带拉小米秤；force=false 走增量，避免重复请求
-            val r = apiCall("sync_range", start, end, email, pwd, false, false)
-            // 真机排查「点了没反应」：区间、是否成功、新拉/跳过各几天都落一条
-            Log.i(TAG, "history sync $start~$end -> ok=${r.optBoolean("ok")} " +
-                "fetched=${r.optInt("fetched")} skipped=${r.optInt("skipped")} " +
-                "activities=${r.optInt("activities")} err=${r.optString("error")}")
-            ui {
-                busy(false)
-                if (!r.optBoolean("ok")) {
-                    setStatus(apiCall("status"))
-                    val err = r.optString("error")
-                    if (r.optBoolean("need_login") || r.optBoolean("need_mfa")) {
-                        toast("登录已失效：$err")
-                        askGarminLogin()
-                    } else {
-                        toast("补历史失败：$err")
-                    }
-                    return@ui
-                }
-                val fetched = r.optInt("fetched")
-                val skipped = r.optInt("skipped")
-                toast(if (fetched > 0)
-                    "已补 $start ~ $end：新拉 $fetched 天、跳过 $skipped 天缓存、" +
-                        "活动 ${r.optInt("activities")} 条"
-                else
-                    "这段时间已经在本地了（跳过 $skipped 天）；" +
-                        "要更早的数据请选「从最早日期往前补」")
-                thread {
-                    apiCall("dashboard")
-                    setStatus(apiCall("status"))
-                    ui { reload() }
-                }
-            }
-        }
-    }
-
+    // DatePicker 的月份是 0-based；统一转成 YYYY-MM-DD 再传给 Python 侧校验。
     /**
-     * 登录成功后自动补一次全量历史。
+     * 后台由近到远补齐历史，标题栏小字显示进度。
      *
-     * 「补全历史」是**一次性**动作：正常情况登录后后台跑完就再也不需要了。
-     * 以前它是「我的」里的一个按钮，用户不点就永远只有最近 30 天 —— 而绝大多数
-     * 人根本不知道该点。这里改成登录后自动跑，跑完 `mark_backfill` 落标记，
-     * 下次登录 `needs_backfill` 为 false 就不再触发。
-     */
-    private fun maybeAutoBackfill() {
-        thread {
-            val st = apiCall("status")
-            if (st.optBoolean("needs_backfill")) {
-                ui { toast("正在后台补全更早的历史，可以正常使用") }
-                runHistorySyncAll(quiet = true)
-            }
-        }
-    }
-
-    /**
-     * 一键补齐全部历史：从今天往前按 365 天一段循环，最多 3 段（`sync_range` 的上限）。
+     * 以前这是「我的」里的一个按钮：点开一个弹窗、选区间，跑完只回一句
+     * 「跳过 90 天缓存」—— 用户的实际感受是「点了没有任何效果」。既然它本质是
+     * 必须跑完才有意义的事，就干脆不让人点：**每次刷新顺手往前挪一段**。
      *
-     * 一次拉 3 年的话中间没有任何反馈，用户只会觉得卡死；按年分段可以在标题栏
-     * 显示「第 2/3 段」，而且某一段全是缓存就提前停（说明更早的也都在本地了）。
+     * Python 侧用游标 `backfill_cursor` 记住「下次从哪天往前补」，默认今天，
+     * 一段一年，退到下限（8 年前）返回 `done=true`。所以：
+     * - 已经补完的库，第一次调用就返回，不发任何请求；
+     * - 没补完的库，刷新几次慢慢补齐，每次只花一段的时间。
      */
-    private fun runHistorySyncAll(quiet: Boolean = false) {
-        val email = secrets.email() ?: ""
-        val pwd = secrets.password() ?: ""
-        // quiet：登录后自动跑的那次。不弹全屏 loading，只在标题栏写进度 ——
-        // 用户是来「登录」的，不是来等三年的历史搬完。
-        if (!quiet) busy(true)
-        subtitle.text = if (quiet) "后台补齐历史…" else "补全历史 准备中…"
+    private fun runBackfill() {
+        if (backfilling) return
+        backfilling = true
         thread {
-            var end = todayISO()
             var seg = 0
             var fetched = 0
-            var skipped = 0
             var lastErr = ""
             var needLogin = false
-            while (seg < 3) {
-                val start = shiftISO(end, -364)
-                ui { subtitle.text = "补全历史 第 ${seg + 1}/3 段：$start ~ $end" }
-                val r = apiCall("sync_range", start, end, email, pwd, false, false, 40)
-                Log.i(TAG, "history sync-all seg=${seg + 1} $start~$end " +
-                    "ok=${r.optBoolean("ok")} fetched=${r.optInt("fetched")} " +
-                    "skipped=${r.optInt("skipped")} err=${r.optString("error")}")
+            var done = false
+            while (!done && seg < 12) {            // 12 段兜底，防止死循环
+                val r = apiCall("backfill_next")
                 if (!r.optBoolean("ok")) {
                     lastErr = r.optString("error")
-                    if (r.optBoolean("need_login") || r.optBoolean("need_mfa")) {
-                        needLogin = true
-                        lastErr = "登录已失效"
-                        break
-                    }
+                    needLogin = r.optBoolean("need_login") || r.optBoolean("need_mfa")
                     break
                 }
+                done = r.optBoolean("done")
                 fetched += r.optInt("fetched")
-                skipped += r.optInt("skipped")
-                // 整段都是缓存：更早的也大概率有了，不用再往前跑
-                if (r.optInt("fetched") == 0) break
-                end = shiftISO(start, -1)
-                seg++
+                if (!done) {
+                    seg++
+                    val a = r.optString("start")
+                    val b = r.optString("end")
+                    Log.i(TAG, "backfill seg=$seg $a~$b fetched=${r.optInt("fetched")} " +
+                        "skipped=${r.optInt("skipped")}")
+                    ui { subtitle.text = "补齐历史 第 $seg 段：$a ~ $b（新拉 ${r.optInt("fetched")} 天）" }
+                }
             }
-            // 跑完（没报错）才落标记：失败的话下次登录会自动重试
-            if (lastErr.isEmpty()) apiCall("mark_backfill", true)
-            Log.i(TAG, "history sync-all done fetched=$fetched skipped=$skipped quiet=$quiet err=$lastErr")
+            backfilling = false
+            Log.i(TAG, "backfill done seg=$seg fetched=$fetched err=$lastErr")
 
             ui {
-                if (!quiet) busy(false)
                 updateSubtitle()
-                if (needLogin) {
-                    toast("登录已失效，补全中止")
-                    askGarminLogin()
-                    return@ui
-                }
-                if (!quiet || fetched > 0) {
-                    toast(if (lastErr.isNotEmpty())
-                        "补全历史中断：$lastErr（已补 $fetched 天）"
-                    else
-                        "补全历史完成：新拉 $fetched 天、跳过 $skipped 天（最多回溯 3 年）")
-                }
+                // 后台任务遇到会话失效不弹登录：用户可能正在看别的页面，
+                // 下一次主动刷新时自然会提示。
+                if (needLogin) return@ui
+                if (seg > 0 && fetched > 0) toast("已补齐 $seg 段历史：新拉 $fetched 天")
                 thread {
-                    apiCall("dashboard")
                     setStatus(apiCall("status"))
                     ui { reload() }
                 }
@@ -556,7 +432,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // DatePicker 的月份是 0-based；统一转成 YYYY-MM-DD 再传给 Python 侧校验。
     private fun isoOf(y: Int, m: Int, d: Int): String =
         String.format(Locale.US, "%04d-%02d-%02d", y, m + 1, d)
 
@@ -575,24 +450,6 @@ class MainActivity : Activity() {
             c.get(Calendar.DAY_OF_MONTH))
     } catch (t: Throwable) {
         todayISO()
-    }
-
-    private fun pickDate(title: String, initial: String, done: (String) -> Unit) {
-        val p = initial.split("-")
-        DatePickerDialog(
-            this,
-            DatePickerDialog.OnDateSetListener { _, y, m, d -> done(isoOf(y, m, d)) },
-            p[0].toInt(), p[1].toInt() - 1, p[2].toInt()
-        ).apply { setTitle(title) }.show()
-    }
-
-    private fun pickDateRange(done: (String, String) -> Unit) {
-        pickDate("选择结束日期", todayISO()) { end ->
-            pickDate("选择起始日期", shiftISO(end, -89)) { start ->
-                if (start > end) toast("起始日不能晚于结束日")
-                else done(start, end)
-            }
-        }
     }
 
     // ------------------------------------------------------------ 启动
@@ -707,11 +564,9 @@ class MainActivity : Activity() {
                             if (garminDead) toast("佳明登录已失效，请在「账号登录」里重登")
                             else if (corosDead) toast("高驰登录已过期，请在「账号登录」里重登")
                             reload()
-                            // 刚登录：历史还没补过就顺手补一次（一次性，跑完落标记）
-                            if (autoBackfillPending) {
-                                autoBackfillPending = false
-                                maybeAutoBackfill()
-                            }
+                            // 每次刷新（含刚登录）都在后台往前补一段；
+                            // 已经补完的库会在第一次调用时立即返回，不发请求。
+                            runBackfill()
                         }
                     }
                 } else {
@@ -842,7 +697,6 @@ class MainActivity : Activity() {
                     }
                     r.optBoolean("ok") -> {
                         secrets.save(email, pwd)
-                        autoBackfillPending = true
                         toast("登录成功")
                         doSync()
                     }
@@ -874,7 +728,6 @@ class MainActivity : Activity() {
             ui {
                 busy(false)
                 if (r.optBoolean("ok")) {
-                    autoBackfillPending = true
                     toast("登录成功")
                     doSync()
                 } else {
@@ -1050,8 +903,8 @@ class MainActivity : Activity() {
 
     /** 当前列表数据；缩略图线程回来时要用，所以挂在类上而不是闭包里。 */
     private var clipArray: JSONArray = JSONArray()
-    /** 刚登录成功：等这次同步跑完就自动补一次全量历史（只触发一次）。 */
-    private var autoBackfillPending = false
+    /** 后台补全历史是否正在跑：下拉刷新连续触发时避免并发两轮。 */
+    private var backfilling = false
 
     /** 当前素材对话框。重建前必须先关掉它，否则会一层层叠起来。 */
     private var clipDialog: Dialog? = null

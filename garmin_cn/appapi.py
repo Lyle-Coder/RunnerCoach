@@ -133,7 +133,7 @@ def _today(store: Store) -> dict:
 _API = {
     "env_info", "status", "login", "submit_mfa", "sync", "sync_range",
     "dashboard", "card_html", "act_card_html", "runs", "activities", "days_index",
-    "history_stats", "mark_backfill",
+    "history_stats", "backfill_next",
     "plan", "set_amap_key", "start_server", "recent", "read_html",
     "motion_html", "motion_status", "motion_cleanup", "motion_audio",
     "clips_list", "clips_add", "clips_remove", "clips_reprobe",
@@ -244,9 +244,13 @@ def status() -> dict:
 
     today_info = _today(store) if st.get("days") else None
     last_sync = store.get_meta("last_sync")
-    # 「补全历史」是一次性动作，以前要用户自己去「我的」里点。现在登录后
-    # 由 App 在后台自动跑一次，跑完写 `backfill_at`；没写过就还欠一次。
-    need_bf = not bool(store.get_meta("backfill_at"))
+    # 「补全历史」是后台慢慢往前挪的游标：退到下限之前都算还欠着。
+    _cursor = store.get_meta(BACKFILL_META)
+    try:
+        _cur_day = dt.date.fromisoformat(str(_cursor)) if _cursor else None
+    except ValueError:
+        _cur_day = None
+    need_bf = _cur_day is None or _cur_day > _backfill_floor()
     try:
         store.conn.close()
     except Exception:
@@ -718,26 +722,91 @@ def card_html(date: str | None = None) -> dict:
             **export_spec(BG_CARD, trim=False)}
 
 
-def mark_backfill(ok: bool = True) -> dict:
-    """标记「全量历史已经补过一次」。
+# ---------------------------------------------------------------- 历史补全
+# 「历史补全」以前是「我的」里的一个按钮，选区间再点确定。问题是它点开只有一个
+# 弹窗、跑完也只是「跳过 90 天缓存」，用户看完只觉得没反应。现在改成**游标式**：
+# 每次刷新由近到远补一段，游标存进 meta，直到回到最早年为止，全程后台。
+BACKFILL_META = "backfill_cursor"
+BACKFILL_SPAN_DAYS = 365      # 一段一年：太长中间没反馈，太短请求次数翻倍
+BACKFILL_MAX_YEARS = 8        # 再早的数据佳明国区也基本没有，兜个底
+BACKFILL_PAGES = 20           # 每段最多翻 20 页活动（约 1200 条）
 
-    只在 App 的「一键补全」真正跑完后由原生侧调用。之后 `status()` 的
-    `needs_backfill` 变成 false，登录时就**不会**再自动跑一遍 —— 补全是
-    一次性动作，每次登录都拉三年既慢又没意义。
-    失败不落标记，下次登录会重试。
-    """
-    if not ok:
-        return {"ok": True, "needs_backfill": True}
+
+def _backfill_floor(today: dt.date | None = None) -> dt.date:
+    t = today or dt.date.today()
     try:
-        store = Store(DB)
-        try:
-            store.set_meta("backfill_at",
-                           dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        finally:
-            store.conn.close()
-    except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-    return {"ok": True, "needs_backfill": False}
+        return t.replace(year=t.year - BACKFILL_MAX_YEARS)
+    except ValueError:                 # 2 月 29 日
+        return t.replace(year=t.year - BACKFILL_MAX_YEARS, day=28)
+
+
+def _backfill_segment(cur: dt.date, floor: dt.date,
+                      span: int = BACKFILL_SPAN_DAYS):
+    """算出这一段该补哪一截：返回 (start, end, next_cursor, done)。
+
+    纯函数，不碰网络也不碰库 —— 自检直接测它，就不必为了验一段逻辑
+    真去拉一年数据。
+    """
+    if cur <= floor:
+        return cur, cur, floor, True
+    start = max(floor, cur - dt.timedelta(days=max(1, int(span)) - 1))
+    nxt = start - dt.timedelta(days=1)
+    if nxt < floor:
+        nxt = floor
+    return start, cur, nxt, nxt <= floor
+
+
+def backfill_next(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
+    """由近到远补**一段**历史，返回这一段的结果和「是否已经补到头」。
+
+    游标 `meta.backfill_cursor` 记住「下次该从哪天往前补」，默认今天。
+    每段跑完把游标往前挪一年，所以刷新几次就能把全部历史慢慢补齐，
+    而且**每次只花一段的时间**，不会让人干等。
+
+    为什么不用「拉 0 天就停」判断到头：某一年可能真的没运动记录，
+    但那不代表更早的也没有。所以只认「游标退到下限」这一个条件。
+    """
+    today = dt.date.today()
+    floor = _backfill_floor(today)
+
+    store = Store(DB)
+    try:
+        raw = store.get_meta(BACKFILL_META) or today.isoformat()
+    finally:
+        store.conn.close()
+    try:
+        cur = dt.date.fromisoformat(str(raw))
+    except ValueError:
+        cur = today
+    if cur > today:
+        cur = today
+
+    if cur <= floor:
+        return {"ok": True, "done": True, "start": "", "end": "",
+                "fetched": 0, "skipped": 0, "cursor": floor.isoformat(),
+                "floor": floor.isoformat()}
+
+    start, end, nxt, done = _backfill_segment(cur, floor, span_days)
+    out = sync_range(start.isoformat(), end.isoformat(),
+                     with_body=False, force=False, activity_pages=BACKFILL_PAGES)
+    if not out.get("ok"):
+        return {"ok": False, "done": False,
+                "start": start.isoformat(), "end": cur.isoformat(),
+                "need_login": bool(out.get("need_login")),
+                "need_mfa": bool(out.get("need_mfa")),
+                "error": out.get("error") or "补全失败"}
+
+    store = Store(DB)
+    try:
+        store.set_meta(BACKFILL_META, nxt.isoformat())
+    finally:
+        store.conn.close()
+
+    return {"ok": True, "done": done,
+            "start": start.isoformat(), "end": end.isoformat(),
+            "fetched": out.get("fetched", 0), "skipped": out.get("skipped", 0),
+            "activities": out.get("activities", 0),
+            "cursor": nxt.isoformat(), "floor": floor.isoformat()}
 
 
 def _activity_days(today: str) -> set[str]:
