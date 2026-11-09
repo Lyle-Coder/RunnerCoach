@@ -179,6 +179,9 @@ def source_badge(store, sync_at: str | None = None) -> tuple[str, str]:
     双源都同步过就并排写两个；只接了高驰就别再写 Garmin 国区——
     那是 0.3.0 之前写死的文案，真机会误导人。
     """
+    if store.get_meta("demo"):
+        # demo 库：如实标注，别让演示截图看起来像真实账号数据
+        return "DEMO 仿真数据", sync_at or store.get_meta("last_sync") or "未同步"
     g = store.get_meta("last_sync")
     c = store.get_meta("last_sync_coros")
     names = []

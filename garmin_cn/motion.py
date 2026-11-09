@@ -122,6 +122,10 @@ def ensure_basemap(track: list[list[float]], ident: str) -> dict | None:
     """
     if len(track) < 2:
         return None
+    # GARMIN_MAP=0：与活动图/看板同一个开关，demo 出图与 README 截图靠它
+    # 保证「一条地图请求都不发」——底图是真实地图图块，不该出现在演示素材里。
+    if os.environ.get("GARMIN_MAP", "1") == "0":
+        return None
     meta = meta_of(track)
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(ident))[:48]
     cache = basemap.CACHE / f"motion-{safe_id}-{_fit_key(meta, len(track))}.png"
@@ -802,9 +806,31 @@ let restPath = null, donePath = new Path2D(), doneIdx = 0;
 // 压暗在开机时烘焙进一张离屏画布：每帧对 1080×1920 做一次 filter 是纯浪费，
 // 而且滤镜+缩放在同一帧里叠着做，交互播放会掉帧。
 let baseBaked = null;
+/* 没有高德 Key 时（或显式 GARMIN_MAP=0）的底板。
+   以前这里是纯色 #0E131A：轨迹一条细线浮在纯黑上，整个卡片看着像没加载出来。
+   现在烘焙一层冷色径向渐变 + 细网格，既压得住轨迹，也让「无底图」看起来是
+   设计而不是故障 —— 没配 Key 的用户是多数，这个观感值这点开销。 */
+function bakeGrid() {
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(W / 2, H * 0.42, 0, W / 2, H * 0.42, W * 0.78);
+  grd.addColorStop(0, '#122033');
+  grd.addColorStop(0.55, '#0C1420');
+  grd.addColorStop(1, '#070A10');
+  g.fillStyle = grd; g.fillRect(0, 0, W, H);
+  g.strokeStyle = 'rgba(96,165,250,.085)'; g.lineWidth = 1;
+  for (let x = 0; x < W; x += 64) {
+    g.beginPath(); g.moveTo(x + .5, 0); g.lineTo(x + .5, H); g.stroke();
+  }
+  for (let y = 0; y < H; y += 64) {
+    g.beginPath(); g.moveTo(0, y + .5); g.lineTo(W, y + .5); g.stroke();
+  }
+  baseBaked = c;
+}
 function bakeBase() {
   const im = IMG.get(D.base);
-  if (!im) return;
+  if (!im) { bakeGrid(); return; }
   const V = D.view || {k: 1, dx: 0, dy: 0};
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
@@ -828,6 +854,7 @@ function drawMap(scale, cx, cy) {
   if (scale !== 1) {
     ctx.translate(W / 2, H / 2); ctx.scale(scale, scale); ctx.translate(-cx, -cy);
   }
+  if (!baseBaked) bakeGrid();
   if (baseBaked) {
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(baseBaked, 0, 0);

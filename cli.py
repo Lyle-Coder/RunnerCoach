@@ -3235,6 +3235,41 @@ def cmd_selftest(args) -> int:
     assert "body_battery_day(self, date: str, *, timeout: int = 30" in _cl_src, \
         "client 层不支持短超时"
 
+    # ---- v59：README 截图全部来自 demo 数据 --------------------------------
+    _root = Path(__file__).parent
+    _readme = (_root / "README.md").read_text(encoding="utf-8")
+    for _img in ("card", "activity", "replay", "dashboard",
+                 "app-today", "app-history", "app-ai"):
+        _png = _root / "docs" / "img" / f"{_img}.png"
+        assert _png.is_file() and _png.stat().st_size > 8000, \
+            f"README 截图缺失或为空：{_png.name}（先跑 tools/readme_shots.py）"
+        assert f"docs/img/{_img}.png" in _readme, f"README 没引用 {_img}.png"
+    assert "高驰" in _readme and "COROS" in _readme, "README 没写高驰数据源"
+    # demo 必须能给活动图和回放供数据，否则 README 只能用真实 GPS 出图
+    import tempfile as _tf
+    from garmin_cn import demo as _D
+
+    _ddb = Path(_tf.mkdtemp()) / "demo-check.db"
+    _dst = _D.build(_ddb, days=14)
+    try:
+        _drow = _dst.conn.execute(
+            "SELECT activity_id FROM activities WHERE distance_m > 2000 LIMIT 1").fetchone()
+        assert _drow, "demo 没有带距离的活动"
+        _ddet = _dst.get_detail(_drow["activity_id"]) or {}
+        assert len(_ddet.get("track") or []) > 50, "demo 活动没有轨迹，活动图/回放演示不了"
+        _pts = (_ddet.get("series") or {}).get("points") or []
+        assert _pts and _pts[0]["t"] > 1e9, "demo 序列为空或时间戳不是秒级 epoch"
+        assert _ddet.get("laps"), "demo 没有分圈"
+        _dday = _dst.day(dt.date.today().isoformat()) or {}
+        assert _dday.get("bb_series"), "demo 没有身体电量曲线，一图流只能显示「未测量」"
+    finally:
+        _dst.conn.close()
+    # 无底图时画网格底板：纯色底会让回放看着像「没加载出来」
+    assert "function bakeGrid()" in _msrc and "bakeGrid(); return;" in _msrc, \
+        "回放没有无底图底板，没配高德 Key 的用户看到的是纯黑"
+    assert 'os.environ.get("GARMIN_MAP", "1") == "0"' in _msrc, \
+        "回放底图不认 GARMIN_MAP=0，demo 出图会去抓真实地图瓦片"
+
     # ---- 发布脚本：快照只保留最近 5 个 APK ---------------------------------
     _snap = Path(__file__).parent / "tools/snapshot.py"
     assert _snap.is_file(), "缺 tools/snapshot.py"
