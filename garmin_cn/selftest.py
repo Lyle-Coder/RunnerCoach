@@ -2282,6 +2282,23 @@ def run() -> int:
         "prepare 没有调用 prune_dist，发版时不会自动清"
     shutil.rmtree(_dd, ignore_errors=True)
 
+    # 月/周柱状图必须铺满整个周期：11 月才到 9 号也要画 30 根，后面是 0 柱。
+    # 以前把 end 截到今天，月初打开只有 9 根，图被压成一条窄带。
+    from garmin_cn import history as _hist
+
+    _hm = _hist.history_page({"mode": ["month"]}).split("</style>")[-1]
+    _sv = re.search(r"<svg.*?</svg>", _hm, re.S)
+    assert _sv, "月视图没有柱状图"
+    _bars = len(re.findall(r"<rect x=", _sv.group(0)))
+    _t = dt.date.today()
+    _dim = (_t.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1)
+    assert _bars == _dim.day, \
+        f"月视图只画了 {_bars} 根，应铺满整月 {_dim.day} 根（未来日期为 0）"
+    _hw = _hist.history_page({"mode": ["week"]}).split("</style>")[-1]
+    _svw = re.search(r"<svg.*?</svg>", _hw, re.S)
+    assert _svw and len(re.findall(r"<rect x=", _svw.group(0))) == 7, \
+        "周视图不是固定 7 根（周中打开也要铺满整周）"
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):

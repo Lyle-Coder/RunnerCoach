@@ -353,8 +353,8 @@ def history_page(qs: dict) -> str:
             sel = keys[-1] if keys else ""
         cur = next((w for w in weeks if str(w.get("key")) == sel), {})
         rs, re_ = _week_span(sel) if sel else ("", "")
-        if re_ and re_ > today:
-            re_ = today                               # 本周不画未来的空柱
+        # 同上：整周 7 根都画，周中打开也是 7 根（后几天是 0），
+        # 否则周三只画 3 根，和月视图的疏密完全对不上。
         bs = range_stats(rs, re_)
         chart = chart_card(f"{sel} 每日跑量（km）" if sel else "本周每日跑量（km）",
                            _weekday_series(bs.get("days") or []),
@@ -372,8 +372,10 @@ def history_page(qs: dict) -> str:
         cur = next((m for m in months if str(m.get("key")) == sel), {})
         rs = f"{sel}-01" if sel else ""
         re_ = _month_end(sel) if sel else ""
-        if re_ and re_ > today:
-            re_ = today                               # 本月只画到今天
+        # 整月都要铺出来：11 月才到 9 号也画满 30 根，后面是 0。
+        # 以前这里把 re_ 截到今天，月初打开只有 9 根柱子，图被压成一条窄带，
+        # 也看不出「这个月还剩多少天」。柱状图的刻度本来就是按月数量身定的
+        # （dense 分支就是为 28~31 根写的）。
         bs = range_stats(rs, re_)
         chart = chart_card(f"{sel} 每日跑量（km）" if sel else "本月每日跑量（km）",
                            bs.get("days") or [], hot=today,
