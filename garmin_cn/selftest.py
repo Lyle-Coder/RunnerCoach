@@ -813,8 +813,17 @@ def run() -> int:
         "视频卡片没有黑帧探测与上一帧缓存"
     assert "lit = sum > 24 * 24 * 3 * 8" in _msrc and "getImageData" in _msrc, \
         "黑帧判据丢了"
-    assert "videoFrame(p.clip.src, v, w, h)" in _msrc, \
+    # 0.6.1 起 videoFrame 多了 rot 参数（回退路径要按原始方向出图再旋转）
+    assert re.search(r"videoFrame\(p\.clip\.src, v, w, h, rotV\)", _msrc), \
         "drawPop 还在直接画 <video>，黑帧会闪出来"
+    # 预抽帧已把显示旋转烘进像素，不能再转一次，否则 90° 变 180°，
+    # 成片里看着就是「旋转没生效」——这是用户实际反馈过的现象。
+    assert "function usesPre(src)" in _msrc, "没区分「预抽帧已旋转」的路径"
+    assert re.search(r"usesPre\(p\.clip\.src\)\) ctx\.drawImage\(frame", _msrc), \
+        "预抽帧仍被二次旋转，旋转角度会翻倍"
+    # 图片素材也要按旋转摆正（以前直接画进旋转后的框，变形且看不出转）
+    assert "drawRotated(cellOf(p.clip, im, fw, fh, true)" in _msrc, \
+        "图片素材没应用显示旋转"
     assert "ctx.drawImage(v, left + pad" not in _msrc, \
         "还留着直连 <video> 的绘制路径"
     assert "VLAST.clear()" in _msrc and "lastClipSrc" in _msrc, \
@@ -851,7 +860,7 @@ def run() -> int:
     assert "VDONE.get(src) === step" in _msrc, \
         "同一抽帧格里还是会每帧做亮度探测 + 全尺寸重绘"
     assert "function fallbackFrame(" in _msrc and \
-        "return fallbackFrame(src, w, h);   // 黑帧沿用上一张有效画面" in _msrc, \
+        re.search(r"return fallbackFrame\(src, fw, fh\);\s*// 黑帧沿用上一张有效画面", _msrc), \
         "黑帧（没有缓存）时同格仍会反复探测，视频解不出画面就又拖慢导出"
     assert "setTimeout(done, 350)" not in _msrc and "setTimeout(done, 120)" in _msrc, \
         "seek 超时仍是 350ms，几千帧会积成几十分钟"

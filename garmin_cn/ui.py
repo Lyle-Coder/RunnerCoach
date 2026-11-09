@@ -689,7 +689,10 @@ def home_page() -> str:
 
     body_html = (sec("今日状态", hero + '<div style="height:10px"></div>' + stats,
                      ("完整看板", f"/view?date={day}&from=today")) +
-                 (sec("今日课表", plan_html) if plan_html else "") +
+                 # 课表卡本身不可点，这里必须留一个入口进二级页看整周与计划信息。
+                 # v63 重排首页时把快捷卡删了，连带把这个链接一起弄丢了。
+                 (sec("今日课表", plan_html, ("完整课表", "/plan?from=today"))
+                  if plan_html else "") +
                  sec("身体", f'<div class="grid">'
                              f'{sleep_card}{weight_card}</div>') +
                  sec("最近活动", rows))

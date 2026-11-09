@@ -1256,9 +1256,21 @@ function fallbackFrame(src, w, h) {
   }
   return null;
 }
-function videoFrame(src, v, w, h) {
+// 导出期是否走原生预抽帧。预抽帧**已经把显示旋转烘进像素**（MotionClips.extract
+// 里转的），所以画它的时候不能再转一次 —— 以前两条路径都调 drawRotated，
+// 90° 被转成 180°，成片里看着就是「旋转没生效」。播放模式用 <video>，那才需要转。
+function usesPre(src) {
+  return !!(exportMode && VPRE.src === src && VPRE.frames.length && !VPFAIL.has(src));
+}
+
+function videoFrame(src, v, w, h, rot) {
+  // w/h 是**旋转后**的外接框。播放回退路径要按原始方向出图，
+  // 再由 drawRotated 转过去；直接画进 w×h 会把画面拉变形。
+  const swp = (rot === 90 || rot === 270);
+  const fw = swp ? h : w;
+  const fh = swp ? w : h;
   // 原生抽帧失败 / 没有这一段：静态封面。绝不再碰 <video>。
-  if (exportMode && VPFAIL.has(src)) return fallbackFrame(src, w, h);
+  if (exportMode && VPFAIL.has(src)) return fallbackFrame(src, fw, fh);
   // 导出期预抽帧就绪：按素材内相对时间直接取缓存位图，完全不碰 <video>。
   // 这是整条流水线提速的关键——渲染循环里不再有解码等待，也不再有
   // 「seek 没到位却抓到旧帧」这种让画面停住的机会。
@@ -1285,16 +1297,21 @@ function videoFrame(src, v, w, h) {
   VDONE.set(src, step == null ? -1 : step);
   if (lit) {
     let rec = VLAST.get(src);
-    if (!rec || rec.w !== w || rec.h !== h) {
+    if (!rec || rec.w !== fw || rec.h !== fh) {
       const c = document.createElement('canvas');
-      c.width = w; c.height = h;
-      rec = {c: c, w: w, h: h};
+      c.width = fw; c.height = fh;
+      rec = {c: c, w: fw, h: fh};
       VLAST.set(src, rec);
     }
-    rec.c.getContext('2d').drawImage(v, 0, 0, w, h);
+    // cover：保持视频原始比例铺满，别把横屏拉成竖的
+    const g2 = rec.c.getContext('2d');
+    const vw = v.videoWidth || fw, vh = v.videoHeight || fh;
+    const k2 = Math.max(fw / vw, fh / vh);
+    g2.clearRect(0, 0, fw, fh);
+    g2.drawImage(v, (fw - vw * k2) / 2, (fh - vh * k2) / 2, vw * k2, vh * k2);
     return rec.c;
   }
-  return fallbackFrame(src, w, h);   // 黑帧沿用上一张有效画面
+  return fallbackFrame(src, fw, fh);   // 黑帧沿用上一张有效画面
 }
 
 function popLayout(p) {
@@ -1391,17 +1408,27 @@ function drawPop(p, e) {
   if (isClip) {
     const [w, h] = lay.cells[0];
     if (p.clip.kind === 'image') {
-      // 图片素材：和照片走同一套裁剪铺满卡片，不走 <video>
+      // 图片素材：按原始方向 cover 到「旋转前」的框，再整体转过去。
+      // 以前直接画进旋转后的 w×h，图片会变形且转了看不出。
       const im = IMG.get(p.clip.src);
-      if (im) drawCell(im, p.clip, left + pad, top + pad, w, h, true);
-      else { ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h); }
+      const rotI = ((p.clip.rotate || 0) % 360 + 360) % 360;
+      const swp = (rotI === 90 || rotI === 270);
+      if (im) {
+        const fw = swp ? h : w, fh = swp ? w : h;
+        drawRotated(cellOf(p.clip, im, fw, fh, true), p.clip,
+                    left + pad, top + pad, w, h);
+      } else { ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h); }
     } else {
       const v = VIDS.get(p.clip.src);
       // readyState < 2 也不直接画空框：videoFrame 还有首帧兜底，
       // 画出来总比空框好（空框在成片里就是一处黑屏）。
-      const frame = v ? videoFrame(p.clip.src, v, w, h) : null;
-      if (frame) drawRotated(frame, p.clip, left + pad, top + pad, w, h);
-      else { ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h); }
+      const rotV = ((p.clip.rotate || 0) % 360 + 360) % 360;
+      const frame = v ? videoFrame(p.clip.src, v, w, h, rotV) : null;
+      if (frame) {
+        // 预抽帧已按显示旋转摆正，直接铺满；播放模式的 <video> 才需要转
+        if (usesPre(p.clip.src)) ctx.drawImage(frame, left + pad, top + pad, w, h);
+        else drawRotated(frame, p.clip, left + pad, top + pad, w, h);
+      } else { ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h); }
     }
   } else {
     let x = left + pad;

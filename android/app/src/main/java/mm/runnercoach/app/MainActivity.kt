@@ -1163,7 +1163,7 @@ class MainActivity : Activity() {
             showClipActions(o)
         }
 
-        if (exists) loadClipThumb(path, kind, dp(56)) { bmp ->
+        if (exists) loadClipThumb(path, kind, dp(56), o.optInt("rotate", 0)) { bmp ->
             if (bmp != null) {
                 thumb.setImageBitmap(bmp)
                 thumb.scaleType = ImageView.ScaleType.CENTER_CROP
@@ -1321,14 +1321,15 @@ class MainActivity : Activity() {
         dlg.show()
         dlg.window?.setLayout(
             (resources.displayMetrics.widthPixels * 0.92f).toInt(), WRAP_CONTENT)
-        loadClipThumb(path, kind, resources.displayMetrics.widthPixels) { bmp ->
+        loadClipThumb(path, kind, resources.displayMetrics.widthPixels,
+            o.optInt("rotate", 0)) { bmp ->
             if (bmp != null) iv.setImageBitmap(bmp)
         }
     }
 
-    /** 取缩略图：图片降采样解码，视频抓第一帧。绝不在主线程做。 */
+    /** 取缩略图：图片降采样解码，视频抓第一帧；按素材的显示旋转摆正。绝不在主线程做。 */
     private fun loadClipThumb(path: String, kind: String, maxPx: Int,
-                              done: (Bitmap?) -> Unit) {
+                              rotate: Int = 0, done: (Bitmap?) -> Unit) {
         thread {
             var bmp: Bitmap? = null
             try {
@@ -1357,7 +1358,25 @@ class MainActivity : Activity() {
             } catch (t: Throwable) {
                 Log.w(TAG, "clip thumb", t)
             }
-            ui { done(bmp) }
+            // 旋转只记在素材上、不转码，所以缩略图必须自己摆正 ——
+            // 否则点了「旋转 90°」列表里毫无变化，看着像按钮没生效。
+            val shown = bmp?.let { upright(it, rotate) }
+            ui { done(shown) }
+        }
+    }
+
+    /** 按角度把位图摆正（顺时针）。0° 原样返回，不做多余拷贝。 */
+    private fun upright(src: Bitmap, rotate: Int): Bitmap {
+        val d = ((rotate % 360) + 360) % 360
+        if (d == 0) return src
+        return try {
+            val m = android.graphics.Matrix().apply { postRotate(d.toFloat()) }
+            val out = Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+            if (out !== src) src.recycle()
+            out
+        } catch (t: Throwable) {
+            Log.w(TAG, "upright bitmap", t)
+            src
         }
     }
 
