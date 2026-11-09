@@ -6,6 +6,7 @@ import html as _html
 import math
 from pathlib import Path
 
+from . import brand as BR
 from .coach import brief
 from .metrics import baseline, num
 
@@ -32,15 +33,15 @@ CSS = """
   --cyan:#22D3EE;
 }
 *{box-sizing:border-box}
-/* 背景的两层径向渐变是整页「科技感」的底色：右上蓝、左上青，
-   固定不随滚动 —— 纯 #070B12 会显得像没加载完。 */
-body{margin:0;color:var(--ink);
-  background:radial-gradient(900px 520px at 88% -8%,rgba(59,130,246,.22),transparent 60%),
-    radial-gradient(760px 480px at 0% 0%,rgba(34,211,238,.12),transparent 62%),
-    var(--bg);
-  background-attachment:fixed;
+/* 背景的两层径向渐变是整页「科技感」的底色：右上蓝、左上青。
+   放到固定伪元素而不是 background-attachment:fixed —— 后者会让 WebView
+   每次滚动重绘整面背景，中低端机上就是「滚动发涩、下拉闪一下」。 */
+body{margin:0;color:var(--ink);background:var(--bg);
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
   -webkit-font-smoothing:antialiased;line-height:1.6;font-size:14px}
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:radial-gradient(900px 520px at 88% -8%,rgba(59,130,246,.22),transparent 60%),
+    radial-gradient(760px 480px at 0% 0%,rgba(34,211,238,.12),transparent 62%)}
 .wrap{max-width:1120px;margin:0 auto;padding:28px 20px 56px}
 /* 页头只有标题 + 一个动作。以前这里是两个胶囊并排，390 宽下
    「AI 教练」和「数据源 · 上次同步」加起来 402px，必然折成第二行还横向溢出；
@@ -175,6 +176,12 @@ td.name{color:var(--ink);max-width:220px;overflow:hidden;text-overflow:ellipsis;
   /* 窄屏让活动名换成两行而不是硬撑宽度：多数日子不再需要横向滚动 */
   td.name{max-width:150px;white-space:normal;word-break:break-word;line-height:1.45}
 }
+""" + BR.BRAND_CSS + """
+/* 完整看板也用同一枚品牌角标；页头与页脚各一处，不压正文。 */
+.top .brandline{margin-bottom:4px}
+.top .brandline h1{margin:0}
+.foot .rc-foot{margin-right:8px;color:var(--blue);font-weight:600}
+.foot .rc-foot .rc-badge{width:18px;height:18px}
 """
 
 # 「教练点评」的异步补全脚本。看板是服务端渲染的静态页，配好模型后
@@ -934,7 +941,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
 
 <div class="top">
   <div class="top-main">
-    <h1>每日看板</h1>
+    <div class="brandline">{BR.badge_html(24)}<h1>每日看板</h1></div>
     <div class="sub">{esc(d)} {WEEK_CN[d.weekday()]} · 睡眠/恢复/负荷综合分析</div>
     <div class="src"><i class="dot"></i><span>{src_line}</span></div>
   </div>
@@ -1011,6 +1018,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
 <div class="card">{table}</div>
 
 <div class="foot">
+<div class="rc-foot">{BR.badge_html(18)}RunnerCoach</div>
 恢复度 = 睡眠 35% + HRV 30% + 静息心率 20% + 身体电量 15%。睡眠与身体电量直接用 Garmin 原始 0–100 分；
 HRV 与静息心率以 28 天中位数为基线，持平或更好记满分，HRV 每低 30% 扣满、静息心率每高 6 bpm 扣满。<br>
 ACWR = 近 7 天负荷 ÷（近 28 天负荷 ÷ 4）；CTL/ATL 为 42 天与 7 天指数移动平均，TSB = CTL − ATL。<br>

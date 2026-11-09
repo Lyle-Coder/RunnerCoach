@@ -21,6 +21,8 @@ import re
 import html
 from pathlib import Path
 
+from . import brand as BR
+
 # 与 android values/colors.xml、aiui.CSS、report.CSS 保持同一组色值。
 # 这套 token 是双向的唯一来源：改这里要同步 aiui.py 的 :root 与 MainActivity 的
 # 颜色常量（docs/交互树.md 第五节有对照表）。
@@ -270,7 +272,7 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
   .acts,.grid{grid-template-columns:1fr}
   .big{font-size:40px}
 }
-"""
+""" + BR.BRAND_CSS
 
 # 看板是独立的宽版 HTML：在 App 里强制单列/收紧留白，别让三栏挤成一小坨。
 DASH_FIX = """
@@ -310,7 +312,16 @@ AI_FIX = """
     0 14px 34px -22px rgba(0,0,0,.9)}
 /* tabs 槽底比页面再深一点，选中项才浮得起来 */
 .tabs{background:rgba(9,14,22,.9);border:1px solid rgba(96,165,250,.12)}
-"""
+""" + BR.BRAND_CSS + """
+/* AI 页自带 CSS，用 h1 的角标伪元素补上同一枚品牌图标，不改它的 DOM。 */
+.top>div:first-child h1{display:flex;align-items:center;gap:9px}
+.top>div:first-child h1::before{content:"";flex:none;width:26px;height:26px;
+  border-radius:8px;
+  background:url("__RC_MARK_URI__") center/80% no-repeat,
+    linear-gradient(155deg,#16273D,#091320);
+  border:1px solid rgba(96,165,250,.36);
+  box-shadow:0 0 16px -5px rgba(59,130,246,.9)}
+""".replace("__RC_MARK_URI__", BR.mark_uri(26))
 
 BRIDGE_JS = """<script>
 (function(){
@@ -391,6 +402,11 @@ def page(kicker: str, title: str, lede: str, body: str,
         head_cls += " after-back"
     if action:
         head_cls += " with-act"
+    # 页头左上角放一枚品牌角标：和启动器、开屏、一图流是同一个图形。
+    # 只做装饰，读屏器跳过；真正的标题仍是 h1。
+    badge = BR.badge_html(26, "rc-head-badge")
+    foot_html = ('<div class="rc-foot">' + BR.badge_html(18) +
+                 '<span>RunnerCoach</span></div>' + esc(foot))
     return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070B12">
@@ -399,12 +415,12 @@ def page(kicker: str, title: str, lede: str, body: str,
 {back_html}
 <header class="page-head{head_cls}">
   {action}
-  <div class="kicker">{esc(kicker)}</div>
+  <div class="brandline">{badge}<div class="kicker">{esc(kicker)}</div></div>
   <h1>{esc(title)}</h1><p class="lede">{esc(lede)}</p>
   <div class="meta">{chips}</div>
 </header>
 <main>{body}</main>
-<div class="foot">{esc(foot)}</div>
+<div class="foot">{foot_html}</div>
 </div>{BRIDGE_JS}</body></html>"""
 
 
@@ -1080,8 +1096,12 @@ def me_page() -> str:
             row("!", "诊断日志", "出问题时把这段发出来，能定位到具体一步",
                 act="diag", tone="a"))
 
-    about = (f'<div class="card"><div class="lab">RunnerCoach · v{esc(VER)}</div>'
-             '<div class="note" style="margin-top:8px;font-size:12.5px;line-height:1.8">'
+    about = ('<div class="card rc-about"><div class="rc-about-h">' +
+             BR.badge_html(38) +
+             f'<div><div class="lab">RunnerCoach · v{esc(VER)}</div>' +
+             '<div class="note" style="margin-top:2px">本地优先的跑步教练</div>'
+             '</div></div>'
+             '<div class="note" style="margin-top:10px;font-size:12.5px;line-height:1.8">'
              '凭据与健康数据只存在这台设备的 App 私有目录；看板、图片、回放全部本地生成，'
              '页面不加载任何 CDN、远程字体或统计脚本。卸载 App 即清空本地数据。'
              '<br><a class="link-act" href="/privacy">完整隐私说明 →</a>'

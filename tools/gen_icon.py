@@ -12,11 +12,18 @@ Outputs:
 """
 import pathlib
 import subprocess
+import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 RES = ROOT / "android" / "app" / "src" / "main" / "res"
 OUT_ICON = ROOT / "docs" / "icon"
+# 图形只认 garmin_cn/brand.py 这一份：开屏、网页角标、一图流都从那里取，
+# 启动器图标不能再自己维护一套坐标。
+sys.path.insert(0, str(ROOT))
+from garmin_cn.brand import (  # noqa: E402
+    NAVY, filter_def, glow_layer, core_layer,
+)
 
 CHROME_CANDIDATES = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -26,33 +33,11 @@ CHROME_CANDIDATES = [
 ]
 
 # ---------------------------------------------------------------- artwork --
-
-# Stadium track + pulse + start/end markers, 130x130 unit space.
-# Real glow = a blurred copy of every stroke underneath the crisp layer.
-ART_GLOW = """
-  <g filter="url(#glow)" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="24" y="34" width="82" height="62" rx="31" fill="none" stroke="#2E7BBF" stroke-width="11" stroke-opacity="0.95"/>
-    <rect x="38" y="48" width="54" height="34" rx="17" fill="none" stroke="#2E5A80" stroke-width="4" stroke-opacity="0.8"/>
-    <path d="M22 65 L48 65 L57 47 L68 85 L78 56 L85 65 L108 65" fill="none" stroke="#5FA8E0" stroke-width="10"/>
-    <circle cx="22" cy="65" r="10" fill="#4FD6A6"/>
-    <rect x="98" y="55" width="20" height="20" rx="4" fill="#E06A5F"/>
-  </g>
-"""
-
-ART_CORE = """
-  <g stroke-linecap="round" stroke-linejoin="round">
-    <rect x="24" y="34" width="82" height="62" rx="31" fill="none" stroke="#5FA8E0" stroke-width="5"/>
-    <rect x="38" y="48" width="54" height="34" rx="17" fill="none" stroke="#2E5A80" stroke-width="3"/>
-    <path d="M22 65 L48 65 L57 47 L68 85 L78 56 L85 65 L108 65" fill="none" stroke="#CFE6FF" stroke-width="3.5"/>
-    <circle cx="22" cy="65" r="8" fill="#4FD6A6"/>
-    <rect x="100" y="57" width="16" height="16" rx="3.5" fill="#E06A5F"/>
-  </g>
-"""
-
-FILTER = ('<filter id="glow" x="-40%" y="-40%" width="180%" height="180%">'
-          '<feGaussianBlur stdDeviation="4"/></filter>')
-
-NAVY = "#0F1B2A"
+# 图形与网页/开屏共用 garmin_cn/brand.py；这里只负责把它渲染成各档 PNG。
+GLOW_ID = "glow"
+ART_GLOW = glow_layer(GLOW_ID)
+ART_CORE = core_layer()
+FILTER = filter_def(GLOW_ID)
 
 
 def svg_legacy() -> str:

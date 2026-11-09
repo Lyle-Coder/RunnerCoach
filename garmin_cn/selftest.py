@@ -24,6 +24,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+
+def _chart_svg(doc: str) -> str:
+    """只取柱状图那一段 SVG，不碰页头的品牌角标。
+
+    0.6.6 起每个页面外壳都带一枚内联 SVG 品牌标记，「页面里第一个 <svg>」
+    不再是柱状图；所有按 SVG 数柱子/数链接的断言都必须走这里。
+    """
+    a = doc.find('<svg viewBox="0 0 400 210"')
+    if a < 0:
+        return ""
+    b = doc.find("</svg>", a)
+    return doc[a:b + 6] if b > a else ""
+
+
 from .auth import AuthError, GarminCNAuth, MfaRequired   # noqa: E402
 from .client import GarminCNClient, SessionExpired        # noqa: E402
 from .coach import context_markdown                      # noqa: E402
@@ -1210,10 +1224,10 @@ def run() -> int:
     # 活动列表视图：柱状图必须在「活动」章节里（不在页首概览）
     _pg_list = _H.history_page({"mode": ["list"]})
     _pos_act = _pg_list.find(">活动</h2>")
-    assert _pos_act > 0 and _pg_list.find("<svg") > _pos_act, \
+    assert _pos_act > 0 and _pg_list.find('<svg viewBox="0 0 400 210"') > _pos_act, \
         "活动列表章节没有柱状图（被挪回页首了）"
     for _m in ("week", "month", "year"):
-        assert "<svg" in _H.history_page({"mode": [_m]}), f"{_m} 视图没有柱状图"
+        assert _chart_svg(_H.history_page({"mode": [_m]})), f"{_m} 视图没有柱状图"
     # 31 根柱要密排：不标数值、轴标签每 5 格一次
     # 30 根柱只该有 8 个刻度（首、每 5 格、末）；逐根标就是 30 个，
     # 柱子上挤一堆字反而读不出来。以前只看「有没有高亮色」，
@@ -1238,14 +1252,15 @@ def run() -> int:
     _pg_new = _H.history_page({"mode": ["month"], "sel": [_new_m]})
     assert f"{_old_m} 每日跑量" in _pg_old and f"{_new_m} 每日跑量" in _pg_new, \
         "柱状图标题没跟着选中的月份走"
-    _spots_old = _pg_old.count("<rect ") + _pg_old.count("<circle ")
+    _spots_old = (_chart_svg(_pg_old).count("<rect ") +
+                  _chart_svg(_pg_old).count("<circle "))
     assert _spots_old == _days_old, \
         f"选中历史月份后柱状图不是那个月的天数：{_spots_old} vs {_days_old}"
     assert 'class="row on"' in _pg_old and f"sel={_old_m}" in _pg_old, \
         "选中的周期行没有高亮"
     # 非法/过期的 sel 要回落到最新一期，不能空图或报错
     _pg_bad = _H.history_page({"mode": ["month"], "sel": ["1999-01"]})
-    assert f"{_new_m} 每日跑量" in _pg_bad and "<svg" in _pg_bad, \
+    assert f"{_new_m} 每日跑量" in _pg_bad and _chart_svg(_pg_bad), \
         "sel 越界时没有回落到最新一期"
     # 周视图：7 根柱（含没跑的日子），刻度是星期而不是日期数字。
     # 必须挑「活动只覆盖 6 天」的那一周来验 —— 拿最新一周（正好 7 天）测，
@@ -1256,7 +1271,8 @@ def run() -> int:
                     None) or (_hs.get("weeks") or [{}])[-1]
     _wk_key = str(_wk_part.get("key") or "")
     _pg_wk = _H.history_page({"mode": ["week"], "sel": [_wk_key]})
-    _spots_wk = _pg_wk.count("<rect ") + _pg_wk.count("<circle ")
+    _spots_wk = (_chart_svg(_pg_wk).count("<rect ") +
+                 _chart_svg(_pg_wk).count("<circle "))
     assert _spots_wk == 7, f"周视图不是 7 个刻度位（只画了有跑的日子）：{_spots_wk}"
     assert ">一</text>" in _pg_wk and ">日</text>" in _pg_wk, "周视图刻度不是星期"
     # 行的日期也必须是完整 ISO 周，否则「11-03~11-05」和 7 根柱对不上
@@ -1269,7 +1285,8 @@ def run() -> int:
         _pg_y = _H.history_page({"mode": ["year"], "sel": [_ys[-1]]})
         # 年视图的柱子带点击热区（多一层透明 rect），所以只数「有渐变填充的柱」
         # 与「零值点」——直接数 rect 会把热区也算进去（12 柱 + 12 热区 = 24）。
-        _spots_y = _pg_y.count('fill="url(#mb)"') + _pg_y.count("<circle ")
+        _spots_y = (_chart_svg(_pg_y).count('fill="url(#mb)"') +
+                    _chart_svg(_pg_y).count("<circle "))
         assert f"{_ys[-1]} 年各月跑量" in _pg_y and _spots_y == 12, \
             f"点旧年份没有切到那一年的 12 个月：{_spots_y} 个刻度位"
     # hot：只有「今天那一根」是实色，历史柱不该也实色
@@ -1289,8 +1306,7 @@ def run() -> int:
     # 柱子可点：列表页 12 个月、年视图 12 个月都该链到「按月 + 那一个月」；
     # 30/31 根的密排图不给链接（9px 宽点不准）。
     def _svg_only(doc: str) -> str:
-        a = doc.find("<svg")
-        return doc[a:doc.find("</svg>", a) + 6] if a >= 0 else ""
+        return _chart_svg(doc)
 
     _pg_list2 = _H.history_page({"mode": ["list"]})
     assert _svg_only(_pg_list2).count('href="/history?mode=month&amp;sel=') == 12, \
@@ -1914,9 +1930,12 @@ def run() -> int:
     h_none = ACTCARD.build_html(priv_row, priv_detail, privacy="none")
     h_trim = ACTCARD.build_html(priv_row, priv_detail, privacy="trim")
     h_hide = ACTCARD.build_html(priv_row, priv_detail, privacy="hide")
-    assert '<path d="M' in h_none and 'data-gc-privacy="none"' in h_none
+    # 品牌角标的 SVG 也带 <path d="M...">，但路径写成 "M55 34" 这种无空格
+    # 紧连数字；GPS 轨迹一律是 "M 210.9,209.0"。用后者当轨迹指纹，
+    # 否则 hide 档位会因为「有品牌图标」被误判成轨迹没藏干净。
+    assert '<path d="M ' in h_none and 'data-gc-privacy="none"' in h_none
     assert "已脱敏" in h_trim and 'data-gc-privacy="trim"' in h_trim
-    assert '<path d="M' not in h_hide and 'data-gc-private="hide"' in h_hide
+    assert '<path d="M ' not in h_hide and 'data-gc-private="hide"' in h_hide
     assert "轨迹已隐藏" in h_hide and "时间已隐藏" in h_hide
     assert "17:46" not in h_hide and "30.000" not in h_hide
     # 旧调用方不传档位时必须与 none 逐字节一致（兼容老 APK / 老 CLI）
@@ -2432,17 +2451,17 @@ def run() -> int:
     from garmin_cn import history as _hist
 
     _hm = _hist.history_page({"mode": ["month"]}).split("</style>")[-1]
-    _sv = re.search(r"<svg.*?</svg>", _hm, re.S)
+    _sv = _chart_svg(_hm)
     assert _sv, "月视图没有柱状图"
     # 0.6.3 起零值画圆点，所以刻度位 = 柱 + 点
-    _bars = len(re.findall(r"<rect x=|<circle ", _sv.group(0)))
+    _bars = len(re.findall(r"<rect x=|<circle ", _sv))
     _t = dt.date.today()
     _dim = (_t.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1)
     assert _bars == _dim.day, \
         f"月视图只画了 {_bars} 根，应铺满整月 {_dim.day} 根（未来日期为 0）"
     _hw = _hist.history_page({"mode": ["week"]}).split("</style>")[-1]
-    _svw = re.search(r"<svg.*?</svg>", _hw, re.S)
-    _n_wk = len(re.findall(r"<rect x=|<circle ", _svw.group(0))) if _svw else 0
+    _svw = _chart_svg(_hw)
+    _n_wk = len(re.findall(r"<rect x=|<circle ", _svw)) if _svw else 0
     assert _n_wk == 7, f"周视图不是固定 7 个刻度位（周中打开也要铺满整周）：{_n_wk}"
 
     # ---- 产物页批量管理：勾选 + 二次确认删除 ----
@@ -2538,6 +2557,54 @@ def run() -> int:
     assert _pages.count('role="button"') >= 1 and 'aria-label=' in _pages, \
         "可点容器没有 role/aria-label，TalkBack 读不出来"
     assert 'aria-hidden="true"' in _pages, "装饰性图标没标 aria-hidden"
+
+    # ---- 0.6.6：品牌图标统一到开屏 / 角标 / 三张出图 / 完整看板 ------------
+    from garmin_cn import brand as _BR
+    assert _BR.mark_svg(32) == _BR.mark_svg(32), \
+        "品牌 SVG 不是确定性的：同样输入两次出图不一致，缓存/回归都会失效"
+    assert _BR.TRACK_OUT in _BR.mark_svg() and _BR.PULSE_PATH in _BR.mark_svg(), \
+        "品牌图形缺了跑道或心电脉冲"
+    assert "%23" in _BR.mark_uri(), "data URI 没把 # 编码，CSS 背景图标会断"
+    _shell = U.page("TEST", "标题", "说明", "")
+    assert 'class="rc-badge' in _shell and 'class="brandline"' in _shell, \
+        "页面外壳没有品牌角标"
+    assert ".rc-badge" in _u.CSS and "radial-gradient" in _u.CSS, \
+        "页面 CSS 没带品牌角标与辉光"
+    for _n in ("card.py", "actcard.py", "racecard.py", "report.py"):
+        _s = (ROOT / "garmin_cn" / _n).read_text(encoding="utf-8")
+        assert "BR.BRAND_CSS" in _s and "BR.badge_html(" in _s, \
+            f"{_n} 没有接上统一品牌图形（又手画了一套？）"
+    _ac_src = (ROOT / "garmin_cn/actcard.py").read_text(encoding="utf-8")
+    assert 'BR.glow_overlay_css(' in _ac_src and 'BR.rgba(th["acc"]' in _ac_src, \
+        "活动图辉光没跟随运动主色"
+    # 出图裁边契约：body 底色必须还是纯色，渐变/辉光只能放在内容盒的装饰层里。
+    from garmin_cn import exportspec as _EX
+    from garmin_cn import actcard as _AC2
+    assert f"background:{_EX.BG_ACT}" in _AC2._CSS, \
+        "活动图 body 底色被改成渐变了，trim_bg 会整圈失效"
+    for _n, _flat in (("card.py", "background:#12161B"),
+                      ("racecard.py", "background:#12161B")):
+        assert _flat in (ROOT / "garmin_cn" / _n).read_text(encoding="utf-8"), \
+            f"{_n} 的 body 底色被改成渐变了，trim_bg 会整圈失效"
+    from garmin_cn import report as _RP
+    assert not re.search(r"background-attachment\s*:\s*fixed\s*;", _RP.CSS), \
+        "完整看板还在用 fixed 背景，WebView 滚动会重绘整面"
+    _res_dir = ROOT / "android/app/src/main/res"
+    for _n in ("drawable/ic_brand_mark.xml", "drawable/brand_badge_bg.xml",
+               "drawable/splash_bg.xml", "drawable/splash_glow.xml"):
+        assert (_res_dir / _n).is_file(), f"缺开屏/角标资源 {_n}"
+    _styles = (_res_dir / "values/styles.xml").read_text(encoding="utf-8")
+    assert "@drawable/splash_bg" in _styles, "冷启动 windowBackground 没换品牌底"
+    _vm = (_res_dir / "drawable/ic_brand_mark.xml").read_text(encoding="utf-8")
+    assert _BR.TRACK_OUT in _vm and _BR.PULSE_PATH in _vm, \
+        "原生角标的路径和网页/启动器不是同一份"
+    _kt2 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    for _needle in ("buildSplash()", "hideSplash()", "R.drawable.ic_brand_mark",
+                    "R.drawable.splash_glow"):
+        assert _needle in _kt2, f"MainActivity 缺开屏/角标代码：{_needle}"
+    assert "from garmin_cn.brand import" in (
+        ROOT / "tools/gen_icon.py").read_text(encoding="utf-8"), \
+        "启动器图标还在自己维护一套坐标"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")

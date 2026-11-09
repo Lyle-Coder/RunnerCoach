@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from . import brand as BR
 from .coach import brief
 from .exportspec import probe as _export_probe
 from .metrics import num
@@ -837,10 +838,25 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .aact-v.sm{{font-size:24px}}
 .aact-v small{{font-size:15px;font-weight:400;color:#9AA5B1;letter-spacing:0}}
 .aact-m{{font-size:15px;color:#7F8A97;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+/* ---- 品牌化：背景走「渐进 + 双辉光」，卡片顶沿一道高光，右下角大水印 ----
+   与 ui.py / actcard.py 共用 garmin_cn/brand.py，不在这里另写一套色值。 */
+{BR.BRAND_CSS}
+{BR.glow_overlay_css("34px 52px 26px")}
+{BR.card_css(".card")}
+.card{{position:relative}}
+.card::before{{content:"";position:absolute;left:0;right:0;top:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(96,165,250,.42),transparent)}}
+.kpi,.bkpi,.aact,.wkd{{background:linear-gradient(180deg,#202932,#171E26)}}
+.wrap{{position:relative;z-index:1}}
+.rc-wm{{right:36px;bottom:70px;opacity:.06}}
+.rc-date{{display:flex;align-items:center;gap:16px}}
+.rc-date .rc-badge{{box-shadow:0 0 26px -6px rgba(59,130,246,.9)}}
+.foot .rc-foot{{color:#8FA4BF;font-weight:600;letter-spacing:.5px}}
+.foot .rc-foot .rc-badge{{width:20px;height:20px}}
 
-</style></head><body><div class="wrap" data-gc-canvas>
+</style></head><body><div class="rc-glow"></div>{BR.watermark_html(420)}<div class="wrap" data-gc-canvas>
 <div class="top">
-  <div class="date">{d.strftime("%m月%d日")}<small>{DOW[d.weekday()]}</small></div>
+  <div class="rc-date">{BR.badge_html(44)}<div class="date">{d.strftime("%m月%d日")}<small>{DOW[d.weekday()]}</small></div></div>
   <div class="meta">恢复度 {_f(r.get("score"))} / 100<br>{esc(src)} · 已同步 {esc((sync_at or "")[:16]) or esc(res["date"])}</div>
 </div>
 
@@ -908,7 +924,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
   </div>
 </div>
 
-<div class="foot"><span>数据来源：Garmin Connect（国区）</span><span>生成于 {dt.datetime.now().strftime("%m-%d %H:%M")}</span></div>
+<div class="foot"><span class="rc-foot">{BR.badge_html(18)}RunnerCoach</span><span>数据来源：{esc(src)}</span><span>生成于 {dt.datetime.now().strftime("%m-%d %H:%M")}</span></div>
 </div>
 {_EXPORT_PROBE}</body></html>"""
 

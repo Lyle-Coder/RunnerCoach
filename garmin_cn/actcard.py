@@ -48,6 +48,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from . import brand as BR
 from .activity import project
 from .card import _find_browser
 from .exportspec import probe as _export_probe
@@ -1018,6 +1019,12 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
                   f"--tagfg:{th['acc']};--tagbg:{th['tag_bg']};--tagbd:{th['tag_bd']};"
                   # 版心几何从常量注入，CSS 里不再写死——加宽画幅时只改一处
                   f"--page-w:{W}px;--pad:{PAD}px;--trk-w:{TRK_W}px;--tw-w:{TW_W}px}}")
+    # 内容盒里的渐进与辉光跟随当前运动主色：跑步青、骑行橙、游泳蓝，
+    # 品牌图形本身不变，一张图里不会出现两套互不相干的光源。
+    # 注意不能改 body 背景（裁边契约见 brand.glow_overlay_css 的说明）。
+    css += BR.glow_overlay_css("30px 36px 40px",
+                               g1=BR.rgba(th["acc"], 0.16),
+                               g2=BR.rgba(th["acc2"], 0.10))
 
     # 距离升成和配速同级的第二个大数字，放最左——跑者第一眼要「跑了多远 + 多快」，
     # 距离缩在右侧小格里等于没强调。室内/力量课没有距离，就只留主指标一块。
@@ -1031,10 +1038,11 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width={W},initial-scale=1,viewport-fit=cover">
 <style>{css}</style></head>
-<body>
+<body><div class="rc-glow"></div>{BR.watermark_html(400)}
 <div class="page" data-gc-canvas data-gc-privacy="{mode}">
 
   <div class="head">
+    <div class="hbrand">{BR.badge_html(48, glow_color=th['acc'])}</div>
     <div class="hleft">
       <div class="hname">{esc(title or row.get("name"))}</div>
       <div class="hsub">{esc(date_txt)} {esc(wd)}{time_txt}{(' · ' + esc(weather_txt)) if weather_txt else ''}</div>
@@ -1097,7 +1105,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     {lap_html}
   </div>
 
-  <div class="foot">数据 {source_label}</div>
+  <div class="foot"><span class="rc-foot">{BR.badge_html(18, glow_color=th['acc'])}RunnerCoach</span> · 数据 {source_label}</div>
 </div>
 <script>
 /* hero 自适应：长距离 + 带小时的用时（42.54 / 3:14:53）会把右上六格挤到换行，
@@ -1300,6 +1308,17 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .ivrow b{width:74px;text-align:right;font-size:21px;flex:none}
 .ivrow em{width:80px;text-align:right;font-style:normal;color:#939FAD;flex:none}
 .ivmore{font-size:16px;color:#64707E;text-align:center;padding-top:8px}
+""" + BR.BRAND_CSS + BR.card_css(".card", top="#18202A", bottom="#141A22") + """
+/* 品牌化：卡片顶沿高光、抬头角标、右下角水印、页脚字标。
+   背景渐进与辉光由 build_html 按运动主色注入，见 surface_css。 */
+.card{position:relative}
+.card::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(96,165,250,.40),transparent)}
+.page{position:relative;z-index:1}
+.rc-wm{right:36px;bottom:70px;opacity:.055}
+.hbrand{flex:none;align-self:center;display:flex;align-items:center}
+.foot .rc-foot{margin-right:6px;color:#93A3B5}
+.foot .rc-foot .rc-badge{width:18px;height:18px}
 """
 
 
