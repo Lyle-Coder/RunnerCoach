@@ -2063,7 +2063,11 @@ def db_export() -> dict:
         except OSError:
             pass
     return {"ok": True, "path": str(out), "name": out.name,
-            "size": out.stat().st_size, "counts": counts, "extras": extras}
+            "size": out.stat().st_size, "counts": counts, "extras": extras,
+            # 明确列出「没带什么」：换机后这些要重做，界面直接照这个渲染，
+            # 别让用户以为导入完就万事大吉。
+            "excluded": ["佳明 / 高驰 / 小米的账号与会话", "高德底图 Key",
+                         "照片与视频原文件"]}
 
 
 def db_import(zip_path: str = "") -> dict:

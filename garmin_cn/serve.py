@@ -119,6 +119,10 @@ class _Handler(SimpleHTTPRequestHandler):
         # 四个 tab 的页面：同源、只读本地库，App 的 JS 桥照常挂在上面。
         # 放在 gate 之后，局域网带访问码的访问也受同一套保护。
         root = Path(self.directory)
+        if u.path == "/__progress":
+            # 产物页轮询它画「正在生成」进度条：原生侧把进度写在
+            # output/_progress/<run>.json，这里只负责读和清理残留。
+            return self._json(self._progress(root))
         if u.path == "/view":
             return self._html(history.view_page(parse_qs(u.query)))
         if u.path in ("/history", "/history.html"):
@@ -170,6 +174,36 @@ class _Handler(SimpleHTTPRequestHandler):
             self.wfile.write(data)
         except BrokenPipeError:
             pass
+
+    def _progress(self, root: Path) -> dict:
+        """正在生成的任务。
+
+        判活靠 `at`（原生每涨 1% 写一次）：超过 30 分钟没动静就当作残留删掉，
+        否则 App 被杀之后产物页会永远显示一条 42% 的假进度。
+        """
+        d = root / "_progress"
+        jobs: list[dict] = []
+        now = dt.datetime.now().timestamp()
+        if d.is_dir():
+            for f in sorted(d.glob("*.json")):
+                try:
+                    j = json.loads(f.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                try:
+                    age = now - float(j.get("at") or 0) / 1000
+                except (TypeError, ValueError):
+                    age = 1e9
+                if age > 1800:
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+                    continue
+                j["pct"] = int(max(0, min(100, int(j.get("pct") or 0))))
+                jobs.append(j)
+        jobs.sort(key=lambda x: x.get("at") or 0)
+        return {"ok": True, "jobs": jobs}
 
     def _frame_post(self, u) -> None:
         """回放视频的逐帧上传。

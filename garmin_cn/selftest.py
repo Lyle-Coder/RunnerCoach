@@ -677,8 +677,11 @@ def run() -> int:
         "取消信号不是线程安全的"
     assert "import java.util.concurrent.atomic.AtomicInteger" in _main, \
         "双线程帧计数不是线程安全的"
-    assert "encoded.set(true)" in _main and "ui { busy(false); updateSubtitle() }" in _main, \
-        "超时/失败时进度圈可能一直转"
+    # 收尾必须关掉进度线。0.6.1 起收尾从单行展开成带刷新的块，
+    # 这里改成「encoded.set 之后不远处要有 busy(false)」，别钉死排版。
+    assert "encoded.set(true)" in _main and \
+        re.search(r"encoded\.set\(true\)[\s\S]{0,600}?busy\(false\)", _main), \
+        "超时/失败时进度线可能一直转"
     assert "motion render done" in _main and "motion export done" in _main, \
         "没有分项计时，真机上定位不了瓶颈"
     assert "${r.via}" in _main and "startedAt" in _main, \
@@ -1113,7 +1116,12 @@ def run() -> int:
     assert 'theme-color" content="#070B12"' in _ui_src, "移动端主题色没换"
     assert _main.count("0xFF070B12.toInt()") >= 2 and "0xFF4DA3FF.toInt()" in _main, \
         "原生顶栏/底栏还是浅色"
-    assert "Theme.Material.NoActionBar" in _man, "原生主题还是 Light"
+    # 0.6.1 起 manifest 指向自定义 AppTheme（弹窗才能圆角+品牌色），
+    # 但 AppTheme 的 parent 必须仍是深色 Material，否则整页会变白底。
+    assert "@style/AppTheme" in _man, "原生主题没指向 AppTheme"
+    assert "Theme.Material.NoActionBar" in (
+        ROOT / "android/app/src/main/res/values/styles.xml"
+    ).read_text(encoding="utf-8"), "AppTheme 的 parent 不是深色 Material，页面会变白"
     # 浅色 token 不许回来：这几处是整套暗色主题的锚点
     for _bad in ("--bg:#F6F7F4", "--brand:#17845F", "background:#FFFFFF"):
         assert _bad not in _ui_src, f"浅色 token 又回来了：{_bad}"
@@ -2208,6 +2216,34 @@ def run() -> int:
     # 源码包不带 server/（未启用的服务端，与 App 无关）
     assert "server/" in _rel.PACK_EXCLUDE_PREFIX, "server/ 又被打进源码包了"
     assert "server/" not in "\n".join(_rel.packed_files()), "打包清单里仍有 server/"
+
+    # ---- 0.6.1：弹窗主题 / 后台生成进度 / 文案去外部工具 ----
+    # 弹窗之前吃系统默认的深灰直角框，和页面里的圆角卡片不是一个语言。
+    _res = ROOT / "android/app/src/main/res"
+    _styles = (_res / "values/styles.xml").read_text(encoding="utf-8")
+    assert "alertDialogTheme" in _styles and "AppDialog" in _styles, \
+        "弹窗没挂自定义主题，还会是系统黑框"
+    assert (_res / "drawable/dialog_bg.xml").is_file(), "缺少圆角弹窗底板"
+    _mani = (ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
+    assert "@style/AppTheme" in _mani, "manifest 还在用系统默认主题"
+
+    _main = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert "progressBarStyleLarge" not in _main, \
+        "回放又用居中大圈盖住页面了（用户反馈「画面中转圈圈」就是这么来的）"
+    assert "progressBarStyleHorizontal" in _main, "进度线没换成顶部横向"
+    # 进度必须落盘：产物页靠 /__progress 读它，只放内存切走就看不见
+    assert 'File(filesDir, "output/_progress")' in _main, "生成进度没写到 _progress"
+    _files = U.files_page(ROOT / "output")
+    assert "gc-jobs" in _files and "__progress" in _files, "产物页没有「正在生成」进度区"
+    assert "_progress" in (ROOT / "garmin_cn/serve.py").read_text(encoding="utf-8"), \
+        "serve 没有 /__progress 接口，产物页轮询会 404"
+
+    # 看板里不该再让用户「去 WorkBuddy 说一句」——装在手机上的人没有那个入口
+    assert "WorkBuddy" not in (ROOT / "garmin_cn/report.py").read_text(encoding="utf-8"), \
+        "教练点评空态又把用户指到 WorkBuddy 了"
+    # 本地兜底课表必须自报家门，不能静默降级成佳明课表
+    assert "本地推算" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
+        "本地兜底课表没有标注，用户会以为那是手表里的计划"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")

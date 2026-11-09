@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 应用主题：深空色底 + 科技蓝强调色。
+         之前直接用 @android:style/Theme.Material.NoActionBar，弹窗就吃系统默认的
+         深灰直角框，和页面里的圆角卡片完全不是一个语言。 -->
+    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:colorBackground">@color/bg</item>
+        <item name="android:colorPrimary">@color/brand</item>
+        <item name="android:colorAccent">@color/brand</item>
+        <item name="android:textColorPrimary">@color/ink</item>
+        <item name="android:textColorSecondary">@color/ink2</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+        <!-- 所有 AlertDialog.Builder 自动走下面这套，不用逐个改调用点 -->
+        <item name="android:alertDialogTheme">@style/AppDialog</item>
+    </style>
+
+    <!-- 弹窗：圆角深色卡片 + 蓝色文字/选中态 -->
+    <style name="AppDialog" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/dialog_bg</item>
+        <item name="android:colorBackground">@color/surface</item>
+        <item name="android:colorAccent">@color/brand</item>
+        <item name="android:colorControlActivated">@color/brand</item>
+        <item name="android:colorControlNormal">@color/ink2</item>
+        <item name="android:textColorPrimary">@color/ink</item>
+        <item name="android:textColorSecondary">@color/ink2</item>
+        <item name="android:backgroundDimAmount">0.66</item>
+    </style>
+</resources>

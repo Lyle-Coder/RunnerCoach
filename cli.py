@@ -1082,7 +1082,7 @@ def cmd_note(args) -> int:
     if not text:
         print("× 点评内容为空（用 --text 或 --file）")
         return 2
-    store.add_note(text, date=date, source="workbuddy")
+    store.add_note(text, date=date, source="manual")
     print(f"√ 已写入 {date} 的教练点评（{len(text)} 字）")
     print("  看板会在下次 report 时更新：run.bat report --open")
     return 0

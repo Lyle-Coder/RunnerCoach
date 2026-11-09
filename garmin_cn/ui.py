@@ -748,6 +748,13 @@ def _today_plan_card(pl: dict) -> str:
     acts = t.get("acts") or []
     done = bool(t.get("done")) or bool(acts)
 
+    # 本地兜底（备赛课表 / 今日处方）不是佳明课表，必须写出来 —— 而且要写原因：
+    # 只说「本地推算」，用户不知道该去重新登录还是该怪数据。
+    _src = str(pl.get("source") or "")
+    _why = str(pl.get("note") or "").strip() or "佳明课表未读到"
+    local_tag = (f'<div class="n" style="color:var(--amber)">本地推算 · {esc(_why)}</div>'
+                 if _src and _src != "calendar" else "")
+
     if items:
         it = items[0]
         more = "".join(
@@ -762,7 +769,7 @@ def _today_plan_card(pl: dict) -> str:
                 for a in acts[:2])
         return (f'<div class="plan-hero"><div class="t">{esc(it.get("name") or "训练")}</div>'
                 + (f'<div class="d">{esc(it.get("detail"))}</div>' if it.get("detail") else "")
-                + f'<div class="n">{esc(_plan_meta(it))}</div>{badge}{more}</div>')
+                + f'<div class="n">{esc(_plan_meta(it))}</div>{badge}{more}{local_tag}</div>')
 
     nxt = pl.get("next_date")
     if nxt:
@@ -787,7 +794,7 @@ def _today_plan_card(pl: dict) -> str:
         done_html = '<div class="n">今天已完成：训练记录已同步（含高驰）</div>'
 
     return (f'<div class="plan-hero"><div class="t">今天休息</div>'
-            f'<div class="d">{tip}</div>{done_html}</div>')
+            f'<div class="d">{tip}</div>{done_html}{local_tag}</div>')
 
 
 def plan_page(qs: dict | None = None) -> str:
@@ -1071,5 +1078,45 @@ def files_page(root: Path) -> str:
                     href=href, tone="b")
     if not rows:
         rows = '<div class="empty">还没有生成任何产物。同步或出一次图，这里就会出现文件。</div>'
+
+    # 「正在生成」由 JS 轮询 /__progress 渲染：回放要跑几分钟，用户不必守在
+    # 出图那一页看转圈，切到产物这里能看到真实百分比；生成完页面自动刷新。
+    jobs = """
+<div id="gc-jobs"></div>
+<script>(function(){
+  var box = document.getElementById('gc-jobs');
+  if (!box) return;
+  var last = 0;
+  function box_html(j){
+    return '<div class="card" style="margin-bottom:10px">' +
+      '<div class="lab">正在生成 · ' + j.name + '</div>' +
+      '<div style="height:8px;border-radius:99px;background:rgba(96,165,250,.16);' +
+      'overflow:hidden;margin-top:10px">' +
+      '<i style="display:block;height:100%;width:' + j.pct + '%;' +
+      'background:linear-gradient(90deg,#22D3EE,#3B82F6);transition:width .4s"></i></div>' +
+      '<div class="note" style="margin-top:8px">' + j.stage + ' ' + j.pct +
+      '% · 可以先切走，生成完这里会自动出现</div></div>';
+  }
+  function tick(){
+    fetch('/__progress', {cache:'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        var jobs = d.jobs || [];
+        if (!jobs.length) {
+          box.innerHTML = '';
+          // 上一轮还有任务、这一轮没了：刚生成完，刷一次让新文件进列表
+          if (last > 0) { location.reload(); return; }
+        } else {
+          box.innerHTML = '<section class="sec"><div class="sec-head">' +
+            '<h2>正在生成</h2></div>' + jobs.map(box_html).join('') + '</section>';
+        }
+        last = jobs.length;
+      })
+      .catch(function(){});
+  }
+  tick();
+  setInterval(tick, 2000);
+})();</script>
+"""
     return page("FILES · 产物", "本机产物文件", "看板、图片、视频都只存在这台设备上",
-                sec("最近生成", rows), chip("只读"), back=("返回我的", "/me"))
+                jobs + sec("最近生成", rows), chip("只读"), back=("返回我的", "/me"))
