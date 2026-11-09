@@ -12,6 +12,11 @@
         android:theme="@style/AppTheme">
 
         <activity
+            android:name=".HuaweiLoginActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="true"

@@ -208,7 +208,7 @@ def daily_advice(date: str | None = None, force: bool = False) -> dict:
 def weight_review(days: int = 60, date: str | None = None) -> dict:
     """体重与体成分复盘：趋势、速率是否合理、和训练负荷是否匹配。
 
-    数据来自小米秤（体成分）+ 佳明日汇总（体重兜底）。秤不在佳明云里，
+    数据来自本地 body 表，按用户的体重来源偏好逐日筛选。秤不一定在佳明云里，
     所以这段经常是「只有体重没有体脂」——提示词要求模型区分，别假装有体脂数据。
     """
     from . import body as B
@@ -218,7 +218,7 @@ def weight_review(days: int = 60, date: str | None = None) -> dict:
     try:
         store = _store()
         res = derive(store, d)
-        rows = B.rows(store, end=d, days=days)
+        rows = B.selected_rows(store, end=d, days=days)
     except Exception as e:
         return {"ok": False, "kind": "data", "error": f"读不到体重数据：{e}"}
 
@@ -240,7 +240,7 @@ def weight_review(days: int = 60, date: str | None = None) -> dict:
 
     if not daily:
         return {"ok": False, "kind": "data",
-                "error": "还没有体重记录。先在小米体脂秤上称一次并同步，或手动导入 CSV。"}
+                "error": "还没有体重记录。请同步已连接的体重来源，或手动导入 CSV。"}
 
     pts = [{"date": k, "weight": round(sum(v) / len(v), 1)} for k, v in sorted(daily.items())]
     first, last = pts[0], pts[-1]
@@ -265,7 +265,7 @@ def weight_review(days: int = 60, date: str | None = None) -> dict:
         # 字段名以 metrics.derive 的 body 段为准（body_fat / muscle，不是 fat / muscle_kg）
         "body": {k: bd.get(k) for k in
                  ("latest", "delta_w", "delta_4w", "body_fat", "fat_delta", "muscle",
-                  "muscle_delta", "bmr", "water", "visceral", "verdict")
+                  "muscle_delta", "bmr", "water", "visceral", "verdict", "source", "source_label")
                  if bd.get(k) is not None},
         # nutrition 的目标热量叫 target_kcal；没有体重时 ok=False、这些字段全缺
         "nutrition_target": {k: nt.get(k) for k in

@@ -113,31 +113,38 @@ def body_battery(store, date: str, client=None, *, ttl: int = TTL,
 
 
 def scale(store, home, *, ttl: int = SCALE_TTL) -> dict:
-    """体重 / 体成分：出图前也顺手拉一次小米秤。
+    """体重 / 体成分：出图前也顺手拉一次秤。
 
     和身体电量同一个道理——秤的数据不在佳明云里，只有 `sync` 会去拉，
-    早上称完没同步的话，看板会一直拿昨天的数当「最新」。这里按天了 5 分钟
+    早上称完没同步的话，看板会一直拿昨天的数当「最新」。这里按天 5 分钟
     一次的频率补拉，没登录 / 网络异常都静默跳过，用库里上一次的值。
 
-    返回 {n, latest, weight, live}
+    拉哪家按「首选来源」走：华为就找华为，小米就找小米，其余不动。
+
+    返回 {n, latest, weight, live, source}
     """
-    key = f"mi_fetch:{dt.date.today().isoformat()}"
+    from . import body as B
+
+    source = B.preferred_source(store)
+    if source not in ("mi", "huawei"):
+        return {"n": 0, "latest": None, "weight": None, "live": False, "source": source}
+
+    key = f"{source}_fetch:{dt.date.today().isoformat()}"
     last = store.get_meta(key)
     if last:
         try:
             age = (dt.datetime.now()
                    - dt.datetime.strptime(last, "%Y-%m-%d %H:%M:%S")).total_seconds()
             if 0 <= age < ttl:
-                return {"n": 0, "latest": None, "weight": None, "live": False}
+                return {"n": 0, "latest": None, "weight": None, "live": False,
+                        "source": source}
         except ValueError:
             pass
 
-    from . import mi as M             # 延迟导入：登录态文件不在就不该拖慢出图
-
     try:
-        n, recs = M.sync(store, home, days=7)
+        n, recs = B.sync_preferred(store, home, days=7)
     except Exception:
-        return {"n": 0, "latest": None, "weight": None, "live": False}
+        return {"n": 0, "latest": None, "weight": None, "live": False, "source": source}
 
     store.set_meta(key, dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     recs = sorted([r for r in (recs or []) if r.get("date")], key=lambda r: r["date"])
@@ -147,4 +154,5 @@ def scale(store, home, *, ttl: int = SCALE_TTL) -> dict:
         "latest": latest["date"] if latest else None,
         "weight": latest.get("weight_kg") if latest else None,
         "live": True,
+        "source": source,
     }

@@ -380,7 +380,7 @@ def body_block(bd: dict) -> str:
         cell("水分率", bd.get("water"), "%", wat_sub),
         cell("内脏脂肪", bd.get("visceral"), "级", "≤9 正常" if bd.get("visceral") else "", 0),
         cell("基础代谢", bd.get("bmr"), "kcal", "静息消耗", 0),
-        cell("BMI", bd.get("bmi"), "", "小米秤估算", 1),
+        cell("BMI", bd.get("bmi"), "", "来源设备估算", 1),
     ])
 
     lv = bd.get("level") or "none"
@@ -398,7 +398,7 @@ def body_block(bd: dict) -> str:
     <h3>体重</h3>
     <div class="bnum">{bd['latest']:.1f}<small>kg</small></div>
     <div class="bdelta">{d7_html}{d4w_html}<br>
-      <span style="color:var(--faint)">{when_txt} · 共 {bd.get('count', 0)} 次称重</span></div>
+      <span style="color:var(--faint)">{when_txt} · 共 {bd.get('count', 0)} 次称重 · {esc(bd.get('source_label') or '体重记录')}</span></div>
     <div class="m-spark" style="margin-top:12px">{spark(bd.get('series') or [], "#F0A97A", h=46)}</div>
   </div>
 

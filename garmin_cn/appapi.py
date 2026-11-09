@@ -145,6 +145,9 @@ _API = {
     "set_llm_config", "get_llm_config", "ai",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
+    "hw_status", "hw_import", "hw_login", "hw_probe", "hw_sync", "hw_logout",
+    "hw_login_start", "hw_login_finish", "hw_login_cancel",
+    "body_sources", "body_set_source",
     "coros_status", "coros_login", "coros_logout", "coros_sync",
 }
 
@@ -332,6 +335,27 @@ def _mask_uid(uid: str) -> str:
     return (s[:3] + "****" + s[-2:]) if len(s) > 7 else (s or "未知")
 
 
+def body_sources() -> dict:
+    from . import body as B
+    store = Store(DB)
+    try:
+        return {"ok": True, **B.source_settings(store)}
+    finally:
+        store.conn.close()
+
+
+def body_set_source(source: str) -> dict:
+    from . import body as B
+    store = Store(DB)
+    try:
+        B.set_preferred_source(store, source)
+        return {"ok": True, **B.source_settings(store)}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        store.conn.close()
+
+
 def mi_status() -> dict:
     """小米登录态：只看凭据文件是否存在（不联网验证，别让面板卡住）。"""
     try:
@@ -465,6 +489,127 @@ def mi_sync(days: int = 30) -> dict:
             "weight": recs[-1].get("weight_kg") if recs else None}
 
 
+# ---------------------------------------------------------------- 华为运动健康
+# 与小米同一套交互：状态 → 登录/导入授权 → 同步 → 退出。
+# 差别只在闸门：华为没走完协议验证时，`hw_sync` 会明确拒绝，不会装作同步成功。
+_HW_LOGIN: dict = {"state": "", "started": 0, "lock": threading.Lock()}
+
+
+def hw_login_start() -> dict:
+    import secrets
+    import time
+    from . import huawei as H
+
+    with _HW_LOGIN["lock"]:
+        state = secrets.token_urlsafe(32)
+        _HW_LOGIN.update(state=state, started=time.monotonic())
+    return {"ok": True, "url": H.login_url(state), "redirect_uri": H.LOGIN_REDIRECT}
+
+
+def hw_login_cancel() -> dict:
+    with _HW_LOGIN["lock"]:
+        _HW_LOGIN.update(state="", started=0)
+    return {"ok": True}
+
+
+def hw_login_finish(callback: str) -> dict:
+    import time
+    from . import huawei as H
+
+    with _HW_LOGIN["lock"]:
+        state, started = _HW_LOGIN["state"], _HW_LOGIN["started"]
+        _HW_LOGIN.update(state="", started=0)  # 一次性消费，拒绝重复回调
+    if not state or time.monotonic() - started > 900:
+        return {"ok": False, "error": "登录已过期，请重新登录"}
+    try:
+        code = H.login_code(callback, state)
+        cloud = H.HuaweiCloud(HOME)
+        cloud.login(code)
+        return {"ok": True, "logged_in": True, "open_id": _mask_uid(cloud.uid)}
+    except H.HwError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception:
+        return {"ok": False, "error": "华为登录未完成，请重试"}
+
+
+def hw_status() -> dict:
+    """华为登录态与协议状态（只看本地文件，不联网）。"""
+    try:
+        from . import huawei as H
+
+        s = H.status(HOME)
+        return {"ok": True, **s, "open_id": _mask_uid(s.get("uid", ""))}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def hw_import(payload: str) -> dict:
+    """导入会话 JSON 文本（healthsession 的 obtain 响应即可）。"""
+    import json as _json
+    try:
+        from . import huawei as H
+
+        try:
+            d = _json.loads(payload or "")
+        except Exception:
+            return {"ok": False, "error": "这不是 JSON：请粘贴华为会话响应"}
+        r = H.HuaweiCloud(HOME).import_payload(d)
+        return {"ok": True, "open_id": _mask_uid(r["uid"]),
+                "has_refresh": r["hasRefresh"]}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def hw_login(user: str, password: str, client_id: str = "") -> dict:
+    """密码模式已证实走不通（App 的 client_id 不给密码授权），保留入口只为给出明确提示。"""
+    return {"ok": False, "need_verify": False,
+            "error": "华为不支持密码模式。请在 App 里登录一次，用 hw import 导入会话；"
+                     "或直接抓包后 hw import --capture <HAR>"}
+
+
+def hw_probe() -> dict:
+    """跑三道闸门：账号 / 体重读取 / 会话续期，逐项报告卡在哪。"""
+    try:
+        from . import huawei as H
+
+        cloud = H.HuaweiCloud(HOME)
+        cloud.load()
+        return {"ok": True, **cloud.probe()}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def hw_sync(days: int = 0) -> dict:
+    """拉一次华为体重并入库（body 表 + 回填 daily）。"""
+    from . import huawei as H
+
+    store = Store(DB)
+    try:
+        n, recs = H.sync(store, HOME, days=max(int(days), 0))
+    except H.HwAuthError as e:
+        return {"ok": False, "need_login": True, "error": str(e)}
+    except H.HwError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        store.conn.close()
+    return {"ok": True, "count": n,
+            "latest": recs[-1]["date"] if recs else None,
+            "weight": recs[-1].get("weight_kg") if recs else None}
+
+
+def hw_logout() -> dict:
+    """删除 data/huawei_auth.json（云端数据不受影响）。"""
+    try:
+        from . import huawei as H
+
+        H.HuaweiCloud(HOME).clear()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 # ---------------------------------------------------------------- 高驰
 def coros_status() -> dict:
     """高驰登录态（只看凭据文件，不联网）。"""
@@ -584,9 +729,9 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
 
     if with_body:
         try:
-            from . import mi as M
+            from . import body as B
 
-            n, recs = M.sync(store, HOME, days=min(max(days, 7), 120))
+            n, recs = B.sync_preferred(store, HOME, days=min(max(days, 7), 120))
             out["body"] = {"count": n, "latest": recs[-1]["date"] if recs else None}
         except Exception as e:
             out["body"] = {"count": 0, "error": f"{type(e).__name__}: {e}"}
@@ -1202,44 +1347,36 @@ def act_card_html(activity_id: str, title: str | None = None,
         if not row:
             return {"ok": False, "error": "库里没有这条活动，先同步一次"}
         aid = str(row["activity_id"])
-        src = (row.get("source") or "garmin")
 
         from . import coros_activity as CA
         from .coros import CorosAuthError
         provider = CA.source(row)
 
         detail = store.get_detail(aid)
-        if not detail and src == "coros":
-            from . import coros as C
-
+        if provider == "coros":
+            # 高驰明细走同一条链路：缓存版本不对（旧口径把 lap 距离当成米，
+            # 1 km 圈会显示成 100.00 km）就重抓一次，别让错数据一直留在库里。
             try:
-                detail = C.fetch_detail(store, HOME, row,
-                                        coros_email or None, coros_password or None)
-                store.save_detail(aid, detail)
-            except C.CorosAuthError as e:
+                detail = CA.ensure(store, HOME, row, coros_email or None,
+                                   coros_password or None)
+            except CorosAuthError as e:
                 return {"ok": False, "need_login": True, "source": "coros",
                         "error": f"{e}（高驰明细需联网抓一次）"}
             except Exception as e:
-                return {"ok": False,
+                return {"ok": False, "source": "coros",
                         "error": f"抓高驰明细失败（需要联网）：{type(e).__name__}: {e}"}
         elif not detail:
             try:
                 from . import activity as act
 
-                if provider == "coros":
-                    detail = CA.ensure(store, HOME, row, coros_email, coros_password)
-                else:
-                    detail = act.ensure(store, _client(email, password), aid)
-            except CorosAuthError:
-                return {"ok": False, "need_login": True, "source": "coros",
-                        "error": "高驰登录已失效，请登录高驰后获取活动明细"}
+                detail = act.ensure(store, _client(email, password), aid)
             except (AuthError, SessionExpired):
                 return {"ok": False, "need_login": True, "source": "garmin",
                         "error": "这条活动的明细还没缓存，需要联网登录后抓一次"}
             except Exception as e:
                 return {"ok": False,
                         "source": provider,
-                        "error": f"获取{'高驰' if provider == 'coros' else '佳明'}活动明细失败：{e}"}
+                        "error": f"获取佳明活动明细失败：{e}"}
         if not detail:
             return {"ok": False, "error": "没拿到活动明细"}
 

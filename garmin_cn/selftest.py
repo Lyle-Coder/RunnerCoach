@@ -2119,7 +2119,9 @@ def run() -> int:
         assert _gone not in _main_src, f"旧的补拉入口还留着：{_gone}"
 
     # 首页：睡眠/体重卡 + 趋势线 + 页头小按钮，且不再有覆盖区块
-    _home = U.home_page()
+    # 趋势线至少需要两天数据；用本次构建的合成库，避免依赖本机称重历史。
+    with _mock.patch.object(AP, "DB", tmp_db):
+        _home = U.home_page()
     assert _home.count('class="vital"') == 2, "首页缺睡眠/体重卡"
     assert _home.count('class="spark"') >= 2, "睡眠/体重卡没有趋势线"
     assert "欠债" in _home and "体脂" in _home, "睡眠/体重卡没带关键数值"
