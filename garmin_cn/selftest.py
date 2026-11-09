@@ -2687,7 +2687,24 @@ def run() -> int:
     assert 'class="rc-day zero"' in _bars and 'height:0px' in _bars, \
         "零值柱没退化成基线点"
     assert "/view?date=" in _bars, "柱子不能点进当天详情"
-    assert 'versionCode = 73' in (
+    # ---- 0.6.8：开屏只画一枚品牌图标 -----------------------------------
+    # 动画层背景若用 splash_bg（自带居中图标），会与 stack 里那枚放大的
+    # 图标 tile 错位重叠，文字上方露出半截圆环，看起来像两个标志。
+    _surf = (_res_dir / "drawable/splash_surface.xml").read_text(encoding="utf-8")
+    _bg = (_res_dir / "drawable/splash_bg.xml").read_text(encoding="utf-8")
+    assert "ic_brand_mark" not in _surf, "开屏动画层背景又带了居中图标"
+    assert "ic_brand_mark" in _bg, "冷启动第一帧的品牌图标别顺手删掉"
+    _bs = _kt2.split("private fun buildSplash()")[1].split(
+        "private fun startSplashAnim()")[0]
+    assert "R.drawable.splash_surface" in _bs, "开屏动画层没换成纯背景"
+    assert "R.drawable.splash_bg" not in _bs, "开屏动画层还在用带图标的底"
+
+    def _hex(s: str) -> set:
+        return set(re.findall(r"#[0-9A-Fa-f]{6,8}", s))
+
+    assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
+        "开屏两层背景的渐变色值漂移了"
+    assert 'versionCode = 74' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"

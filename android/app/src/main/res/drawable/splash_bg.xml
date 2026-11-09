@@ -2,7 +2,8 @@
 <!-- 冷启动第一帧的 windowBackground：与 App 内页面同一套「右上蓝、左下青」
      双辉光 + 深空蓝渐进，中间压一枚圆角品牌图块。
      Android 在 Activity 真正画出来之前就能显示它，Python 解释器启动那
-     几百毫秒不会是一片空白；MainActivity 随后盖上的动画层用同一组色值。 -->
+     几百毫秒不会是一片空白；MainActivity 随后盖上的动画层用同一组色值，
+     但请改用不带图标的 splash_surface，避免两层各画一枚品牌标志。 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item>
         <shape android:shape="rectangle">

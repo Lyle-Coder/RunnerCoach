@@ -257,7 +257,9 @@ class MainActivity : Activity() {
     /** 开屏动画层：渐进底 + 呼吸辉光 + 品牌图块放大浮现 + 跑动进度线。 */
     private fun buildSplash(): FrameLayout {
         val f = FrameLayout(this).apply {
-            background = resources.getDrawable(R.drawable.splash_bg, theme)
+            // 只用渐变+辉光底：splash_bg 自带一枚居中图标，再叠 stack 里
+            // 那枚放大的 tile 会在文字上方露出半截圆环（两个标志重叠）。
+            background = resources.getDrawable(R.drawable.splash_surface, theme)
             isClickable = true              // 淡出前别把点击漏给下面的 WebView
         }
         val glow = View(this).apply {
