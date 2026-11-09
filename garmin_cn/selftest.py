@@ -1090,17 +1090,18 @@ def run() -> int:
 
     # ---- v50：活动图标题溢出 / 登录态 / 补拉入口 / 素材管理 -----------------
     # 1) 活动图：长标题 + 长天气会把右侧标签挤出卡片。flex 子项默认
-    #    min-width:auto，必须显式给 0 才允许换行；标题 44→38 并限两行。
+    #    min-width:auto，必须显式给 0 才允许收缩；0.6.9 起整行不换行，
+    #    让标题自己收缩/换行，标签固定在右侧（加了品牌 icon 后左侧更宽）。
     from garmin_cn import actcard as _AC
     _ac_src = Path(_AC.__file__).read_text(encoding="utf-8")
     _clip_dlg = (_kt_dir / "ClipTrimDialog.kt").read_text(encoding="utf-8")
-    assert ".hleft{flex:1 1 520px;min-width:0}" in _ac_src, \
+    assert ".hleft{flex:1 1 460px;min-width:0}" in _ac_src, \
         "活动图标题列没有 min-width:0，长标题会把标签挤出卡片"
     assert ".hname{font-size:36px" in _ac_src and \
         "max-height:calc(36px * 1.3 * 2)" in _ac_src, \
         "标题没缩小或没限高，长标题仍会溢出"
-    assert "flex-wrap:wrap" in _ac_src, \
-        "标题行不会回绕，标签还是会被挤出卡片"
+    assert "flex-wrap:nowrap" in _ac_src, \
+        "标题行又允许回绕了，右侧标签会掉到下一行"
     assert ".htag{flex:none;white-space:nowrap" in _ac_src, \
         "标签会被长标题压缩/换行"
     # 列表行：标题从单行省略改成最多两行，参数本来就换行
@@ -2624,9 +2625,10 @@ def run() -> int:
     _base_css = _SC.SCREEN_CSS.split("@media(min-width:900px)")[0]
     assert "@media(min-width:900px)" in _css and "grid-template-areas" in _css, \
         "宽屏没有用同一份 DOM 重排成五面板"
-    assert "html.rc-big .rc-screen" in _css, "大屏模式开关没共用同一套栅格"
-    assert _css.count('"h h h h l l l l b b b b"') == 2, \
-        "自动大屏与手动开关用了两套栅格，迟早漂移"
+    assert "html.rc-big" not in _css and "rc-mode" not in _css, \
+        "「大屏模式」按钮/手动栅格又回来了（系统旋转入口已覆盖）"
+    assert _css.count('"h h h h l l l l b b b b"') == 1, \
+        "大屏栅格只剩一份，别再手写两遍"
     _h = U.home_page()
     # 只在 DOM 里找按钮：CSS 注释提到旧做法不算「按钮还在」。
     _h_dom = _h.split("<main>")[1]
@@ -2640,16 +2642,16 @@ def run() -> int:
         assert _seg in _h, f"首屏缺段：{_seg}"
     assert 'class="sec"' not in _h and 'class="more"' not in _h, \
         "又把首页排成四个等高 section + 四个重复按钮了"
-    for _btn in ("完整看板", "完整课表", "导出今日一图流"):
+    for _btn in ("完整看板", "完整课表", "导出今日一图流", "大屏模式"):
         assert _btn not in _h_dom, f"冗余入口没删干净：{_btn}"
     assert '<div class="t">今天休息</div>' not in _h_dom, \
         "计划一条又重复了结论条的判断"
-    assert 'data-screen-toggle' in _h and 'aria-pressed="false"' in _h, \
-        "「完整看板」没换成正常的大屏模式按钮"
-    assert "rc-big" in _u.BRIDGE_JS and "landscape" in _u.BRIDGE_JS, \
-        "大屏开关没接到桥接脚本"
-    assert "ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE" in _kt2, \
-        "原生没接横屏，手机上点大屏模式不会真的转过去"
+    assert 'data-screen-toggle' not in _h and 'aria-pressed="false"' not in _h, \
+        "「大屏模式」按钮没删干净"
+    assert "rc-big" not in _u.BRIDGE_JS and "landscape" not in _u.BRIDGE_JS, \
+        "桥接脚本还在强制旋转，系统旋转按钮会重复出现"
+    assert "SCREEN_ORIENTATION_LANDSCAPE" not in _kt2, \
+        "原生还在强制横屏"
 
     # 恢复环 r45 / 描边 9；常态不亮、异常才亮；id 固定保证可复现
     _r70, _r30 = _SC.ring_svg(70), _SC.ring_svg(30, alert=True)
@@ -2671,8 +2673,7 @@ def run() -> int:
     for _sel, _needle in ((".rc-day{", "min-height:44px"),
                           (".rc-day{", "min-width:32px"),
                           (".rc-days{", "gap:7px"),
-                          (".rc-sample{", "min-height:44px"),
-                          (".rc-mode{", "min-height:44px")):
+                          (".rc-sample{", "min-height:44px")):
         assert _needle in _base_css.split(_sel)[1].split("}")[0], \
             f"{_sel} 缺 {_needle}"
 
@@ -2704,8 +2705,73 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 74' in (
+    assert 'versionCode = 75' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
+
+    # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
+    from unittest import mock as _um
+    from garmin_cn import appapi as _AP2
+
+    _today = dt.date.today().isoformat()
+    _fake = {
+        "today": {"date": _today, "items": [
+            {"name": "W2 周二 12km@E", "km": 12, "minutes": 70, "rest": False}]},
+        "next_date": (dt.date.today() + dt.timedelta(days=1)).isoformat(),
+        "next_items": [{"name": "W2 周三 10km@E", "km": 10, "rest": False}],
+    }
+    with _um.patch.object(_AP2, "plan", return_value=_fake):
+        _h_today = U.home_page()
+    assert "训练计划 · 今天" in _h_today and ">今天<" in _h_today, \
+        "今天有课，计划条却没给今天"
+    assert ">明天<" not in _h_today, "计划条又跳到明天去了"
+
+    # 复现用户场景：最后同步日比真实今天早一天，课表的 next_date 恰是今天。
+    # 旧版拿 st["last"] 当今天，会把今天的课写成「明天」。
+    _yest = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    _fake2 = {
+        "today": {"date": _yest, "items": [], "acts": []},
+        "week": [{"date": _yest, "items": []},
+                 {"date": _today, "items": [
+                     {"name": "W2 周二 12km@E", "km": 12, "rest": False}]}],
+        "next_date": _today,
+        "next_items": [{"name": "W2 周二 12km@E", "km": 12, "rest": False}],
+    }
+    with _um.patch.object(_AP2, "plan", return_value=_fake2), \
+         _um.patch.object(_AP2, "status", return_value={
+             "last": _yest, "days": 287, "last_sync": "2026-11-09 20:34"}):
+        _h_lag = U.home_page()
+    assert "训练计划 · 今天" in _h_lag and ">今天<" in _h_lag, \
+        "没同步的一天里，今天的课没显示成今天"
+    assert ">明天<" not in _h_lag, "最后同步日又被当成今天了"
+
+    # 胶囊压薄：只减纵向留白，44px 可点目标一条都不动。
+    for _sel, _needle in ((".rc-panel{", "padding:11px 12px"),
+                          (".rc-verdict{", "min-height:38px"),
+                          (".rc-cell{", "padding:7px 10px 6px"),
+                          (".rc-plan{", "min-height:60px")):
+        assert _needle in _base_css.split(_sel)[1].split("}")[0], \
+            f"{_sel} 没压薄：缺 {_needle}"
+    for _sel, _needle in ((".rc-day{", "min-height:44px"),
+                          (".rc-sample{", "min-height:44px")):
+        assert _needle in _base_css.split(_sel)[1].split("}")[0], \
+            f"压薄把可点目标也削掉了：{_sel}"
+
+    _card_src = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
+    _act_src = (ROOT / "garmin_cn/actcard.py").read_text(encoding="utf-8")
+    assert "max-width:46%" in _card_src and 'class="m1"' in _card_src, \
+        "看板一图流顶部右侧没限宽，长来源会挤出画幅"
+    assert "flex-wrap:nowrap" in _act_src, \
+        "活动图顶部标签还会换行/被挤走"
+    assert "background:#12161B" in _card_src, \
+        "看板一图流 body 纯色底被改了，trim_bg 会整圈失效"
+    assert "background:#0F1319" in _act_src, \
+        "活动图 body 纯色底被改了，trim_bg 会整圈失效"
+    assert "#141E2B" in _card_src and "#121E2C" in _act_src, \
+        "两张一图流的卡片底色没换成深空蓝"
+    assert "#4FD6A6" in _card_src and "#4FD6A6" in _act_src, \
+        "icon 起点绿没进两张出图"
+    assert "#5FA8E0" in _act_src and "#3B82F6" in _act_src, \
+        "活动图兜底配色没往品牌蓝靠"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")

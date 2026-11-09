@@ -32,7 +32,7 @@ CHROME_CANDIDATES = [
 
 DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 LEVEL_COLOR = {
-    "优秀": "#2FBF8F", "良好": "#2FBF8F", "一般": "#E0A33A",
+    "优秀": "#4FD6A6", "良好": "#4FD6A6", "一般": "#D6A75A",
     "偏低": "#E06A5F", "较差": "#E06A5F", "数据不足": "#7C8794",
 }
 
@@ -75,14 +75,14 @@ def _level_color(score, level: str) -> str:
         return LEVEL_COLOR[level]
     if score is None:
         return "#7C8794"
-    return "#2FBF8F" if score >= 75 else ("#E0A33A" if score >= 60 else "#E06A5F")
+    return "#4FD6A6" if score >= 75 else ("#D6A75A" if score >= 60 else "#E06A5F")
 
 
 def _bars(parts: list[dict]) -> str:
     out = []
     for p in parts:
         score = p.get("score") or 0
-        color = "#2FBF8F" if score >= 75 else ("#E0A33A" if score >= 60 else "#E06A5F")
+        color = "#4FD6A6" if score >= 75 else ("#D6A75A" if score >= 60 else "#E06A5F")
         out.append(
             f'<div class="bar">'
             f'<div class="bar-top"><span class="bar-name">{esc(p["name"])}'
@@ -521,13 +521,13 @@ def build_html(res: dict, sync_at: str | None = None,
             # 10% 以上才标红；脂肪是「上限」，一超就是超标——以前 59/54 还
             # 亮着绿条，吃完黄焖鸡看着像完全没问题，其实已经顶破额度。
             if not tgt:
-                col = "#E0A33A"
+                col = "#D6A75A"
             elif v > (tgt if hard else tgt * 1.1):
                 col = "#E4574D"
             elif v >= tgt:
                 col = "#4FD6A6"
             else:
-                col = "#E0A33A"
+                col = "#D6A75A"
             return (f'<div class="nrow"><span class="nl">{label}</span>'
                     f'<div class="ntrack"><i style="width:{ratio:.0f}%;background:{col}"></i></div>'
                     f'<span class="nv" style="color:{col}">{v:g} / {tgt:g}{unit}</span></div>')
@@ -635,7 +635,7 @@ def build_html(res: dict, sync_at: str | None = None,
                         height=72, unit=" h", target=sleep_need_h,
                         extra=[nap_rows.get(d_) for d_, _ in (res["series"].get("sleep_h") or [])],
                         extra_color="#5FA8E0", legend=("主睡眠", "小睡"))
-    bb_spark = _spark(_bb["pts"], h=48, color="#E0A33A", label="", unit="%")
+    bb_spark = _spark(_bb["pts"], h=48, color="#D6A75A", label="", unit="%")
     hrv_pts = [(i, num(v)) for i, (_, v) in enumerate(res["series"].get("hrv") or [])]
     rhr_pts = [(i, num(v)) for i, (_, v) in enumerate(res["series"].get("rhr") or [])]
     hrv_spark = _spark(hrv_pts[-14:], h=42, color="#5FA8E0", label="HRV", unit=" ms")
@@ -670,11 +670,21 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
   font-family:"Microsoft YaHei","PingFang SC",sans-serif;color:#EDF1F5;
   -webkit-font-smoothing:antialiased}}
 .wrap{{width:{W}px;height:{H}px;padding:34px 52px 26px;display:flex;flex-direction:column}}
-.top{{display:flex;justify-content:space-between;align-items:flex-end;
-  padding-bottom:16px;border-bottom:1px solid #232B34}}
-.date{{font-size:42px;font-weight:700;letter-spacing:1px}}
-.date small{{font-size:24px;font-weight:400;color:#8C97A4;margin-left:14px}}
-.meta{{text-align:right;font-size:21px;color:#7F8A97;line-height:1.6}}
+.top{{position:relative;display:flex;justify-content:space-between;
+  align-items:flex-end;gap:24px;padding-bottom:16px;
+  border-bottom:1px solid #223349}}
+.top::after{{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
+  background:linear-gradient(90deg,#3B82F6,rgba(34,211,238,.35),transparent);
+  pointer-events:none}}
+.date{{font-size:38px;font-weight:700;letter-spacing:1px;white-space:nowrap}}
+.date small{{font-size:21px;font-weight:400;color:#8FA4BF;margin-left:10px}}
+/* 右侧限宽：加了品牌 icon 之后左侧变宽，来源/同步时间一长就会把右侧顶到
+   画幅外。两行拆开、各自可换行，右侧永远留在 52px 安全区内。 */
+.meta{{flex:0 1 46%;max-width:46%;text-align:right;font-size:19px;
+  color:#8FA4BF;line-height:1.5;word-break:break-word}}
+.meta .m1{{font-size:22px;font-weight:650;color:#8CC2FF;
+  font-variant-numeric:tabular-nums}}
+.meta .m2{{font-size:18px;color:#7689A2;margin-top:4px}}
 .hero{{display:flex;align-items:center;gap:40px;padding:14px 0 12px;height:196px;overflow:hidden}}
 .score-box{{text-align:center;min-width:250px}}
 .score{{font-size:104px;font-weight:700;line-height:.95;color:{color};letter-spacing:-4px}}
@@ -686,30 +696,30 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .bar-name{{color:#9AA5B1}}
 .bar-name em{{font-style:normal;font-size:16px;color:#6C7683;margin-left:8px}}
 .bar-score{{font-weight:700}}
-.bar-track{{height:9px;background:#232B34;border-radius:5px;overflow:hidden}}
+.bar-track{{height:9px;background:#223349;border-radius:5px;overflow:hidden}}
 .bar-track i{{display:block;height:100%;border-radius:5px}}
-.card{{background:#1A2027;border:1px solid #262E38;border-radius:18px;padding:18px 26px}}
+.card{{background:#141E2B;border:1px solid #24344A;border-radius:18px;padding:18px 26px}}
 .card h3{{font-size:21px;color:#7F8A97;font-weight:400;margin-bottom:10px;letter-spacing:1px}}
 .sess{{margin-top:16px;padding:22px 28px}}
 .sess .st{{font-size:38px;font-weight:700;letter-spacing:1px}}
 .sess .chips{{margin:10px 0 10px}}
 .chip{{display:inline-block;font-size:20px;padding:4px 14px;border-radius:999px;
   background:#232C36;color:#B6C0CB;margin-right:10px}}
-.chip.main{{background:rgba(47,191,143,.14);color:#4FD6A6}}
+.chip.main{{background:rgba(79,214,166,.14);color:#4FD6A6}}
 .chip.gray{{background:#202932;color:#A8B4C0}}
 .sess .why{{font-size:21px;line-height:1.45;color:#B9C3CE;display:-webkit-box;
   -webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}}
-.sess .ai{{margin-top:12px;padding-top:10px;border-top:1px solid #262E38;
+.sess .ai{{margin-top:12px;padding-top:10px;border-top:1px solid #24344A;
   font-size:18px;line-height:1.45;color:#93A3B5;display:-webkit-box;
   -webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}}
 .sess .ai span{{color:#5FA8E0;font-weight:700;margin-right:8px}}
 .row4{{display:flex;gap:14px;margin-top:14px}}
-.kpi{{flex:1;background:#1A2027;border:1px solid #262E38;border-radius:16px;
+.kpi{{flex:1;background:#141E2B;border:1px solid #24344A;border-radius:16px;
   padding:13px 8px;text-align:center}}
 .kpi b{{display:block;font-size:32px;font-weight:700;letter-spacing:-1px}}
 .kpi span{{display:block;font-size:18px;color:#7F8A97;margin-top:6px}}
 .brow{{display:flex;gap:12px;margin-top:10px}}
-.bkpi{{flex:1;background:#1A2027;border:1px solid #262E38;border-radius:14px;
+.bkpi{{flex:1;background:#141E2B;border:1px solid #24344A;border-radius:14px;
   padding:10px 10px;text-align:center}}
 .bkpi b{{display:block;font-size:27px;font-weight:700;letter-spacing:-.5px}}
 .bkpi b small{{font-size:18px;font-weight:400;color:#8C97A4;margin-left:3px}}
@@ -732,7 +742,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .pt-focus{{font-size:20px;color:#7F8A97;font-weight:400}}
 /* 备赛区：横排 7 格日历条，计划在上、实际完成在下 */
 .wk{{display:flex;gap:10px}}
-.wkd{{flex:1;background:#20272F;border:1px solid #262E38;border-radius:14px;
+.wkd{{flex:1;background:#20272F;border:1px solid #24344A;border-radius:14px;
   padding:9px 8px;text-align:center;display:flex;flex-direction:column}}
 .wkd.today{{background:rgba(47,191,143,.09);border-color:rgba(79,214,166,.4)}}
 .wkd .d{{font-size:17px;color:#7F8A97}}
@@ -745,7 +755,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .wkd .act{{margin-top:auto;font-size:15px;font-weight:600;border-radius:7px;
   padding:3px 0;margin-top:7px}}
 .wkd .act.ok{{background:rgba(79,214,166,.16);color:#4FD6A6}}
-.wkd .act.part{{background:rgba(224,163,58,.16);color:#E0A33A}}
+.wkd .act.part{{background:rgba(224,163,58,.16);color:#D6A75A}}
 .wkd .act.miss{{background:#1B222A;color:#6C7683}}
 .wkd .act.void{{color:#3C4650}}
 .wlist{{flex:1;display:flex;flex-direction:column;gap:4px}}
@@ -782,7 +792,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .sp{{display:block;width:100%;height:88px;flex:1 1 auto;min-height:42px}}
 .chart-h{{font-size:18px;color:#7F8A97;margin:7px 0 1px;letter-spacing:.5px}}
 .mini4{{display:flex;gap:9px;margin-bottom:2px}}
-.mini4 div{{flex:1;background:#1F262E;border:1px solid #262E38;border-radius:12px;
+.mini4 div{{flex:1;background:#1F262E;border:1px solid #24344A;border-radius:12px;
   padding:6px 6px;text-align:center}}
 .mini4 b{{display:block;font-size:24px;font-weight:700;letter-spacing:-.5px}}
 .mini4 b small{{font-size:15px;font-weight:400;color:#8C97A4;margin-left:2px}}
@@ -798,7 +808,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .flags ul{{list-style:none;flex:1;display:flex;flex-direction:column;gap:12px;justify-content:center}}
 .flags li{{font-size:20px;line-height:1.6;color:#C9D2DC;padding-left:20px;position:relative}}
 .flags li:before{{content:"";position:absolute;left:0;top:11px;width:8px;height:8px;
-  border-radius:50%;background:#E0A33A}}
+  border-radius:50%;background:#D6A75A}}
 .last{{font-size:19px;color:#8C97A4;margin-top:auto;line-height:1.45;padding-top:8px}}
 .tline{{display:flex;justify-content:space-between;align-items:baseline;
   font-size:18px;color:#C9D2DC;padding:4px 0}}
@@ -807,9 +817,9 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .delta.up{{color:#4FD6A6}}
 .delta.down{{color:#E06A5F}}
 .foot{{display:flex;justify-content:space-between;font-size:17px;color:#5C6673;
-  margin-top:auto;padding-top:12px;border-top:1px solid #232B34}}
+  margin-top:auto;padding-top:12px;border-top:1px solid #223349}}
 .aline{{display:flex;justify-content:space-between;align-items:baseline;gap:12px;
-  padding:10px 0;border-bottom:1px solid #232B34}}
+  padding:10px 0;border-bottom:1px solid #223349}}
 .aline:last-child{{border-bottom:none}}
 .aline span{{font-size:20px;color:#C9D2DC;min-width:0;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
@@ -821,7 +831,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .nutri{{display:flex;flex-direction:column;gap:6px;margin-top:9px}}
 .nrow{{display:flex;align-items:center;gap:12px;font-size:19px}}
 .nl{{width:48px;color:#9AA5B1;flex:none}}
-.ntrack{{flex:1;height:11px;background:#232B34;border-radius:7px;overflow:hidden}}
+.ntrack{{flex:1;height:11px;background:#223349;border-radius:7px;overflow:hidden}}
 .ntrack i{{display:block;height:100%;border-radius:7px}}
 .nv{{width:172px;text-align:right;font-weight:600;font-size:19px;flex:none}}
 .empty{{font-size:20px;color:#6C7683}}
@@ -830,7 +840,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
   gap:9px;margin-top:2px}}
 .today-empty{{flex:1;display:flex;align-items:center;justify-content:center;text-align:center;padding:0 12px}}
 .aact{{min-height:0;display:flex;flex-direction:column;justify-content:center;gap:2px;
-  background:#20272F;border:1px solid #262E38;border-radius:12px;padding:10px 14px;
+  background:#20272F;border:1px solid #24344A;border-radius:12px;padding:10px 14px;
   overflow:hidden}}
 .aact.span2{{grid-column:span 2}}
 .aact-h{{font-size:16px;color:#8C97A4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
@@ -839,17 +849,19 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .aact-v small{{font-size:15px;font-weight:400;color:#9AA5B1;letter-spacing:0}}
 .aact-m{{font-size:15px;color:#7F8A97;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
 /* ---- 品牌化：背景走「渐进 + 双辉光」，卡片顶沿一道高光，右下角大水印 ----
-   与 ui.py / actcard.py 共用 garmin_cn/brand.py，不在这里另写一套色值。 */
+   与 ui.py / actcard.py 共用 garmin_cn/brand.py，不在这里另写一套色值。
+   0.6.9 把中性灰底换成深空蓝灰、语义绿换成 icon 起点绿 #4FD6A6、
+   琥珀降饱和，两张出图和启动器图标的冷调保持一致。body 仍保持纯色。 */
 {BR.BRAND_CSS}
 {BR.glow_overlay_css("34px 52px 26px")}
 {BR.card_css(".card")}
 .card{{position:relative}}
 .card::before{{content:"";position:absolute;left:0;right:0;top:0;height:1px;
   background:linear-gradient(90deg,transparent,rgba(96,165,250,.42),transparent)}}
-.kpi,.bkpi,.aact,.wkd{{background:linear-gradient(180deg,#202932,#171E26)}}
+.kpi,.bkpi,.aact,.wkd{{background:linear-gradient(180deg,#1B2A3D,#111C2B)}}
 .wrap{{position:relative;z-index:1}}
 .rc-wm{{right:36px;bottom:70px;opacity:.06}}
-.rc-date{{display:flex;align-items:center;gap:16px}}
+.rc-date{{display:flex;align-items:center;gap:12px;flex:0 0 auto}}
 .rc-date .rc-badge{{box-shadow:0 0 26px -6px rgba(59,130,246,.9)}}
 .foot .rc-foot{{color:#8FA4BF;font-weight:600;letter-spacing:.5px}}
 .foot .rc-foot .rc-badge{{width:20px;height:20px}}
@@ -857,7 +869,10 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 </style></head><body><div class="rc-glow"></div>{BR.watermark_html(420)}<div class="wrap" data-gc-canvas>
 <div class="top">
   <div class="rc-date">{BR.badge_html(44)}<div class="date">{d.strftime("%m月%d日")}<small>{DOW[d.weekday()]}</small></div></div>
-  <div class="meta">恢复度 {_f(r.get("score"))} / 100<br>{esc(src)} · 已同步 {esc((sync_at or "")[:16]) or esc(res["date"])}</div>
+  <div class="meta">
+    <div class="m1">恢复度 <b>{_f(r.get("score"))}</b> / 100</div>
+    <div class="m2">{esc(src)} · 已同步 {esc((sync_at or "")[:16]) or esc(res["date"])}</div>
+  </div>
 </div>
 
 <div class="hero">
@@ -908,7 +923,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
       <div class="chart-h">HRV 与静息心率（近 14 天）</div>
       {hrv_spark}
       {rhr_spark}
-      <div class="last" style="border-top:1px solid #232B34">
+      <div class="last" style="border-top:1px solid #223349">
         睡眠债 {_f(sl.get("debt_h"), " h", 1)}{debt_nap} · 压力 {_f(t.get("avg_stress"))} · 步数 {_f(t.get("steps"))}
         {("　最近一次：" + last) if last else ""}
       </div>

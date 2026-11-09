@@ -69,7 +69,7 @@ a{color:var(--brand-ink);text-decoration:none}
 /* 页头右上角的单动作按钮（今日页就是「分享」出图）。
    以前它是页面里的一整张快捷卡，占掉半屏却只做一件事。 */
 .head-act{position:absolute;top:12px;right:0;display:inline-flex;align-items:center;
-  justify-content:center;gap:5px;font-size:12.5px;font-weight:600;padding:0 14px;
+  justify-content:center;gap:5px;font-size:12.5px;font-weight:600;padding:0 12px;
   min-height:44px;border-radius:999px;
   color:var(--brand-ink);background:var(--brand-soft);cursor:pointer;
   border:1px solid rgba(59,130,246,.36);box-shadow:0 0 18px -6px rgba(59,130,246,.9)}
@@ -80,8 +80,8 @@ a{color:var(--brand-ink);text-decoration:none}
   text-shadow:0 0 12px rgba(34,211,238,.45)}
 .page-head h1{margin:6px 0 4px;font-size:24px;font-weight:650;letter-spacing:-.5px;line-height:1.3}
 .lede{margin:0;font-size:13px;color:var(--muted)}
-.meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
-.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:4px 10px;
+.meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:3px 9px;
   border-radius:999px;background:rgba(15,22,34,.72);border:1px solid var(--line);color:var(--ink2)}
 .chip.ok{background:var(--brand-soft);border-color:rgba(59,130,246,.34);color:var(--brand-ink)}
 a.chip{min-height:44px;padding:0 14px;justify-content:center}
@@ -340,21 +340,9 @@ BRIDGE_JS = """<script>
       n = n.parentNode;
     }
   }, false);
-  /* 「大屏模式」开关：同一份 DOM 强制铺成 12 栅格，不跳到第二个页面。
-     顺带请原生切横屏；桌面 / 没有桥的环境只切 class，零依赖。 */
-  document.addEventListener('click', function(e){
-    var n = e.target;
-    while (n && n !== document) {
-      if (n.getAttribute && n.getAttribute('data-screen-toggle') !== null) {
-        var on = document.documentElement.classList.toggle('rc-big');
-        n.setAttribute('aria-pressed', on ? 'true' : 'false');
-        n.textContent = on ? '返回首屏' : '大屏模式';
-        if (window.GC && GC.action) GC.action(on ? 'landscape' : 'portrait');
-        return;
-      }
-      n = n.parentNode;
-    }
-  }, false);
+  /* 宽屏 / 横屏由 CSS 媒体查询自动铺成五面板，不再放按钮：倾斜手机时
+     系统已经给了旋转入口，App 再放一个横屏按钮只会重复，而且强制
+     requestedOrientation 还会额外弹出一次系统旋转提示。 */
   /* 同页参数变化（日期 / 筛选 / 分页）一律 replace：不往历史栈堆条目，
      返回键才能保持「二级页 → 所属 tab → 今日 → 退出」这条单一链路。 */
   document.addEventListener('click', function(e){
@@ -641,8 +629,9 @@ def home_page() -> str:
     依据《主页面设计说明》：主页不是展示全部数据的地方，是回答
     「今天怎么样、今天怎么练」的地方。竖屏 6 段（结论条 / 恢复环 /
     负荷带 / 身体 2×2 / 计划一条 / 最近 7 天），宽屏 ≥900px 由同一份
-    DOM 重排成 12 栅格 5 面板；「完整看板」链接退成「大屏模式」开关，
-    report.py 只保留按日期回看与导出，首页不再长出第二个产品。
+    DOM 重排成 12 栅格 5 面板；宽屏/横屏由 CSS 自动切换，不再放
+    「大屏模式」按钮（系统旋转入口已覆盖这件事）；report.py 只保留
+    按日期回看与导出，首页不再长出第二个产品。
 
     冗余入口一并收掉：四个 sec-head 的「完整 XX →」、两张快捷卡、
     卡底那条总进度条、和结论条重复的「今天休息」。数据层仍只用
@@ -778,37 +767,64 @@ def home_page() -> str:
                  f'<span class="rc-win">近 14 天趋势</span></div>'
                  f'<div class="rc-body">{"".join(cells)}</div></section>')
 
-    # ---- 计划一条 72：只放「下一次」，不再重复「今天休息」 ----------------
+    # ---- 计划一条：以「真实今天」为准，不再拿最后同步日当今天 -------------
+    # 旧版把 st["last"]（最后同步日）当 d0，而课表快照的 next_date 是相对
+    # 真实今天算的：没同步的日子里两者错开一天，今天的课就被写成「明天」。
+    # 恢复度/身体指标仍看最新有数据的那天，只有训练计划看日历今天。
     try:
         pl = A.plan(False) or {}
     except Exception:
         pl = {}
+    tday = dt.date.today()
+    real_today = tday.isoformat()
+    week_rows = pl.get("week") or []
+    today_plan = pl.get("today") or {}
+
+    def _items_on(d: str) -> list[dict]:
+        for w in week_rows:
+            if str(w.get("date") or "") == d:
+                return [x for x in (w.get("items") or []) if not x.get("rest")]
+        return []
+
+    today_items = _items_on(real_today)
+    if not today_items and str(today_plan.get("date") or "") == real_today:
+        today_items = [x for x in (today_plan.get("items") or [])
+                       if not x.get("rest")]
     nxt = pl.get("next_date")
     nxt_items = pl.get("next_items") or []
-    today_items = (pl.get("today") or {}).get("items") or []
     when, subwhen, title, desc = "—", "", "按恢复度安排", "本周暂无排课"
-    pick = (nxt_items[0] if nxt_items else None) or (today_items[0] if today_items else None)
-    if nxt:
+    eyebrow, pick = "训练计划 · 今天", None
+    if today_items or (nxt and str(nxt) == real_today and nxt_items):
+        # next_date 偶尔就是今天（日历/教练两种数据源口径不同），一并归今天。
+        pick = (today_items or nxt_items)[0]
+        when = "今天"
+        subwhen = "周" + "一二三四五六日"[tday.weekday()]
+    elif nxt_items:
+        pick = nxt_items[0]
+        eyebrow = "训练计划 · 下一次"
         try:
             nd = dt.date.fromisoformat(str(nxt))
-            when = "明天" if nd == d0 + dt.timedelta(days=1) else str(nxt)[5:]
+            when = "明天" if nd == tday + dt.timedelta(days=1) else str(nxt)[5:]
             subwhen = "周" + "一二三四五六日"[nd.weekday()]
         except (TypeError, ValueError):
             when = str(nxt)[5:]
-    elif today_items:
-        when, subwhen = "今天", f"周{week_cn}"
+    elif nxt:
+        eyebrow = "训练计划 · 下一次"
+        when = str(nxt)[5:]
     if pick:
         title = _plan_name(pick.get("name"))
         desc = _plan_meta(pick)
         hr_cap = pick.get("hr_max") or pick.get("hr_cap") or pick.get("target_hr")
         if hr_cap:
             desc += f" · 心率 ≤ {hr_cap}"
+    # 没有元信息就不渲染副标题，别留一行空白把计划条撑厚。
+    desc_html = f'<div class="d">{esc(desc)}</div>' if desc else ""
     plan_html = (f'<section class="rc-panel rc-plan-panel">'
-                 f'<div class="rc-panel-hd"><span class="rc-eyebrow">训练计划 · 下一次</span>'
+                 f'<div class="rc-panel-hd"><span class="rc-eyebrow">{esc(eyebrow)}</span>'
                  f'<span class="rc-win">按日课表</span></div>'
                  f'<div class="rc-plan"><div class="when"><b>{esc(when)}</b>'
                  f'{esc(subwhen)}</div><div class="what"><div class="t">'
-                 f'{esc(title)}</div><div class="d">{esc(desc)}</div></div>'
+                 f'{esc(title)}</div>{desc_html}</div>'
                  f'<a class="go" href="/plan?from=today">课表 →</a>'
                  f'</div></section>')
 
@@ -851,11 +867,9 @@ def home_page() -> str:
 
     body_html_all = ('<div class="rc-screen">' + verdict + hero + load_html
                      + body_html + plan_html + week_html + '</div>')
-    # 「完整看板 →」退成一个正常按钮：同一份 DOM 铺开，不再跳第二个页面。
+    # 只留两个数据胶囊：宽屏自动铺成大屏，不再需要第三个按钮。
     chips = (chip(f"{st.get('days') or 0} 天数据") +
-             chip(f"上次同步 {esc(str(st.get('last_sync') or '—')[5:16])}") +
-             '<button class="rc-mode" type="button" data-screen-toggle '
-             'aria-pressed="false">大屏模式</button>')
+             chip(f"上次同步 {esc(str(st.get('last_sync') or '—')[5:16])}"))
     action = ('<div class="head-act" data-act="export" role="button" tabindex="0" '
               'aria-label="导出一图流"><span aria-hidden="true">⇪</span>一图流</div>')
     return page("TODAY · 今日", "今天该怎么练", "", body_html_all, chips,
