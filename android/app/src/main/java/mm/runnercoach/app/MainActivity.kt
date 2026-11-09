@@ -1,8 +1,8 @@
-package com.garmincoach.app
+package mm.runnercoach.app
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.DatePickerDialog
+import android.app.Dialog
 import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Bitmap
@@ -13,11 +13,13 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.DocumentsContract
 import android.system.Os
 import android.util.Base64
 import android.text.InputType
 import android.util.Log
 import android.view.Gravity
+import android.view.Window
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -25,11 +27,13 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.chaquo.python.PyObject
@@ -42,6 +46,10 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -115,7 +123,7 @@ class MainActivity : Activity() {
         val toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0xFF070B12.toInt())
             setPadding(dp(18), 0, dp(6), 0)
         }
         val titles = LinearLayout(this).apply {
@@ -124,13 +132,13 @@ class MainActivity : Activity() {
         titles.addView(TextView(this).apply {
             text = "RunnerCoach"
             textSize = 16f
-            setTextColor(0xFF1A1F1B.toInt())
+            setTextColor(0xFFE8F0FB.toInt())
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         subtitle = TextView(this).apply {
             text = "今日 · 下拉同步"
             textSize = 11f
-            setTextColor(0xFF78806F.toInt())
+            setTextColor(0xFF7C8FA8.toInt())
         }
         titles.addView(subtitle)
         toolbar.addView(titles, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
@@ -139,7 +147,7 @@ class MainActivity : Activity() {
         shell.addView(toolbar, LinearLayout.LayoutParams(MATCH_PARENT, toolH))
 
         // 一条极细的分割线，比阴影轻，看板滚到底时也不会糊成一片
-        shell.addView(View(this).apply { setBackgroundColor(0xFFE4E8E1.toInt()) },
+        shell.addView(View(this).apply { setBackgroundColor(0xFF16202F.toInt()) },
             LinearLayout.LayoutParams(MATCH_PARENT, 1))
 
         pull = PullRefreshLayout(this)
@@ -178,7 +186,7 @@ class MainActivity : Activity() {
                     return true
                 }
             }
-            setBackgroundColor(0xFFF6F7F4.toInt())
+            setBackgroundColor(0xFF070B12.toInt())
         }
         pull.addView(web, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         pull.attach(web)
@@ -193,7 +201,7 @@ class MainActivity : Activity() {
         bar.visibility = View.GONE
 
         shell.addView(pull, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
-        shell.addView(View(this).apply { setBackgroundColor(0xFFE4E8E1.toInt()) },
+        shell.addView(View(this).apply { setBackgroundColor(0xFF16202F.toInt()) },
             LinearLayout.LayoutParams(MATCH_PARENT, 1))
         shell.addView(buildTabBar(), LinearLayout.LayoutParams(MATCH_PARENT, dp(62)))
         setContentView(shell)
@@ -233,6 +241,7 @@ class MainActivity : Activity() {
             path.startsWith("/view") -> goTab(if (uri?.getQueryParameter("from") == "today") 0 else 1)
             path.startsWith("/plan") -> goTab(0)     // 训练计划属于今日
             path.startsWith("/files") -> goTab(3)    // 产物属于我的
+            path.startsWith("/privacy") -> goTab(3)  // 隐私说明也挂在我的下面
             activeTab != 0 -> goTab(0)               // 其它 tab 先回今日
             else -> finish()                         // 已在今日根页面，退出
         }
@@ -262,7 +271,9 @@ class MainActivity : Activity() {
             ui {
                 when (name) {
                     "export" -> exportCard()
-                    "historySync" -> showSyncRangeDialog()
+                    // 旧页面缓存里可能还有这两个按钮：都转成后台补全，
+                    // 不再弹那个「选区间」的框（选了也没有任何可见效果）。
+                    "historySync", "historySyncAll" -> runBackfill()
                     // 数据源行直接进对应登录，不再先弹「佳明还是高驰」的二层选择器
                     "login:garmin" -> askGarminLogin()
                     "login:coros" -> askCorosLogin()
@@ -271,6 +282,9 @@ class MainActivity : Activity() {
                     "planRefresh" -> refreshPlan()
                     "amap" -> showAmapDialog()
                     "clips" -> showClips()
+                    "dbExport" -> doExportData()
+                    "dbImport" -> doImportData()
+                    "diag" -> showDiag()
                     else -> toast("未知操作：$name")
                 }
             }
@@ -287,7 +301,7 @@ class MainActivity : Activity() {
     private fun buildTabBar(): LinearLayout {
         val nav = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0xFF080D15.toInt())
             setPadding(dp(4), dp(6), dp(4), dp(6))
         }
         for (i in TAB_NAMES.indices) {
@@ -322,13 +336,13 @@ class MainActivity : Activity() {
     private fun updateTabs() {
         for (i in tabRoots.indices) {
             val on = i == activeTab
-            val c = if (on) 0xFF17845F.toInt() else 0xFF78806F.toInt()
+            val c = if (on) 0xFF4DA3FF.toInt() else 0xFF4E6076.toInt()
             tabIcons[i].setColorFilter(c)
             tabLabels[i].setTextColor(c)
             tabLabels[i].setTypeface(
                 android.graphics.Typeface.DEFAULT,
                 if (on) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-            tabRoots[i].setBackgroundColor(if (on) 0xFFE5F3ED.toInt() else 0x00000000)
+            tabRoots[i].setBackgroundColor(if (on) 0x243B82F6.toInt() else 0x00000000)
         }
         if (this::subtitle.isInitialized) updateSubtitle()
     }
@@ -355,7 +369,8 @@ class MainActivity : Activity() {
         val path = url.substringAfter(":$port", url)
         val t = when {
             path.startsWith("/ai") -> 2
-            path.startsWith("/me") || path.startsWith("/files") -> 3
+            path.startsWith("/me") || path.startsWith("/files") ||
+                path.startsWith("/privacy") -> 3
             path.startsWith("/history") || path.startsWith("/view") -> 1
             else -> 0
         }
@@ -365,58 +380,56 @@ class MainActivity : Activity() {
         }
     }
 
-    // ------------------------------------------------------------ 历史补拉
-    /** 只有「补拉」需要联网和账号，仍走原生对话框；查询历史已经全部网页化。 */
-    private fun showSyncRangeDialog() {
-        val end = todayISO()
-        AlertDialog.Builder(this)
-            .setTitle("拉取更多历史数据（增量补齐）")
-            .setMessage("已有且稳定的日子会跳过，活动列表自动翻页补齐。\n" +
-                "范围越大请求越多，请保持网络畅通。")
-            .setItems(arrayOf<CharSequence>(
-                "最近 90 天", "最近 180 天", "最近 365 天",
-                "自定义日期区间…（最多 3 年）")) { _, which ->
-                if (which < 3) {
-                    val n = intArrayOf(90, 180, 365)[which]
-                    runHistorySync(shiftISO(end, -(n - 1)), end)
-                } else {
-                    pickDateRange { a, b -> runHistorySync(a, b) }
+    // DatePicker 的月份是 0-based；统一转成 YYYY-MM-DD 再传给 Python 侧校验。
+    /**
+     * 后台由近到远补齐历史，标题栏小字显示进度。
+     *
+     * 以前这是「我的」里的一个按钮：点开一个弹窗、选区间，跑完只回一句
+     * 「跳过 90 天缓存」—— 用户的实际感受是「点了没有任何效果」。既然它本质是
+     * 必须跑完才有意义的事，就干脆不让人点：**每次刷新顺手往前挪一段**。
+     *
+     * Python 侧用游标 `backfill_cursor` 记住「下次从哪天往前补」，默认今天，
+     * 一段一年，退到下限（8 年前）返回 `done=true`。所以：
+     * - 已经补完的库，第一次调用就返回，不发任何请求；
+     * - 没补完的库，刷新几次慢慢补齐，每次只花一段的时间。
+     */
+    private fun runBackfill() {
+        if (backfilling) return
+        backfilling = true
+        thread {
+            var seg = 0
+            var fetched = 0
+            var lastErr = ""
+            var needLogin = false
+            var done = false
+            while (!done && seg < 12) {            // 12 段兜底，防止死循环
+                val r = apiCall("backfill_next")
+                if (!r.optBoolean("ok")) {
+                    lastErr = r.optString("error")
+                    needLogin = r.optBoolean("need_login") || r.optBoolean("need_mfa")
+                    break
+                }
+                done = r.optBoolean("done")
+                fetched += r.optInt("fetched")
+                if (!done) {
+                    seg++
+                    val a = r.optString("start")
+                    val b = r.optString("end")
+                    Log.i(TAG, "backfill seg=$seg $a~$b fetched=${r.optInt("fetched")} " +
+                        "skipped=${r.optInt("skipped")}")
+                    ui { subtitle.text = "补齐历史 第 $seg 段：$a ~ $b（新拉 ${r.optInt("fetched")} 天）" }
                 }
             }
-            .setNegativeButton("取消", null)
-            .show()
-    }
+            backfilling = false
+            Log.i(TAG, "backfill done seg=$seg fetched=$fetched err=$lastErr")
 
-    private fun runHistorySync(start: String, end: String) {
-        val email = secrets.email()
-        val pwd = secrets.password()
-        if (email.isNullOrBlank() || pwd.isNullOrBlank()) {
-            toast("补历史需要佳明账号，请先在「账号登录」里登录")
-            showLoginPicker()
-            return
-        }
-        busy(true)
-        subtitle.text = "正在补历史 $start ~ $end…"
-        thread {
-            // with_body=false 不顺带拉小米秤；force=false 走增量，避免重复请求
-            val r = apiCall("sync_range", start, end, email, pwd, false, false)
             ui {
-                busy(false)
-                if (!r.optBoolean("ok")) {
-                    setStatus(apiCall("status"))
-                    val err = r.optString("error")
-                    if (r.optBoolean("need_login") || r.optBoolean("need_mfa")) {
-                        toast("登录已失效：$err")
-                        askGarminLogin()
-                    } else {
-                        toast("补历史失败：$err")
-                    }
-                    return@ui
-                }
-                toast("已补 ${r.optString("range")}：新拉 ${r.optInt("fetched")} 天、" +
-                    "跳过 ${r.optInt("skipped")} 天缓存、活动 ${r.optInt("activities")} 条")
+                updateSubtitle()
+                // 后台任务遇到会话失效不弹登录：用户可能正在看别的页面，
+                // 下一次主动刷新时自然会提示。
+                if (needLogin) return@ui
+                if (seg > 0 && fetched > 0) toast("已补齐 $seg 段历史：新拉 $fetched 天")
                 thread {
-                    apiCall("dashboard")
                     setStatus(apiCall("status"))
                     ui { reload() }
                 }
@@ -424,7 +437,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // DatePicker 的月份是 0-based；统一转成 YYYY-MM-DD 再传给 Python 侧校验。
     private fun isoOf(y: Int, m: Int, d: Int): String =
         String.format(Locale.US, "%04d-%02d-%02d", y, m + 1, d)
 
@@ -443,24 +455,6 @@ class MainActivity : Activity() {
             c.get(Calendar.DAY_OF_MONTH))
     } catch (t: Throwable) {
         todayISO()
-    }
-
-    private fun pickDate(title: String, initial: String, done: (String) -> Unit) {
-        val p = initial.split("-")
-        DatePickerDialog(
-            this,
-            DatePickerDialog.OnDateSetListener { _, y, m, d -> done(isoOf(y, m, d)) },
-            p[0].toInt(), p[1].toInt() - 1, p[2].toInt()
-        ).apply { setTitle(title) }.show()
-    }
-
-    private fun pickDateRange(done: (String, String) -> Unit) {
-        pickDate("选择结束日期", todayISO()) { end ->
-            pickDate("选择起始日期", shiftISO(end, -89)) { start ->
-                if (start > end) toast("起始日不能晚于结束日")
-                else done(start, end)
-            }
-        }
     }
 
     // ------------------------------------------------------------ 启动
@@ -575,6 +569,9 @@ class MainActivity : Activity() {
                             if (garminDead) toast("佳明登录已失效，请在「账号登录」里重登")
                             else if (corosDead) toast("高驰登录已过期，请在「账号登录」里重登")
                             reload()
+                            // 每次刷新（含刚登录）都在后台往前补一段；
+                            // 已经补完的库会在第一次调用时立即返回，不发请求。
+                            runBackfill()
                         }
                     }
                 } else {
@@ -627,13 +624,13 @@ class MainActivity : Activity() {
                 addView(TextView(this@MainActivity).apply {
                     text = title
                     textSize = 15f
-                    setTextColor(0xFF1A1F1B.toInt())
+                    setTextColor(0xFFE8F0FB.toInt())
                     setTypeface(typeface, android.graphics.Typeface.BOLD)
                 })
                 addView(TextView(this@MainActivity).apply {
                     text = sub
                     textSize = 11.5f
-                    setTextColor(0xFF78806F.toInt())
+                    setTextColor(0xFF7C8FA8.toInt())
                 })
             }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             box.addView(r)
@@ -644,7 +641,7 @@ class MainActivity : Activity() {
         row(R.drawable.ic_logo_garmin, "Garmin 佳明国区",
             if (g.isNullOrBlank()) "邮箱密码 + 邮箱验证码" else "已登录 $g · 点击可重新登录"
         ) { askGarminLogin() }
-        box.addView(View(this).apply { setBackgroundColor(0xFFE4E8E1.toInt()) },
+        box.addView(View(this).apply { setBackgroundColor(0xFF16202F.toInt()) },
             LinearLayout.LayoutParams(MATCH_PARENT, 1))
         row(R.drawable.ic_logo_coros, "COROS 高驰",
             if (c.isNullOrBlank()) "邮箱密码（Training Hub）· token 自动续期" else "已登录 $c · 点击可重新登录"
@@ -771,7 +768,7 @@ class MainActivity : Activity() {
         val vRegion = TextView(this).apply {
             text = "账号区域：国内"
             textSize = 14f
-            setTextColor(0xFF485046.toInt())
+            setTextColor(0xFFB7C7DD.toInt())
             setPadding(0, dp(14), 0, dp(6))
             setOnClickListener {
                 AlertDialog.Builder(this@MainActivity)
@@ -837,7 +834,7 @@ class MainActivity : Activity() {
                    "换取底图时会把这次跑步的轨迹中心点发给高德；不填则只画矢量轨迹。\n" +
                    "Key 只保存在本机，不会上传。"
             textSize = 13f
-            setTextColor(0xFF485046.toInt())
+            setTextColor(0xFFB7C7DD.toInt())
             setLineSpacing(dp(3).toFloat(), 1f)
         })
         val input = EditText(this).apply {
@@ -888,8 +885,13 @@ class MainActivity : Activity() {
         }
     }
 
-    // ------------------------------------------------------------ 素材片段
-    /** 素材管理：列出已登记片段，点一条问删除，右上角添加。 */
+    // ------------------------------------------------------------ 素材
+    /**
+     * 素材管理：每条显示缩略图 + 名称 + 类型/时长 + 拍摄时间，点一条问删除。
+     *
+     * 为什么不复用 `setItems(文字数组)`：只有文字时根本分不清哪条是哪条——
+     * 一堆 `vid-1730...` 的名字，选错了才发现删错。缩略图 + 时间才认得出来。
+     */
     private fun showClips() {
         thread {
             val r = apiCall("clips_list")
@@ -898,41 +900,472 @@ class MainActivity : Activity() {
                     toast("读取素材失败")
                     return@ui
                 }
-                val arr = r.optJSONArray("items") ?: JSONArray()
-                val labels = (0 until arr.length()).map { i ->
-                    val o = arr.optJSONObject(i) ?: JSONObject()
-                    val sec = o.optDouble("dur", 0.0)
-                    "「${o.optString("name", "片段")}」 · ${"%.1f".format(sec)} 秒"
-                }.toTypedArray()
-                if (labels.isEmpty()) {
-                    AlertDialog.Builder(this)
-                        .setTitle("素材片段")
-                        .setMessage("还没有素材。\n\n从相册选一段视频、裁出想要的几秒，" +
-                            "生成回放时会自动插到对应位置。只搬样本不重编码，几秒就完成。")
-                        .setPositiveButton("添加") { _, _ -> pickVideo() }
-                        .setNegativeButton("关闭", null)
-                        .show()
-                    return@ui
-                }
-                AlertDialog.Builder(this)
-                    .setTitle("素材片段（${labels.size}）")
-                    .setItems(labels) { _, which ->
-                        val o = arr.optJSONObject(which) ?: JSONObject()
-                        confirmDeleteClip(o.optString("id"), o.optString("name"))
-                    }
-                    .setPositiveButton("添加") { _, _ -> pickVideo() }
-                    .setNegativeButton("关闭", null)
-                    .show()
+                clipArray = r.optJSONArray("items") ?: JSONArray()
+                renderClipList()
             }
         }
     }
 
-    private fun pickVideo() {
+    /** 当前列表数据；缩略图线程回来时要用，所以挂在类上而不是闭包里。 */
+    private var clipArray: JSONArray = JSONArray()
+    /** 后台补全历史是否正在跑：下拉刷新连续触发时避免并发两轮。 */
+    private var backfilling = false
+
+    /** 当前素材对话框。重建前必须先关掉它，否则会一层层叠起来。 */
+    private var clipDialog: Dialog? = null
+    /** 标题在列表里要动态改成「已选 N 个」，所以单独留个引用。 */
+    private var clipTitle: TextView? = null
+    private var clipSelecting = false
+    private val clipChecked = linkedSetOf<String>()
+
+    private fun renderClipList() {
+        // 每次重建都先关掉上一版：不关就会一层层叠上去，
+        // 删完素材还能看见旧列表 —— 用户说的「多保留历史界面」就是这个。
+        clipDialog?.dismiss()
+        clipDialog = null
+        clipTitle = null
+        val arr = clipArray
+        if (arr.length() == 0) {
+            clipSelecting = false
+            clipChecked.clear()
+            AlertDialog.Builder(this)
+                .setTitle("素材")
+                .setMessage("还没有素材。\n\n" +
+                    "可以加图片或视频：\n" +
+                    "· 图片直接插到回放对应位置；\n" +
+                    "· 视频能裁出想要的几秒（只搬样本不重编码，几秒就完成）。\n\n" +
+                    "插入位置取文件里的拍摄时间；没有时间信息时按数量均匀铺在整段活动里。")
+                .setPositiveButton("添加") { _, _ -> pickMedia() }
+                .setNegativeButton("关闭", null)
+                .show()
+            return
+        }
+
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(4), dp(8), dp(8))
+        }
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: JSONObject()
+            box.addView(clipRow(o))
+            if (i < arr.length() - 1) {
+                box.addView(View(this).apply { setBackgroundColor(0xFF16202F.toInt()) },
+                    LinearLayout.LayoutParams(MATCH_PARENT, 1).apply {
+                        leftMargin = dp(66); topMargin = dp(2); bottomMargin = dp(2)
+                    })
+            }
+        }
+
+        // 固定高度的 Dialog + 自己的 ScrollView。
+        // 旧版走 AlertDialog.setView()，customPanel 在不少机型上会被压到只剩
+        // 七八行 —— 列表看着像「只显示最新的 8 个」，其实是滚不动。
+        // 这里把中间那块做成明确可滚（weight=1），标题写总数，一眼能确认条数。
+        val title = TextView(this).apply {
+            text = if (clipSelecting) "已选 ${clipChecked.size} 个" else "素材（${arr.length()}）"
+            textSize = 17f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTextColor(0xFFE8F0FB.toInt())
+            setPadding(dp(18), dp(14), dp(18), dp(10))
+        }
+        clipTitle = title
+
+        val sv = ScrollView(this).apply {
+            isFillViewport = false
+            addView(box, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        }
+
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            setPadding(dp(8), dp(4), dp(8), dp(6))
+        }
+        fun btn(txt: String, color: Int, cb: () -> Unit): TextView =
+            TextView(this).apply {
+                text = txt
+                textSize = 14f
+                setTextColor(color)
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                isClickable = true
+                setOnClickListener { cb() }
+            }
+        btnRow.addView(btn("关闭", 0xFFB7C7DD.toInt()) { clipDialog?.dismiss() })
+        btnRow.addView(btn(if (clipSelecting) "退出选择" else "批量管理",
+            0xFF2E5A8A.toInt()) {
+            clipSelecting = !clipSelecting
+            if (!clipSelecting) clipChecked.clear()
+            renderClipList()
+        })
+        btnRow.addView(btn(if (clipSelecting) "删除选中" else "添加",
+            0xFF4DA3FF.toInt()) {
+            if (clipSelecting) {
+                deleteCheckedClips()
+            } else {
+                clipDialog?.dismiss()
+                pickMedia()
+            }
+        })
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = dp(16).toFloat()
+                setColor(0xFF0F1622.toInt())
+            }
+        }
+        val line = { View(this).apply { setBackgroundColor(0xFF16202F.toInt()) } }
+        root.addView(title, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        root.addView(line(), LinearLayout.LayoutParams(MATCH_PARENT, 1))
+        root.addView(sv, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        root.addView(line(), LinearLayout.LayoutParams(MATCH_PARENT, 1))
+        root.addView(btnRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+
+        val dlg = Dialog(this)
+        dlg.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        dlg.setContentView(root)
+        val dm = resources.displayMetrics
+        dlg.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dlg.window?.setLayout((dm.widthPixels * 0.94f).toInt(),
+            (dm.heightPixels * 0.8f).toInt())
+        dlg.setOnDismissListener {
+            if (clipDialog === dlg) {
+                clipDialog = null
+                clipTitle = null
+            }
+        }
+        clipDialog = dlg
+        dlg.show()
+    }
+
+    private fun deleteCheckedClips() {
+        val ids = clipChecked.toList()
+        if (ids.isEmpty()) {
+            toast("先勾选要删的素材")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("删除 ${ids.size} 个素材")
+            .setMessage("成品和「再次剪辑」用的原始片都会一起删掉，不能恢复。")
+            .setPositiveButton("删除") { _, _ ->
+                clipSelecting = false
+                thread {
+                    val r = apiCall("clips_remove_many", ids)
+                    ui {
+                        clipChecked.clear()
+                        toast(if (r.optBoolean("ok"))
+                            "已删除 ${r.optInt("removed")} 个"
+                        else r.optString("error", "删除失败"))
+                        showClips()
+                    }
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /** 一行：56dp 缩略图 + 两行文字。 */
+    private fun clipRow(o: JSONObject): View {
+        val id = o.optString("id", "")
+        val path = o.optString("path", "")
+        val name = o.optString("name", "素材")
+        val kind = o.optString("kind", "video")
+        val exists = o.optBoolean("exists", true)
+        val dur = o.optDouble("dur", 0.0)
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(8), dp(2), dp(8))
+            isClickable = true
+            // 给点击一点反馈，否则按下去像是没反应
+            setBackgroundResource(android.R.drawable.list_selector_background)
+        }
+
+        if (clipSelecting) {
+            val cb = CheckBox(this).apply {
+                isChecked = clipChecked.contains(id)
+                setOnCheckedChangeListener { _, on ->
+                    if (on) clipChecked.add(id) else clipChecked.remove(id)
+                    clipTitle?.text = if (clipChecked.isEmpty())
+                        "素材（${clipArray.length()}）" else "已选 ${clipChecked.size} 个"
+                }
+            }
+            row.addView(cb, LinearLayout.LayoutParams(dp(40), dp(40)))
+        }
+
+        val thumb = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            // 圆角靠 outline 裁：给个圆角 drawable 当背景，再 clipToOutline
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = dp(8).toFloat()
+                setColor(0xFF1A2435.toInt())
+            }
+            clipToOutline = true
+        }
+        row.addView(thumb, LinearLayout.LayoutParams(dp(56), dp(56)))
+
+        val texts = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), 0, 0, 0)
+        }
+        val title = TextView(this).apply {
+            text = name
+            textSize = 14f
+            setTextColor(0xFFE8F0FB.toInt())
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+        }
+        val subTxt = clipSubtitle(o, kind, dur, exists)
+        val noTime = o.optLong("t_utc", 0L) <= 0L
+        val sub = TextView(this).apply {
+            text = subTxt
+            textSize = 12f
+            setTextColor(when {
+                !exists -> 0xFFB3261E.toInt()
+                noTime -> 0xFFB26A00.toInt()      // 橙：不是坏了，但位置会不准
+                else -> 0xFF7C8FA8.toInt()
+            })
+            setPadding(0, dp(3), 0, 0)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        texts.addView(title)
+        texts.addView(sub)
+        row.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+
+        // 右箭头暗示「点进去有动作」（这里是删除确认）
+        val chev = TextView(this).apply {
+            text = "›"
+            textSize = 20f
+            setTextColor(0xFFB6BDB2.toInt())
+            setPadding(dp(6), 0, dp(2), 0)
+        }
+        row.addView(chev)
+
+        // 点一条不直接删：先给动作菜单，否则手滑就没了。
+        // 没有拍摄时间的那条额外给「重新读取」和「为什么」，别让人对着
+        // 一行「加入 xx」猜到底有没有问题。
+        row.setOnClickListener {
+            if (clipSelecting) {
+                val on = !clipChecked.contains(id)
+                if (on) clipChecked.add(id) else clipChecked.remove(id)
+                // 只同步这一行，不重建列表 —— 重建会把滚动位置打回顶部，
+                // 勾到第 10 条时特别难受。
+                (row.getChildAt(0) as? CheckBox)?.isChecked = on
+                clipTitle?.text = if (clipChecked.isEmpty())
+                    "素材（${clipArray.length()}）" else "已选 ${clipChecked.size} 个"
+                return@setOnClickListener
+            }
+            showClipActions(o)
+        }
+
+        if (exists) loadClipThumb(path, kind, dp(56)) { bmp ->
+            if (bmp != null) {
+                thumb.setImageBitmap(bmp)
+                thumb.scaleType = ImageView.ScaleType.CENTER_CROP
+            }
+        }
+        return row
+    }
+
+    /**
+     * 点一条素材的动作菜单。
+     *
+     * 以前只有「预览 / 删除」；现在要能再次剪辑和旋转：视频会留一份原始片
+     * （`src`），有它才能回到未裁的原片重新选起止点，而不是在已经裁过的
+     * 成品上二次裁（首段永远找不回来）。
+     */
+    private fun showClipActions(o: JSONObject) {
+        val id = o.optString("id", "")
+        val name = o.optString("name", "素材")
+        val kind = o.optString("kind", "video")
+        val src = o.optString("src", "")
+        val canReedit = kind == "video" && src.isNotBlank() && File(src).isFile()
+        val noTime = o.optLong("t_utc", 0L) <= 0L
+        val acts = mutableListOf<String>()
+        acts.add("预览")
+        if (canReedit) acts.add("重新剪辑")
+        if (kind == "video") acts.add("旋转 90°（当前 ${o.optInt("rotate", 0)}°）")
+        acts.add("重新读取时间")
+        if (noTime) acts.add("为什么没有拍摄时间？")
+        acts.add("删除")
+        AlertDialog.Builder(this)
+            .setTitle(name)
+            .setItems(acts.toTypedArray()) { _, which ->
+                val a = acts[which]
+                when {
+                    a == "预览" -> previewClip(o)
+                    a == "重新剪辑" -> reeditClip(o)
+                    a.startsWith("旋转") -> rotateClip(o)
+                    a == "重新读取时间" -> reprobeClip(o)
+                    a == "为什么没有拍摄时间？" -> explainMissingTime(o)
+                    else -> confirmDeleteClip(id, name)
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun reprobeClip(o: JSONObject) {
+        toast("正在重新读取…")
+        thread {
+            val r = apiCall("clips_reprobe", o.optString("id"))
+            val got = r.optLong("t_utc", 0L)
+            ui {
+                toast(if (got > 0) "已补到拍摄时间"
+                else r.optString("error", "还是读不到拍摄时间"))
+                showClips()
+            }
+        }
+    }
+
+    /** 每次 90° 循环。无损剪辑不转码，角度只记在素材上，绘制/抽帧时兑现。 */
+    private fun rotateClip(o: JSONObject) {
+        val id = o.optString("id", "")
+        val next = (o.optInt("rotate", 0) + 90) % 360
+        thread {
+            val r = apiCall("clips_update", id, 0.0, 0, 0, next)
+            ui {
+                if (r.optBoolean("ok")) {
+                    toast("已旋转到 $next°")
+                    showClips()
+                } else {
+                    toast(r.optString("error", "旋转失败"))
+                }
+            }
+        }
+    }
+
+    private fun reeditClip(o: JSONObject) {
+        val src = File(o.optString("src", ""))
+        if (!src.isFile) {
+            toast("原始片已经不在了，没法重新剪辑；删掉这条重新从相册添加")
+            return
+        }
+        val durMs = (o.optDouble("dur", 0.0) * 1000).toLong()
+        if (durMs < 1500) {
+            toast("这段视频太短，没法再剪")
+            return
+        }
+        showTrimUi(src, durMs, o.optString("name", "素材"),
+            o.optLong("t_utc", 0L), editId = o.optString("id"),
+            userRotate = o.optInt("rotate", 0))
+    }
+
+    /** 视频自带的 tkhd 旋转（竖拍常见 90）。编码宽高要靠它换成显示宽高。 */
+    private fun readRotation(f: File): Int {
+        val mmr = android.media.MediaMetadataRetriever()
+        return try {
+            mmr.setDataSource(f.absolutePath)
+            (mmr.extractMetadata(
+                android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                ?.toIntOrNull() ?: 0)
+        } catch (t: Throwable) {
+            0
+        } finally {
+            try { mmr.release() } catch (_: Throwable) {}
+        }
+    }
+
+    private fun clipSubtitle(o: JSONObject, kind: String, dur: Double, exists: Boolean): String {
+        if (!exists) return "文件已丢失，建议删除"
+        val kindTxt = if (kind == "image") "图片" else "视频"
+        val durTxt = if (kind == "image") "" else " · ${"%.1f".format(dur)} 秒"
+        val tMs = o.optLong("t_utc", 0L)
+        if (tMs > 0) {
+            val whenTxt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(tMs))
+            return "$kindTxt$durTxt · 拍摄 $whenTxt"
+        }
+        return "$kindTxt$durTxt · ⚠ 无拍摄时间（加入 ${o.optString("added_at", "—")}）"
+    }
+
+    /** 没有拍摄时间不是「显示问题」：回放会退化成按数量均分，位置不准。说清怎么办。 */
+    private fun explainMissingTime(o: JSONObject) {
+        val why = o.optString("t_why", "").ifBlank { "文件里读不到拍摄时间" }
+        AlertDialog.Builder(this)
+            .setTitle("为什么没有拍摄时间")
+            .setMessage(
+                "$why\n\n" +
+                    "影响：回放里这段只能按数量均匀铺开，位置不准。\n\n" +
+                    "常见原因是视频被剪辑、转发或重封装后，拍摄时间" +
+                    "（mvhd.creation_time）被清掉了。很多手机把拍摄时间只写在" +
+                    "相册数据库或视频日期标签里，mp4 文件本身并没有。\n" +
+                    "这一版在选片那一刻就把相册时间、视频日期标签、原始文件名" +
+                    "和剪辑前源文件一起取出来，登记时会写进成品，所以：\n" +
+                    "· 新加的视频会自动显示「拍摄」；\n" +
+                    "· 老素材的时间在当初剪辑时就丢了，点「重新读取时间」再试一次，\n" +
+                    "  仍读不到就删掉这条，重新从相册添加。")
+            .setPositiveButton("知道了", null)
+            .show()
+    }
+
+    /** 大图预览：图片看原图，视频看第一帧（要看动态得去生成回放）。 */
+    private fun previewClip(o: JSONObject) {
+        val path = o.optString("path", "")
+        val kind = o.optString("kind", "video")
+        val name = o.optString("name", "素材")
+        val iv = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(0xFF12161B.toInt())
+            minimumHeight = dp(160)
+        }
+        val dlg = AlertDialog.Builder(this)
+            .setTitle(name)
+            .setView(iv)
+            .setNegativeButton("关闭", null)
+            .create()
+        dlg.show()
+        dlg.window?.setLayout(
+            (resources.displayMetrics.widthPixels * 0.92f).toInt(), WRAP_CONTENT)
+        loadClipThumb(path, kind, resources.displayMetrics.widthPixels) { bmp ->
+            if (bmp != null) iv.setImageBitmap(bmp)
+        }
+    }
+
+    /** 取缩略图：图片降采样解码，视频抓第一帧。绝不在主线程做。 */
+    private fun loadClipThumb(path: String, kind: String, maxPx: Int,
+                              done: (Bitmap?) -> Unit) {
+        thread {
+            var bmp: Bitmap? = null
+            try {
+                val f = File(path)
+                if (f.isFile) {
+                    bmp = if (kind == "image") {
+                        val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeFile(path, b)
+                        var s = 1
+                        while (b.outWidth / s > maxPx * 2 || b.outHeight / s > maxPx * 2) s *= 2
+                        BitmapFactory.decodeFile(path, BitmapFactory.Options().apply {
+                            inSampleSize = s
+                        })
+                    } else {
+                        val mmr = android.media.MediaMetadataRetriever()
+                        try {
+                            mmr.setDataSource(path)
+                            mmr.getScaledFrameAtTime(
+                                0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                                maxPx * 2, maxPx * 2)
+                        } finally {
+                            try { mmr.release() } catch (_: Throwable) {}
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "clip thumb", t)
+            }
+            ui { done(bmp) }
+        }
+    }
+
+    /** 相册里图片和视频都能选：图片直接入库，视频走裁剪。支持批量选择。 */
+    private fun pickMedia() {
         try {
             startActivityForResult(
                 Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "video/*"
+                    type = "*/*"
+                    putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("video/*", "image/*"))
+                    // 图片可以一次全入库；视频排队逐个裁剪（每段都要人确认起止点）
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                 },
                 REQ_VIDEO,
             )
@@ -941,11 +1374,166 @@ class MainActivity : Activity() {
         }
     }
 
+    /** 批量选中的视频队列：一段剪完自动弹下一段。 */
+    private val pendingVideos = ArrayDeque<Uri>()
+
+    private fun nextPendingVideo() {
+        val u = pendingVideos.removeFirstOrNull()
+        if (u == null) {
+            showClips()
+            return
+        }
+        trimDialog(u)
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_BUNDLE && resultCode == android.app.Activity.RESULT_OK) {
+            data?.data?.let { askImportBundle(it) }
+            return
+        }
         if (requestCode == REQ_VIDEO && resultCode == android.app.Activity.RESULT_OK) {
-            data?.data?.let { trimDialog(it) }
+            val got = data ?: return
+            val uris = mutableListOf<Uri>()
+            val cd = got.clipData
+            if (cd != null && cd.itemCount > 0) {
+                for (i in 0 until cd.itemCount) cd.getItemAt(i)?.uri?.let { uris.add(it) }
+            } else {
+                got.data?.let { uris.add(it) }
+            }
+            if (uris.isEmpty()) return
+            val vids = mutableListOf<Uri>()
+            val imgs = mutableListOf<Pair<Uri, String>>()
+            for (u in uris) {
+                val mime = try {
+                    contentResolver.getType(u) ?: ""
+                } catch (t: Throwable) {
+                    ""
+                }
+                if (mime.startsWith("image/")) imgs.add(u to mime) else vids.add(u)
+            }
+            // 多张图片：全部加完再刷新列表，别每张都重建一次对话框
+            val left = java.util.concurrent.atomic.AtomicInteger(imgs.size)
+            for ((u, m) in imgs) addImage(u, m, left)
+            if (vids.isNotEmpty()) {
+                pendingVideos.clear()
+                pendingVideos.addAll(vids)
+                nextPendingVideo()
+            }
+        }
+    }
+
+    /**
+     * 图片素材：拷进 data/media 登记即可，不需要裁剪。
+     *
+     * 常见格式**原样**拷，保留 EXIF 的拍摄时间与坐标——回放靠它把素材放到正确位置。
+     * HEIC 之类浏览器解不了的，解码重编成 JPEG（会丢 EXIF，位置由后端均匀铺开兜底）。
+     */
+    private fun addImage(src: Uri, mime: String,
+                         left: java.util.concurrent.atomic.AtomicInteger? = null) {
+        busy(true)
+        subtitle.text = "加入素材…"
+        thread {
+            // 扩展名跟着内容走：本机服务只放行 png/jpg，把 PNG 存成 .jpg 会让
+            // Content-Type 和实际字节对不上；webp / heic 一律重编成 JPEG。
+            val copyAsIs = mime == "image/jpeg" || mime == "image/jpg" || mime == "image/png"
+            val ext = if (mime == "image/png") ".png" else ".jpg"
+            val dst = File(File(filesDir, "data/media"),
+                "img-" + System.currentTimeMillis() + ext)
+            dst.parentFile?.mkdirs()
+            var ok = false
+            if (copyAsIs) {
+                try {
+                    contentResolver.openInputStream(src)?.use { i ->
+                        dst.outputStream().use { o -> i.copyTo(o) }
+                    }
+                    ok = dst.length() > 0
+                } catch (t: Throwable) {
+                    Log.w(TAG, "copy image", t)
+                }
+            }
+            if (!ok) {
+                try {
+                    val bmp = decodeDown(src, 1600)
+                    if (bmp != null) {
+                        dst.outputStream().use { o ->
+                            bmp.compress(Bitmap.CompressFormat.JPEG, 88, o)
+                        }
+                        bmp.recycle()
+                        ok = dst.length() > 0
+                    }
+                } catch (t: Throwable) {
+                    Log.w(TAG, "encode image", t)
+                }
+            }
+            if (!ok) {
+                dst.delete()
+                ui { busy(false); updateSubtitle(); toast("这张图片读不出来") }
+                return@thread
+            }
+            val opt = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(dst.absolutePath, opt)
+            val add = apiCall("clips_add", dst.absolutePath, dst.nameWithoutExtension,
+                0.0, opt.outWidth, opt.outHeight, "image")
+            ui {
+                busy(false)
+                updateSubtitle()
+                val done = left == null || left.decrementAndGet() == 0
+                if (add.optBoolean("ok")) {
+                    toast("已加入素材（图片）")
+                } else {
+                    toast(add.optString("error", "登记失败"))
+                }
+                // 批量时等最后一张再加完刷新，否则每张都重建一次列表对话框
+                if (done) showClips()
+            }
+        }
+    }
+
+    /** 按最长边降采样解码，避免 4000 万像素的图把内存打爆。 */
+    private fun decodeDown(uri: Uri, maxSide: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        try {
+            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        } catch (_: Throwable) {
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var s = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / s > maxSide) s *= 2
+        val opt = BitmapFactory.Options().apply { inSampleSize = s }
+        return try {
+            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opt) }
+        } catch (t: Throwable) {
+            Log.w(TAG, "decode image", t)
+            null
+        }
+    }
+
+    /** 视频自己写的拍摄日期：`20261107T185530.000Z` / `2026-11-07 18:55:30+0800`。 */
+    private fun parseMediaDate(s: String?): Long {
+        if (s.isNullOrBlank()) return 0L
+        val m = Regex("(\\d{4})[-/]?(\\d{2})[-/]?(\\d{2})[T ]?(\\d{2}):?(\\d{2}):?(\\d{2})")
+            .find(s) ?: return 0L
+        val (y, mo, d, h, mi, se) = m.destructured
+        val off = Regex("([+-])(\\d{2}):?(\\d{2})$").find(s.trim())
+        val tz = when {
+            s.trim().endsWith("Z", true) -> "UTC"
+            off != null -> "GMT${off.groupValues[1]}${off.groupValues[2]}:${off.groupValues[3]}"
+            else -> TimeZone.getDefault().id
+        }
+        return try {
+            Calendar.getInstance(TimeZone.getTimeZone(tz)).apply {
+                set(Calendar.YEAR, y.toInt())
+                set(Calendar.MONTH, mo.toInt() - 1)
+                set(Calendar.DAY_OF_MONTH, d.toInt())
+                set(Calendar.HOUR_OF_DAY, h.toInt())
+                set(Calendar.MINUTE, mi.toInt())
+                set(Calendar.SECOND, se.toInt())
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+        } catch (t: Throwable) {
+            0L
         }
     }
 
@@ -953,106 +1541,167 @@ class MainActivity : Activity() {
     private fun trimDialog(src: Uri) {
         busy(true)
         thread {
+            // 原始文件名要留住：`clip-<时间戳>` 这种名字既看不出内容，
+            // 也丢了相机写在名字里的拍摄时间（VID_20261103_180036）。
+            // 同时把相册的 DATE_TAKEN / 文件修改时间取出来：真机上很多视频的
+            // 拍摄时间只存在于 MediaStore，mp4 里的 mvhd 是 0，光探文件永远读不到。
+            var storeTakenMs = 0L
+            val displayName = try {
+                contentResolver.query(src, null, null, null, null)?.use { c ->
+                    if (!c.moveToFirst()) return@use null
+                    fun col(name: String): Long = try {
+                        val i = c.getColumnIndex(name)
+                        if (i >= 0 && !c.isNull(i)) c.getLong(i) else 0L
+                    } catch (t: Throwable) {
+                        0L
+                    }
+                    val dt = col("datetaken")
+                    val lm = col(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                    storeTakenMs = if (dt > 0) dt else lm
+                    val ni = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (ni >= 0) c.getString(ni) else null
+                }
+            } catch (t: Throwable) {
+                null
+            } ?: "video.mp4"
             val tmp = File(cacheDir, "clip-src-${System.currentTimeMillis()}.mp4")
             try {
                 contentResolver.openInputStream(src)?.use { i ->
                     tmp.outputStream().use { o -> i.copyTo(o) }
                 }
             } catch (t: Throwable) {
-                ui { busy(false); toast("读取视频失败：${t.message}") }
+                ui {
+                    busy(false)
+                    toast("读取视频失败：${t.message}")
+                    if (pendingVideos.isNotEmpty()) nextPendingVideo() else showClips()
+                }
                 return@thread
             }
             var durMs = 0L
+            var metaDateMs = 0L
             val mmr = android.media.MediaMetadataRetriever()
             try {
                 mmr.setDataSource(tmp.absolutePath)
                 durMs = mmr.extractMetadata(
                     android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
                     ?.toLongOrNull() ?: 0L
+                metaDateMs = parseMediaDate(mmr.extractMetadata(
+                    android.media.MediaMetadataRetriever.METADATA_KEY_DATE))
             } catch (t: Throwable) {
                 Log.w(TAG, "read duration", t)
             } finally {
                 try { mmr.release() } catch (_: Throwable) {}
             }
+            // 视频自己的日期标签 > 相册 DATE_TAKEN > 文件修改时间。
+            // DATE_ADDED 故意不用：那是「下载/加入媒体库」的时间，不是拍摄时间。
+            val takenMs = if (metaDateMs > 0) metaDateMs else storeTakenMs
             ui {
                 busy(false)
                 if (durMs < 1500) {
                     tmp.delete()
                     toast("这段视频太短（不足 1.5 秒）")
+                    if (pendingVideos.isNotEmpty()) nextPendingVideo() else showClips()
                 } else {
-                    showTrimUi(tmp, durMs)
+                    showTrimUi(tmp, durMs, displayName, takenMs)
                 }
             }
         }
     }
 
-    private fun showTrimUi(src: File, durMs: Long) {
-        val secs = (durMs / 1000).toInt().coerceAtLeast(2)
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(8), dp(20), 0)
-        }
-        val tip = TextView(this).apply {
-            text = "拖动两个滑块选择片段；起点会对齐到关键帧，可能比选的早一点。"
-            textSize = 12.5f
-            setTextColor(0xFF485046.toInt())
-        }
-        val startBar = android.widget.SeekBar(this).apply { max = secs }
-        val endBar = android.widget.SeekBar(this).apply { max = secs; progress = secs }
-        val info = TextView(this).apply { textSize = 13f; setPadding(0, dp(6), 0, 0) }
-
-        fun refresh() {
-            if (endBar.progress <= startBar.progress) endBar.progress = startBar.progress + 1
-            info.text = "${startBar.progress} 秒 → ${endBar.progress} 秒" +
-                "（${endBar.progress - startBar.progress} 秒）"
-        }
-        val listener = object : android.widget.SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: android.widget.SeekBar?, p: Int, fromUser: Boolean) =
-                refresh()
-            override fun onStartTrackingTouch(sb: android.widget.SeekBar?) {}
-            override fun onStopTrackingTouch(sb: android.widget.SeekBar?) {}
-        }
-        startBar.setOnSeekBarChangeListener(listener)
-        endBar.setOnSeekBarChangeListener(listener)
-        box.addView(tip)
-        box.addView(startBar)
-        box.addView(endBar)
-        box.addView(info)
-        refresh()
-
-        AlertDialog.Builder(this)
-            .setTitle("裁剪素材")
-            .setView(box)
-            .setPositiveButton("保存") { _, _ ->
-                saveClip(src, startBar.progress * 1000L, endBar.progress * 1000L)
-            }
-            .setNegativeButton("取消") { _, _ -> src.delete() }
-            .setOnCancelListener { src.delete() }
-            .show()
+    private fun showTrimUi(src: File, durMs: Long, displayName: String, takenMs: Long,
+                           editId: String? = null, userRotate: Int = 0) {
+        // 预览 + 关键帧胶片条：光有两个滑块根本不知道第几秒拍的是什么，
+        // 也没法知道落刀会不会被吸附到别处。见 ClipTrimDialog。
+        ClipTrimDialog.show(this, src, durMs, userRotate,
+            onPick = { s, e, rot ->
+                saveClip(src, s, e, displayName, takenMs, editId, rot)
+            },
+            onCancel = {
+                // 再次剪辑的 src 是长期保留的原始片，取消时绝不能删
+                if (editId == null) src.delete()
+                if (pendingVideos.isNotEmpty()) nextPendingVideo() else showClips()
+            })
     }
 
-    private fun saveClip(src: File, startMs: Long, endMs: Long) {
+    private fun saveClip(src: File, startMs: Long, endMs: Long,
+                         displayName: String, takenMs: Long,
+                         editId: String? = null, userRotate: Int = 0) {
         busy(true)
         subtitle.text = "剪辑中…"
         thread {
-            val dst = File(File(filesDir, "data/media"),
-                "clip-" + System.currentTimeMillis() + ".mp4")
+            val outDir = File(filesDir, "data/media").apply { mkdirs() }
+            val dst = File(outDir, "clip-" + System.currentTimeMillis() + ".mp4")
             val r = ClipTrimmer.trim(src, dst, startMs, endMs)
-            src.delete()
             if (!r.ok) {
-                ui { busy(false); updateSubtitle(); toast("剪辑失败：${r.message}") }
+                if (editId == null) src.delete()
+                ui {
+                    busy(false); updateSubtitle()
+                    toast("剪辑失败：${r.message}")
+                    if (pendingVideos.isNotEmpty()) nextPendingVideo() else showClips()
+                }
                 return@thread
             }
-            val add = apiCall("clips_add", dst.absolutePath, dst.nameWithoutExtension,
-                r.durMs / 1000.0, r.width, r.height)
+            // 编码宽高是「横向」的：竖拍视频 tkhd 带 rotation=90，播放器会自己转，
+            // 但回放卡片是按登记尺寸布局的 —— 不换过来就会被压成横屏。
+            // MediaMuxer 偶尔会丢掉 rotation，那就退回读源片。
+            val rot = readRotation(dst).takeIf { it != 0 } ?: readRotation(src)
+            val dw = if (rot == 90 || rot == 270) r.height else r.width
+            val dh = if (rot == 90 || rot == 270) r.width else r.height
+
+            val call: JSONObject
+            if (editId != null) {
+                // 覆盖原成品：先把新裁的挪到它现在的路径上，再回写记录
+                val oldPath = (0 until clipArray.length())
+                    .mapNotNull { clipArray.optJSONObject(it) }
+                    .firstOrNull { it.optString("id") == editId }
+                    ?.optString("path") ?: ""
+                val target = if (oldPath.isNotBlank()) File(oldPath) else dst
+                if (target.absolutePath != dst.absolutePath) {
+                    try {
+                        target.delete()
+                        if (!dst.renameTo(target)) {
+                            dst.copyTo(target, overwrite = true)
+                            dst.delete()
+                        }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "replace clip", t)
+                    }
+                }
+                call = apiCall("clips_update", editId, r.durMs / 1000.0,
+                    dw, dh, userRotate)
+            } else {
+                // 留一份原始片，供「重新剪辑」回到未裁的版本
+                var keep = ""
+                try {
+                    val k = File(outDir, "src-" + System.currentTimeMillis() + ".mp4")
+                    src.copyTo(k, overwrite = true)
+                    if (k.length() > 0) keep = k.absolutePath
+                } catch (t: Throwable) {
+                    Log.w(TAG, "keep src", t)
+                }
+                // 关键：把**源文件**和**相册拍摄时间**都传过去。MediaMuxer 重封装会丢
+                // creation_time；不少手机把拍摄时间只写在 MediaStore / 解码器日期标签里，
+                // 裁完的成品和拷进 cache 的源片都读不出来，只能在选片这一刻取走。
+                call = apiCall("clips_add", dst.absolutePath, displayName,
+                    r.durMs / 1000.0, dw, dh, "video", src.absolutePath, takenMs,
+                    userRotate, keep)
+            }
+            if (editId == null) src.delete()   // 临时 cache 可以删，长期保留片不能
             ui {
                 busy(false)
                 updateSubtitle()
-                if (add.optBoolean("ok")) {
-                    toast("已加入素材（${r.durMs / 1000} 秒）")
+                if (call.optBoolean("ok")) {
+                    // 实际落刀点可能比选定的早（吸附到关键帧），说出来免得以为剪错了
+                    val drift = startMs - r.startMs
+                    val extra = if (drift > 200) "，实际从 ${r.startMs / 1000.0} 秒开始" else ""
+                    val noTime = if (editId == null && call.optLong("t_utc", 0L) <= 0L)
+                        "，⚠ 没读到拍摄时间" else ""
+                    toast((if (editId != null) "已更新素材" else "已加入素材") +
+                        "（${r.durMs / 1000} 秒$extra）$noTime")
                 } else {
-                    toast(add.optString("error", "登记失败"))
+                    toast(call.optString("error", "登记失败"))
                 }
+                if (pendingVideos.isNotEmpty()) nextPendingVideo() else showClips()
             }
         }
     }
@@ -1318,6 +1967,203 @@ class MainActivity : Activity() {
         }
     }
 
+    // ------------------------------------------------------------ 诊断
+    /**
+     * 最近几条异常。用可选中复制的 TextView 而不是 WebView 页面：
+     * 用户要的是「把这段发给你」，多一次跳转就多一次放弃。
+     */
+    private fun showDiag() {
+        busy(true)
+        thread {
+            val r = apiCall("diag_text", 300)
+            ui {
+                busy(false)
+                val txt = r.optString("text", "（读不出来）")
+                val tv = TextView(this).apply {
+                    text = txt
+                    setTextIsSelectable(true)
+                    textSize = 11.5f
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    setPadding(dp(16), dp(12), dp(16), dp(12))
+                }
+                val sv = ScrollView(this).apply { addView(tv) }
+                AlertDialog.Builder(this)
+                    .setTitle("诊断日志")
+                    .setView(sv)
+                    .setPositiveButton("关闭", null)
+                    .setNeutralButton("复制") { _, _ ->
+                        val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("diag", txt))
+                        toast("已复制，直接发给开发者即可")
+                    }
+                    .show()
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 数据搬迁
+    /**
+     * 导出数据包。
+     *
+     * App 是 allowBackup=false，卸载/换机就等于历史清零，所以必须给用户一条
+     * 自己把数据搬走的通路。zip 先由 Python 侧用 sqlite backup API 生成，
+     * 这里再复制到公共「下载/RunnerCoach」，用户既能自己在文件管理器里找到，
+     * 也能一口气分享出去。
+     */
+    private fun doExportData() {
+        if (port == 0) {
+            toast("还在启动，稍等一下")
+            return
+        }
+        busy(true)
+        thread {
+            val r = apiCall("db_export")
+            ui {
+                busy(false)
+                if (!r.optBoolean("ok")) {
+                    toast("导出失败：${r.optString("error")}")
+                    return@ui
+                }
+                val src = File(r.optString("path"))
+                val name = r.optString("name", "runnercoach-data.zip")
+                val uri = try {
+                    publishToDownloads(src, name)
+                } catch (t: Throwable) {
+                    Log.e(TAG, "publish bundle failed", t)
+                    null
+                }
+                if (uri == null) {
+                    toast("导出失败：写不进下载目录")
+                    return@ui
+                }
+                val c = r.optJSONObject("counts")
+                val days = c?.optInt("daily", 0) ?: 0
+                val acts = c?.optInt("activities", 0) ?: 0
+                val mb = String.format(Locale.US, "%.1f", src.length() / 1048576.0)
+                AlertDialog.Builder(this)
+                    .setTitle("已导出")
+                    .setMessage(
+                        "$days 天日汇总 / $acts 条活动，共 $mb MB。\n\n" +
+                            "已存到「下载/RunnerCoach/$name」，也可以直接分享出去。\n\n" +
+                            "包里不含账号密码、会话与照片原文件。"
+                    )
+                    .setPositiveButton("分享") { _, _ -> shareZip(uri) }
+                    .setNegativeButton("知道了", null)
+                    .show()
+            }
+        }
+    }
+
+    /** 写进公共下载目录，返回可分享的 content:// uri。 */
+    private fun publishToDownloads(src: File, name: String): Uri? {
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, name)
+            put(MediaStore.Downloads.MIME_TYPE, "application/zip")
+            put(MediaStore.Downloads.RELATIVE_PATH,
+                Environment.DIRECTORY_DOWNLOADS + "/RunnerCoach")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: return null
+        try {
+            contentResolver.openOutputStream(uri)?.use { out ->
+                src.inputStream().use { it.copyTo(out) }
+            } ?: return null
+        } catch (t: Throwable) {
+            contentResolver.delete(uri, null, null)
+            throw t
+        }
+        values.clear()
+        values.put(MediaStore.Downloads.IS_PENDING, 0)
+        contentResolver.update(uri, values, null, null)
+        return uri
+    }
+
+    private fun shareZip(uri: Uri) {
+        val i = Intent(Intent.ACTION_SEND).apply {
+            type = "application/zip"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(i, "分享数据包"))
+    }
+
+    private fun doImportData() {
+        try {
+            startActivityForResult(
+                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                    // 有的文件管理器把 zip 报成 octet-stream，两个都收；
+                    // 真正的校验在 Python 侧（看 manifest.json），不靠后缀。
+                    putExtra(Intent.EXTRA_MIME_TYPES,
+                        arrayOf("application/zip", "application/octet-stream"))
+                },
+                REQ_BUNDLE,
+            )
+        } catch (t: Throwable) {
+            toast("打不开文件选择器：${t.message}")
+        }
+    }
+
+    private fun askImportBundle(uri: Uri) {
+        AlertDialog.Builder(this)
+            .setTitle("导入数据？")
+            .setMessage(
+                "会用数据包里的库覆盖当前数据。\n" +
+                    "覆盖前会自动备份一份 garmin.db.bak-时间戳，导错了还能换回来。\n\n" +
+                    "账号需要重新登录，照片素材需要重新添加（包里不含这些）。"
+            )
+            .setPositiveButton("导入") { _, _ -> doImportBundle(uri) }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun doImportBundle(uri: Uri) {
+        busy(true)
+        thread {
+            val tmp = File(cacheDir, "import-bundle.zip")
+            val copied = try {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    tmp.outputStream().use { input.copyTo(it) }
+                }
+                tmp.isFile && tmp.length() > 0
+            } catch (t: Throwable) {
+                Log.e(TAG, "copy bundle failed", t)
+                false
+            }
+            if (!copied) {
+                ui { busy(false); toast("读不出这个文件") }
+                return@thread
+            }
+            val r = apiCall("db_import", tmp.absolutePath)
+            tmp.delete()
+            ui {
+                busy(false)
+                if (!r.optBoolean("ok")) {
+                    toast("导入失败：${r.optString("error")}")
+                    return@ui
+                }
+                val c = r.optJSONObject("counts")
+                val days = c?.optInt("daily", 0) ?: 0
+                val acts = c?.optInt("activities", 0) ?: 0
+                val bak = r.optString("backup")
+                AlertDialog.Builder(this)
+                    .setTitle("导入完成")
+                    .setMessage(
+                        "$days 天日汇总 / $acts 条活动。\n" +
+                            (if (bak.isEmpty()) "" else "\n原库已备份到：\n${File(bak).name}")
+                    )
+                    .setPositiveButton("好") { _, _ ->
+                        goTab(0)
+                        reload()
+                    }
+                    .show()
+            }
+        }
+    }
+
     // ------------------------------------------------------------ 出图
     /** 生成一图流 HTML，再用一个离屏 WebView 画成 1080×1920 的 PNG。 */
     private fun exportCard() {
@@ -1430,7 +2276,7 @@ class MainActivity : Activity() {
             return
         }
         busy(true)
-        subtitle.text = "准备回放…"
+        subtitle.text = "生成回放 0%"
         thread {
             val r = apiCall("motion_html", id, 24, duration, privacy)
             if (!r.optBoolean("ok")) {
@@ -1441,6 +2287,13 @@ class MainActivity : Activity() {
                 }
                 return@thread
             }
+            // 真机上排查底图缩放：k 是底图与轨迹共用的视口缩放，
+            // ratio 是变换前轨迹外框占画幅的比例（过大 = 旧版会顶到边缘）。
+            Log.i(TAG, "motion view=" + r.optJSONObject("view"))
+            // 原生预抽素材帧：必须在起 WebView 之前做完 —— 这时还没有监督
+            // 线程，不会撞上「连续 5 分钟没有新帧」的判死。抽不到帧的段
+            // n=0，页面退回静态封面，绝不再在 WebView 里 drawImage(<video>)。
+            prepareClipFrames(r)
             ui {
                 startMotionView(
                     r.optString("run"), r.optInt("frames"), r.optInt("fps", 24),
@@ -1450,7 +2303,48 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 离屏 WebView 加载动画页：页面自己逐帧 JPEG POST 到 /__frame。 */
+    /** 把每段视频按 12fps 抽成缩略 JPEG，再写 `_clips.json` 给页面按 ci 取图。 */
+    private fun prepareClipFrames(r: org.json.JSONObject) {
+        val arr = r.optJSONArray("clips") ?: return
+        val dir = r.optString("dir")
+        if (arr.length() == 0 || dir.isEmpty()) return
+        val root = java.io.File(dir)
+        val index = org.json.JSONObject()
+        for (i in 0 until arr.length()) {
+            val c = arr.optJSONObject(i) ?: continue
+            val ci = c.optInt("ci", i)
+            ui { subtitle.text = "准备素材画面 ${i + 1}/${arr.length()}" }
+            val t0 = System.currentTimeMillis()
+            // 画质优先：长边 840 正好等于卡片最大显示尺寸（不再放大），
+            // 帧率让到 8fps、单段上限 72 格（9 秒内素材满帧率，更长的自动降格率）。
+            // 抽帧总量反而比 12fps/150 格少一半，导出更快。
+            val info = MotionClips.extract(
+                c.optString("file"), java.io.File(root, "c$ci"), 8, 72, 840,
+                c.optInt("rotate", 0))
+            try {
+                index.put(ci.toString(), org.json.JSONObject()
+                    .put("n", info.n).put("fps", info.fps)
+                    .put("w", info.w).put("h", info.h))
+            } catch (_: Throwable) {}
+            Log.i(TAG, "motion clip ${c.optString("name")}: ${info.n} 帧 @ " +
+                "${String.format(Locale.US, "%.1f", info.fps)}fps " +
+                "${info.w}x${info.h}, " +
+                "${(System.currentTimeMillis() - t0) / 1000}s")
+        }
+        try {
+            java.io.File(root, "_clips.json").writeText(index.toString(), Charsets.UTF_8)
+        } catch (t: Throwable) {
+            Log.w(TAG, "写 _clips.json 失败: ${t.message}")
+        }
+    }
+
+    /**
+     * 离屏 WebView 加载动画页：页面自己逐帧 JPEG POST 到 /__frame。
+     *
+     * v42 之前是「等 720 帧全部写盘 → 才开始编码」两段串行，30 秒的片子要等
+     * 两遍耗时。现在 WebView 一起就起编码线程，按帧号边收边编；帧齐立刻拆掉
+     * WebView 释放内存（编码只读盘上的 JPEG，不再依赖它）。
+     */
     private fun startMotionView(run: String, frames: Int, fps: Int,
                                 htmlPath: String, title: String) {
         val name = htmlPath.substringAfterLast('/')
@@ -1463,38 +2357,37 @@ class MainActivity : Activity() {
             translationY = 8000f
         }
         pull.addView(view, FrameLayout.LayoutParams(1080, 1920))
-        view.loadUrl(url)
-        thread {
-            var last = -1
-            var fail: String? = null
-            val t0 = System.currentTimeMillis()
-            val deadline = t0 + 12 * 60 * 1000
-            while (System.currentTimeMillis() < deadline) {
-                Thread.sleep(1000)
-                val st = apiCall("motion_status", run)
-                val n = st.optInt("frames")
-                if (n != last) {
-                    last = n
-                    ui { subtitle.text = "生成回放 $n/$frames 帧" }
-                }
-                // 帧齐就走人。`done` 只作参考：它靠页面最后补一个 POST，
-                // 万一那一下丢了，死等 done 会白卡到超时。
-                if (n >= frames && n > 0) {
-                    Thread.sleep(400)
-                    break
-                }
-                val diag = st.optJSONObject("diag")
-                // 页面自报诊断：一直是 0 帧时直接把原因说清楚，
-                // 别让人对着进度条猜是慢还是坏了
-                if (n == 0 && diag != null && !diag.optBoolean("base", true)) {
-                    fail = "底图没能加载：先到「我的 → 地图底图」配置高德 Key，再试一次"
-                    break
-                }
-                if (n == 0 && System.currentTimeMillis() - t0 > 30_000 && diag == null) {
-                    fail = "播放页没有开始渲染（WebView 未就绪），请重试"
-                    break
+
+        val cancel = AtomicBoolean(false)
+        val encoded = AtomicBoolean(false)
+        val detached = AtomicBoolean(false)
+        val rendered = AtomicBoolean(false)
+        val renderDone = AtomicInteger(0)
+        val encodeDone = AtomicInteger(0)
+        val startedAt = System.currentTimeMillis()
+        // 全流水线共享的「最后一次有进展」时刻：渲染侧帧数增长、编码侧每拿到
+        // 一帧或编完一帧都会刷新它。慢机器只要还在推进就一直续期，不会超时。
+        val lastProgressAt = AtomicLong(System.currentTimeMillis())
+        val pctLock = Any()
+        var lastPct = -1
+        // 并行流水线的真实完成度 = 渲染与编码里**较慢**的那条。
+        // v42 用 max(渲染 0~70, 编码 70~100)：编码编完第 0 帧就报 70，
+        // 进度条瞬间假跳到 70%，之后渲染侧所有上报都被单调保护吞掉，
+        // 只剩每 24~29 帧才涨 1% 的编码刻度。这里改成两条线程各报帧数，
+        // 统一按 min(r, e) 换算，绝不虚高。
+        fun report(force: Int? = null) {
+            val v = force ?: (minOf(renderDone.get(), encodeDone.get()) * 100L /
+                max(1, frames)).toInt().coerceIn(0, 100)
+            val show = synchronized(pctLock) {
+                if (v <= lastPct) -1 else {
+                    lastPct = v
+                    v
                 }
             }
+            if (show >= 0) ui { subtitle.text = "生成回放 $show%" }
+        }
+        fun detach() {
+            if (!detached.compareAndSet(false, true)) return
             ui {
                 try {
                     pull.removeView(view)
@@ -1502,54 +2395,184 @@ class MainActivity : Activity() {
                     Log.w(TAG, "remove motion view", t)
                 }
                 view.destroy()
-                if (fail != null) {
-                    busy(false)
-                    updateSubtitle()
-                    val got = apiCall("motion_status", run).optInt("frames")
-                    if (got == 0) {
-                        apiCall("motion_cleanup", run)
-                        toast(fail)
-                    } else {
-                        encodeMotion(run, fps, title)
-                    }
-                } else {
-                    encodeMotion(run, fps, title)
-                }
             }
+        }
+        report()
+        view.loadUrl(url)
+
+        // 只管显示、诊断与兜底取消，不再决定什么时候开始编码
+        thread {
+            var lastFrames = -1
+            var loggedPre = ""
+            while (!encoded.get() && !cancel.get()) {
+                Thread.sleep(700)
+                val st = apiCall("motion_status", run)
+                val n = st.optInt("frames")
+                // 每段视频的预抽帧结果：真机上能确认走的是新路径、
+                // 抽到多少格真正有画面（lit=0 就说明视频解码有问题）
+                st.optJSONObject("diag")?.optJSONObject("preload")?.let { p ->
+                    val key = "${p.optString("name")}/${p.optInt("n")}/${p.optInt("lit")}"
+                    if (key != loggedPre) {
+                        loggedPre = key
+                        Log.i(TAG, "motion preload: ${p.optString("name")} " +
+                            "${p.optInt("lit")}/${p.optInt("n")} frames " +
+                            "@${p.optDouble("fps")}fps " +
+                            "${p.optInt("w")}x${p.optInt("h")}")
+                    }
+                }
+                if (n > lastFrames) {
+                    lastFrames = n
+                    lastProgressAt.set(System.currentTimeMillis())
+                }
+                renderDone.set(n)
+                report()
+                if (n >= frames && n > 0) {
+                    if (rendered.compareAndSet(false, true)) {
+                        Log.i(TAG, "motion render done: " +
+                            "${(System.currentTimeMillis() - startedAt) / 1000}s, " +
+                            "$n frames")
+                    }
+                    detach()
+                }
+                // 慢但持续推进时 lastProgressAt 一直被刷新，这里永远不触发。
+                // 只有连续 grace 分钟一帧都没动，才判定页面/编码器真的卡死。
+                // 诊断也放到卡死时才判：旧版「30 秒还没 0 帧」会把加载慢的
+                // WebView 误杀（而且 diag 是空对象，那个分支其实从来没命中）。
+                val grace = if (lastFrames > 0) MOTION_STALL_MS
+                            else MOTION_FIRST_FRAME_MS
+                if (System.currentTimeMillis() - lastProgressAt.get() <= grace) continue
+                val diag = st.optJSONObject("diag")
+                val hasDiag = diag != null && diag.length() > 0
+                val baseOk = diag?.optBoolean("base", true) ?: true
+                val msg = when {
+                    lastFrames <= 0 && !baseOk ->
+                        "底图没能加载：先到「我的 → 地图底图」配置高德 Key，再试一次"
+                    lastFrames <= 0 && !hasDiag ->
+                        "播放页没有开始渲染（WebView 未就绪），请重试"
+                    else -> "回放生成已停止：连续 ${grace / 60_000} 分钟没有新帧" +
+                        "（已收 ${max(0, lastFrames)}/$frames 帧），请重试"
+                }
+                Log.w(TAG, "motion stalled: $msg, render=$n/$frames, " +
+                    "encode=${encodeDone.get()}/$frames")
+                cancel.set(true)
+                apiCall("motion_cleanup", run)
+                detach()
+                ui { busy(false); updateSubtitle(); toast(msg) }
+                break
+            }
+        }
+
+        // 编码线程：与 WebView 渲染并行
+        thread {
+            val ok = encodeMotion(run, fps, title, frames, cancel, startedAt,
+                lastProgressAt,
+                { done ->
+                    encodeDone.set(done)
+                    if (done > 0) lastProgressAt.set(System.currentTimeMillis())
+                    report()
+                }, { detach() })
+            encoded.set(true)
+            if (ok) report(100)   // 只有成功才强制到 100%，超时后别显示满格
+            detach()
+            // 统一收尾：不管成功、失败、诊断取消还是超时，进度圈都得关掉
+            ui { busy(false); updateSubtitle() }
         }
     }
 
-    private fun encodeMotion(run: String, fps: Int, title: String) {
+    /** 等第 i 帧落盘。服务端用 .tmp + os.replace 原子改名，文件出现即完整。
+     *  超时看的是**整条流水线的心跳**，不是这一帧等了多久：渲染慢时每帧可能
+     *  要好几秒甚至几十秒，旧版固定 120 秒死线会在正常推进中把编码器掐断。 */
+    private fun awaitFrame(dir: File, i: Int, cancel: AtomicBoolean,
+                           lastProgressAt: AtomicLong): File? {
+        val f = File(dir, String.format(Locale.US, "f_%05d.jpg", i))
+        while (!cancel.get()) {
+            if (f.isFile && f.length() > 1024) {
+                lastProgressAt.set(System.currentTimeMillis())
+                return f
+            }
+            if (System.currentTimeMillis() - lastProgressAt.get() >
+                MOTION_STALL_MS) return null
+            Thread.sleep(12)
+        }
+        return null
+    }
+
+    private fun encodeMotion(run: String, fps: Int, title: String, total: Int,
+                             cancel: AtomicBoolean, startedAt: Long,
+                             lastProgressAt: AtomicLong,
+                             report: (Int) -> Unit, detach: () -> Unit): Boolean {
         val st = apiCall("motion_status", run)
         val dir = File(st.optString("dir"))
-        if (!dir.isDirectory) {
-            busy(false)
-            updateSubtitle()
-            toast("没有收到帧，回放生成失败")
-            return
+        // 页面是先 POST 时间轴、再推第 0 帧。等到时间轴和首帧都在，
+        // 音频清单就一定是齐的，不会出现「编完了才发现没混音」。
+        // 不再自带 60 秒死线：首帧慢交给监督线程按「零进展」统一判定，
+        // 也由它给出具体原因，这里只管等 cancel。
+        var ready = false
+        while (!cancel.get()) {
+            if (File(dir, "_timeline.json").isFile && File(dir, "f_00000.jpg").isFile) {
+                ready = true
+                break
+            }
+            // 监督线程万一挂了，这里也不能无限空转。门槛必须比它的
+            // FIRST_FRAME + STALL 更宽，保证正常情况下先由监督线程给出原因。
+            if (System.currentTimeMillis() - lastProgressAt.get() >
+                MOTION_FIRST_FRAME_MS + MOTION_STALL_MS) break
+            Thread.sleep(200)
         }
-        subtitle.text = "编码中…"
-        thread {
-            val out = File(File(filesDir, "output"),
-                "motion-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".mp4")
-            val r = MotionEncoder.encode(dir, out, 1080, 1920, fps)
-            apiCall("motion_cleanup", run)
-            ui {
-                busy(false)
-                updateSubtitle()
-                if (!r.ok) {
-                    toast("编码失败：${r.message}")
-                    return@ui
+        if (!ready || cancel.get()) {
+            // cancel=true 说明监督线程已经弹过具体诊断，别重复弹
+            if (!cancel.get()) ui { toast("没有收到帧，回放生成失败，请重试") }
+            return false
+        }
+        val out = File(File(filesDir, "output"),
+            "motion-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".mp4")
+        // 时间轴落在帧目录里，cleanup 会连它一起删，所以先取再编码。
+        // 取不到（没视频素材 / 老页面没回传）就是空列表，编码器退回无声。
+        val ar = apiCall("motion_audio", run)
+        val segments = ArrayList<MotionAudio.Segment>()
+        val rows = ar.optJSONArray("items")
+        if (rows != null) {
+            for (i in 0 until rows.length()) {
+                val o = rows.optJSONObject(i) ?: continue
+                val f = o.optString("file", "")
+                if (f.isNotEmpty()) {
+                    segments.add(MotionAudio.Segment(
+                        f, o.optDouble("at", 0.0), o.optDouble("dur", 0.0)))
                 }
-                val uri = saveVideoToGallery(out)
-                if (uri == null) {
-                    toast("回放已生成，但写不进相册：${out.name}")
-                    return@ui
-                }
-                toast("回放已存相册/GarminCoach")
-                shareVideo(uri, "分享回放：$title")
             }
         }
+        val r = MotionEncoder.encode(
+            dir, out, 1080, 1920, fps, segments,
+            frameCount = total,
+            frameAt = MotionEncoder.FrameAt { i ->
+                awaitFrame(dir, i, cancel, lastProgressAt)
+            },
+            cancelled = { cancel.get() },
+            onProgress = report)
+        apiCall("motion_cleanup", run)
+        if (cancel.get()) return false   // 监督线程已经弹过具体原因
+        detach()
+        val seconds = (System.currentTimeMillis() - startedAt) / 1000
+        Log.i(TAG, "motion export done: ${seconds}s, ${r.via} ${r.width}x${r.height}, " +
+            "ok=${r.ok}, audio=${r.audioSegments}, frames=$total, msg=${r.message}")
+        ui {
+            busy(false)
+            updateSubtitle()
+            if (!r.ok) {
+                toast("编码失败：${r.message}")
+                return@ui
+            }
+            val uri = saveVideoToGallery(out)
+            if (uri == null) {
+                toast("回放已生成，但写不进相册：${out.name}")
+                return@ui
+            }
+            val tail = if (r.audioSegments > 0)
+                "（含 ${r.audioSegments} 段素材原声）" else ""
+            toast("回放已存相册/GarminCoach · ${seconds}s · ${r.via} 编码$tail")
+            shareVideo(uri, "分享回放：$title")
+        }
+        return r.ok && !cancel.get()     // 只有真的成了才把进度推到 100%
     }
 
     private fun saveVideoToGallery(f: File): Uri? = try {
@@ -1957,6 +2980,18 @@ class MainActivity : Activity() {
     private companion object {
         const val TAG = "GarminCoach"
 
+        /**
+         * 回放导出的超时语义（v44）：**慢不是失败，卡死才是**。
+         *
+         * 旧版按「从点击起 12 分钟」一刀切：真机一帧要几秒时，进度还在走，
+         * 到点却直接 cancel 并弹「回放生成超时，请重试」；用户重试又是同样的
+         * 12 分钟，永远出不了片。现在只认「连续这么久没有任何新帧」：只要
+         * 渲染帧数或编码帧数还在增长就一直续期，没有总时长上限。
+         * 首帧前单独放宽，因为 WebView 要加载底图、照片和视频。
+         */
+        const val MOTION_STALL_MS = 5 * 60 * 1000L
+        const val MOTION_FIRST_FRAME_MS = 3 * 60 * 1000L
+
         /** 与 garmin_cn/privacy.py 的 MODES 一一对应，顺序不能改。 */
         val PRIVACY_MODES = arrayOf("none", "trim", "hide")
         val PRIVACY_LABELS = arrayOf<CharSequence>(
@@ -1971,6 +3006,7 @@ class MainActivity : Activity() {
 
         /** 相册选素材的请求号。 */
         const val REQ_VIDEO = 1001
+        const val REQ_BUNDLE = 1002
 
         /**
          * 读 HTML 里的导出探针；旧版 Python 没有探针时返回空串，走尺寸兜底。

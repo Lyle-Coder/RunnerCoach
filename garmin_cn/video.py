@@ -104,9 +104,30 @@ def render_frames(html: Path, total: int, fps: int, *, workers: int = 2,
                 self.send_response(204)
                 self.end_headers()
                 return
+            # `/__diag`（诊断）和 `/__done`（完成标记）必须**显式吃掉**，不能让它们
+            # 掉到下面的收帧逻辑：两者都没有 `i` 参数，会被当成 i=0 覆盖真正的首帧。
+            # `/__done` 的 body 是空的 → 首帧被写成 0 字节，成片从第 1 帧开始。
+            if self.path.startswith(("/__done", "/__diag")):
+                n = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(n) if n else b""
+                if self.path.startswith("/__diag") and body:
+                    # 诊断信息要留下来：视频没解码出来时，成片里表现为
+                    # 「视频卡片黑屏」，但帧数照样齐，导出端根本发现不了。
+                    try:
+                        diag = json.loads(body)
+                    except Exception:
+                        diag = {"raw": body[:200].decode("utf-8", "ignore")}
+                    with lock:
+                        state.setdefault("diag", diag)
+                self.send_response(204)
+                self.end_headers()
+                return
             i = int((q.get("i") or ["0"])[0])
             n = int(self.headers.get("Content-Length") or 0)
-            (FRAMES / f"f_{i:05d}.jpg").write_bytes(self.rfile.read(n))
+            target = FRAMES / f"f_{i:05d}.jpg"
+            tmp = FRAMES / f".f_{i:05d}.tmp"
+            tmp.write_bytes(self.rfile.read(n))
+            os.replace(tmp, target)          # 原子落盘，见 serve.py 同款说明
             self.send_response(204)
             self.end_headers()
             with lock:
@@ -221,17 +242,19 @@ def render_frames(html: Path, total: int, fps: int, *, workers: int = 2,
             windows = [(miss[j], miss[min(j + step, len(miss)) - 1] + 1)
                        for j in range(0, len(miss), step)]
             launch(windows, attempt)
-            # 卡住判定：60 秒没有新帧就直接换一批进程重来，别干等到超时
-            deadline = time.time() + max(120, len(miss) * 0.5)
+            # 卡住判定：只认「连续没有新帧」，不认「整轮跑了多久」。
+            # 旧版给每轮一个固定 max(120, 缺帧数*0.5) 秒上限，机器慢一点时
+            # 帧还在推进也会被掐断，重启 Chrome 又从头渲，越补越慢，8 轮后
+            # 报「还有 N 帧没渲染出来」。现在只要还在收帧就一直等下去。
             idle, last_n = time.time(), len(got)
-            while time.time() < deadline:
+            while True:
                 if len(got) >= total:
                     break
                 if len(got) != last_n:
                     last_n, idle = len(got), time.time()
                     log(f"  {len(got)}/{total} 帧")
-                elif time.time() - idle > 25:
-                    log(f"! 25 秒没有新帧，重启渲染进程（已收 {len(got)}/{total}）")
+                elif time.time() - idle > 60:
+                    log(f"! 60 秒没有新帧，重启渲染进程（已收 {len(got)}/{total}）")
                     break
                 time.sleep(0.5)
             for p in procs:
@@ -240,6 +263,17 @@ def render_frames(html: Path, total: int, fps: int, *, workers: int = 2,
         missing = total - len(got)
         if missing > 0:
             raise RuntimeError(f"还有 {missing} 帧没渲染出来（浏览器反复卡住或被关掉）")
+        # 页面自报的诊断：视频解码失败时成片里只是黑屏，帧数却是齐的，
+        # 光看「渲染成功」会误以为片子没问题。
+        diag = state.get("diag") or {}
+        if diag:
+            bad = diag.get("names") or []
+            if not diag.get("vidOk", True) or bad:
+                log("! 有视频没解码出来，成片里这几处会是黑屏："
+                    + "、".join(bad[:6]))
+            if diag.get("missing"):
+                log(f"! 有 {diag['missing']} 张图片没加载："
+                    + "、".join((diag.get("missingOne") or [])[:3]))
     finally:
         for p in procs:
             kill(p)
@@ -287,14 +321,18 @@ def sweep_profiles(log=print) -> None:
 
 
 def _clip_audio(timeline: Path) -> list[tuple[str, float, float]]:
-    """从页面回传的时间轴里挑出有音轨可用的片段：(文件, 开始秒, 自身时长)。"""
+    """从页面回传的时间轴里挑出有音轨可用的片段：(文件, 开始秒, 自身时长)。
+
+    优先用 `file`（磁盘绝对路径）：`src` 在 App 里是 `/data/...` 同源 URL，
+    ffmpeg 打不开。老页面没回传 `file` 时再退回 `src`。
+    """
     try:
         rows = json.loads(Path(timeline).read_text("utf-8"))
     except (OSError, ValueError):
         return []
     out = []
     for w in rows if isinstance(rows, list) else []:
-        src = str(w.get("src") or "")
+        src = str(w.get("file") or w.get("src") or "")
         dur = float(w.get("dur") or 0)
         if not src or dur <= 0 or not Path(src).exists():
             continue
@@ -314,7 +352,17 @@ def export(html: Path, dest: Path, *, duration: float, fps: int = 30,
             "  或下载解压后把 ffmpeg.exe 放到 tools/ 目录\n"
             "（不想装就先只出网页：去掉 --mp4）")
 
-    total = max(int(round(duration * fps)), 1)
+    # 成片长度以页面算出来的「真实总时长」为准：巡航预算 + 素材停留。
+    # 只按 `duration`（巡航预算）算会把后面的素材和尾段一起截掉——
+    # 桌面和手机两条路都得认这一个数，别各算各的。
+    total_s = float(duration)
+    try:
+        _side = Path(html).with_suffix(".json")
+        if _side.exists():
+            total_s = float(json.loads(_side.read_text("utf-8")).get("total") or duration)
+    except (OSError, ValueError):
+        total_s = float(duration)
+    total = max(int(round(total_s * fps)), 1)
     frames = render_frames(html, total, fps, workers=workers, log=log)
 
     dest = Path(dest)
@@ -329,12 +377,12 @@ def export(html: Path, dest: Path, *, duration: float, fps: int = 30,
         "-i", str(frames / "f_%05d.jpg"),
     ]
     if clips:
-        cmd += ["-f", "lavfi", "-t", f"{duration:.3f}", "-i",
+        cmd += ["-f", "lavfi", "-t", f"{total_s:.3f}", "-i",
                 "anullsrc=r=48000:cl=stereo"]
         for src, _, _ in clips:
             cmd += ["-i", src]
         st = "aformat=sample_fmts=fltp:channel_layouts=stereo"
-        parts = [f"[1:a]atrim=0:{duration:.3f},asetpts=N/SR/TB,{st}[base]"]
+        parts = [f"[1:a]atrim=0:{total_s:.3f},asetpts=N/SR/TB,{st}[base]"]
         for k, (_, at, _dur) in enumerate(clips):
             ms = max(int(round(at * 1000)), 0)
             # 片段多半是单声道，不升轨的话 amix 会把整条音轨降成 mono
@@ -351,7 +399,7 @@ def export(html: Path, dest: Path, *, duration: float, fps: int = 30,
         "-pix_fmt", "yuv420p",
     ]
     if clips:
-        cmd += ["-c:a", "aac", "-b:a", "160k", "-t", f"{duration:.3f}"]
+        cmd += ["-c:a", "aac", "-b:a", "160k", "-t", f"{total_s:.3f}"]
     cmd += ["-movflags", "+faststart", str(dest)]
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0 or not dest.exists():

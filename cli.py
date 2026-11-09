@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import os
 import shutil
 import sys
@@ -539,10 +540,107 @@ def cmd_act(args) -> int:
     return 0
 
 
+def cmd_race(args) -> int:
+    """赛事成绩：录入官方成绩、列出个人最好成绩、出赛后复盘图。"""
+    store = Store(DB)
+
+    # ---- 录入官方成绩 ----
+    if args.add:
+        date = args.date or dt.date.today().isoformat()
+        event = args.event or "比赛"
+        aid = args.id or ""
+        if not aid:
+            row = store.get_activity(date=date)
+            aid = row["activity_id"] if row else ""
+        rid = store.add_race_result(
+            date=date, event=event, bib=args.bib or "",
+            activity_id=aid, gun_s=args.gun, net_s=args.net,
+            distance_km=args.dist, target_s=args.target, note=args.note or "")
+        print(f"√ 已录入 {date} {event} 官方成绩（id={rid}）")
+        if args.net:
+            print(f"  净成绩 {_hms(args.net)}" + (f"｜枪声 {_hms(args.gun)}" if args.gun else ""))
+
+    # ---- 个人最好成绩 ----
+    if args.best or not (args.add or args.card):
+        pbs = store.personal_bests()
+        if not pbs:
+            print("· 还没有录入任何官方成绩（用 --add 录一场）")
+        else:
+            print("√ 个人最好成绩：")
+            for r in pbs:
+                t = r.get("net_s") or r.get("gun_s")
+                tgt = r.get("target_s")
+                gap = ""
+                if tgt and t:
+                    gap = f"　较目标 {t - tgt:+.0f} 秒"
+                print(f"  {r['date']} {r['event']}　{_hms(t)}"
+                      f"　({r.get('distance_km') or 0:.2f} km){gap}")
+
+    # ---- 赛后复盘图 ----
+    if args.card:
+        from garmin_cn import activity as act
+        from garmin_cn.racecard import render as render_race
+        from garmin_cn import raceplan
+
+        date = args.date or dt.date.today().isoformat()
+        race = store.race_result(date, args.event)
+        if not race:
+            print(f"× {date} 没有录入官方成绩，先用 --add 录入")
+            return 2
+        aid = race.get("activity_id") or ""
+        row = store.get_activity(activity_id=aid) if aid else None
+        if not row:
+            row = store.get_activity(date=date)
+        if not row:
+            print(f"× 库里没有找到 {date} 的活动")
+            return 2
+        try:
+            client = get_client(require=True)
+            detail = act.ensure(store, client, row["activity_id"])
+        except Exception as e:
+            print(f"× 抓取明细失败：{type(e).__name__}: {e}")
+            return 3
+
+        # 赛后一周课表：比赛次日（周一）起 7 天
+        week = []
+        for k in range(7):
+            d = dt.date.fromisoformat(date) + dt.timedelta(days=1 + k)
+            info = raceplan.day_info(d) or {}
+            week.append({
+                "dow": info.get("dow") or ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][k],
+                "main": info.get("abbr") or "休",
+                "sub": info.get("sub") or "",
+                "kind": info.get("kind") or "rest",
+            })
+
+        out = OUT / f"race-{date}.png"
+        try:
+            path, is_png = _shot(render_race, out, race, detail, week,
+                                 coach_text=args.coach or "", row=row)
+        except Exception as e:
+            print(f"× 出图失败：{type(e).__name__}: {e}")
+            return 4
+        if is_png:
+            shutil.copyfile(path, OUT / "race.png")
+            print(f"√ 赛后复盘图已生成：{path}")
+        else:
+            _no_browser_note(path)
+        if args.open:
+            open_any(path)
+    return 0
+
+
+def _hms(sec) -> str:
+    if sec is None:
+        return "—"
+    s = int(round(sec))
+    h, m, ss = s // 3600, (s % 3600) // 60, s % 60
+    return f"{h}:{m:02d}:{ss:02d}" if h else f"{m}:{ss:02d}"
+
+
 def cmd_motion(args) -> int:
     """动态轨迹回放：合成轨迹 → 取底图 → 出 1080×1920 播放器（可再导 MP4）。"""
     from garmin_cn import activity as act, clip as clp, motion as mot, photo as ph
-
     store = Store(DB)
     row = store.get_activity(activity_id=args.id, date=args.date)
     if not row:
@@ -590,8 +688,10 @@ def cmd_motion(args) -> int:
     side = html.with_suffix(".json").read_text("utf-8")
     meta = json.loads(side)
     print(f"√ {row['name']}（{row['date']}）")
+    _nclip = sum(1 for p in meta["photos"] if p.get("clip"))
+    _tail = f"（轨迹 {args.duration:.0f} 秒 + {_nclip} 段素材停留）" if _nclip else ""
     print(f"  {meta['dist'] / 1000:.2f} km · {meta['dur'] // 60} 分 "
-          f"{meta['dur'] % 60} 秒 · 成片 {args.duration:.0f} 秒")
+          f"{meta['dur'] % 60} 秒 · 成片 {meta.get('total') or args.duration:.0f} 秒{_tail}")
     print(f"  轨迹点 {(detail.get('route') or {}).get('n')}｜照片 {len(photos)} 张"
           f"｜实况 {len(videos)} 段，匹配 {len(meta['photos'])} 处")
     for p in meta["photos"]:
@@ -623,6 +723,14 @@ def cmd_motion(args) -> int:
             return 5
     if args.open:
         mot.open_in_browser(html)
+
+    # 回放缓存没有上限的话，一条 4K 素材能烘出几百 MB，连导几次就吃满手机存储。
+    # 在这里顺手收一次：只删最旧的、且上限内不动，比等用户手动清靠谱。
+    from garmin_cn import housekeeping as hk
+
+    got = hk.prune_motion_cache(HOME / "data" / "motion_cache", apply=True)
+    if got["removed"]:
+        print(f"· 已清理回放缓存 {got['removed']} 个文件，释放 {hk.human(got['freed'])}")
     return 0
 
 
@@ -1002,7 +1110,7 @@ def cmd_plan(args) -> int:
             return 2
         from garmin_cn.plan import diag
 
-        print(_json.dumps(diag(client, today), ensure_ascii=False, indent=1))
+        print(json.dumps(diag(client, today), ensure_ascii=False, indent=1))
         return 0
     if args.cached:
         data = load(HOME / "data" / "plan.json")
@@ -1673,6 +1781,41 @@ def cmd_nap(args) -> int:
     return 0
 
 
+def cmd_export(args) -> int:
+    """把本地数据打成一个 zip：换手机 / 重装时用。"""
+    from garmin_cn import appapi
+
+    r = appapi.db_export()
+    if not r.get("ok"):
+        print("! " + str(r.get("error")))
+        return 1
+    c = r.get("counts") or {}
+    print(f"√ 已导出：{r['path']}（{r['size'] / 1048576:.1f} MB）")
+    print(f"  日汇总 {c.get('daily', 0)} 天 / 活动 {c.get('activities', 0)} 条"
+          f" / 明细 {c.get('activity_detail', 0)} 条")
+    print("  不含账号凭据与照片原文件；导入用 run.bat import <这个 zip>")
+    return 0
+
+
+def cmd_import(args) -> int:
+    """用数据包覆盖本地数据；覆盖前自动备份旧库。"""
+    from garmin_cn import appapi
+
+    r = appapi.db_import(args.path)
+    if not r.get("ok"):
+        print("! " + str(r.get("error")))
+        return 1
+    c = r.get("counts") or {}
+    print(f"√ 已导入（来自 {r.get('exported_at') or '未知时间'}）")
+    print(f"  日汇总 {c.get('daily', 0)} 天 / 活动 {c.get('activities', 0)} 条"
+          f" / 明细 {c.get('activity_detail', 0)} 条")
+    if r.get("restored"):
+        print("  附带恢复：" + "、".join(r["restored"]))
+    if r.get("backup"):
+        print(f"  原库已备份：{r['backup']}")
+    return 0
+
+
 def cmd_status(args) -> int:
     store = Store(DB)
     st = store.stats()
@@ -1929,10 +2072,19 @@ def cmd_ai(args) -> int:
 
 
 def cmd_demo(args) -> int:
-    from garmin_cn.demo import build
+    from garmin_cn.demo import DEMO_REV, build
 
     demo_db = HOME / "data" / "demo.db"
-    if args.fresh or not demo_db.exists():
+    # 复用旧库之前先看生成逻辑版本：demo 里加过东西（比如活动明细），
+    # 旧库不会自己长出来，结果就是「代码明明改了，demo 里看不到」。
+    stale = args.fresh or not demo_db.exists()
+    if not stale:
+        try:
+            old = Store(demo_db)
+            stale = old.get_meta("demo_rev") != str(DEMO_REV)
+        except Exception:
+            stale = True
+    if stale:
         if demo_db.exists():
             try:
                 demo_db.unlink()
@@ -1952,467 +2104,55 @@ def cmd_demo(args) -> int:
     return 0
 
 
-def cmd_selftest(args) -> int:
-    """不联网的自检：解析、指标、渲染全链路。"""
-    from garmin_cn.sync import parse_activity, parse_hrv, parse_sleep
+def cmd_clean(args) -> int:
+    """看磁盘占用，并清理可再生缓存。
 
-    assert parse_hrv({"hrvSummary": {"lastNightAvg": 62, "weeklyAvg": 55, "status": "BALANCED"}})["hrv_night"] == 62
-    s = parse_sleep({"dailySleepDTO": {"sleepTimeSeconds": 27000, "deepSleepSeconds": 5400,
-                                       "sleepScores": {"overall": {"value": 78}}}})
-    assert s["sleep_total_min"] == 450 and s["sleep_score"] == 78, s
-    a = parse_activity({"activityId": 1, "startTimeLocal": "2026-11-01 07:12:00",
-                        "activityType": {"typeKey": "running"}, "duration": 2400, "distance": 8000})
-    assert a["pace_s_km"] == 300, a
+    只动 `data/motion_cache` 与 `output/thumbs` 这类「删了会自动重建」的东西。
+    `output/` 里的卡片/成片、`data/photos` 的原始素材、`data/garmin.db` 一律不碰 ——
+    那些删了就找不回来了，清理工具不该替用户做这种决定。
+    """
+    from garmin_cn import housekeeping as hk
 
-    # 小米健康云的加密外壳：RC4-drop1024 + 双签名，改坏了在这里先炸
-    from garmin_cn import mi as MI
+    print("· 磁盘占用")
+    for rel, size, note in hk.survey(HOME):
+        print(f"    {rel:<22} {hk.human(size):>10}   {note}")
 
-    sn = MI._signed_nonce(b"s" * 16, MI._nonce())
-    data = '{"key":"weight"}'
-    h1 = MI._sign("POST", "/p", {"data": data}, sn)
-    assert MI._sign("POST", "/p", {"data": data}, sn) == h1
-    assert MI.rc4_drop1024(sn, MI.rc4_drop1024(sn, data.encode())) == data.encode()
-    assert MI._sign("POST", "/p", {"data": data, "rc4_hash__": h1}, sn) != h1
-    mi_rec = MI.to_records([{"time": 1767225600, "zone_offset": 28800,
-                             "value": '{"weight":68.4,"muscle_rate":42.1}'}])[0]
-    assert mi_rec["weight_kg"] == 68.4 and mi_rec["muscle_kg"] == 28.8, mi_rec
-    # 安全验证（短信）用的小工具：context 提取、带/不带前缀的 JSON、中文错误文案
-    assert MI._ctx_of("https://a/b?sid=x&context=ABC123&_locale=zh") == "ABC123"
-    assert MI._json_of('&&&START&&&{"code":0}')["code"] == 0
-    assert MI._json_of('{"code":0}')["code"] == 0
-    assert "图形验证码" in MI._verify_error({"code": 87001})
-    assert MI._cookie_parse("a=1; b=2")["b"] == "2"
-    try:
-        MI._json_of("<html>登录页</html>")
-        raise AssertionError("非 JSON 应当报错")
-    except MI.MiAuthError:
-        pass
+    cap = args.cap if args.cap else hk.CACHE_CAP_MB
+    plans = (("data/motion_cache", cap), ("output/thumbs", 80))
+    total_freed = 0
+    for rel, cap_mb in plans:
+        p = HOME / rel
+        got = hk.prune_motion_cache(p, cap_mb=cap_mb, apply=args.apply)
+        over = got["total"] > got["cap"] or got["removed"]
+        if not got["removed"] and not over:
+            print(f"· {rel}：{hk.human(got['total'])}，未超上限（{cap_mb} MB），跳过")
+            continue
+        if got["removed"]:
+            verb = "已删除" if args.apply else "可删除"
+            print(f"· {rel}：{verb} {got['removed']} 个文件，"
+                  f"{hk.human(got['freed'])}；清理后 {hk.human(got['total'])}")
+            total_freed += got["freed"]
+        else:
+            print(f"· {rel}：{hk.human(got['total'])}，超上限 {cap_mb} MB，"
+                  f"但最近 {hk.CACHE_PROTECT_HOURS} 小时内没有可删的旧文件")
 
-    import tempfile
-
-    tmp_db = Path(tempfile.gettempdir()) / "garmin_selftest.db"
-    tmp_html = Path(tempfile.gettempdir()) / "garmin_selftest.html"
-    if tmp_db.exists():
-        tmp_db.unlink()
-    store = Store(tmp_db)
-    from garmin_cn.demo import build as build_demo
-
-    build_demo(tmp_db, days=40, seed=3)
-    # demo 数据默认没有体重：补两条进去，否则营养那段断言会被静默跳过
-    from garmin_cn import body as BD
-
-    today = dt.date.today()
-    BD.save(store, [
-        {"date": (today - dt.timedelta(days=10)).isoformat(), "ts": "08:00",
-         "weight_kg": 67.0, "body_fat_pct": 16.4, "muscle_kg": 52.0,
-         "water_pct": 61.8, "visceral": 3, "bmr": 1560},
-        {"date": today.isoformat(), "ts": "08:00",
-         "weight_kg": 66.2, "body_fat_pct": 15.9, "muscle_kg": 52.1,
-         "water_pct": 62.2, "visceral": 3, "bmr": 1560},
-    ], "mi")
-    res = derive(store, dt.date.today().isoformat())
-    assert res["readiness"]["score"] is not None
-    assert res["load"]["ctl"] >= 0
-
-    # 手机端出图画幅契约：成品必须 9:16，且 HTML 带尺寸探针。
-    # 少了任一项，App 导出的长图就会被系统分享面板二次裁切。
-    from garmin_cn import actcard as ACTCARD
-    from garmin_cn import card as CARD
-    from garmin_cn import exportspec as EX
-    EX.check()
-    for bg in (EX.BG_CARD, EX.BG_ACT):
-        sp = EX.spec(bg)
-        assert (sp["export_width"], sp["export_height"]) == (1080, 1920), sp
-        assert sp["export_width"] * 16 == sp["export_height"] * 9, sp
-        assert sp["export_mode"] == "contain", sp
-    for mod in (CARD, ACTCARD):
-        assert mod._EXPORT_PROBE == EX.probe()
-        assert EX.CANVAS_ATTR in mod._EXPORT_PROBE
-    for h in (CARD.build_html(res),
-              ACTCARD.build_html({}, {}, None, None, "自检")):
-        assert EX.CANVAS_ATTR in h and "__gcExportInfo" in h, "HTML 缺导出探针"
-        assert h.count("__gcExportInfo") == 1, "探针重复注入"
-        assert "__gcFit" in h and "visualViewport" in h, "HTML 缺缩放校正探针"
-
-    # 间歇训练（快慢交替）自动切底部双栏：左快组、右慢组；
-    # 匀速跑 / 单调加速不能误报，非间歇活动的分圈表必须原样保留。
-    from garmin_cn import interval as IV
-
-    IV.check()
-    iv_pts: list[dict] = []
-    t, dist = 0.0, 0.0
-    for _ in range(6):
-        for spd, secs in ((4.2, 95.0), (2.6, 77.0)):
-            for _ in range(int(secs / 5)):
-                iv_pts.append({"t": t, "spd": spd, "hr": 165, "cad": 180,
-                               "dist": dist})
-                t += 5.0
-                dist += spd * 5.0
-    iv_html = ACTCARD.build_html({}, {"series": {"points": iv_pts}},
-                                 None, None, "间歇自检")
-    assert 'class="iv"' in iv_html and "快组" in iv_html
-    assert "慢组 / 恢复" in iv_html and "间歇结构" in iv_html
-    assert '<div class="lhead">' not in iv_html, "间歇版不该再渲染原分圈表"
-    assert 'class="iv"' not in ACTCARD.build_html({}, {}, None, None, "自检")
-
-    # 原地休息型间歇（真实 15×400 m 样本形态）：静止点不能被过滤掉，
-    # 右栏要写「平均恢复 1:xx」而不是几十分钟每公里的假配速，15 组逐组列全。
-    rest_pts: list[dict] = []
-    t = 0.0
-    for _ in range(15):
-        for spd, secs in ((4.6, 86.0), (0.0, 90.0)):
-            for _ in range(int(secs / 4)):
-                rest_pts.append({"t": t, "spd": spd, "hr": 160, "cad": 200,
-                                 "dist": 0.0})
-                t += 4.0
-    rest_html = ACTCARD.build_html({}, {"series": {"points": rest_pts}},
-                                   None, None, "间歇自检（原地恢复）")
-    assert 'class="iv"' in rest_html and "平均恢复" in rest_html
-    assert "组间恢复" in rest_html and "速度差" not in rest_html
-    assert 'class="ivmore"' not in rest_html, "15 组应逐组列全"
-    assert rest_html.count('class="ivrow"') == 30, "左右各 15 行"
-
-    # 手机端 WebView 的缩放自校正：density=3 时布局视口 1080 CSS px 只露出
-    # 360 CSS px，必须把画布缩到 1/3；归一后内容高度与 density 无关。
-    # 少了这一步，draw(Canvas) 只截到左上角，分享预览会「只剩一个角」。
-    assert abs(EX.fit_scale(1080, 360) - 1 / 3) < 1e-9
-    assert EX.fit_scale(1080, 1080) == 1.0
-    assert EX.fit_scale(1080, 0) == 1.0
-    assert EX.content_height(1080, 1080, 2250) == 2250
-    assert EX.content_height(1080, 1080, 1920) == 1920
-
-    # 历史数据（手机端「拉取更多 / 查询历史」）：接口面、区间门禁与活动分页。
-    # 只跑不联网的分支——合法日期的 sync_range 会真发请求，不能进自检。
-    import json as _json
-    import tempfile as _tf
-    from pathlib import Path as _Path
-    from garmin_cn import appapi as AP
-    from garmin_cn.store import Store as _Store
-    from garmin_cn.sync import SyncService as _Sync
-
-    assert {"sync_range", "activities", "days_index"} <= AP._API
-
-    def bad_range(*a):
-        return _json.loads(AP.call("sync_range", _json.dumps(list(a))))
-
-    assert bad_range("2026-11-06", "2026-11-01")["ok"] is False   # 起止颠倒
-    assert bad_range("2020-01-01", "2026-11-06")["ok"] is False   # 超过 3 年
-    assert bad_range("not-a-date")["ok"] is False                 # 非法日期
-    bad_q = _json.loads(AP.call("activities", _json.dumps(["bad-date"])))
-    assert bad_q["ok"] is False and "YYYY-MM-DD" in bad_q["error"]
-    d = _json.loads(AP.call("days_index", _json.dumps([1])))
-    assert d["ok"] and all(k in d for k in ("first", "last", "count", "items"))
-    q = _json.loads(AP.call("activities", _json.dumps([None, None, None, 5, 0])))
-    assert q["ok"] and all(k in q for k in ("items", "total", "has_more", "offset"))
-
-    # 网页外壳与交互树：四个 tab 共用一套 ui.page，卡片动作走 data-act，
-    # 活动行走 data-aid。约束见 docs/交互树.md：一个动作只有一个入口。
-    from garmin_cn import history as HW
-    from garmin_cn import ui as U
-
-    idx = HW.index_section(U.coverage())
-    assert "/view?date=" in idx and "日汇总覆盖" in idx
-    hp = HW.history_page({"type": ["run"]})
-    assert "page-head" in hp and 'name="start"' in hp
-    assert "data-aid=" in hp and "GC.activity" in hp
-    # 「补拉历史」只在历史页出现一次，今日/我的都不再重复
-    assert hp.count('data-act="historySync"') == 1
-    home = U.home_page()
-    assert "page-head" in home and 'data-act="export"' in home and "data-aid=" in home
-    assert 'href="/history"' not in home, "首页不该再给历史入口，底部 tab 已经有了"
-    me = U.me_page()
-    assert "page-head" in me and 'data-act="login:garmin"' in me
-    assert 'data-act="login:coros"' in me, "数据源行要直达对应登录"
-    assert 'data-act="historySync"' not in me and 'data-act="settings"' not in me
-    assert 'href="/files"' in me
-    assert 'data-act="amap"' in me and "地图底图" in me, "我的页要有底图 Key 入口"
-    # 看板导航只剩「回来源 tab + 前后翻日期」，不再有横向 tab 入口
-    nav = U.nav_html("2026-10-21",
-                     {"first": "2026-10-01", "last": "2026-11-06"})
-    assert "gc-nav" in nav
-    assert "/view?date=2026-10-20" in nav and "/view?date=2026-10-22" in nav
-    assert 'href="/history"' in nav and 'href="/"' not in nav
-    # 同页参数变化走 replace，不往历史栈堆条目
-    assert "data-nopush" in nav and "data-nopush" in U.BRIDGE_JS
-    assert "max-width:820px" in U.DASH_FIX and "max-width:820px" in U.AI_FIX
-    # 训练计划页：读到/读不到都要能出页面，且能回今日、有刷新入口
-    pp = U.plan_page({})
-    assert "PLAN · 训练计划" in pp
-    assert 'class="back" href="/"' in pp
-    assert "planRefresh" in pp
-    assert ('class="plan-hero"' in pp) or ("还没读到训练计划" in pp)
-
-    # 训练计划：日历优先。workout/race 归一化成同一结构，activity 只用来打
-    # 「已完成」标记，note 等其它日历项不能当成课。
-    from garmin_cn import plan as PL
-
-    cal_items = [
-        {"itemType": "workout", "date": "2026-11-03", "title": "轻松跑",
-         "duration": 3000, "distance": 8000, "sportTypeKey": "running"},
-        {"itemType": "activity", "date": "2026-11-03", "title": "跑步"},
-        {"itemType": "workout", "date": "2026-11-07", "title": "节奏跑",
-         "duration": 2400, "distance": 7000},
-        {"itemType": "race", "date": "2026-11-15", "title": "半马",
-         "distance": 21097},
-        {"itemType": "note", "date": "2026-11-09", "title": "备注"},
-    ]
-    cal = PL.from_calendar(cal_items, "2026-11-07")
-    assert cal["source"] == "calendar" and cal["scheduled"], cal
-    assert cal["today"]["items"][0]["minutes"] == 40
-    assert cal["today"]["items"][0]["km"] == 7.0
-    assert cal["week"][1]["done"] is True, "周二有 activity，应标已完成"
-    assert cal["next_date"] == "2026-11-15", cal["next_date"]  # 11-09 是 note，跳过
-    assert PL.from_calendar([], "2026-11-07")["scheduled"] is False
-    # 未来未执行的 activity（没有 activityId）要当排课，不能当成已完成
-    fut = PL.from_calendar([
-        {"itemType": "activity", "date": "2026-11-08", "title": "明天的课",
-         "duration": 3600, "distance": 10000},
-        {"itemType": "workout", "date": "2026-11-05", "title": "周四的课"},
-        {"itemType": "activity", "date": "2026-11-05", "title": "跑步",
-         "activityId": 999},
-    ], "2026-11-07")
-    assert fut["week"][6]["items"], "未来 activity 应算课"
-    assert fut["week"][3]["done"] is True, "带 activityId 的才算已完成"
-    assert PL._months("2026-11-07")[0] == (2026, 10), "要连上个月一起拉，兼容月份语义"
-
-    # 一图流读计划快照必须走 GARMIN_HOME：APK 里代码在只读 assets、数据在
-    # filesDir，用 __file__ 推路径永远读不到——手机上一图流没计划就是这个坑。
-    import os as _os
-    import tempfile as _tf2
-
-    with _tf2.TemporaryDirectory() as td:
-        _data = Path(td) / "data"
-        _data.mkdir(parents=True, exist_ok=True)
-        (_data / "plan.json").write_text(
-            _json.dumps(cal, ensure_ascii=False), encoding="utf-8")
-        _old = _os.environ.get("GARMIN_HOME")
-        _os.environ["GARMIN_HOME"] = td
-        try:
-            _got = PL.attach({}).get("plan") or {}
-            assert _got.get("name") == "佳明日历", \
-                "attach() 要按 GARMIN_HOME 读快照，不能用 __file__ 推"
-            from garmin_cn.card import _week_cells
-
-            _rows = _week_cells(_got, "2026-11-07")
-            assert _rows.count('class="wkd') == 7, "一图流周视图应横排 7 格"
-            assert '<div class="wk">' in _rows, "横排容器必须存在，不能退回竖排 7 行"
-        finally:
-            if _old is None:
-                _os.environ.pop("GARMIN_HOME", None)
-            else:
-                _os.environ["GARMIN_HOME"] = _old
-    # 回放导出（手机端）：页面走 http，底图/照片必须是同源 URL。
-    # 真机绝对路径是 /data/user/0/<包名>/files/data/basemaps/x.png，
-    # 服务端白名单只认 /data/basemaps/x.png —— 不改写就 404，页面 ready
-    # 永远 false，导出静默停在 0 帧（这是踩过的坑，别再改回去）。
-    from garmin_cn import basemap as BM
-    from garmin_cn import motion as MO
-
-    _web = MO._web_url(str(BM.ROOT / "data" / "basemaps" / "_selftest.png"))
-    assert _web == "/data/basemaps/_selftest.png", _web
-    # 已经是同源路径的不再加工；私密文件（db/session）不转
-    assert MO._web_url("/data/basemaps/_selftest.png") == "/data/basemaps/_selftest.png"
-    assert MO._web_url(str(BM.ROOT / "data" / "session.json")) != "/data/session.json"
-    _msrc = Path(MO.__file__).read_text(encoding="utf-8")
-    # toURL 不能给已带前导 / 的路径再补一个（会变成 //data/... 协议相对 URL，
-    # 浏览器会去找主机名为 data 的地址，请求到不了本机服务）
-    assert "if (n.startsWith('/')) return n;" in _msrc, "toURL 的前导斜杠判断丢了"
-    assert "{ method: 'POST' }" in _msrc, "__done 必须用 POST 写完成标记"
-    assert "window.__motion.ready = !!baseBaked;" in _msrc, "ready 只该要求底图"
-    assert HW._date({"date": ["not-a-date"]}, "date", "2026-11-06") == "2026-11-06"
-    # 底图 Key 校验：太短的串直接拒，且不写盘
-    _amap = _json.loads(AP.call("set_amap_key", _json.dumps(["short"])))
-    assert not _amap.get("ok") and "不完整" in (_amap.get("error") or "")
-
-    class _FakeClient:
-        def __init__(self, items):
-            self.items = items
-
-        def activities(self, limit=60, start=0):
-            return self.items[start:start + limit]
-
-    with _tf.TemporaryDirectory() as td:
-        items = [
-            {"activityId": 1000 + i,
-             "startTimeLocal": (dt.date(2026, 11, 6) -
-                                dt.timedelta(days=i)).isoformat() + " 07:00:00",
-             "activityType": {"typeKey": "running"},
-             "duration": 1800, "distance": 6000}
-            for i in range(150)
-        ]
-        # 补一年历史时活动不能只留最近 60 条：翻页应把 150 条都落库
-        sa = _Store(_Path(td) / "a.db")
-        sb = _Store(_Path(td) / "b.db")
-        try:
-            assert _Sync(_FakeClient(items), sa) \
-                .sync_activities(max_pages=3, oldest=None) == 150
-            # 翻到本页已有早于区间起点的活动时收手，不把整个账号历史拉一遍
-            assert _Sync(_FakeClient(items), sb) \
-                .sync_activities(max_pages=3, oldest="2026-11-01") == 60
-        finally:
-            # Windows 下不关连接，TemporaryDirectory 清理时会 WinError 32
-            sa.conn.close()
-            sb.conn.close()
-
-    # 分享前轨迹脱敏：档位口径 + 「脱敏版绝不泄漏轨迹」的硬约束。
-    # 用合成轨迹（约 1.1 km 直线），不碰任何真实活动 ID / 坐标 / 日期。
-    from garmin_cn import privacy as PV
-    assert PV.MODES == ("none", "trim", "hide")
-    synth = [[30.0 + i * 0.0001, 120.0] for i in range(100)]
-    _, ti = PV.mask_track(synth, "trim")
-    assert 0 < ti["kept"] < 100 and ti["cut_head_m"] >= 200 and ti["cut_tail_m"] >= 200
-    assert PV.mask_track(synth, "none")[1]["kept"] == 100
-    assert PV.mask_track(synth, "hide")[0] == []
-    assert PV.normalize("bogus") == "trim" and PV.normalize(None) == "none"
-    priv_row = {"name": "自检活动", "date": "2026-11-05",
-                "start_ts": "2026-11-05T17:46:00", "distance_m": 6200,
-                "duration_s": 2100, "type": "running", "raw": "{}"}
-    priv_detail = {"track": synth, "summary": {}, "laps": [],
-                   "series": {"points": []}}
-    h_none = ACTCARD.build_html(priv_row, priv_detail, privacy="none")
-    h_trim = ACTCARD.build_html(priv_row, priv_detail, privacy="trim")
-    h_hide = ACTCARD.build_html(priv_row, priv_detail, privacy="hide")
-    assert '<path d="M' in h_none and 'data-gc-privacy="none"' in h_none
-    assert "已脱敏" in h_trim and 'data-gc-privacy="trim"' in h_trim
-    assert '<path d="M' not in h_hide and 'data-gc-private="hide"' in h_hide
-    assert "轨迹已隐藏" in h_hide and "时间已隐藏" in h_hide
-    assert "17:46" not in h_hide and "30.000" not in h_hide
-    # 旧调用方不传档位时必须与 none 逐字节一致（兼容老 APK / 老 CLI）
-    assert ACTCARD.build_html(priv_row, priv_detail) == h_none
-
-    # 营养目标：三大营养素的 kcal 之和必须回到目标摄入（差几 kcal 是四舍五入），
-    # 且目标摄入不能低于 BMR——这条被改坏等于鼓励长期吃不够。
-    from garmin_cn import nutrition as NU
-
-    nt = res.get("nutrition") or {}
-    if nt.get("ok"):
-        total = nt["protein_kcal"] + nt["carb_kcal"] + nt["fat_kcal"]
-        assert abs(total - nt["target_kcal"]) <= 3, (total, nt["target_kcal"])
-        assert nt["protein_g"] == round(nt["weight"] * 1.8), nt["protein_g"]
-        assert not nt["bmr"] or nt["target_kcal"] >= nt["bmr"], nt
-        assert sum(NU.pct_split(nt)) == 100, NU.pct_split(nt)
-    out = render(res, store, tmp_html)
-    assert out.exists() and out.stat().st_size > 5000
-
-    # 轨迹合成：几何 + 时序合体后，时间/坐标/心率必须落在同一个点上
-    from garmin_cn import photo as PH, route as RT
-
-    lat0, lon0 = 34.1400, 108.8340
-    poly = [{"lat": lat0 + i * 0.0001, "lon": lon0, "time": 1793659105000 + i * 1000,
-             "valid": True, "speed": 0.0} for i in range(11)]
-    det = {
-        "geoPolylineDTO": {"polyline": poly},
-        "metricDescriptors": [
-            {"key": "directTimestamp", "metricsIndex": 0},
-            {"key": "directHeartRate", "metricsIndex": 1},
-            {"key": "directSpeed", "metricsIndex": 2},
-            {"key": "sumDistance", "metricsIndex": 3},
-        ],
-        "activityDetailMetrics": [
-            {"metrics": [1793659105000 + i * 1000, 120 + i, 2.5, i * 11.1]}
-            for i in range(11)
-        ],
-    }
-    rt = RT.build(det)
-    assert rt["n"] == 11 and rt["t"][-1] == 10, rt
-    assert rt["hr"][0] == 120 and rt["hr"][-1] == 130, rt["hr"]
-    # 11 个点 × 0.0001° 纬差 ≈ 122 m（1° 纬度 110540 m）
-    assert 110 < rt["d"][-1] < 135, rt["d"][-1]
-    assert RT.summary(rt)["distance_m"] == rt["d"][-1]
-    assert abs(RT.at(rt, 5)["d"] - rt["d"][5]) < 1.0
-    assert RT.pace(rt, 10) is not None
-
-    # EXIF：自己拼一张带 GPS 的 JPEG，验证解析（含 GPS UTC 时间与方向）
-    import struct
-
-    def _rat(v):
-        d = int(v); m = int((v - d) * 60); s = round(((v - d) * 60 - m) * 60, 4)
-        return struct.pack("<IIIIII", d, 1, m, 1, int(s * 10000), 10000)
-
-    def _asc(x):
-        return x.encode() + b"\x00"
-
-    n0, nex, ng = 5, 3, 8
-    o0 = 8
-    oe = o0 + (2 + n0 * 12 + 4)
-    og = oe + (2 + nex * 12 + 4)
-    od = og + (2 + ng * 12 + 4)
-    pool = bytearray()
-
-    def _add(v):
-        off = od + len(pool)
-        pool.extend(v)
-        if len(v) % 2:
-            pool.append(0)
-        return off
-
-    # GPS 时间取轨迹首点的 UTC：对不上就落进「不在活动时段」，自检反而失效
-    t0u = dt.datetime.fromtimestamp(1793659105000 / 1000, dt.timezone.utc)
-    mk, md = _add(_asc("Xiaomi")), _add(_asc("Xiaomi 17"))
-    dto = _add(_asc(t0u.strftime("%Y:%m:%d %H:%M:%S")))
-    la, lo = _add(_rat(lat0)), _add(_rat(lon0))
-    tm = _add(struct.pack("<IIIIII", t0u.hour, 1, t0u.minute, 1, t0u.second * 100, 100))
-    gd = _add(_asc(t0u.strftime("%Y:%m:%d")))
-
-    def _ent(t, ty, c, v):
-        return struct.pack("<HHI", t, ty, c) + v
-
-    i0 = (struct.pack("<H", n0)
-          + _ent(0x010F, 2, 7, struct.pack("<I", mk)) + _ent(0x0110, 2, 10, struct.pack("<I", md))
-          + _ent(0x0112, 3, 1, struct.pack("<HH", 6, 0))
-          + _ent(0x8769, 4, 1, struct.pack("<I", oe)) + _ent(0x8825, 4, 1, struct.pack("<I", og))
-          + struct.pack("<I", 0))
-    ex = (struct.pack("<H", nex) + _ent(0x9003, 2, 20, struct.pack("<I", dto))
-          + _ent(0xA002, 4, 1, struct.pack("<I", 4096))
-          + _ent(0xA003, 4, 1, struct.pack("<I", 2304)) + struct.pack("<I", 0))
-    gp = (struct.pack("<H", ng) + _ent(0x0001, 2, 2, b"N\x00\x00\x00")
-          + _ent(0x0002, 5, 3, struct.pack("<I", la))
-          + _ent(0x0003, 2, 2, b"E\x00\x00\x00")
-          + _ent(0x0004, 5, 3, struct.pack("<I", lo))
-          + _ent(0x0005, 1, 1, b"\x00\x00\x00\x00")
-          + _ent(0x0006, 5, 1, struct.pack("<I", _add(struct.pack("<II", 418, 1))))
-          + _ent(0x0007, 5, 3, struct.pack("<I", tm))
-          + _ent(0x001D, 2, 11, struct.pack("<I", gd)) + struct.pack("<I", 0))
-    tiff = b"II*\x00" + struct.pack("<I", o0) + i0 + ex + gp + bytes(pool)
-    app1 = b"Exif\x00\x00" + tiff
-    jpg = (b"\xff\xd8" + b"\xff\xe1" + struct.pack(">H", len(app1) + 2) + app1
-           + b"\xff\xc0" + struct.pack(">HBHHB", 17, 8, 2304, 4096, 3) + b"\x00" * 9
-           + b"\xff\xd9")
-    pj = tmp_db.with_suffix(".jpg")
-    pj.write_bytes(jpg)
-    got = PH.read(pj)
-    assert abs(got["lat"] - lat0) < 1e-6 and abs(got["lon"] - lon0) < 1e-6, got
-    assert got["t_source"] == "gps" and got["orientation"] == 6, got
-    mt = PH.match([got], rt, t0_ms=rt["t0"], max_m=500)
-    assert len(mt["points"]) == 1, mt["loose"]
-
-    # 时区兜底：相机把本地时间当 UTC 写（差整 8 小时）也要能挂上
-    skew = dict(got, t_utc=got["t_utc"] + 8 * 3600 * 1000)
-    m2 = PH.match([skew], rt, t0_ms=rt["t0"], max_m=500)
-    assert len(m2["points"]) == 1 and m2["points"][0]["t_source"].endswith("+8h"), m2
-    # 没有坐标：时间本身就定位了位置，标 approx 而不是丢掉
-    nogps = dict(got, lat=None, lon=None)
-    m3 = PH.match([nogps], rt, t0_ms=rt["t0"])
-    assert len(m3["points"]) == 1 and m3["points"][0]["approx"] is True, m3
-    # 单文件实况：JPEG 尾部内嵌 MP4，能按 ftyp 定位并整段切出
-    from garmin_cn import clip as CL
-
-    box = struct.pack(">I", 24) + b"ftypisom" + b"\x00" * 16 + b"\x00" * 5000
-    live = tmp_db.with_suffix(".live.jpg")
-    live.write_bytes(jpg + box)
-    assert CL.embedded_mp4(live) == (len(jpg), len(box)), CL.embedded_mp4(live)
-    assert CL.embedded_mp4(pj) is None            # 普通照片不能误判
-    live.unlink(missing_ok=True)
-    pj.unlink(missing_ok=True)
-
-    print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
-          f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
-    for p in (tmp_db, tmp_html):
-        try:
-            p.unlink(missing_ok=True)
-        except OSError:
-            pass
+    if not args.apply:
+        print(f"√ 预览完成（最多可释放 {hk.human(total_freed)}）；加 --apply 才会真删")
+    else:
+        print(f"√ 清理完成，释放 {hk.human(total_freed)}")
     return 0
+
+
+def cmd_selftest(args) -> int:
+    """不联网的自检：解析、指标、渲染全链路。
+
+    具体断言在 `garmin_cn/selftest.py`：这里以前是 1900 行，占了入口文件
+    近一半，挪出去之后既能单独跑，也不至于改一行要滚半天。
+    """
+    from garmin_cn.selftest import run
+
+    return run()
+
 
 
 def main() -> int:
@@ -2492,6 +2232,23 @@ def main() -> int:
                    help="分享脱敏：none 原图 / trim 首尾各裁 200m / hide 完全隐藏轨迹")
     q.add_argument("--open", action="store_true")
     q.set_defaults(func=cmd_act)
+
+    q = sub.add_parser("race", help="赛事成绩：录官方成绩 / 看 PB / 出赛后复盘图")
+    q.add_argument("--add", action="store_true", help="录入一场比赛的官方成绩")
+    q.add_argument("--date", help="日期 YYYY-MM-DD")
+    q.add_argument("--event", help="赛事名称，默认「比赛」")
+    q.add_argument("--bib", help="参赛号")
+    q.add_argument("--id", help="关联的佳明活动 ID")
+    q.add_argument("--net", type=float, help="净成绩（秒），如 5301 表示 1:28:21")
+    q.add_argument("--gun", type=float, help="枪声成绩（秒）")
+    q.add_argument("--dist", type=float, help="官方距离（km），半马 21.0975")
+    q.add_argument("--target", type=float, help="赛前目标时间（秒）")
+    q.add_argument("--note", help="备注：赛道特点、天气等")
+    q.add_argument("--best", action="store_true", help="列出个人最好成绩")
+    q.add_argument("--card", action="store_true", help="生成赛后复盘图 PNG")
+    q.add_argument("--coach", help="复盘图上的一段点评")
+    q.add_argument("--open", action="store_true")
+    q.set_defaults(func=cmd_race)
 
     q = sub.add_parser("motion", help="动态轨迹回放（1080×1920，网页或 MP4）")
     q.add_argument("--id", help="活动 ID")
@@ -2632,6 +2389,13 @@ def main() -> int:
     q = sub.add_parser("status", help="查看状态")
     q.set_defaults(func=cmd_status)
 
+    q = sub.add_parser("export", help="导出本地数据包（换机 / 重装用）")
+    q.set_defaults(func=cmd_export)
+
+    q = sub.add_parser("import", help="导入数据包（覆盖当前数据，先自动备份）")
+    q.add_argument("path", help="导出的 zip 路径")
+    q.set_defaults(func=cmd_import)
+
     q = sub.add_parser("doctor", help="环境自检（排查跑不通）")
     q.set_defaults(func=cmd_doctor)
 
@@ -2661,6 +2425,12 @@ def main() -> int:
 
     q = sub.add_parser("selftest", help="离线自检")
     q.set_defaults(func=cmd_selftest)
+
+    q = sub.add_parser("clean", help="看磁盘占用并清理可再生缓存")
+    q.add_argument("--apply", action="store_true", help="真的删（默认只预览）")
+    q.add_argument("--cap", type=int, default=None,
+                   help="回放缓存上限（MB），默认 320")
+    q.set_defaults(func=cmd_clean)
 
     args = p.parse_args()
     try:

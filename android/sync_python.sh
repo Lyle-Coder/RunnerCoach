@@ -14,4 +14,8 @@ mkdir -p "$DST"
 cp -R "$ROOT/garmin_cn" "$DST/garmin_cn"
 find "$DST" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
+# 自检只在桌面端跑（`run.bat selftest`），App 里没有任何入口调用它。
+# 近 2000 行断言进 APK 只是白占体积和启动时的字节码加载，同步时剔掉。
+rm -f "$DST/garmin_cn/selftest.py"
+
 echo "已同步 $(find "$DST/garmin_cn" -name '*.py' | wc -l) 个 .py 到 $DST/garmin_cn"

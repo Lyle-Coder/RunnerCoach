@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -59,6 +60,7 @@ def _web_url(path: str) -> str:
 # 静态图按 540×960 请求 + scale=2 → 1080×1920，与画布 1:1
 BASE_W, BASE_H = 540, 960
 PAD = 44                 # 取景内边距（BASE 坐标系）
+MOTION_REV = 2           # rev2：缓存键纳入取景指纹，杜绝串档（见 ensure_basemap）
 ROOT = Path(__file__).resolve().parent.parent
 ACCENT = "#34D399"       # 与一图流同一支绿
 INK = "#0B0F14"
@@ -89,7 +91,7 @@ def meta_of(track: list[list[float]]) -> dict:
     lons = [p[0] for p in pts]
     lats = [p[1] for p in pts]
     return {
-        "fit": "motion", "rev": 1,
+        "fit": "motion", "rev": MOTION_REV,
         "center": [round((min(lons) + max(lons)) / 2, 6),
                    round((min(lats) + max(lats)) / 2, 6)],
         "zoom": _fit_zoom(track), "w": BASE_W, "h": BASE_H, "s": 1.0,
@@ -97,24 +99,53 @@ def meta_of(track: list[list[float]]) -> dict:
     }
 
 
+def _fit_key(meta: dict, npts: int) -> str:
+    """取景指纹：换成别的隐私档位 / 轨迹更新 / 取景算法改版，都必须换底图。
+
+    以前缓存文件名只有 `motion-<activity_id>.png`，而 App 默认档位是
+    `trim`（首尾各裁 200 m）。同一条活动先用「不脱敏」生成过一次，缓存的
+    就是**完整轨迹**的 zoom；之后用默认档生成，轨迹被裁短了，却仍拿那张
+    底图和它的 meta 来投影 —— 轨迹缩在画面一角，看起来就是「底图缩放错了」。
+    两种档位的取景中心、zoom 都不同，把它们编进文件名就再也不会串。
+    """
+    raw = (f"rev{meta['rev']}|{meta['center'][0]:.6f},{meta['center'][1]:.6f}"
+           f"|z{meta['zoom']}|{meta['w']}x{meta['h']}|pad{meta['pad']}"
+           f"|frame{meta['frame'][0]}x{meta['frame'][1]}|n{npts}")
+    return hashlib.sha1(raw.encode("ascii")).hexdigest()[:10]
+
+
 def ensure_basemap(track: list[list[float]], ident: str) -> dict | None:
-    """取底图（带缓存）。没有 Key 或接口失败返回 None，调用方回落到纯色底。"""
+    """取底图（带缓存）。没有 Key 或接口失败返回 None，调用方回落到纯色底。
+
+    缓存必须跟着**这次的取景**走：命中时逐个核对 center / zoom / 画幅，
+    旧版本留下的 `motion-<id>.png` 因为文件名不带指纹，自然不再被读取。
+    """
     if len(track) < 2:
         return None
-    cache = basemap.CACHE / f"motion-{ident}.png"
+    # GARMIN_MAP=0：与活动图/看板同一个开关，demo 出图与 README 截图靠它
+    # 保证「一条地图请求都不发」——底图是真实地图图块，不该出现在演示素材里。
+    if os.environ.get("GARMIN_MAP", "1") == "0":
+        return None
+    meta = meta_of(track)
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(ident))[:48]
+    cache = basemap.CACHE / f"motion-{safe_id}-{_fit_key(meta, len(track))}.png"
     meta_f = cache.with_name(cache.stem + ".json")
     if cache.exists() and cache.stat().st_size > 1024 and meta_f.exists():
         try:
-            meta = json.loads(meta_f.read_text("utf-8"))
-            if meta.get("fit") == "motion" and meta.get("rev") == 1 \
-                    and meta.get("frame") == [W, H]:
-                return {"png": cache, "meta": meta}
+            old = json.loads(meta_f.read_text("utf-8"))
+            same = (old.get("fit") == "motion" and old.get("rev") == MOTION_REV
+                    and old.get("frame") == meta["frame"]
+                    and old.get("center") == meta["center"]
+                    and old.get("zoom") == meta["zoom"]
+                    and old.get("w") == meta["w"] and old.get("h") == meta["h"]
+                    and old.get("pad") == meta["pad"])
+            if same:
+                return {"png": cache, "meta": old}
         except (OSError, ValueError):
             pass
     k = basemap.key()
     if not k:
         return None
-    meta = meta_of(track)
     meta["region"] = basemap.regeo(meta["center"][1], meta["center"][0])
     import urllib.request
 
@@ -197,7 +228,70 @@ def make_thumb(src: Path, dst: Path, ph: dict, max_w: int = 1200) -> Path | None
 
 
 # ------------------------------------------------------------------ 数据打包
-CLIP_LEAD = 0.15        # 卡片淡入完成后才起播，避免"贴脸突然有声"
+CLIP_LEAD = 0.0         # 素材延迟起播的秒数：0 = 卡片一出现就播
+                        # 原来是 0.15（怕"贴脸突然有声"），但那会让停留必须多留 0.15s
+                        # 收尾，总时长就对不上「30s + 素材总长」的要求了。
+RAMP = 0.70             # 每处素材「停住」前后各 0.7s 加减速（播放秒）
+# 上限只是防呆，不是裁剪。素材要「完整插入」：视频按自身时长整段播完，
+# 所以这里的上限必须 ≥ clip.py 的 MAX_VIDEO_SEC，否则长视频会被截断播放
+# （页面时长标签写的是原时长，实际只播了前面一段，两边对不上）。
+HOLD_MIN, HOLD_MAX = 0.6, 3600.0
+
+# 素材与活动时间窗的容差（秒）。
+# 口径不是「严格落在活动时段内」，而是「必须是**同一次活动附近**的素材」：
+# 差几小时的素材照旧保留（贴到最近一端，用户加的东西不许凭空消失），
+# 但差好几天的——上一次跑步/上一次比赛加的视频还留在素材库里——
+# 必须剔除，否则会被贴到这次活动两端，看着像放错了片子。
+CLIP_TOL_PRE_S = 24 * 3600.0    # 活动开始前 24 小时
+CLIP_TOL_POST_S = 24 * 3600.0   # 活动结束后 24 小时
+
+
+def _timeline_total(play: float, photos: list[dict]) -> float:
+    """页面时间轴的真实总时长，算法必须与 JS 里的 `TL` / `holdsSum` 逐字一致。
+
+    总时长 = 巡航预算 + 素材停留。素材停留是**额外叠加**的，不挤占 `play`：
+    30 秒巡航 + 视频素材总长 + 3 秒 × 图片素材数。
+
+    App 靠这个数算要渲染多少帧，算小了片子尾巴会被截掉（素材越多截得越狠）。
+    """
+    holds = 0.0
+    plain = 0
+    for ph in photos:
+        clip = ph.get("clip")
+        if clip:
+            holds += max(HOLD_MIN, min(HOLD_MAX, float(clip.get("dur") or 0)))
+        else:
+            plain += 1
+    if plain:
+        holds += min(2.8, max(1.0, play * 0.40 / plain)) * plain
+    # 加减速本身也占播放时间。素材多到「光加减速就超过 play」时，巡航被压成 0，
+    # 总长以加减速兜底 —— 对应页面里那条 build(8000) 的退化分支。
+    return max(play, 2 * RAMP * len(photos)) + holds
+
+
+def _spread_clips(clips: list[dict], rt: dict) -> list[dict]:
+    """给没有拍摄时间的素材补一个位置，均匀铺在活动区间里。
+
+    用户从相册随手加一段素材，文件里往往既没有可信时间也没有 GPS
+    （转发来的图、截屏、剪辑过的视频，元数据都被剥掉了）。
+    `photo.match` 会以「没有拍摄时间」把它们全部丢掉，表现就是
+    「加了素材，回放里却什么都没有」。这里按数量均匀铺开，
+    宁可位置不准，也别让人以为功能坏了。
+    """
+    if not clips or not rt.get("n"):
+        return clips
+    t0 = rt.get("t0")
+    span = float((rt.get("t") or [0])[-1] or 0)
+    if not t0 or span <= 0:
+        return clips
+    miss = [c for c in clips if c.get("t_utc") is None]
+    if not miss:
+        return clips
+    n = len(miss)
+    for i, c in enumerate(miss):
+        c["t_utc"] = int(t0 + span * 1000.0 * (i + 1) / (n + 1))
+        c["approx"] = True
+    return clips
 
 
 def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
@@ -222,10 +316,16 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                 basemap.to_px(la, lo, meta)[1] * 2)
                for la, lo in zip(rt["lat"], rt["lon"])]
         gps = True
+        # 同一组变换也会在 JS 的 bakeBase 里作用到底图位图上，两者必须同源，
+        # 否则轨迹就会和路网错开。无底图时 _project 已排好版，不要动。
+        view = _view_fit(pts)
+        pts = [(x * view["k"] + view["dx"], y * view["k"] + view["dy"])
+               for x, y in pts]
     else:
         # 没底图：自己投影到画布，留出上下给文字
         pts = _project(rt, W, H)
         gps = False
+        view = {"k": 1.0, "dx": 0.0, "dy": 0.0, "ratio": [0.0, 0.0]}
 
     out_photos = []
     if photos:
@@ -255,11 +355,38 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
     else:
         out_photos, loose = [], []
 
-    # ---- 视频片段：同一套吸附规则，挂到已有的照片点上；挂不上就自己成一个点
+    # ---- 素材片段（视频 / 图片）：同一套吸附规则，挂到已有的照片点上；
+    # 挂不上就自己成一个点
     out_clips = 0
     if clips:
+        clips = _spread_clips(clips, rt)
+        # 先按**活动时间附近**剔除明显不属于这次活动的素材。
+        # 素材库是全局的：上一次跑步/上一次比赛加的视频还留在里面，
+        # 不先筛掉的话 clamp_ends 会把它们强行贴到这次活动的两端塞进成片——
+        # 表现是「上次比赛（11-03）的视频混进了这次（11-08）的回放」。
+        # 容差 24 小时：差几小时的照旧保留（用户加的素材不许凭空消失），
+        # 差好几天的才剔除。读不到拍摄时间的素材一律保留（无法判定归属）。
+        t0_ms = rt.get("t0")
+        ts = rt.get("t") or []
+        act_dur = float(ts[-1]) if ts else 0.0
+        if t0_ms and act_dur:
+            keep = []
+            for c in clips:
+                t_utc = c.get("t_utc")
+                if not t_utc:
+                    keep.append(c)
+                    continue
+                rel = (float(t_utc) - float(t0_ms)) / 1000.0
+                if -CLIP_TOL_PRE_S <= rel <= act_dur + CLIP_TOL_POST_S:
+                    keep.append(c)
+            clips = keep
+        # cluster_m=0：素材**不合并**。两段视频拍在同一地点很常见（同路口前后各
+        # 一段），合并后只会保留最长的一段，另一段就凭空消失了——用户要的是
+        # 「素材完整插入」。clamp_ends：时间**接近**这次活动但落在外面的
+        # （比如起跑前拍的几秒）也贴到最近的一端，不许丢。
         cg = photo_mod.match(clips, rt, t0_ms=rt.get("t0"),
-                             keep=("dur", "codec", "bytes"))
+                             cluster_m=0.0, clamp_ends=True,
+                             keep=("dur", "codec", "bytes", "kind"))
         loose.extend(cg["loose"])
         for g in cg["points"]:
             if not g["shots"]:
@@ -268,25 +395,44 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
             pick = max(g["shots"], key=lambda x: x.get("dur") or 0)
             if not pick.get("dur"):
                 continue
-            src = clip_mod.ensure_playable(pick, clip_cache or (ROOT / "data" / "motion_cache"))
-            # 尺寸以「真正送进浏览器的那个文件」为准：转码时 ffmpeg 已经把旋转
-            # 烘进像素、矩阵归一了，拿它的 tkhd 才是画面真实朝向。
-            # 用原文件的 w/h 会把竖屏塞进横格子（画面被压扁）。
-            real = clip_mod.probe(Path(src))
-            if real.get("w") and real.get("h"):
-                vw, vh = real["w"], real["h"]
-                k = min(1200 / max(vw, vh), 1.0)
-                vw, vh = max(int(vw * k), 1), max(int(vh * k), 1)
-            else:
+            kind = pick.get("kind") or "video"
+            if kind == "image":
+                # 图片素材不做转码，直接把原图交给页面画（Ken Burns 之外不再加工）
+                src = pick["path"]
                 vw, vh = visible_size(pick)
+            else:
+                src = clip_mod.ensure_playable(
+                    pick, clip_cache or (ROOT / "data" / "motion_cache"))
+                # 尺寸以「真正送进浏览器的那个文件」为准：转码时 ffmpeg 已经把旋转
+                # 烘进像素、矩阵归一了，拿它的 tkhd 才是画面真实朝向。
+                # 用原文件的 w/h 会把竖屏塞进横格子（画面被压扁）。
+                real = clip_mod.probe(Path(src))
+                if real.get("w") and real.get("h"):
+                    vw, vh = real["w"], real["h"]
+                    k = min(1200 / max(vw, vh), 1.0)
+                    vw, vh = max(int(vw * k), 1), max(int(vh * k), 1)
+                else:
+                    vw, vh = visible_size(pick)
             x, y = _xy_at(rt, pts, g["t"])
             item = {
                 "src": str(Path(src).resolve()),
+                # 同源 URL 只给页面看；混原声时原生编解码器要的是磁盘路径。
+                # `web=True` 会把 src 改成 /data/...，这个字段必须原样留着，
+                # 否则手机上 `/__timeline` 回传的 src 是 URL，MediaExtractor 打不开。
+                "local": str(Path(src).resolve()),
+                "kind": kind,
                 "w": vw, "h": vh,
                 "dur": round(float(pick["dur"]), 2), "name": pick["name"],
                 "gap": pick["gap_m"], "approx": bool(pick.get("approx")),
                 "lead": CLIP_LEAD,
+                # 显示旋转（0/90/180/270）：无损剪辑不重新编码，竖拍被压成横屏
+                # 或者用户手动转过的，都靠这个字段在绘制端兑现。
+                "rotate": int(pick.get("rotate") or 0) % 360,
             }
+            # 素材下标：App 端原生抽帧按这个下标建目录 c<ci>/，
+            # 页面再用 `_clips.json` 里的同一下标取图。必须和 out_clips
+            # 同步递增（只数视频，图片素材不占号），否则页面会取错段。
+            item["ci"] = out_clips
             # 已有同点照片 → 合并（视频优先，照片当封面/备用）
             host = None
             for p0 in out_photos:
@@ -311,6 +457,7 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
         "sub": " · ".join(x for x in [started,
                                       (bm or {}).get("meta", {}).get("region") or region] if x),
         "base": str(bm["png"].resolve()) if bm else "", "gps": gps,
+        "view": view,
         "root": str(ROOT),
         "t": rt["t"], "x": [round(p[0], 1) for p in pts],
         "y": [round(p[1], 1) for p in pts],
@@ -318,6 +465,10 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
         "dur": int(s["duration_s"]), "dist": round(s["distance_m"], 1),
         "hr_avg": s.get("hr_avg"), "hr_max": s.get("hr_max"),
         "play": float(duration),
+        # 真实总时长（见 `_timeline_total`）。App 按它算渲染帧数。
+        "total": round(_timeline_total(float(duration), out_photos), 3),
+        "spread": sum(1 for p in out_photos
+                      if p.get("clip") and p["clip"].get("approx")),
         "photos": out_photos, "clips": out_clips, "loose": loose,
         "accent": ACCENT,
     }
@@ -329,6 +480,34 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
             if p.get("clip"):
                 p["clip"]["src"] = _web_url(p["clip"]["src"])
     return pl
+
+
+# 视口自适应（v45）：高德静态图的 zoom 只能是整数，粒度是 2 倍。
+# `_fit_zoom` 选「刚好装得下整条轨迹」的那一档，于是轨迹外框会落在
+# 画幅的 50%~100% 之间：偏大的一边就**顶到甚至超出画面边缘**，看起来
+# 像「底图被放大裁切」；偏小的一边又缩在一角。两种都是同一件事。
+# 这里把底图和轨迹用**同一组**仿射变换一起缩放到目标占比并居中：
+# 变换同时作用于底图位图与所有轨迹/照片坐标，地理对齐一点不变。
+VIEW_W, VIEW_H = 0.66, 0.70     # 轨迹外框目标占画布宽 / 高的比例
+VIEW_CY = 0.53                  # 目标中心略低于正中，给顶部 HUD 让位
+VIEW_K_MIN, VIEW_K_MAX = 0.60, 1.50
+
+
+def _view_fit(pts: list[tuple[float, float]]) -> dict:
+    """算 (k, dx, dy)：`(x,y) -> (x*k+dx, y*k+dy)`，底图与轨迹一起用。"""
+    if len(pts) < 2:
+        return {"k": 1.0, "dx": 0.0, "dy": 0.0, "ratio": [0.0, 0.0]}
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    bw, bh = max(x1 - x0, 1.0), max(y1 - y0, 1.0)
+    k = min(W * VIEW_W / bw, H * VIEW_H / bh)
+    k = max(VIEW_K_MIN, min(VIEW_K_MAX, k))
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    tx, ty = W / 2, H * VIEW_CY
+    return {"k": round(k, 4),
+            "dx": round(tx - cx * k, 1), "dy": round(ty - cy * k, 1),
+            "ratio": [round(bw / W, 3), round(bh / H, 3)]}
 
 
 def _project(rt: dict, w: int, h: int) -> list[tuple[float, float]]:
@@ -453,37 +632,88 @@ function idxAt(rt) {
   while (lo < hi) { const m = (lo + hi) >> 1; if (T[m] < rt) lo = m + 1; else hi = m; }
   return lo;
 }
+
+// ---- 配速：先按「轨迹秒」把累计距离重采样成均匀表，再算窗口平均
+// 千万别直接在 T 上取索引差算窗口时间：回放的 T 是 _synth_route 按里程
+// 现场合成的 —— 420 个点覆盖 5312 秒（平均 12.6 秒才一个点），还带着几十处
+// 重复时间戳。原来取索引两端的时间戳相减当窗口时间，窗口里经常 ia === ib，
+// dt = 0 → paceAt 返回 null → fmtPace 画 '—'；下一帧 ib 挪一格又正常。
+// 实测一条真实活动 720 帧里 180 帧是 '—'、交替 207 次，就是角标一直在闪。
+// 现在窗口时间用 rt 本身的差值（恒成立），距离用重采样表插值（单调、连续），
+// 再加轻度平滑与上一有效值兜底，静止/无数据也只是保持不变，绝不闪空值。
+const PACE_DT = 2;                       // 重采样步长（轨迹秒）
+const PACE_WIN = 15;                     // 平均配速窗口（轨迹秒）
+const PACE_N = Math.max(2, Math.ceil(D.dur / PACE_DT) + 1);
+const PACE_D = new Float64Array(PACE_N);
+(function buildPaceTable() {
+  let k = 0;
+  for (let i = 0; i < PACE_N; i++) {
+    const t = i * PACE_DT;
+    while (k + 1 < N && T[k + 1] <= t) k++;
+    let v;
+    if (k + 1 >= N) v = DIST[N - 1];
+    else if (T[k + 1] <= T[k]) v = DIST[k + 1];      // 重复时间戳：直接取后一点
+    else {
+      const f = Math.min(1, Math.max(0, (t - T[k]) / (T[k + 1] - T[k])));
+      v = DIST[k] + (DIST[k + 1] - DIST[k]) * f;
+    }
+    PACE_D[i] = v;
+  }
+})();
+function paceDist(t) {
+  const x = Math.min(Math.max(t / PACE_DT, 0), PACE_N - 1);
+  const i = Math.floor(x), f = x - i;
+  const j = Math.min(i + 1, PACE_N - 1);
+  return PACE_D[i] + (PACE_D[j] - PACE_D[i]) * f;
+}
+// 起点第一帧还没攒够窗口：拿全段平均配速起步，别一上来先闪一下 '—'
+let lastPace = (D.dur > 0 && DIST[N - 1] > 0)
+  ? D.dur / DIST[N - 1] * 1000 : 300;
 function paceAt(rt) {
-  // 15 秒窗口：1Hz 瞬时配速在 ±40s/km 抖，直接用角标会跳成噪音
-  const a = Math.max(rt - 15, 0), ia = idxAt(a), ib = idxAt(rt);
-  const dd = DIST[ib] - DIST[ia], dt = T[ib] - T[ia];
-  return (dd > 5 && dt > 0) ? dt / dd * 1000 : null;
+  const b = Math.min(Math.max(rt, 0), D.dur);
+  const a = Math.max(b - PACE_WIN, 0);
+  const dt = b - a, dd = paceDist(b) - paceDist(a);
+  if (dt > 0 && dd > 1) {
+    const p = dt / dd * 1000;                        // s/km
+    // 60s/km ~ 40min/km 之外是 GPS 漂移或站定不动，不拿来污染角标
+    if (isFinite(p) && p > 60 && p < 2400) {
+      lastPace = lastPace == null ? p : lastPace + (p - lastPace) * 0.30;
+    }
+  }
+  return lastPace;
 }
 
 // ---- 时间轴：给「速度」设计曲线，再积分成位置
 // 原来是位置折线（KEYS），速度在进出照片处从 1x 硬切到 0.0125x——位置连着，
 // 但速度不连续，看起来就是「猛刹一脚、再猛窜出去」。现在改成速度剖面：
 // 匀速 → 半余弦减速 0.7s → 完全静止 hold 秒 → 半余弦加速 0.7s，
-// 归一化后保证总时长正好等于 D.play、终点正好落在 D.dur。
+// 归一化后保证「巡航 + 加减速」正好等于 D.play、终点正好落在 D.dur；
+// 素材停留是额外叠加的，见下面 holdsSum。
 const RAMP = 0.70;                  // 加减速时长（播放秒）
 const PWIN = [];                    // 每处照片的播放时间窗口 {a: 停住开始, b: 停住结束}
 const TL = (function () {
   const ps = (D.photos || []).slice().sort((a, b) => a.t - b.t);
   const n = ps.length;
-  // 停留时长按点算：有实况的按片段长度（要播完），照片点平分剩下的预算
-  const budget = D.play * 0.40;
-  let used = 0;
+  // 素材停留**叠加**在巡航时长之上，不挤占轨迹节奏：
+  //   视频按自身时长整段播完，图片/照片按固定停留。
+  // 于是总时长 = D.play（轨迹巡航 + 加减速）+ 所有停留，
+  // 也就是「30s + 视频素材总时长 + 3s × 图片素材数」。早期版本把停留塞进
+  // D.play 里，素材一多轨迹就被压成几秒飞完全程，看起来像"时长算错了"。
   for (const ph of ps) {
     if (ph.clip) {
-      // 整段放完：卡片停留 = 素材本身长度 + 一点收尾，方便后期再剪
-      ph._hold = Math.min(40, Math.max(1.2, ph.clip.dur + 0.6));
-      used += ph._hold;
+      const d = ph.clip.dur || 0;
+      // 上限与 Python 侧 HOLD_MAX 保持一致（3600s），只防呆不裁剪：
+      // 视频按自身时长整段播完，标签写多久就播多久。
+      ph._hold = Math.max(0.6, Math.min(3600, d));
     }
   }
+  // 纯照片点（没挂素材）仍按预算平分，同样叠加在 D.play 之上
   const plain = ps.filter(x => !x.clip);
-  const rest = Math.max(budget - used, D.play * 0.12);
+  const clipHold = ps.reduce((a, ph) => a + (ph.clip ? ph._hold : 0), 0);
+  const rest = D.play * 0.40;
   const baseHold = plain.length ? Math.min(2.8, Math.max(1.0, rest / plain.length)) : 0;
   for (const x of plain) x._hold = baseHold;
+  const holdsSum = clipHold + baseHold * plain.length;
 
   // 给定 k（轨迹秒/播放秒），排出整条时间轴；总时长随 k 单调递减，二分求 k
   function build(k) {
@@ -511,15 +741,23 @@ const TL = (function () {
   let lo = 0.5, hi = 8000, best = build(10);
   for (let i = 0; i < 48; i++) {
     const mid = (lo + hi) / 2, t = build(mid);
-    if (t.total > D.play) lo = mid; else { hi = mid; best = t; }
+    // 只把「巡航 + 加减速」压进 D.play；停留是额外加的
+    if (t.total - holdsSum > D.play) lo = mid; else { hi = mid; best = t; }
   }
+  // 极端情况：素材多到「光加减速就超过巡航预算」，二分无解（best 还停在
+  // 初始的 build(10)，会把片子拉成几十秒的慢动作）。退化成轨迹瞬间走完，
+  // 至少每条素材都完整放到。
+  if (best.total - holdsSum > D.play + 0.05) best = build(8000);
   for (const w of best.win) PWIN.push(Object.assign({}, w.ph, { a: w.a, b: w.b }));
   return best;
 })();
 
+// 整条片子的真实总时长：巡航预算 + 所有素材停留
+const TOTAL = TL.total;
+
 function routeAt(p) {
   if (p <= 0) return 0;
-  if (p >= D.play) return D.dur;
+  if (p >= TOTAL) return D.dur;
   const segs = TL.segs;
   let lo = 0, hi = segs.length - 1;
   while (lo < hi) {                    // 找 p 落在哪一段
@@ -568,15 +806,43 @@ let restPath = null, donePath = new Path2D(), doneIdx = 0;
 // 压暗在开机时烘焙进一张离屏画布：每帧对 1080×1920 做一次 filter 是纯浪费，
 // 而且滤镜+缩放在同一帧里叠着做，交互播放会掉帧。
 let baseBaked = null;
-function bakeBase() {
-  const im = IMG.get(D.base);
-  if (!im) return;
+/* 没有高德 Key 时（或显式 GARMIN_MAP=0）的底板。
+   以前这里是纯色 #0E131A：轨迹一条细线浮在纯黑上，整个卡片看着像没加载出来。
+   现在烘焙一层冷色径向渐变 + 细网格，既压得住轨迹，也让「无底图」看起来是
+   设计而不是故障 —— 没配 Key 的用户是多数，这个观感值这点开销。 */
+function bakeGrid() {
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const g = c.getContext('2d');
-  // 高德静态图是浅底，压在深色看板上会抢主体，压暗到「看得到路名」就够
+  const grd = g.createRadialGradient(W / 2, H * 0.42, 0, W / 2, H * 0.42, W * 0.78);
+  grd.addColorStop(0, '#122033');
+  grd.addColorStop(0.55, '#0C1420');
+  grd.addColorStop(1, '#070A10');
+  g.fillStyle = grd; g.fillRect(0, 0, W, H);
+  g.strokeStyle = 'rgba(96,165,250,.085)'; g.lineWidth = 1;
+  for (let x = 0; x < W; x += 64) {
+    g.beginPath(); g.moveTo(x + .5, 0); g.lineTo(x + .5, H); g.stroke();
+  }
+  for (let y = 0; y < H; y += 64) {
+    g.beginPath(); g.moveTo(0, y + .5); g.lineTo(W, y + .5); g.stroke();
+  }
+  baseBaked = c;
+}
+function bakeBase() {
+  const im = IMG.get(D.base);
+  if (!im) { bakeGrid(); return; }
+  const V = D.view || {k: 1, dx: 0, dy: 0};
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  // 视口 k<1 时底图盖不满画布，先铺一层看板底色，边缘才不会露出纯黑
+  g.fillStyle = '#0E131A'; g.fillRect(0, 0, W, H);
+  // 高德静态图是浅底，压在深色看板上会抢主体，压暗到「看得到路名」就够。
+  // 9 参 drawImage：源是全图，目标按 view 变换；Python 侧的轨迹点已用
+  // 同一组 (k,dx,dy) 变换过，两者必须严格同源，否则路网和轨迹会错开。
   g.filter = 'brightness(.60) saturate(.72) contrast(1.04)';
-  g.drawImage(im, 0, 0, W, H);
+  const nw = im.naturalWidth || W, nh = im.naturalHeight || H;
+  g.drawImage(im, 0, 0, nw, nh, V.dx, V.dy, W * V.k, H * V.k);
   g.filter = 'none';
   g.fillStyle = 'rgba(9,13,19,.30)';
   g.fillRect(0, 0, W, H);
@@ -588,6 +854,7 @@ function drawMap(scale, cx, cy) {
   if (scale !== 1) {
     ctx.translate(W / 2, H / 2); ctx.scale(scale, scale); ctx.translate(-cx, -cy);
   }
+  if (!baseBaked) bakeGrid();
   if (baseBaked) {
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(baseBaked, 0, 0);
@@ -780,11 +1047,266 @@ function ensureVideo(src) {
   return v;
 }
 
+// 真机 WebView 里 `seeked` 只代表定位完成，不代表这一帧已经解码好；
+// 直接 drawImage(video) 会画出黑帧，成片里就是「视频卡片黑屏频闪」。
+// 每帧先用 24×24 小画布探一下平均亮度，只有确实有画面才更新缓存；
+// 黑帧一律复用上一张有效画面 —— 最坏是短暂停住，绝不会闪黑。
+const VLAST = new Map();          // src -> {c, w, h}
+// 导出时的视频抽帧状态：VSTEP 是「当前落在哪一格」，VDONE 是「这一格
+// 已经抓过画面」。播放模式不走 syncVideo，两个 Map 都是空的，于是
+// videoFrame 每帧正常抓新画面，不受影响。
+const CLIP_FPS = 8;               // 卡片画面最多每秒更新 8 次（成片仍 24fps）
+// 画质优先：8fps 让出帧率，换来每帧 840px —— 正好等于卡片最大显示尺寸，
+// 绘制时不再放大，480px 时代的糊边就没了。
+const VSTEP = new Map();          // src -> 抽帧格号
+const VDONE = new Map();          // src -> 已完成抓帧的格号
+const WAITED = new Set();         // src -> 已经等过「视频就绪」，别每帧等
+const VPROBE = document.createElement('canvas');
+VPROBE.width = 24; VPROBE.height = 24;
+const vpctx = VPROBE.getContext('2d', {willReadFrequently: true});
+
+// ---- 导出期「按段预抽帧」----------------------------------------------
+// 旧路径每遇一个新抽帧格就 v.currentTime = want，等 seeked / 120ms，然后
+// 从 <video> 里 drawImage 两次（24×24 亮度探测 + 卡片整帧重绘）。后两步在
+// Android WebView 上是**同步等解码器**：随机 seek 后要从最近关键帧解几十
+// 帧，几百毫秒一格很常见，6 秒素材就能拖到几分钟。更糟的是 seek 期间
+// readyState 会短暂掉到 1，旧版 WAITED 记过一次就不再等、也不推进 VSTEP，
+// 画面会永久停在某一帧（音轨是原生独立解码的，所以照常播）——这就是真机
+// 上「画面中间暂停、声音正常」。
+// 现在改成：进入某段素材时一次性**顺序**把整段抽成小画布数组，渲染循环
+// 只读缓存位图，零 seek、零解码等待。按段缓存、切段释放，内存有硬上限。
+const VPRE = { src: null, fps: CLIP_FPS, frames: [], w: 0, h: 0, lit: 0 };
+const VPFAIL = new Set();      // 预抽失败的素材回退到逐格 seek
+let exportMode = false;
+let VREL = 0;                  // 当前帧在素材内的相对秒数（缓存索引用）
+const PRE_MAX = 72;            // PC 端兜底上限（App 端走原生抽帧，不进这里）
+const PRE_SEEK_MS = 150;       // 兜底单格 seek 上限；PC Chrome 上几十毫秒就到位
+const PRE_LONG = 840;          // 预抽画布长边 = 卡片显示上限，1:1 不放大
+
+// 原生抽好的素材帧（v48）：App 在起 WebView 之前就用 MediaMetadataRetriever
+// 把每段视频按 12fps 抽成缩略 JPEG，页面只读 <img>。
+// `CIMG.get(ci)` = {imgs, fps, n, w, h}；`CIREADY` 表示 `_clips.json` 读到了。
+// 一旦 CIREADY，凡是没有图（n === 0）的素材一律静态封面 —— 绝不再在
+// WebView 里 `drawImage(<video>)`：那一步会**同步**等解码器出帧，主线程被占住
+// 时 setTimeout 兜底也跑不了，真机上能把一段 6 秒素材拖到 5 分钟以上，
+// 最后被编码线程判死（提示「第 N 帧没送到」）。
+const CIMG = new Map();
+let CIREADY = false;
+async function loadClipImages(run) {
+  if (!run) return;
+  try {
+    const r = await fetch('_frames/' + run + '/_clips.json', {cache: 'no-store'});
+    if (!r.ok) return;
+    const obj = await r.json();
+    const jobs = [];
+    for (const k in obj) {
+      const it = obj[k] || {};
+      const n = it.n | 0;
+      if (n <= 0) {
+        CIMG.set(+k, {imgs: [], fps: CLIP_FPS, n: 0, w: 0, h: 0});
+        continue;
+      }
+      const imgs = [];
+      const base = '_frames/' + run + '/c' + k + '/';
+      for (let i = 0; i < n; i++) {
+        const im = new Image();
+        im.src = base + i + '.jpg';
+        imgs.push(im);
+        jobs.push(im.decode ? im.decode().catch(() => null)
+                             : Promise.resolve());
+      }
+      CIMG.set(+k, {imgs: imgs, fps: it.fps || CLIP_FPS, n: n,
+                    w: it.w | 0, h: it.h | 0});
+    }
+    await Promise.all(jobs);   // 全部解码完再开跑，首帧不会卡在解码上
+    CIREADY = true;
+  } catch (e) { /* 没有原生帧（PC 端 / 老服务）就走页面预抽兜底 */ }
+}
+
+function preSize(clip) {
+  const cw0 = clip.w || 1080, ch0 = clip.h || 1920;
+  const k = Math.min(840 / cw0, 780 / ch0, 1.5);
+  const cw = Math.max(1, Math.round(cw0 * k)), ch = Math.max(1, Math.round(ch0 * k));
+  const s = Math.min(1, PRE_LONG / Math.max(cw, ch));
+  return [Math.max(1, Math.round(cw * s)), Math.max(1, Math.round(ch * s))];
+}
+function preCanvas(w, h) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  return c;
+}
+// 顺序 seek：严格等 seeked（带上限），超时也继续——顺序推进不会像随机
+// seek 那样把解码器来回拽，而且整段只做一次，不占渲染循环的关键路径。
+function seekExact(v, t, ms) {
+  return new Promise(res => {
+    if (Math.abs(v.currentTime - t) <= 0.001 && !v.seeking) return res();
+    let hit = false, tm = null;
+    const done = () => {
+      if (hit) return;
+      hit = true;
+      if (tm) clearTimeout(tm);
+      v.removeEventListener('seeked', done);
+      res();
+    };
+    tm = setTimeout(done, ms || PRE_SEEK_MS);
+    v.addEventListener('seeked', done, { once: true });
+    try { v.currentTime = t; } catch (e) { done(); }
+  });
+}
+function probeLit(v) {
+  try {
+    if (v.readyState < 2) return false;
+    vpctx.drawImage(v, 0, 0, 24, 24);
+    const d = vpctx.getImageData(0, 0, 24, 24).data;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+    return sum > 24 * 24 * 3 * 8;
+  } catch (e) { return false; }
+}
+// 黑帧复用上一格画面，首格黑则用首帧缩略图，保证任何时刻都有确定帧：
+// 既不会中途冻结，也不会闪黑。每格是独立画布，不是共用一张。
+async function preloadClip(clip) {
+  VPRE.src = clip.src; VPRE.frames = []; VPRE.lit = 0; VREL = 0;
+  const ci = (clip.ci == null) ? -1 : +clip.ci;
+  // 原生已经抽好：直接接管，零解码、零 seek
+  if (exportMode && CIMG.has(ci)) {
+    const c = CIMG.get(ci);
+    if (!c.n || !c.imgs.length) { VPFAIL.add(clip.src); return; }
+    VPRE.frames = c.imgs; VPRE.fps = c.fps; VPRE.lit = c.n;
+    VPRE.w = c.w; VPRE.h = c.h;
+    return;
+  }
+  // 清单读到了却没有这一段（含 n=0）：静态封面，别回 WebView 里抽
+  if (exportMode && CIREADY) { VPFAIL.add(clip.src); return; }
+  const v = VIDS.get(clip.src);
+  if (!v) { VPFAIL.add(clip.src); return; }
+  if (v.readyState < 2) await waitReady(v, 2500);
+  if (v.readyState < 2) { VPFAIL.add(clip.src); return; }
+  const [w, h] = preSize(clip);
+  const dur = Math.max(0.1, clip.dur || 1);
+  const n = Math.max(1, Math.min(PRE_MAX, Math.ceil(dur * CLIP_FPS)));
+  VPRE.w = w; VPRE.h = h; VPRE.fps = n / dur;
+  const scratch = preCanvas(w, h);
+  const g = scratch.getContext('2d');
+  let prev = null;
+  for (let i = 0; i < n; i++) {
+    await seekExact(v, Math.min(i / VPRE.fps, Math.max(0, dur - 0.02)), PRE_SEEK_MS);
+    const lit = probeLit(v);
+    if (lit) { g.drawImage(v, 0, 0, w, h); VPRE.lit++; }
+    const f = preCanvas(w, h);
+    const fg = f.getContext('2d');
+    if (lit || prev) fg.drawImage(lit ? scratch : prev, 0, 0);
+    else {
+      const first = VFIRST.get(clip.src);
+      if (first) fg.drawImage(first.c, 0, 0, w, h);
+      else { fg.fillStyle = '#141A22'; fg.fillRect(0, 0, w, h); }
+    }
+    VPRE.frames.push(f);
+    prev = f;
+  }
+  if (!v.paused) v.pause();
+  const info = { name: clip.name, n: n, lit: VPRE.lit,
+                 fps: +VPRE.fps.toFixed(2), w: w, h: h };
+  window.__motion.preload = info;
+  // 回传诊断：真机 Logcat 能看到每段抽了多少格、多少格真有画面。
+  // 带上原 diag 一起写，别把底图/视口信息覆盖掉。
+  try {
+    await fetch('/__diag?run=' + (QS.get('run') || ''), {
+      method: 'POST',
+      body: JSON.stringify(Object.assign({}, window.__motion.diag, {preload: info}))
+    });
+  } catch (e) { /* 上报失败不影响导出 */ }
+}
+
+// 首帧兜底：视频元素 loadeddata 之后先抓一帧存住。
+// 导出时是多路 Chrome 并行渲染，每路进程各自维护 VLAST——某一路的
+// 视频元素还没解出当前帧时，VLAST 里是空的，videoFrame 返回 null，
+// 卡片就画成空框（成片里表现为「某几处视频黑屏」）。
+// 首帧兜底保证任何时刻都有画面可画，最差也只是画面停在开头那一帧。
+const VFIRST = new Map();         // src -> {c, w, h}
+// 只存卡片大小的缩略图：按 v.videoWidth/Height 存原分辨率的话，11 段
+// 1080p/4K 素材就是几百 MB RGBA 常驻 WebView，导出全程在 GC。兜底帧在
+// videoFrame 里本来也会按目标尺寸重画一遍，存小图不损失任何画质。
+function grabFirst(v, src) {
+  try {
+    const iw = v.videoWidth || 1080, ih = v.videoHeight || 1920;
+    const k = Math.min(840 / iw, 780 / ih, 1);
+    const w = Math.max(1, Math.round(iw * k));
+    const h = Math.max(1, Math.round(ih * k));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(v, 0, 0, w, h);
+    if (!VFIRST.has(src)) VFIRST.set(src, {c: c, w: w, h: h});
+  } catch (e) { /* 首帧抓不到就等后面的兜底 */ }
+}
+
+// 没有新画面可抓时统一走这里：上一张有效画面 → 首帧缩略图 → 空框。
+// 首帧按目标尺寸重画一遍并且就地缓存，别每帧新建画布。
+function fallbackFrame(src, w, h) {
+  const rec = VLAST.get(src);
+  if (rec) return rec.c;
+  const first = VFIRST.get(src);
+  if (first) {
+    if (first.w !== w || first.h !== h) {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(first.c, 0, 0, w, h);
+      first.c = c; first.w = w; first.h = h;
+    }
+    return first.c;
+  }
+  return null;
+}
+function videoFrame(src, v, w, h) {
+  // 原生抽帧失败 / 没有这一段：静态封面。绝不再碰 <video>。
+  if (exportMode && VPFAIL.has(src)) return fallbackFrame(src, w, h);
+  // 导出期预抽帧就绪：按素材内相对时间直接取缓存位图，完全不碰 <video>。
+  // 这是整条流水线提速的关键——渲染循环里不再有解码等待，也不再有
+  // 「seek 没到位却抓到旧帧」这种让画面停住的机会。
+  if (exportMode && VPRE.src === src && VPRE.frames.length && !VPFAIL.has(src)) {
+    const i = Math.max(0, Math.min(VPRE.frames.length - 1,
+      Math.floor(Math.max(0, VREL) * VPRE.fps)));
+    return VPRE.frames[i];
+  }
+  // 回退路径（播放模式 / 预抽失败）：同一抽帧格里不再探测亮度、不再把
+  // 视频帧重画到 w×h 离屏画布。
+  const step = VSTEP.get(src);
+  if (step != null && VDONE.get(src) === step) return fallbackFrame(src, w, h);
+  let lit = false;
+  try {
+    // readyState < 2 时 drawImage 会抛，或画出一张空图——两种都当「没画面」
+    if (v.readyState >= 2) {
+      vpctx.drawImage(v, 0, 0, 24, 24);
+      const d = vpctx.getImageData(0, 0, 24, 24).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+      lit = sum > 24 * 24 * 3 * 8;   // 平均亮度 > 8/255 才算有画面
+    }
+  } catch (e) { lit = false; }
+  VDONE.set(src, step == null ? -1 : step);
+  if (lit) {
+    let rec = VLAST.get(src);
+    if (!rec || rec.w !== w || rec.h !== h) {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      rec = {c: c, w: w, h: h};
+      VLAST.set(src, rec);
+    }
+    rec.c.getContext('2d').drawImage(v, 0, 0, w, h);
+    return rec.c;
+  }
+  return fallbackFrame(src, w, h);   // 黑帧沿用上一张有效画面
+}
+
 function popLayout(p) {
   if (p.clip) {
     const c = p.clip;
-    const k = Math.min(840 / c.w, 780 / c.h, 1.5);
-    return { cells: [[Math.round(c.w * k), Math.round(c.h * k)]], crop: false };
+    // 旋转 90/270 时卡片要竖着放：w/h 是原画幅，外接框得交换，
+    // 否则竖拍素材会被压进横卡片里（真机上「竖屏被压成横屏」就是这个）。
+    const rot = (c.rotate || 0) % 360;
+    const rw = (rot === 90 || rot === 270) ? c.h : c.w;
+    const rh = (rot === 90 || rot === 270) ? c.w : c.h;
+    const k = Math.min(840 / rw, 780 / rh, 1.5);
+    return { cells: [[Math.round(rw * k), Math.round(rh * k)]], crop: false };
   }
   const shots = (p.shots || []).slice(0, 2);
   // 单张等比完整显示（裁掉内容最可惜）；两张统一成同样大小的格子 + 中心裁切，
@@ -827,6 +1349,20 @@ function drawCell(im, s, x, y, w, h, crop) {
   ctx.drawImage(cellOf(s, im, w, h, crop), x, y);
 }
 
+// 按素材的显示旋转把一帧画进 (x,y,w,h)。w/h 已经是**旋转后**的外接框，
+// 所以 90/270 时要画一个 (h,w) 的矩形才能正好填满；不旋转时零开销。
+function drawRotated(im, clip, x, y, w, h) {
+  const rot = (((clip && clip.rotate) || 0) % 360 + 360) % 360;
+  if (!rot) { ctx.drawImage(im, x, y, w, h); return; }
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2);
+  ctx.rotate(rot * Math.PI / 180);
+  const dw = (rot === 90 || rot === 270) ? h : w;
+  const dh = (rot === 90 || rot === 270) ? w : h;
+  ctx.drawImage(im, -dw / 2, -dh / 2, dw, dh);
+  ctx.restore();
+}
+
 function drawPop(p, e) {
   const isClip = !!(p.clip);
   const shots = isClip ? [] : (p.shots || []).slice(0, 2);
@@ -853,11 +1389,19 @@ function drawPop(p, e) {
   ctx.save();
   rr(left, top, pw, ph, 30); ctx.clip();
   if (isClip) {
-    const v = VIDS.get(p.clip.src), [w, h] = lay.cells[0];
-    if (v && v.readyState >= 2) {
-      ctx.drawImage(v, left + pad, top + pad, w, h);
+    const [w, h] = lay.cells[0];
+    if (p.clip.kind === 'image') {
+      // 图片素材：和照片走同一套裁剪铺满卡片，不走 <video>
+      const im = IMG.get(p.clip.src);
+      if (im) drawCell(im, p.clip, left + pad, top + pad, w, h, true);
+      else { ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h); }
     } else {
-      ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h);
+      const v = VIDS.get(p.clip.src);
+      // readyState < 2 也不直接画空框：videoFrame 还有首帧兜底，
+      // 画出来总比空框好（空框在成片里就是一处黑屏）。
+      const frame = v ? videoFrame(p.clip.src, v, w, h) : null;
+      if (frame) drawRotated(frame, p.clip, left + pad, top + pad, w, h);
+      else { ctx.fillStyle = '#141A22'; ctx.fillRect(left + pad, top + pad, w, h); }
     }
   } else {
     let x = left + pad;
@@ -884,7 +1428,10 @@ function drawPop(p, e) {
   ctx.textAlign = 'left';
   const capX = left + pad + (isClip ? 20 : 2);
   const capW = kmLeft - capX - 10;
-  let capTxt = isClip ? name + '  ' + (p.clip.dur || 0).toFixed(1) + 's' : name + more;
+  const clipTag = isClip
+    ? (p.clip.kind === 'image' ? '图片' : (p.clip.dur || 0).toFixed(1) + 's')
+    : '';
+  let capTxt = isClip ? name + '  ' + clipTag : name + more;
   if (ctx.measureText(capTxt).width > capW) {
     while (capTxt.length > 1 && ctx.measureText(capTxt + '…').width > capW) capTxt = capTxt.slice(0, -1);
     capTxt += '…';
@@ -893,7 +1440,7 @@ function drawPop(p, e) {
   ctx.beginPath();
   ctx.rect(left + pad, ty - 30, capX + capW - (left + pad), 42);
   ctx.clip();
-  if (isClip) {                       // 小三角标一下这是会动的
+  if (isClip && p.clip.kind !== 'image') {   // 小三角标一下这是会动的
     ctx.fillStyle = ACCENT;
     ctx.beginPath();
     ctx.moveTo(left + pad + 2, ty - 16);
@@ -922,23 +1469,72 @@ function drawPop(p, e) {
 
 // 导出走"精确 seek"，播放走"让视频自己跑"——每帧都 seek 的话播放会卡成幻灯
 let videoDriven = false;
+let lastClipSrc = null;
+
+// 等视频能出画面（readyState >= 2）。
+// 以前 readyState < 2 就直接返回，结果是：不 seek → 画不出帧 → 下一帧继续
+// 这么等，循环往复到 60 秒超时。表现就是「某一段帧一直渲不出来」，
+// 而页面诊断里 vidOk 还是 true（就绪检查是在 boot 时做的，早就过了）。
+function waitReady(v, ms) {
+  if (!v || v.readyState >= 2) return Promise.resolve();
+  return new Promise(res => {
+    let hit = false;
+    const done = () => { if (!hit) { hit = true; res(); } };
+    v.addEventListener('loadeddata', done, { once: true });
+    v.addEventListener('canplay', done, { once: true });
+    v.addEventListener('error', done, { once: true });
+    setTimeout(done, ms || 4000);
+    try { if (v.networkState === 3) v.load(); } catch (e) { done(); }
+  });
+}
+
 async function syncVideo(p) {
   for (const [src, v] of VIDS) {
     if (!p || !p.clip || p.clip.src !== src) { if (!v.paused) v.pause(); }
   }
   if (!p || !p.clip) return;
-  const v = VIDS.get(p.clip.src);
-  if (!v || v.readyState < 2) return;
+  const src = p.clip.src;
+  const v = VIDS.get(src);
+  if (!v) return;
   const rel = playT - p.a - (p.clip.lead || 0);
-  const want = Math.max(0, Math.min(rel, (p.clip.dur || 1) - 0.02));
-  if (Math.abs(v.currentTime - want) <= 0.04) return;
-  await new Promise(res => {
-    let tm = null;
-    const done = () => { if (tm) clearTimeout(tm); res(); };
-    tm = setTimeout(done, 350);
-    v.addEventListener('seeked', done, { once: true });
-    try { v.currentTime = want; } catch (err) { done(); }
-  });
+  VREL = Math.max(0, rel);
+  // 导出期预抽帧就绪：只记相对时间，绝不再 seek / drawImage(video)。
+  // 随机 seek 是整条流水线最贵的一步（长 GOP 要从最近关键帧解码几十帧），
+  // 旧版 `0.04` 的省 seek 阈值在 24fps 下（帧间隔 0.0417s）永远不命中，
+  // 等于每帧都 seek 一次；现在整段只在 preloadClip 里顺序抽一次。
+  if (exportMode && VPRE.src === src && VPRE.frames.length && !VPFAIL.has(src)) {
+    VSTEP.set(src, Math.floor(VREL * VPRE.fps));
+    return;
+  }
+  if (exportMode && VPFAIL.has(src)) return;   // 静态封面，一次 seek 都不做
+  const step = Math.floor(VREL * CLIP_FPS);
+  if (VSTEP.get(src) === step) return;
+  // 视频还没解出画面：每次都短等一次，绝不能「等过一次就永远不等」。
+  // seek 期间 readyState 会短暂掉到 1，旧版 WAITED 一旦记过就直接 return，
+  // VSTEP 再也不推进，成片里视频画面永久冻结（音轨独立解码所以照常）。
+  if (v.readyState < 2) {
+    const first = !WAITED.has(src);
+    WAITED.add(src);
+    await waitReady(v, first ? 1500 : 250);
+    if (v.readyState < 2) return;   // 用兜底帧顶住，下一帧再试
+  }
+  const want = Math.max(0, Math.min(step / CLIP_FPS, (p.clip.dur || 1) - 0.02));
+  if (Math.abs(v.currentTime - want) > 0.02) {
+    await new Promise(res => {
+      let tm = null;
+      const done = () => {
+        if (tm) { clearTimeout(tm); tm = null; }
+        v.removeEventListener('seeked', done);   // 超时后别把 once 监听堆在元素上
+        res();
+      };
+      tm = setTimeout(done, 120);
+      v.addEventListener('seeked', done, { once: true });
+      try { v.currentTime = want; } catch (err) { done(); }
+    });
+  }
+  // VSTEP 必须等 seek 走完才推进：早设的话 120ms 超时会被当成「这一格已
+  // 处理」，videoFrame 抓到 seek 未完成的旧帧也当成新画面缓存下来。
+  VSTEP.set(src, step);
 }
 
 function driveVideo(p) {
@@ -1013,6 +1609,13 @@ function drawFrame(playT) {
   drawHud(hd, rt);
   drawFoot(rt);
   const pop = popAt(playT);
+  // 换素材窗口（或退出窗口）时丢掉上一张缓存画面，否则新窗口第一帧
+  // 若是黑的，会闪一下上一段素材的末帧。播放与导出都会走这里。
+  const curClip = (pop.w && pop.w.clip) ? pop.w.clip.src : null;
+  if (curClip !== lastClipSrc) {
+    VLAST.clear(); VSTEP.clear(); VDONE.clear();
+    lastClipSrc = curClip;
+  }
   if (videoDriven) driveVideo(pop.w);
   if (pop.w && pop.k > 0) drawPop(pop.w, smooth(pop.k));
 }
@@ -1022,9 +1625,9 @@ let playT = 0, last = 0, playing = true, raf = null;
 function loop(ts) {
   if (!last) last = ts;
   playT += (ts - last) / 1000; last = ts;
-  if (playT >= D.play) playT = D.play;
+  if (playT >= TOTAL) playT = TOTAL;
   drawFrame(playT);
-  if (playT < D.play) raf = requestAnimationFrame(loop);
+  if (playT < TOTAL) raf = requestAnimationFrame(loop);
   else playing = false;
 }
 function play() {
@@ -1040,7 +1643,7 @@ function pause() {
 // 导出的每一帧都要求"画面停在某个确定时刻"，所以这里要等视频 seek 到位再画
 async function seekTo(t) {
   pause();
-  playT = Math.max(0, Math.min(t, D.play));
+  playT = Math.max(0, Math.min(t, TOTAL));
   await syncVideo(popAt(playT).w);
   drawFrame(playT);
   return playT;
@@ -1061,14 +1664,34 @@ async function runExport() {
   try {
     const rows = PWIN.map(w => ({
       t: w.t, a: +w.a.toFixed(3), b: +w.b.toFixed(3),
-      dur: w.clip ? w.clip.dur : 0,
+      // 图片素材没有音轨，dur 必须给 0，否则 ffmpeg 会去一个 jpg 里抽音频
+      dur: (w.clip && w.clip.kind !== 'image') ? w.clip.dur : 0,
       lead: w.clip ? (w.clip.lead || 0) : 0,
-      src: w.clip ? w.clip.src : '',
+      src: (w.clip && w.clip.kind !== 'image') ? w.clip.src : '',
+      // 磁盘绝对路径：桌面 ffmpeg 与手机 MediaCodec 都从它读原声。
+      // src 在 App 里是 /data/... 的同源 URL，只能给 WebView，不能拿去解码。
+      file: (w.clip && w.clip.kind !== 'image') ? (w.clip.local || w.clip.src) : '',
     }));
     await fetch('/__timeline?run=' + run, { method: 'POST', body: JSON.stringify(rows) });
   } catch (e) { /* 没有视频就不用报 */ }
+  // 导出期启用「按段预抽帧」：进入某段素材时一次性顺序抽完，之后渲染
+  // 循环只读缓存位图，不再逐格 seek。切出窗口立刻释放，内存有上限。
+  // 时间轴是单调递增的，所以每段只会抽一次；预抽失败的素材加入 VPFAIL，
+  // 自动回退到旧的逐格 seek 路径，不会把导出卡死。
+  exportMode = true;
+  // 导出期时间充裕：统一高质量插值，缩小时不会出现锯齿/糊边
+  try { ctx.imageSmoothingQuality = 'high'; } catch (e) {}
+  // 原生抽好的素材帧（App 在起 WebView 前就备好了）；PC 端没有这个文件，
+  // 会回落到下面的逐段预抽。
+  await loadClipImages(run);
   for (let i = from; i < total; i++) {
-    await seekTo(i / fps);
+    const t = i / fps;
+    const w = popAt(t).w;
+    const clip = (w && w.clip && w.clip.kind !== 'image') ? w.clip : null;
+    const src = clip ? clip.src : null;
+    if (src && src !== VPRE.src && !VPFAIL.has(src)) await preloadClip(clip);
+    if (!src && VPRE.frames.length) { VPRE.frames = []; VPRE.src = null; }
+    await seekTo(t);
     const blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.82));
     await fetch('/__frame?i=' + i + '&run=' + run, { method: 'POST', body: blob });
   }
@@ -1078,7 +1701,7 @@ async function runExport() {
 }
 
 window.__motion = {
-  duration: D.play, seek: seekTo, play: play, pause: pause,
+  duration: TOTAL, seek: seekTo, play: play, pause: pause,
   frames: N, ready: false,
 };
 
@@ -1090,7 +1713,11 @@ window.__motion = {
   if (D.base) need.push(D.base);
   for (const p of (D.photos || [])) {
     for (const s of (p.shots || [])) need.push(s.src);
-    if (p.clip) clips.push(p.clip);
+    if (p.clip) {
+      // 图片素材进图片队列，视频才进 <video>；两条加载路径不能混
+      if (p.clip.kind === 'image') need.push(p.clip.src);
+      else clips.push(p.clip);
+    }
   }
 
   for (let round = 0; round < 3; round++) {
@@ -1101,7 +1728,12 @@ window.__motion = {
   // 视频走 <video>，不能混在图片队列里：只等到能出画面（loadeddata）为止
   await Promise.all(clips.map(c => new Promise(res => {
     const v = ensureVideo(c.src);
-    if (!v || v.readyState >= 2) return res();
+    if (!v) return res();
+    // loadeddata 一到就抓首帧存住：多路并行渲染时，某一路进程可能还没
+    // 解出当前帧，没有首帧兜底那几处卡片就会画成空框（成片里是黑屏）。
+    v.addEventListener('loadeddata', () => grabFirst(v, c.src), { once: true });
+    v.addEventListener('canplay', () => grabFirst(v, c.src), { once: true });
+    if (v.readyState >= 2) { grabFirst(v, c.src); return res(); }
     let hit = false;
     const done = () => { if (!hit) { hit = true; res(); } };
     v.addEventListener('loadeddata', done, { once: true });
@@ -1123,9 +1755,14 @@ window.__motion = {
   // 照片/视频缺了只是那几处难看，不能因此整段不出片——之前把三者绑在一起，
   // 手机上底图 404 就表现为「一直 0 帧，页面也不报错」。
   window.__motion.ready = !!baseBaked;
+  const bim = IMG.get(D.base);
   window.__motion.diag = {
     base: !!baseBaked, missing: missing.length, missingOne: missing.slice(0, 3),
     clips: clips.length, vidOk: vidOk,
+    // 真机上「底图缩放错」时靠这两个数定位：view 是本次的视口变换，
+    // baseSize 是 WebView 实际解码出来的底图像素尺寸。
+    view: D.view || null,
+    baseSize: bim ? [bim.naturalWidth, bim.naturalHeight] : [0, 0],
     names: clips.filter(c => {
       const v = VIDS.get(c.src); return !v || v.readyState < 2;
     }).map(c => c.name).slice(0, 3),
@@ -1166,14 +1803,21 @@ window.addEventListener('keydown', e => {
 def render(row: dict, detail: dict, photos: list[dict] | None,
            out_html: Path, *, duration: float = 45.0,
            thumb_dir: Path | None = None, clips: list[dict] | None = None,
-           clip_cache: Path | None = None, web: bool = False) -> Path:
-    """生成播放器 HTML。返回路径（同目录另存一份 payload 便于排查）。"""
+           clip_cache: Path | None = None, web: bool = False,
+           payload_out: dict | None = None) -> Path:
+    """生成播放器 HTML。返回路径（同目录另存一份 payload 便于排查）。
+
+    `payload_out`：传一个 dict 进来，就把这次实际用的 payload 填进去。
+    调用方要拿 `total`（真实总时长）算帧数时用得上，比再从 HTML 里正则抠可靠。
+    """
     out_html = Path(out_html)
     out_html.parent.mkdir(parents=True, exist_ok=True)
     payload = build_payload(row, detail, photos, clips=clips, thumb_dir=thumb_dir,
                             clip_cache=clip_cache, duration=duration, web=web)
+    if payload_out is not None:
+        payload_out.update(payload)
     out_html.write_text(build_html(payload), encoding="utf-8")
-    meta = {k: payload[k] for k in ("title", "sub", "dur", "dist", "play")}
+    meta = {k: payload[k] for k in ("title", "sub", "dur", "dist", "play", "total")}
     meta["photos"] = [{"t": p["t"], "d": p["d"],
                        "n": len(p.get("shots") or []),
                        "clip": (p.get("clip") or {}).get("name")}

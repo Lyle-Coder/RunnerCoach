@@ -53,7 +53,8 @@ def save_bb(store, date: str, bb: dict) -> None:
     store.conn.commit()
 
 
-def body_battery(store, date: str, client=None, *, ttl: int = TTL) -> dict:
+def body_battery(store, date: str, client=None, *, ttl: int = TTL,
+                 timeout: int = 8, retries: int = 1) -> dict:
     """当天身体电量：当前值 + 当日曲线。client 为空时只读库。
 
     返回 {now, now_at, high, low, charged, drained, series, live}
@@ -85,7 +86,9 @@ def body_battery(store, date: str, client=None, *, ttl: int = TTL) -> dict:
             pass
 
     try:
-        raw = client.body_battery_day(date)
+        # 出图是「顺手刷新」，不是同步任务：8 秒拿不到就退回库里的值。
+        # 用默认的 30 秒 + 3 次重试会让离线时打开完整看板卡住近两分钟。
+        raw = client.body_battery_day(date, timeout=timeout, retries=retries)
     except Exception:
         return state          # 会话过期 / 网络抖动都不该让看板挂掉
 

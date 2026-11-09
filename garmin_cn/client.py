@@ -48,12 +48,16 @@ class GarminCNClient:
             h["Connect-Csrf-Token"] = csrf
         return h
 
-    def get(self, path: str, params: dict | None = None, *, tries: int | None = None) -> Any:
+    def get(self, path: str, params: dict | None = None, *, tries: int | None = None,
+            timeout: int = 30, retries: int = 3) -> Any:
+        """`timeout` / `retries` 只给「出图前顺手刷一下」这类场景用：
+        那里的请求失败无所谓，但不能让页面等 30 秒。"""
         url = BASE + path
         if params:
             url += "?" + urlencode(params)
         try:
-            status, text = self.net.request("GET", url, headers=self._headers())
+            status, text = self.net.request("GET", url, headers=self._headers(),
+                                            timeout=timeout, retries=retries)
         except Exception as e:  # 网络异常
             self.last_errors.append(f"{path}: {type(e).__name__} {e}")
             return None
@@ -61,7 +65,8 @@ class GarminCNClient:
         # 403 且 body 为空 = 网关没拿到 CSRF 令牌（令牌会随会话轮换），续一次再试
         if status == 403 and not text.strip() and self.refresh_csrf():
             try:
-                status, text = self.net.request("GET", url, headers=self._headers())
+                status, text = self.net.request("GET", url, headers=self._headers(),
+                                                timeout=timeout, retries=retries)
             except Exception as e:
                 self.last_errors.append(f"{path}: {type(e).__name__} {e}")
                 return None
@@ -103,9 +108,10 @@ class GarminCNClient:
                 self.last_errors.append(f"POST {path}: HTTP {status} {text[:200]}")
         return None
 
-    def _first(self, candidates: list[tuple[str, dict | None]]) -> Any:
+    def _first(self, candidates: list[tuple[str, dict | None]],
+               *, timeout: int = 30, retries: int = 3) -> Any:
         for path, params in candidates:
-            data = self.get(path, params)
+            data = self.get(path, params, timeout=timeout, retries=retries)
             if data:
                 return data
         return None
@@ -185,12 +191,14 @@ class GarminCNClient:
             ]
         )
 
-    def body_battery_day(self, date: str) -> Any:
+    def body_battery_day(self, date: str, *, timeout: int = 30,
+                         retries: int = 3) -> Any:
         return self._first(
             [
                 (f"/wellness-service/wellness/daily/bodyBattery/{date}", None),
                 ("/wellness-service/wellness/bodyBattery/reports/daily", {"startDate": date, "endDate": date}),
-            ]
+            ],
+            timeout=timeout, retries=retries,
         )
 
     def spo2(self, date: str) -> Any:

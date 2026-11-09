@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 from pathlib import Path
 
 DOW = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6: "周六", 7: "周日"}
@@ -57,7 +58,8 @@ def _task_date(task: dict) -> str | None:
     return _iso((task.get("taskWorkout") or {}).get("scheduledDate"))
 
 
-def normalize(detail: dict, today: str | None = None) -> dict:
+def normalize(detail: dict, today: str | None = None,
+              activity_days: set[str] | None = None) -> dict:
     """把 taskList 展开成「按日期分组的本周课表 + 今天的建议 + 下一次训练」。"""
     today = today or dt.date.today().isoformat()
     tasks = detail.get("taskList") or []
@@ -73,7 +75,7 @@ def normalize(detail: dict, today: str | None = None) -> dict:
             "detail": w.get("workoutDescription"),
             "sport": SPORT.get(((w.get("sportType") or {}).get("sportTypeKey")), None),
             "sport_key": (w.get("sportType") or {}).get("sportTypeKey"),
-            "minutes": round((w.get("estimatedDurationInSecs") or 0) / 60) or None,
+            "minutes": round(_as_seconds(_num(w.get("estimatedDurationInSecs"))) / 60) or None,
             "effect": EFFECT.get(w.get("trainingEffectLabel") or "", None),
             "rest": bool(w.get("restDay")),
             "status": w.get("adaptiveCoachingWorkoutStatus"),
@@ -109,8 +111,9 @@ def normalize(detail: dict, today: str | None = None) -> dict:
                 cur_phase = p
                 break
 
-    return {
+    data = {
         "available": True,
+        "classify": CLASSIFY_REV,
         "plan_id": detail.get("trainingPlanId"),
         "name": detail.get("name"),
         "description": detail.get("description"),
@@ -127,12 +130,16 @@ def normalize(detail: dict, today: str | None = None) -> dict:
             "start": _iso((cur_phase or {}).get("startDate")),
             "end": _iso((cur_phase or {}).get("endDate")),
         } if cur_phase else None,
-        "today": {"date": today, "items": today_items, "rest": not today_items},
+        "today": {"date": today, "items": today_items, "acts": [],
+                  "rest": not today_items},
         "week": week,
         "next_date": upcoming[0] if upcoming else None,
         "next_items": [x for x in by_date.get(upcoming[0], []) if not x["rest"]] if upcoming else [],
         "rest_days_in_week": sum(1 for w in week if w["rest"]),
     }
+    # 教练计划以前完全没有「完成」概念，本周永远是「已排」，也算不出来；
+    # 用同一套证据（本地库 / 日历活动）统一标注。
+    return annotate(data, activity_days, today)
 
 
 def _num(v) -> float:
@@ -147,11 +154,83 @@ _SKIP_TYPES = {"note", "goal", "badge", "event", "health",
                "weighin", "measurement"}
 
 
+MAX_SESSION_S = 24 * 3600          # 单次训练超过一天就不正常了（超马另算）
+
+
+def _as_seconds(raw: float, *, race: bool = False) -> float:
+    """把「耗时」统一成秒，并挡住单位错误。
+
+    Garmin 的字段单位并不统一：`estimatedDurationInSecs` 明确是秒，但日历项里的
+    `duration` 在部分端（网页端 / 新版本的「计划活动」）给的是**毫秒**。
+    旧代码一律按秒读，于是 1,072,560 毫秒 —— 一次 17 分 52 秒的骑行 ——
+    被显示成 **17876 分钟**（12 天）。这不是数据脏，是单位没判。
+
+    规则：≤ 上限就按秒；超了但除以 1000 落回合理区间，说明原来是毫秒；
+    两种读法都离谱就当没给（宁可显示「—」，也不要摆一个 12 天）。
+    比赛不受 24 小时限制（100 英里越野能跑 30 小时）。
+    """
+    if raw <= 0:
+        return 0.0
+    limit = 72 * 3600 if race else MAX_SESSION_S
+    if raw <= limit:
+        return raw
+    alt = raw / 1000.0
+    if 60 <= alt <= limit:
+        return alt
+    return 0.0
+
+
+MAX_KM = 500.0            # 单次训练的距离上限（超马、长途骑行都在内）
+MAX_KMH = 130.0           # 合理时速上限：再快就不是人，是单位错了
+
+
+def _distance_km(raw, dur_s: float) -> float:
+    """把日历里的距离换算成公里，顺带挡住单位错误。
+
+    `distance` 和 `duration` 一样，不同端给的单位不一致：有米，也有**厘米**
+    （安卓上传的活动常见）。旧代码一律 `dist / 1000` 当米读，于是今早 4.09 km
+    的通勤被显示成 **409.3 公里**。
+
+    用「隐含时速」判比拍一个阈值靠谱：4 公里骑 18 分钟是 13 km/h，正常；
+    409 公里骑 18 分钟是 1364 km/h，物理上不可能 —— 那说明原值是厘米。
+    依次试 米 / 厘米 / 毫米，取第一个「距离合理且时速合理」的读法。
+    """
+    try:
+        v = float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if v <= 0:
+        return 0.0
+
+    hours = (dur_s or 0) / 3600.0
+    for div in (1.0, 100.0, 1000.0):        # 米 / 厘米 / 毫米
+        km = v / div / 1000.0
+        if km > MAX_KM:
+            continue
+        # 时间太短时算不准时速，只校验距离
+        if hours > 0.01 and km / hours > MAX_KMH:
+            continue
+        return km
+    return 0.0
+
+
+def _dur_seconds(it: dict, *, race: bool = False) -> float:
+    """按可信度取耗时字段：带单位语义的优先，其余依次兜底。"""
+    for key in ("estimatedDurationInSecs", "duration", "elapsedDuration"):
+        raw = _num(it.get(key))
+        if raw > 0:
+            return _as_seconds(raw, race=race)
+    return 0.0
+
+
 def _cal_item(it: dict) -> dict:
     """把一个日历项折成课表行。字段名各地区略有差异，这里都兜一遍。"""
-    dur = _num(it.get("duration") or it.get("estimatedDurationInSecs")
-               or it.get("elapsedDuration"))
-    dist = _num(it.get("distance") or it.get("estimatedDistanceInMeters"))
+    is_race = (bool(it.get("isRace"))
+               or str(it.get("itemType") or "").lower() == "race")
+    dur = _dur_seconds(it, race=is_race)
+    # 带单位的优先；否则按「米→厘米→毫米」挑一个物理上说得通的读法
+    dist = _num(it.get("estimatedDistanceInMeters"))
+    km = dist / 1000.0 if dist > 0 else _distance_km(it.get("distance"), dur)
     sport_key = it.get("sportTypeKey") or (it.get("activityType") or {}).get("typeKey")
     return {
         "name": it.get("title") or it.get("workoutName") or "训练",
@@ -159,21 +238,70 @@ def _cal_item(it: dict) -> dict:
         "sport": SPORT.get(sport_key),
         "sport_key": sport_key,
         "minutes": round(dur / 60) or None,
-        "km": round(dist / 1000, 1) or None,
+        "km": round(km, 1) or None,
         "effect": EFFECT.get(it.get("trainingEffectLabel") or ""),
         "rest": False,
-        "race": bool(it.get("isRace")) or str(it.get("itemType") or "").lower() == "race",
+        "race": is_race,
         "workout_id": it.get("workoutId"),
         "status": None,
     }
 
 
-def from_calendar(items: list[dict] | None, today: str | None = None) -> dict:
+# 课表分类口径的版本号。变更记录：
+#   1 — 按日期猜完成（错：过去即已完成）
+#   2 — 看 activityId + 本地库活动日，但把「无 id 的 activity」当计划活动（错）
+#   3 — `activity` 一律是已完成记录；计划只来自 workout / race
+CLASSIFY_REV = 3
+
+
+def annotate(data: dict, activity_days: set[str] | None = None,
+             today: str | None = None) -> dict:
+    """按「完成证据」重算 done / missed，不靠日期猜。
+
+    证据只有两种：
+      1. 日历里**带 activityId** 的记录（已经做完的活动）；
+      2. 本地库里那天确实有活动 —— 这条很重要：高驰记录的活动压根不会出现在
+         佳明日历里，只看日历会把「已经练了」误判成「没练」。
+
+    `done_days` 只有在新口径（CLASSIFY_REV ≥ 2）落盘的快照里才可信：旧版本把
+    「今天之前的所有项」都写成已完成，那是错的，读旧快照时直接丢掉重算。
+    """
+    today = today or dt.date.today().isoformat()
+    done = set(data.get("done_days") or []) if int(data.get("classify") or 0) >= CLASSIFY_REV else set()
+    done |= {d for d in (activity_days or set()) if d}
+
+    for w in data.get("week") or []:
+        w["done"] = w["date"] in done
+        # 今天还没过完，谈不上「没完成」
+        w["missed"] = bool(w.get("items")) and not w["done"] and w["date"] < today
+    t = data.get("today") or {}
+    if t:
+        t["done"] = t.get("date") in done
+        t["missed"] = False
+
+    data["done_days"] = sorted(done)
+    data["week_done"] = sum(1 for w in data.get("week") or [] if w.get("done"))
+    data["week_planned"] = sum(1 for w in data.get("week") or [] if w.get("items"))
+    return data
+
+
+def from_calendar(items: list[dict] | None, today: str | None = None,
+                  activity_days: set[str] | None = None) -> dict:
     """日历项 → 与 `normalize()` 相同结构的课表。
 
-    只取排课（workout / race，以及任何带 workoutId 的项）；`activity` 是同一天
-    已完成的记录，只用来给当天打「已完成」标记，不再重复成一条课。
-    日期限定在「本周一 ~ 今天 + 62 天」，避免把上个月拉来对齐时带出的旧项算进来。
+    日历里三类东西必须分开，分不清就会出现「计划没做被标成已完成」：
+
+    | 形态 | 含义 | 处理 |
+    |---|---|---|
+    | `workout` / `race` | 排进日历的课 | **计划**，今天之后要练的 |
+    | `activity` + activityId | 真做完的活动 | **完成证据**，当天没排课时单独显示 |
+    | `activity` 无 id | 佳明把「排入计划的训练」也记成 activity | **计划**，不能因为日期在过去就算完成 |
+
+    最后一条是旧实现的坑：它把「今天之前的所有项」都当已完成，于是上周计划了
+    但没跑的课被悄悄抹掉，历史完成率永远是 100%。
+
+    日期窗口是「本周一 ~ 今天 + 140 天」；`activity_days` 是本地库里有活动的日期，
+    用来兜住「高驰记录、佳明日历里没有」的情况。
     """
     today = today or dt.date.today().isoformat()
     d = dt.date.fromisoformat(today)
@@ -182,7 +310,8 @@ def from_calendar(items: list[dict] | None, today: str | None = None) -> dict:
     hi = (d + dt.timedelta(days=LOOKAHEAD_DAYS)).isoformat()
 
     workouts: dict[str, list[dict]] = {}
-    done: set[str] = set()
+    acts: dict[str, list[dict]] = {}
+    done_ids: set[str] = set()
     seen: set[tuple] = set()
     for it in items or []:
         if not isinstance(it, dict):
@@ -191,57 +320,74 @@ def from_calendar(items: list[dict] | None, today: str | None = None) -> dict:
         if not day or not (lo <= day <= hi):
             continue
         kind = str(it.get("itemType") or "").lower()
-        if kind == "activity":
-            # 佳明把「计划但还没跑」的安排也记成 activity：没有 activityId。
-            # 只有已经执行过的（有 activityId，或日期在今天之前）才算完成标记，
-            # 否则会把未来每一天的课全当成「已完成」而漏掉。
-            aid = it.get("activityId") or it.get("activityUUID")
-            if day < today or aid:
-                done.add(day)
-                continue
-        elif kind in _SKIP_TYPES:
+        if kind in _SKIP_TYPES:
             continue
-        # 没有标题也没有课程 id 的，不当作排课
+
+        # `activity` 一律是**已经做完的记录**（佳明日历会把当天上传的活动也列进来），
+        # 只当完成证据，绝不当排课。
+        #
+        # v61 曾把它按「有没有 activityId」二分：有 id → 已完成，没 id → 计划活动。
+        # 那个推断是错的 —— 今早 4 公里通勤没有 id，于是被当成「今日课表」，
+        # 课表本该是休息却显示一条骑行。原始实现「activity 一律 continue」才是对的。
+        if kind == "activity":
+            done_ids.add(day)
+            row = _cal_item(it)
+            row["completed"] = True
+            row["name"] = it.get("title") or row.get("name") or "已完成的训练"
+            # 去重键：优先活动 id；没有就按「日期 + 名称 + 开始时间」
+            seen_act = (day, row.get("name"),
+                        it.get("activityId") or it.get("activityUUID")
+                        or it.get("startTimeLocal"))
+            if seen_act not in seen:
+                seen.add(seen_act)
+                acts.setdefault(day, []).append(row)
+            continue
+
+        # 其余才可能是「计划」：workout / race
         if not (it.get("title") or it.get("workoutId") or it.get("workoutUuid")):
             continue
         key = (day, str(it.get("title") or ""), it.get("workoutId"))
         if key in seen:                      # 多拉了相邻月份时可能重复
             continue
         seen.add(key)
-        workouts.setdefault(day, []).append(_cal_item(it))
+        row = _cal_item(it)
+        row["planned"] = True
+        workouts.setdefault(day, []).append(row)
 
-    d = dt.date.fromisoformat(today)
-    monday = d - dt.timedelta(days=d.weekday())
     week_dates = [(monday + dt.timedelta(days=i)).isoformat() for i in range(7)]
-
     week = []
     for date in week_dates:
         its = workouts.get(date, [])
+        act = acts.get(date, [])
         week.append({"date": date, "dow": DOW[dt.date.fromisoformat(date).isoweekday()],
-                     "items": its, "rest": not its, "done": date in done})
+                     "items": its, "acts": act,
+                     "rest": not its and not act})
 
     today_items = workouts.get(today, [])
+    today_acts = acts.get(today, [])
     upcoming = sorted(k for k in workouts if k > today)
-    days = sorted(workouts)
+    days = sorted(set(workouts) | set(acts))
 
-    return {
+    data = {
         "available": True,
         "scheduled": bool(workouts),
         "source": "calendar",
+        "classify": CLASSIFY_REV,
         "name": "佳明日历",
         "description": "来自佳明 Connect 日历的排课（自己排入的课程与比赛）",
         "level": None, "weeks": None, "per_week": None, "version": None,
         "start": days[0] if days else today,
         "end": days[-1] if days else today,
         "status": None, "phase": None,
-        "today": {"date": today, "items": today_items,
-                  "rest": not today_items, "done": today in done},
+        "today": {"date": today, "items": today_items, "acts": today_acts,
+                  "rest": not today_items and not today_acts},
         "week": week,
         "next_date": upcoming[0] if upcoming else None,
         "next_items": workouts.get(upcoming[0], []) if upcoming else [],
         "rest_days_in_week": sum(1 for w in week if w["rest"]),
-        "done_days": sorted(done),
+        "done_days": sorted(done_ids),
     }
+    return annotate(data, activity_days, today)
 
 
 def _months(today: str, span: int = LOOKAHEAD_DAYS) -> list[tuple[int, int]]:
@@ -260,7 +406,8 @@ def _months(today: str, span: int = LOOKAHEAD_DAYS) -> list[tuple[int, int]]:
     return out
 
 
-def fetch_calendar(client, today: str | None = None) -> dict:
+def fetch_calendar(client, today: str | None = None,
+                   activity_days: set[str] | None = None) -> dict:
     """按月拉日历并归一化。一个排课都没有时返回 available=False。"""
     today = today or dt.date.today().isoformat()
     items: list[dict] = []
@@ -278,7 +425,7 @@ def fetch_calendar(client, today: str | None = None) -> dict:
             items.extend(data)
     if not items:
         return {"available": False, "reason": "佳明日历里还没有排课"}
-    return from_calendar(items, today)
+    return from_calendar(items, today, activity_days)
 
 
 def diag(client, today: str | None = None) -> dict:
@@ -317,23 +464,41 @@ def diag(client, today: str | None = None) -> dict:
                               if isinstance(it, dict)) if d)
     out["dates"] = [days[0], days[-1]] if days else []
     out["count"] = len(items)
-    out["samples"] = [
-        {k: it.get(k) for k in ("date", "itemType", "title", "duration",
-                                "distance", "workoutId", "sportTypeKey", "isRace")}
-        for it in items[:12] if isinstance(it, dict)]
+    # 样例里同时给「原始 duration」和「解析出来的分钟」：单位错了一眼能看出来
+    out["samples"] = []
+    for it in items[:12]:
+        if not isinstance(it, dict):
+            continue
+        item = _cal_item(it)
+        out["samples"].append({
+            "date": it.get("date"), "itemType": it.get("itemType"),
+            "title": it.get("title"), "sportTypeKey": it.get("sportTypeKey"),
+            "duration": it.get("duration"),
+            "estimatedDurationInSecs": it.get("estimatedDurationInSecs"),
+            "distance": it.get("distance"), "workoutId": it.get("workoutId"),
+            "isRace": it.get("isRace"),
+            "parsed_minutes": item.get("minutes"),
+            "parsed_km": item.get("km"),
+        })
     parsed = from_calendar(items, today)
     out["parsed"] = {
         "today": [i.get("name") for i in parsed["today"]["items"]],
+        "today_acts": [i.get("name") for i in (parsed["today"].get("acts") or [])],
         "next_date": parsed["next_date"],
-        "week": [{"date": w["date"], "items": [i.get("name") for i in w["items"]]}
+        "week": [{"date": w["date"], "dow": w["dow"],
+                  "items": [i.get("name") for i in w["items"]],
+                  "acts": [i.get("name") for i in (w.get("acts") or [])],
+                  "done": w.get("done"), "missed": w.get("missed")}
                  for w in parsed["week"]],
+        "week_done": parsed.get("week_done"),
+        "week_planned": parsed.get("week_planned"),
         "start": parsed["start"], "end": parsed["end"],
     }
     return out
 
 
 def fetch(client, today: str | None = None, out_path: Path | None = None,
-          source: str = "auto") -> dict:
+          source: str = "auto", activity_days: set[str] | None = None) -> dict:
     """拉一次训练安排。取不到就返回 available=False，不抛异常。
 
     `source`：
@@ -348,7 +513,7 @@ def fetch(client, today: str | None = None, out_path: Path | None = None,
 
     if source in ("auto", "calendar"):
         try:
-            cal = fetch_calendar(client, today)
+            cal = fetch_calendar(client, today, activity_days)
         except Exception as e:
             cal = {"available": False, "reason": f"{type(e).__name__}: {e}"}
         use = cal.get("scheduled") if source == "auto" else cal.get("available")
@@ -374,7 +539,7 @@ def fetch(client, today: str | None = None, out_path: Path | None = None,
         detail = client.adaptive_plan(plan.get("trainingPlanId"))
     except Exception:
         detail = None
-    data = normalize(detail or plan, today)
+    data = normalize(detail or plan, today, activity_days)
     data["source"] = "coach"
 
     if out_path:
@@ -384,11 +549,22 @@ def fetch(client, today: str | None = None, out_path: Path | None = None,
 
 
 def load(path: Path) -> dict | None:
-    """读本地缓存的计划快照（看板/MCP 用，避免每次联网）。"""
+    """读本地缓存的计划快照（看板/MCP 用，避免每次联网）。
+
+    旧口径（classify < CLASSIFY_REV）的快照直接作废：那份里的 `items` / `acts`
+    是按老规则分的（把已完成的活动当成计划），而原始日历项没有存下来，
+    没法就地修正。宁可当作「没有计划」让上层重新拉一次，也不要拿错的课表
+    继续骗人 —— 手机上换版本后一直显示错数据，就是这个原因。
+    """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+    if not isinstance(data, dict):
+        return None
+    if int(data.get("classify") or 0) < CLASSIFY_REV:
+        return None
+    return data
 
 
 def _home() -> Path:
@@ -417,6 +593,127 @@ def item_line(item: dict) -> str:
         bits.append(f"{item['minutes']} 分钟")
     if item.get("effect"):
         bits.append(item["effect"])
-    if item.get("sport") and item.get("sport") != "跑步":
-        bits.append(item["sport"])
+    _sp = str(item.get("sport") or "")
+    if _sp and _sp != "跑步" and _sp not in str(item.get("name") or ""):
+        bits.append(_sp)
     return " · ".join(bits)
+
+
+# ---------------------------------------------------------------- 本地兜底
+# 纯高驰用户永远拿不到佳明日历（高驰没有对外计划接口）。以前 plan() 直接
+# 返回 ok:false，今日页整块课表就不渲染 —— 明明本地有备赛课表和恢复度，
+# 能算出「今天练什么」，却让人以为这个功能根本不存在。
+
+def _minutes_of(text) -> int | None:
+    """从「45 分钟」「60-75 分钟」「已练 30 分钟」里取分钟数，取上限。"""
+    m = re.search(r"(\d+)\s*(?:[-~到]\s*(\d+))?\s*分", str(text or ""))
+    if not m:
+        return None
+    return int(m.group(2) or m.group(1))
+
+
+def from_coach(res: dict, today: str | None = None,
+               activity_days: set[str] | None = None) -> dict:
+    """本地兜底课表：备赛计划优先，没有就退回今日处方。
+
+    输出结构与 `normalize()` / `from_calendar()` 完全一致，展示层不用区分
+    数据来自佳明日历还是本地推的 —— 否则每加一个兜底就要改一遍页面。
+    """
+    from . import raceplan
+    from .coach import pick_session
+
+    today = today or dt.date.today().isoformat()
+    d0 = dt.date.fromisoformat(today)
+    try:
+        has_race = bool(raceplan.available())
+    except Exception:
+        has_race = False
+
+    monday = d0 - dt.timedelta(days=d0.weekday())
+    week: list[dict] = []
+    for i in range(7):
+        day = monday + dt.timedelta(days=i)
+        date = day.isoformat()
+        items: list[dict] = []
+        if has_race:
+            try:
+                info = raceplan.day_info(day)
+            except Exception:
+                info = None
+            if info and not info.get("is_rest"):
+                items.append({
+                    "name": info.get("title") or info.get("abbr") or "训练",
+                    "detail": info.get("tip") or info.get("sub") or "",
+                    "sport": "跑步",
+                    "sport_key": "running",
+                    "minutes": info.get("minutes") or None,
+                    "effect": None,
+                    "rest": False,
+                    "status": None,
+                    "priority": None,
+                    "uuid": None,
+                    "note": info.get("note") or "",
+                })
+        week.append({"date": date, "dow": DOW[day.isoweekday()],
+                     "items": items, "rest": not items})
+
+    today_items = next((w["items"] for w in week if w["date"] == today), [])
+    from_coach_source = "raceplan"
+    today_note = ""
+    today_rest = False
+    if not today_items:
+        # 今天没排备赛课（或压根没挂计划）：用恢复度算一个处方，
+        # 至少让人知道该练什么强度，而不是看到一片空白。
+        try:
+            s = pick_session(res)
+        except Exception:
+            s = {}
+        _kind = str(s.get("type") or "")
+        if _kind and "休息" in _kind and "加练" not in _kind:
+            # 处方是「休息」时不能塞成一条 20 分钟 Z1 的课 —— 那正是
+            # v64 修过的坑（把记录当课表，看着像要练）。保持休息，
+            # 把「为什么休息」写进 note，页面在标题下面显示。
+            today_rest = True
+            today_note = str(s.get("why") or "")
+            from_coach_source = "coach"
+        elif _kind:
+            today_items = [{
+                "name": _kind,
+                "detail": s.get("why") or "",
+                "sport": "跑步",
+                "sport_key": "running",
+                "minutes": _minutes_of(s.get("duration")),
+                "effect": s.get("intensity"),
+                "rest": False,
+                "status": None,
+                "priority": None,
+                "uuid": None,
+                "note": s.get("duration") or "",
+            }]
+            from_coach_source = "coach"
+            week = [{**w, "items": today_items, "rest": False}
+                    if w["date"] == today else w for w in week]
+
+    data = {
+        "available": True,
+        "classify": CLASSIFY_REV,
+        "plan_id": None,
+        "name": "本地教练计划" if from_coach_source == "coach" else "本地备赛计划",
+        "description": "由备赛课表与恢复度在本地算出，不依赖任何账号",
+        "level": None,
+        "version": None,
+        "weeks": None,
+        "per_week": None,
+        "start": None,
+        "end": None,
+        "status": "local",
+        "phase": None,
+        "source": from_coach_source,
+        "today": {"date": today, "items": today_items, "acts": [],
+                  "rest": today_rest, "note": today_note},
+        "week": week,
+        "next_date": None,
+        "next_items": [],
+        "rest_days_in_week": sum(1 for w in week if w["rest"]),
+    }
+    return annotate(data, activity_days, today)

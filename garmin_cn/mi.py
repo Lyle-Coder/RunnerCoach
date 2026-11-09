@@ -51,6 +51,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from .tls import https_handler
 from pathlib import Path
 
 ACCOUNT = "https://account.xiaomi.com"
@@ -160,7 +162,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+_OPENER = urllib.request.build_opener(_NoRedirect, https_handler())
 
 
 def _http(method: str, url: str, *, body: str | None = None,

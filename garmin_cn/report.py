@@ -21,39 +21,58 @@ WEEK_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
 CSS = """
 :root{
-  --bg:#F4F6F2; --card:#FFFFFF; --line:#E3E7DF; --line-2:#EDF0EA;
-  --ink:#1B1F1A; --ink-2:#4A5147; --muted:#7A8276; --faint:#A5AC9F;
-  --green:#1D9E75; --green-soft:#E4F3EC; --amber:#C08A16; --amber-soft:#FBF1DA;
-  --red:#C2453F; --red-soft:#FAE7E5; --blue:#3A6EA5; --blue-soft:#E8F0F8;
+  color-scheme:dark;
+  --bg:#070B12; --card:#0F1622; --line:rgba(96,165,250,.16);
+  --line-2:rgba(96,165,250,.09);
+  --ink:#E8F0FB; --ink-2:#B7C7DD; --muted:#7C8FA8; --faint:#5C6C82;
+  --green:#34D399; --green-soft:rgba(52,211,153,.14);
+  --amber:#F5C26B; --amber-soft:rgba(245,194,107,.14);
+  --red:#F87171; --red-soft:rgba(248,113,113,.14);
+  --blue:#4DA3FF; --blue-soft:rgba(77,163,255,.14);
+  --cyan:#22D3EE;
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);
+/* 背景的两层径向渐变是整页「科技感」的底色：右上蓝、左上青，
+   固定不随滚动 —— 纯 #070B12 会显得像没加载完。 */
+body{margin:0;color:var(--ink);
+  background:radial-gradient(900px 520px at 88% -8%,rgba(59,130,246,.22),transparent 60%),
+    radial-gradient(760px 480px at 0% 0%,rgba(34,211,238,.12),transparent 62%),
+    var(--bg);
+  background-attachment:fixed;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
   -webkit-font-smoothing:antialiased;line-height:1.6;font-size:14px}
 .wrap{max-width:1120px;margin:0 auto;padding:28px 20px 56px}
 .top{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:18px;flex-wrap:wrap}
 .top h1{margin:0;font-size:22px;font-weight:600;letter-spacing:.2px}
 .top .sub{color:var(--muted);font-size:12.5px;margin-top:4px}
-.badge{display:inline-flex;align-items:center;gap:6px;background:var(--card);border:1px solid var(--line);
+.badge{display:inline-flex;align-items:center;gap:6px;background:rgba(9,14,22,.72);
+  border:1px solid var(--line);
   border-radius:999px;padding:5px 12px;font-size:12px;color:var(--ink-2)}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--green)}
-.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px}
+.card{background:linear-gradient(180deg,#121B2A,#0F1622);
+  border:1px solid var(--line);border-radius:16px;padding:18px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 16px 40px -28px rgba(0,0,0,.9)}
 .hero{display:grid;grid-template-columns:1.05fr 1.15fr .95fr;gap:14px;margin-bottom:14px}
 .metrics{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:14px}
 .two{display:grid;grid-template-columns:1.45fr 1fr;gap:14px;margin-bottom:14px}
-h2.sec{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:1.2px;margin:26px 0 10px}
+h2.sec{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:1.2px;
+  margin:26px 0 10px;display:flex;align-items:center;gap:8px}
+h2.sec:before{content:"";width:3px;height:12px;border-radius:2px;flex:0 0 auto;
+  background:linear-gradient(180deg,var(--blue),var(--cyan));
+  box-shadow:0 0 9px rgba(59,130,246,.85)}
 .card h3{margin:0 0 12px;font-size:12.5px;font-weight:600;color:var(--muted);letter-spacing:.8px}
 .ring-wrap{display:flex;align-items:center;gap:16px}
 .ring-num{font-size:32px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums}
 .ring-lv{font-size:12.5px;margin-top:5px}
 .parts{margin-top:14px;display:flex;flex-direction:column;gap:7px}
 .part{display:grid;grid-template-columns:64px 1fr 46px;align-items:center;gap:8px;font-size:12px;color:var(--ink-2)}
-.bar{height:5px;border-radius:3px;background:var(--line-2);overflow:hidden}
-.bar i{display:block;height:100%;border-radius:3px;background:var(--green)}
+.bar{height:5px;border-radius:3px;background:rgba(9,14,22,.9);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:3px;
+  background:linear-gradient(90deg,#1D5FC4,var(--cyan))}
 .part span:last-child{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
 .sess-type{font-size:21px;font-weight:600;letter-spacing:.2px;margin-bottom:2px}
 .sess-meta{display:flex;gap:8px;margin:10px 0 10px;flex-wrap:wrap}
-.chip{font-size:12px;padding:3px 9px;border-radius:999px;background:var(--green-soft);color:#0F6E56}
+.chip{font-size:12px;padding:3px 9px;border-radius:999px;background:var(--green-soft);color:#6EE7B7}
 .chip.gray{background:var(--line-2);color:var(--ink-2)}
 .sess-why{font-size:13px;color:var(--ink-2);line-height:1.65}
 .flags{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:9px}
@@ -76,11 +95,13 @@ td.name{color:var(--ink);max-width:220px;overflow:hidden;text-overflow:ellipsis;
    body 层；现在溢出被锁在 .tbl-scroll 里。 */
 .tbl-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .tbl-scroll table{min-width:620px}
-.tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:5px;background:var(--blue-soft);color:var(--blue)}
+.tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:5px;
+  background:var(--blue-soft);color:#8CC2FF}
 .note{font-size:13.5px;line-height:1.8;color:var(--ink-2);white-space:pre-wrap}
 .note-meta{font-size:11.5px;color:var(--faint);margin-top:12px}
 .empty{color:var(--faint);font-size:13px}
-.placeholder{border:1px dashed #D6DBD0;border-radius:12px;padding:22px;text-align:center;background:#FBFCF9}
+.placeholder{border:1px dashed rgba(96,165,250,.28);border-radius:12px;padding:22px;
+  text-align:center;background:rgba(9,14,22,.55)}
 .placeholder b{display:block;font-size:13px;font-weight:500;color:var(--ink-2);margin-bottom:4px}
 .placeholder span{font-size:12.5px;color:var(--faint)}
 .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin-top:12px}
@@ -95,7 +116,8 @@ td.name{color:var(--ink);max-width:220px;overflow:hidden;text-overflow:ellipsis;
    窄屏换列的规则会被覆盖；再配 minmax(0,1fr)+bcell min-width:0，
    nowrap 文字才会省略号收尾而不是把格子（连带整页）撑出屏幕。 */
 .bgrid.n3{grid-template-columns:repeat(3,minmax(0,1fr))}
-.bcell{background:#FAFBF8;border:1px solid var(--line-2);border-radius:10px;padding:8px 10px;min-width:0}
+.bcell{background:rgba(9,14,22,.55);border:1px solid var(--line-2);
+  border-radius:10px;padding:8px 10px;min-width:0}
 .bcell b{display:block;font-size:16.5px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.3}
 .bcell b small{font-size:10.5px;font-weight:400;color:var(--muted);margin-left:2px}
 .bcell span{font-size:10.5px;color:var(--muted);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -109,7 +131,8 @@ td.name{color:var(--ink);max-width:220px;overflow:hidden;text-overflow:ellipsis;
 .nlist li.warn:before{background:var(--amber)}
 .nlist li.alert:before{background:var(--red)}
 .kv{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}
-.kv div{background:#FAFBF8;border:1px solid var(--line-2);border-radius:10px;padding:10px 12px;min-width:0}
+.kv div{background:rgba(9,14,22,.55);border:1px solid var(--line-2);
+  border-radius:10px;padding:10px 12px;min-width:0}
 .kv b{display:block;font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
 .kv span{font-size:11.5px;color:var(--muted)}
 .foot{margin-top:26px;font-size:11.5px;color:var(--faint);line-height:1.9;border-top:1px solid var(--line);padding-top:14px}
@@ -156,6 +179,9 @@ def source_badge(store, sync_at: str | None = None) -> tuple[str, str]:
     双源都同步过就并排写两个；只接了高驰就别再写 Garmin 国区——
     那是 0.3.0 之前写死的文案，真机会误导人。
     """
+    if store.get_meta("demo"):
+        # demo 库：如实标注，别让演示截图看起来像真实账号数据
+        return "DEMO 仿真数据", sync_at or store.get_meta("last_sync") or "未同步"
     g = store.get_meta("last_sync")
     c = store.get_meta("last_sync_coros")
     names = []
@@ -180,7 +206,7 @@ def source_foot(store) -> str:
     return "；".join(names) if names else "本地库"
 
 
-def spark(points: list[tuple[str, float]], color="#1D9E75", w=150, h=34) -> str:
+def spark(points: list[tuple[str, float]], color="#34D399", w=150, h=34) -> str:
     if len(points) < 2:
         return f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}"></svg>'
     vals = [p[1] for p in points]
@@ -210,7 +236,7 @@ def donut(score, color, size=104, stroke=9) -> str:
     pct = 0 if score is None else max(0, min(100, score)) / 100
     return (
         f'<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}">'
-        f'<circle cx="{size/2}" cy="{size/2}" r="{r}" fill="none" stroke="#EDF0EA" stroke-width="{stroke}"/>'
+        f'<circle cx="{size/2}" cy="{size/2}" r="{r}" fill="none" stroke="#243246" stroke-width="{stroke}"/>'
         f'<circle cx="{size/2}" cy="{size/2}" r="{r}" fill="none" stroke="{color}" stroke-width="{stroke}"'
         f' stroke-linecap="round" stroke-dasharray="{c*pct:.1f} {c:.1f}"'
         f' transform="rotate(-90 {size/2} {size/2})"/>'
@@ -229,7 +255,7 @@ def load_chart(dates, loads, ctl, atl, w=620, h=150) -> str:
     for i, v in enumerate(loads):
         bh = (v / hi) * (h - pad_b - 6) if hi else 0
         x = pad_l + i * bw
-        color = "#1D9E75" if v > 0 else "#EDF0EA"
+        color = "#34D399" if v > 0 else "#243246"
         bars.append(
             f'<rect x="{x+bw*0.18:.1f}" y="{h-pad_b-bh:.1f}" width="{bw*0.64:.1f}" height="{max(bh,0):.1f}"'
             f' rx="2" fill="{color}" opacity="{0.85 if v>0 else 1}"/>'
@@ -250,17 +276,17 @@ def load_chart(dates, loads, ctl, atl, w=620, h=150) -> str:
     for i in range(0, n, step):
         x = pad_l + i * bw + bw / 2
         labels.append(
-            f'<text x="{x:.1f}" y="{h-6}" font-size="10" fill="#A5AC9F" text-anchor="middle">{dates[i][5:]}</text>'
+            f'<text x="{x:.1f}" y="{h-6}" font-size="10" fill="#6E7F97" text-anchor="middle">{dates[i][5:]}</text>'
         )
     return (
         f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}">'
-        + "".join(bars) + poly(ctl, "#3A6EA5") + poly(atl, "#C08A16")
+        + "".join(bars) + poly(ctl, "#4DA3FF") + poly(atl, "#F5C26B")
         + "".join(labels) + "</svg>"
     )
 
 
 def sleep_bar(deep, light, rem, awake, w=360, h=26) -> str:
-    segs = [(deep, "#2F4B7C"), (light, "#4E7FB8"), (rem, "#7FB2D9"), (awake, "#D9DED4")]
+    segs = [(deep, "#2F6FD0"), (light, "#4C8EE8"), (rem, "#7FC4FF"), (awake, "#55677F")]
     total = sum(v for v, _ in segs if v)
     if not total:
         return '<p class="empty">昨晚没有睡眠记录</p>'
@@ -373,7 +399,7 @@ def body_block(bd: dict) -> str:
     <div class="bnum">{bd['latest']:.1f}<small>kg</small></div>
     <div class="bdelta">{d7_html}{d4w_html}<br>
       <span style="color:var(--faint)">{when_txt} · 共 {bd.get('count', 0)} 次称重</span></div>
-    <div class="m-spark" style="margin-top:12px">{spark(bd.get('series') or [], "#B0704A", h=46)}</div>
+    <div class="m-spark" style="margin-top:12px">{spark(bd.get('series') or [], "#F0A97A", h=46)}</div>
   </div>
 
   <div class="card">
@@ -404,17 +430,17 @@ def nutrition_block(nt: dict) -> str:
 
     pp, cp, fp = pct_split(nt)
     bar = (f'<div class="nbar">'
-           f'<i style="width:{pp}%;background:#3A6EA5"></i>'
-           f'<i style="width:{cp}%;background:#C08A16"></i>'
-           f'<i style="width:{fp}%;background:#B0704A"></i></div>')
+           f'<i style="width:{pp}%;background:#4DA3FF"></i>'
+           f'<i style="width:{cp}%;background:#F5C26B"></i>'
+           f'<i style="width:{fp}%;background:#F0A97A"></i></div>')
 
     def cell(label, grams, kcal, pct, color):
         return (f'<div class="bcell"><b>{grams}<small>g</small></b>'
                 f'<span style="color:{color}">{label} {pct}% · {kcal} kcal</span></div>')
 
-    cells = (cell("蛋白", nt["protein_g"], nt["protein_kcal"], pp, "#3A6EA5")
-             + cell("碳水", nt["carb_g"], nt["carb_kcal"], cp, "#C08A16")
-             + cell("脂肪", nt["fat_g"], nt["fat_kcal"], fp, "#B0704A"))
+    cells = (cell("蛋白", nt["protein_g"], nt["protein_kcal"], pp, "#4DA3FF")
+             + cell("碳水", nt["carb_g"], nt["carb_kcal"], cp, "#F5C26B")
+             + cell("脂肪", nt["fat_g"], nt["fat_kcal"], fp, "#F0A97A"))
 
     gap = nt["gap"]
     gap_txt = (f"缺口 {gap} kcal" if gap > 0 else
@@ -433,7 +459,7 @@ def nutrition_block(nt: dict) -> str:
     eat_txt = ""
     if eat.get("ok"):
         left = nt.get("left_kcal") or 0
-        eat_txt = (f'<br><span style="color:#4FD6A6">已吃 {eat["kcal"]} kcal（{len(eat.get("items") or [])} 餐）· '
+        eat_txt = (f'<br><span style="color:#34D399">已吃 {eat["kcal"]} kcal（{len(eat.get("items") or [])} 餐）· '
                    + (f'还可吃 {left} kcal' if left > 0 else f'已超 {abs(left)} kcal') + '</span>')
 
     return f"""
@@ -483,15 +509,15 @@ def plan_card(plan: dict) -> str:
     today = (plan.get("today") or {}).get("date")
     for d in plan.get("week") or []:
         is_today = d["date"] == today
-        mark = ' style="background:#F1F7EE"' if is_today else ""
+        mark = ' style="background:rgba(59,130,246,.14)"' if is_today else ""
         label = "今天" if is_today else d["dow"]
         if d["rest"]:
-            body = '<span style="color:#8A8F87">休息</span>'
+            body = '<span style="color:#7C8FA8">休息</span>'
         else:
             body = "；".join(esc(item_line(x)) for x in d["items"])
         rows.append(
-            f'<tr{mark}><td style="white-space:nowrap;color:#6B7268">{esc(d["date"][5:])}'
-            f'<span style="margin-left:6px;color:#A8ADA4">{esc(label)}</span></td>'
+            f'<tr{mark}><td style="white-space:nowrap;color:#93A6BF">{esc(d["date"][5:])}'
+            f'<span style="margin-left:6px;color:#6E7F97">{esc(label)}</span></td>'
             f'<td>{body}</td></tr>'
         )
 
@@ -512,7 +538,7 @@ def plan_card(plan: dict) -> str:
         + "</table>"
         '<p class="sess-why" style="margin-top:14px;font-size:12.5px">'
         f'<b style="font-weight:500">今日</b> · {today_txt}</p>'
-        '<p style="font-size:11.5px;color:#A8ADA4;margin:8px 0 0">'
+        '<p style="font-size:11.5px;color:#6E7F97;margin:8px 0 0">'
         "上方「今日处方」由本地规则按恢复度算出；这一栏是佳明教练的课表，两者冲突时取更保守的一边。</p>"
         "</div>"
     )
@@ -530,15 +556,15 @@ def race_card(d: dt.date) -> str:
     rows = []
     for r in raceplan.week_rows(d):
         is_today = r["date"] == d.isoformat()
-        mark = ' style="background:#F1F7EE"' if is_today else ""
+        mark = ' style="background:rgba(59,130,246,.14)"' if is_today else ""
         label = "今天" if is_today else r["dow"]
         if r["kind"] == "rest":
-            body = '<span style="color:#8A8F87">休</span>'
+            body = '<span style="color:#7C8FA8">休</span>'
         else:
             body = esc(r["main"]) + (f' · {esc(r["sub"])}' if r["sub"] else "")
         rows.append(
-            f'<tr{mark}><td style="white-space:nowrap;color:#6B7268">{esc(r["date"][5:])}'
-            f'<span style="margin-left:6px;color:#A8ADA4">{esc(label)}</span></td>'
+            f'<tr{mark}><td style="white-space:nowrap;color:#93A6BF">{esc(r["date"][5:])}'
+            f'<span style="margin-left:6px;color:#6E7F97">{esc(label)}</span></td>'
             f'<td>{body}</td></tr>'
         )
     head = (f'<span class="chip">105K 备赛 · W{info["week"]} {esc(info["phase"])}期</span>'
@@ -553,7 +579,7 @@ def race_card(d: dt.date) -> str:
         + "</table>"
         f'<p class="sess-why" style="margin-top:14px;font-size:12.5px">'
         f'<b style="font-weight:500">今日</b> · {esc(today_txt)}</p>'
-        '<p style="font-size:11.5px;color:#A8ADA4;margin:8px 0 0">'
+        '<p style="font-size:11.5px;color:#6E7F97;margin:8px 0 0">'
         "与下方佳明教练课表冲突时，以这一栏为准（数据与执行卡 plan-105k-card 同源）。</p>"
         "</div>"
     )
@@ -609,37 +635,37 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     _cand(has_sleep, sleep_label,
           fmt(sl["total_min"] / 60, d=1) if sl["total_min"] is not None else "—",
           "小时", tr["sleep"]["delta"], "up",
-          res["series"]["sleep_h"], "#3A6EA5", delta_unit=" 分")
+          res["series"]["sleep_h"], "#4DA3FF", delta_unit=" 分")
     _cand(t.get("hrv_night") is not None,
           "HRV", fmt(t.get("hrv_night")), "ms", tr["hrv"]["delta"], "up",
-          res["series"]["hrv"], "#1D9E75")
+          res["series"]["hrv"], "#34D399")
     _cand(t.get("resting_hr") is not None,
           "静息心率", fmt(t.get("resting_hr")), "bpm", tr["rhr"]["delta"], "down",
-          res["series"]["rhr"], "#C2453F")
+          res["series"]["rhr"], "#F87171")
     _cand(t.get("bb_high") is not None,
           "身体电量", fmt(t.get("bb_high")), "", tr["bb"]["delta"], "up",
-          res["series"]["bb"], "#7A6AC4")
+          res["series"]["bb"], "#A78BFA")
     _cand(t.get("avg_stress") is not None,
           "压力", fmt(t.get("avg_stress")), "", tr["stress"]["delta"], "down",
           [(x["date"], num(x.get("avg_stress")) or 0) for x in hist
            if num(x.get("avg_stress")) is not None],
-          "#C08A16")
+          "#F5C26B")
     _cand(t.get("steps") is not None,
           "步数", fmt(t.get("steps")), "", None, "up",
-          res["series"]["steps"], "#6B7268",
+          res["series"]["steps"], "#93A6BF",
           extra=f"目标 {fmt(t.get('step_goal'))}")
     _cand(t.get("vo2max") is not None,
           "VO2max", fmt(t.get("vo2max"), d=1), "", tr["vo2max"]["delta"], "up",
-          res["series"]["vo2"], "#2F7D4F")
+          res["series"]["vo2"], "#4ADE80")
     _cand(today_load is not None,
           "今日负荷", fmt(today_load), "", None, "up",
-          [(x, L["loads"].get(x) or 0) for x in dates], "#B26A2F")
+          [(x, L["loads"].get(x) or 0) for x in dates], "#F59E6B")
     _cand(t.get("hrv_weekly") is not None,
           "HRV 基线", fmt(t.get("hrv_weekly")), "ms", None, "up",
-          res["series"]["hrv_base"], "#5B7DB1")
+          res["series"]["hrv_base"], "#93B4E0")
     _cand(t.get("distance_m") is not None,
           "今日距离", fmt((num(t.get("distance_m")) or 0) / 1000, d=1), "km",
-          None, "up", res["series"]["dist_km"], "#3E8E7E")
+          None, "up", res["series"]["dist_km"], "#22D3EE")
     cards = [c for ok, c in cand if ok][:6]
 
     # 体重 / 体成分单独成一块（见 body_block）：塞进 6 列指标格里放不下 8 个字段
@@ -656,10 +682,10 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
             return "—", "基线样本不足"
         d = cur - base
         if abs(d) < 0.5:
-            return '<b style="color:#7A8276">持平</b>', "较 28 天基线"
+            return '<b style="color:#7C8FA8">持平</b>', "较 28 天基线"
         sign = "+" if d >= 0 else "−"
         good = (d <= 0) if invert else (d >= 0)
-        color = "#1D9E75" if good else "#C2453F"
+        color = "#34D399" if good else "#F87171"
         return f'<b style="color:{color}">{sign}{abs(d):.{digits}f}{unit}</b>', "较 28 天基线"
 
     hrv_v, hrv_l = _cmp(num(t.get("hrv_night")), hrv_base, "")
@@ -723,11 +749,11 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
         + "</tbody></table></div>"
     )
 
-    acwr_color = "#1D9E75"
+    acwr_color = "#34D399"
     if L["acwr"] and L["acwr"] > 1.4:
-        acwr_color = "#C2453F"
+        acwr_color = "#F87171"
     elif L["acwr"] and L["acwr"] < 0.8:
-        acwr_color = "#C08A16"
+        acwr_color = "#F5C26B"
 
     # 睡眠债口径注脚：有小睡抵扣时提示一句，免得数字对不上手机上的缺口
     nap_note = ""
@@ -743,10 +769,10 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     <h3>昨晚睡眠结构</h3>
     {sleep_bar(sl['deep_min'], sl['light_min'], sl['rem_min'], sl['awake_min'])}
     <div class="legend">
-      <span><i style="background:#2F4B7C"></i>深睡 {fmt(sl['deep_min'])} 分</span>
-      <span><i style="background:#4E7FB8"></i>浅睡 {fmt(sl['light_min'])} 分</span>
-      <span><i style="background:#7FB2D9"></i>REM {fmt(sl['rem_min'])} 分</span>
-      <span><i style="background:#D9DED4"></i>清醒 {fmt(sl['awake_min'])} 分</span>
+      <span><i style="background:#2F6FD0"></i>深睡 {fmt(sl['deep_min'])} 分</span>
+      <span><i style="background:#4C8EE8"></i>浅睡 {fmt(sl['light_min'])} 分</span>
+      <span><i style="background:#7FC4FF"></i>REM {fmt(sl['rem_min'])} 分</span>
+      <span><i style="background:#55677F"></i>清醒 {fmt(sl['awake_min'])} 分</span>
     </div>
     <div class="kv" style="grid-template-columns:1fr 1fr 1fr">
       <div><b>{fmt(sl['total_h'], ' h', 1)}</b><span>总睡眠</span></div>
@@ -766,7 +792,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     <h3>体能与恢复</h3>
     <div class="ring-wrap" style="align-items:center">
       <div>
-        <div class="ring-num" style="color:#2F7D4F">{fmt(t.get('vo2max'), d=1)}</div>
+        <div class="ring-num" style="color:#4ADE80">{fmt(t.get('vo2max'), d=1)}</div>
         <div class="m-delta">VO2max · 最大摄氧量</div>
       </div>
     </div>
@@ -848,9 +874,9 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     <h3>近 {len(dates)} 天负荷</h3>
     {load_chart(dates, loads, ctl, atl)}
     <div class="legend">
-      <span><i style="background:#1D9E75"></i>每日负荷</span>
-      <span><i style="background:#3A6EA5"></i>CTL 长期体能</span>
-      <span><i style="background:#C08A16"></i>ATL 短期疲劳</span>
+      <span><i style="background:#34D399"></i>每日负荷</span>
+      <span><i style="background:#4DA3FF"></i>CTL 长期体能</span>
+      <span><i style="background:#F5C26B"></i>ATL 短期疲劳</span>
     </div>
     <div class="kv">
       <div><b style="color:{acwr_color}">{L['acwr'] if L['acwr'] else '—'}</b><span>ACWR · {esc(L['acwr_state'])}</span></div>

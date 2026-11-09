@@ -98,7 +98,7 @@ adb install -r dist\garmin-coach-<version>-debug.apk
 5. 之后**在页面顶部下拉**即可同步最近 30 天 + 重出看板；浏览与设置走底部
    4 个 tab（今日 / 历史 / 教练 / 我的），右上角只留一个刷新按钮。
 
-数据在 `/data/data/com.garmincoach.app/files/`，卸载即清空；
+数据在 `/data/data/mm.runnercoach.app/files/`，卸载即清空；
 密码用 Android Keystore 加密存在 SharedPreferences，Python 侧不落密码。
 
 ### 界面交互（下拉同步 / 底部导航 / 统一主题）
@@ -116,12 +116,15 @@ adb install -r dist\garmin-coach-<version>-debug.apk
   图标是 4 个自绘 VectorDrawable（`ic_tab_*.xml`），选中态用绿色 tint + 浅绿底。
   点 tab 切 URL；页面内链接（如首页点「历史活动」、看板点日期）触发
   `onPageFinished` 里的 `syncTabByUrl()`，高亮跟着 URL 走，不会只认点击。
-- **右上角 ⋮ 已拆掉**：六个动作分散到页面里——导出一图流 / 补拉历史在
-  「今日」和「我的」的快捷卡片，AI 教练与设置是独立 tab / 卡片，
-  账号登录、小米体重、产物文件、版本信息都在「我的」。卡片只写 `data-act`，
+- **右上角 ⋮ 已拆掉**：动作分散到页面里——导出一图流在「今日」卡片，
+  AI 教练与设置是独立 tab / 卡片，账号登录、小米体重、素材、导出/导入数据、
+  诊断日志、产物文件、版本信息都在「我的」。卡片只写 `data-act`，
   由 `garmin_cn/ui.py` 的统一 JS 转发到 `Bridge.action(name)`，原生再调
-  `exportCard() / showSyncRangeDialog() / showLoginPicker() / showMiPanel()`；
-  加动作不用改 JS。登录、补历史这些需要键盘和进度的仍走原生对话框。
+  `exportCard() / doExportData() / showDiag() / showLoginPicker() / showMiPanel()`；
+  加动作不用改 JS。登录、导入数据这些需要键盘和确认的仍走原生对话框。
+- **补全历史没有按钮**：每次刷新（含登录后）由 `runBackfill()` 调
+  `backfill_next()`，按「一年一段」由近到远往前挪，进度写在标题栏小字；
+  补到下限（8 年）后直接返回 `done`，零网络请求。
 - **四个 tab 共用一套视觉语言**：`garmin_cn/ui.py` 提供 CSS tokens、
   `page()` 外壳、`sec()/card()/row()/act()/stat()` 组件和 `BRIDGE_JS`。
   页面按「分区标题 + 卡片网格」组织，不再是一列到底的文件链接；
@@ -129,7 +132,7 @@ adb install -r dist\garmin-coach-<version>-debug.apk
 - **历史数据**：`/history` 按区间 / 类型 / 分页查 `activities()`（起点取活动表
   `MIN(date)`，比日汇总窗口更早的活动也查得到）；`/view?date=` 用
   `dashboard(date, live=false)` 按需生成，顶部带前后翻页，且不会覆盖 `latest.html`。
-  补拉仍走 `sync_range()` → `sync(days, end, activity_pages)`，增量跳过稳定日，
+  后台补齐走 `backfill_next()` → `sync_range()`，增量跳过稳定日，
   活动列表按 60 条一页翻到区间起点。
 - **看板 / 列表里的活动行可以直接点**：`data-aid` 由统一 JS 转给
   `GC.activity(id)`，走分享前脱敏三档再出图；桌面版不绑事件，无副作用。

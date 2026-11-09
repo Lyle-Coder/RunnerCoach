@@ -27,10 +27,14 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import sys
 import threading
+import time
+import zipfile
 from pathlib import Path
 
+from . import __version__
 from .auth import AuthError, GarminCNAuth, MfaRequired
 from .client import GarminCNClient, SessionExpired
 from .exportspec import BG_ACT, BG_CARD, spec as export_spec
@@ -76,12 +80,24 @@ def _remember_email(email: str) -> None:
         pass
 
 
-def _client(email: str | None = None, password: str | None = None) -> GarminCNClient:
+def _client(email: str | None = None, password: str | None = None,
+            revalidate: bool = False) -> GarminCNClient:
     from .net import Net
 
     auth = GarminCNAuth(HOME)
     net = Net(auth.session_path, min_interval=0.5)
     ok = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
+
+    # 有票据不等于票据还有效：Garmin 的 JWT 几小时就会失效，服务端直接 401。
+    # 旧版只看「有没有」，于是带着死票据跑完整轮同步才失败，用户看到的就是
+    # 「关掉再开一刷新就要重新登录」。这里先花一次轻量请求验一下，失效且
+    # 本地存了凭据就当场续期，不用再让用户手输密码。
+    if ok and revalidate:
+        if not auth.ensure_session():
+            ok = False
+        else:
+            # 校验过程中服务端可能轮换过 Cookie，重新从磁盘读一次最新值
+            net = Net(auth.session_path, min_interval=0.5)
 
     if not ok and email and password:
         auth.login(email, password)      # 可能要验证码，交给上层处理
@@ -120,9 +136,12 @@ def _today(store: Store) -> dict:
 _API = {
     "env_info", "status", "login", "submit_mfa", "sync", "sync_range",
     "dashboard", "card_html", "act_card_html", "runs", "activities", "days_index",
+    "history_stats", "backfill_next",
     "plan", "set_amap_key", "start_server", "recent", "read_html",
-    "motion_html", "motion_status", "motion_cleanup",
-    "clips_list", "clips_add", "clips_remove",
+    "db_export", "db_import", "diag_text",
+    "motion_html", "motion_status", "motion_cleanup", "motion_audio",
+    "clips_list", "clips_add", "clips_remove", "clips_reprobe",
+    "clips_remove_many", "clips_update",
     "set_llm_config", "get_llm_config", "ai",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
@@ -187,6 +206,11 @@ def call(name: str, args_json: str = "[]") -> str:
     try:
         return json.dumps(globals()[name](*args), ensure_ascii=False)
     except Exception as e:
+        # 异常在 App 里只表现为一句 toast，用户复述不清。留一份到 diag.log，
+        # 「我的 → 诊断日志」能一键复制，远程排查才有依据。
+        from . import diag
+
+        diag.log_exc(f"api:{name}", e)
         return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"},
                           ensure_ascii=False)
 
@@ -227,6 +251,20 @@ def status() -> dict:
         except Exception:
             session_ok = False
 
+    today_info = _today(store) if st.get("days") else None
+    last_sync = store.get_meta("last_sync")
+    # 「补全历史」是后台慢慢往前挪的游标：退到下限之前都算还欠着。
+    _cursor = store.get_meta(BACKFILL_META)
+    try:
+        _cur_day = dt.date.fromisoformat(str(_cursor)) if _cursor else None
+    except ValueError:
+        _cur_day = None
+    need_bf = _cur_day is None or _cur_day > _backfill_floor()
+    try:
+        store.conn.close()
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "logged_in": session_ok,
@@ -235,8 +273,9 @@ def status() -> dict:
         "activities": st.get("activities", 0),
         "first": st.get("first"),
         "last": st.get("last"),
-        "last_sync": store.get_meta("last_sync"),
-        "today": _today(store) if st.get("days") else None,
+        "last_sync": last_sync,
+        "today": today_info,
+        "needs_backfill": need_bf,
     }
 
 
@@ -510,7 +549,7 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
                 pass
 
     try:
-        client = _client(email, password)
+        client = _client(email, password, revalidate=True)
     except MfaRequired:
         return {"ok": False, "need_mfa": True, "error": "续期需要邮箱验证码，请重新登录"}
     except AuthError as e:
@@ -588,6 +627,45 @@ def sync_range(start: str, end: str | None = None,
 
 
 # ---------------------------------------------------------------- 产出
+def _refresh_live(store, date: str) -> None:
+    """出图/出报告前刷新一次「会随时间变」的指标（身体电量）。
+
+    `daily` 里的 `bb_high / bb_low` 来自 daily summary，是当天第一次同步的
+    快照；「此刻还剩多少」只存在于 bodyBattery 的日内序列里。CLI 出图前本来
+    就会拉，App 侧以前没拉 —— 于是手机上一图流的身体电量永远是「未测量」。
+    没登录 / 离线都静默跳过，退回库里上一次的值。
+
+    两次提前退出，都是为了别让出图白等一次网络往返（实测一次约 280ms）：
+    - **历史日期**：昨天以前的卡不存在「此刻」，库里已有曲线就直接用；
+    - **TTL 内**：刚刚拉过（连点两次导出最常见），连客户端都不建。
+    """
+    from . import live as L
+
+    if date < dt.date.today().isoformat():
+        if L._load_series((store.day(date) or {}).get("bb_series")):
+            return
+
+    last = store.get_meta(f"bb_fetch:{date}")
+    if last:
+        try:
+            age = (dt.datetime.now()
+                   - dt.datetime.strptime(last, "%Y-%m-%d %H:%M:%S")).total_seconds()
+            if 0 <= age < L.TTL:
+                return
+        except ValueError:
+            pass
+
+    client = None
+    try:
+        client = _client()
+    except Exception:
+        client = None
+    try:
+        L.body_battery(store, date, client)
+    except Exception:
+        pass
+
+
 def dashboard(date: str | None = None, live: bool = True) -> dict:
     """出网页看板，返回文件路径（App 用 WebView 直接读它，或走 start_server）。"""
     store = Store(DB)
@@ -596,10 +674,10 @@ def dashboard(date: str | None = None, live: bool = True) -> dict:
 
     d = date or dt.date.today().isoformat()
     if live:
+        _refresh_live(store, d)
         try:
             from . import live as L
 
-            L.body_battery(store, d, None)
             L.scale(store, HOME)
         except Exception:
             pass
@@ -631,6 +709,8 @@ def card_html(date: str | None = None) -> dict:
     from .card import build_html
     from .plan import attach
 
+    _refresh_live(store, d)
+
     try:
         res = attach(derive(store, d))
         from .report import source_badge
@@ -651,6 +731,137 @@ def card_html(date: str | None = None) -> dict:
             **export_spec(BG_CARD, trim=False)}
 
 
+# ---------------------------------------------------------------- 历史补全
+# 「历史补全」以前是「我的」里的一个按钮，选区间再点确定。问题是它点开只有一个
+# 弹窗、跑完也只是「跳过 90 天缓存」，用户看完只觉得没反应。现在改成**游标式**：
+# 每次刷新由近到远补一段，游标存进 meta，直到回到最早年为止，全程后台。
+BACKFILL_META = "backfill_cursor"
+BACKFILL_SPAN_DAYS = 365      # 一段一年：太长中间没反馈，太短请求次数翻倍
+BACKFILL_MAX_YEARS = 8        # 再早的数据佳明国区也基本没有，兜个底
+BACKFILL_PAGES = 20           # 每段最多翻 20 页活动（约 1200 条）
+
+
+def _backfill_floor(today: dt.date | None = None) -> dt.date:
+    t = today or dt.date.today()
+    try:
+        return t.replace(year=t.year - BACKFILL_MAX_YEARS)
+    except ValueError:                 # 2 月 29 日
+        return t.replace(year=t.year - BACKFILL_MAX_YEARS, day=28)
+
+
+def _backfill_segment(cur: dt.date, floor: dt.date,
+                      span: int = BACKFILL_SPAN_DAYS):
+    """算出这一段该补哪一截：返回 (start, end, next_cursor, done)。
+
+    纯函数，不碰网络也不碰库 —— 自检直接测它，就不必为了验一段逻辑
+    真去拉一年数据。
+    """
+    if cur <= floor:
+        return cur, cur, floor, True
+    start = max(floor, cur - dt.timedelta(days=max(1, int(span)) - 1))
+    nxt = start - dt.timedelta(days=1)
+    if nxt < floor:
+        nxt = floor
+    return start, cur, nxt, nxt <= floor
+
+
+def backfill_next(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
+    """由近到远补**一段**历史，返回这一段的结果和「是否已经补到头」。
+
+    游标 `meta.backfill_cursor` 记住「下次该从哪天往前补」，默认今天。
+    每段跑完把游标往前挪一年，所以刷新几次就能把全部历史慢慢补齐，
+    而且**每次只花一段的时间**，不会让人干等。
+
+    为什么不用「拉 0 天就停」判断到头：某一年可能真的没运动记录，
+    但那不代表更早的也没有。所以只认「游标退到下限」这一个条件。
+    """
+    today = dt.date.today()
+    floor = _backfill_floor(today)
+
+    store = Store(DB)
+    try:
+        raw = store.get_meta(BACKFILL_META) or today.isoformat()
+    finally:
+        store.conn.close()
+    try:
+        cur = dt.date.fromisoformat(str(raw))
+    except ValueError:
+        cur = today
+    if cur > today:
+        cur = today
+
+    if cur <= floor:
+        return {"ok": True, "done": True, "start": "", "end": "",
+                "fetched": 0, "skipped": 0, "cursor": floor.isoformat(),
+                "floor": floor.isoformat()}
+
+    start, end, nxt, done = _backfill_segment(cur, floor, span_days)
+    out = sync_range(start.isoformat(), end.isoformat(),
+                     with_body=False, force=False, activity_pages=BACKFILL_PAGES)
+    if not out.get("ok"):
+        return {"ok": False, "done": False,
+                "start": start.isoformat(), "end": cur.isoformat(),
+                "need_login": bool(out.get("need_login")),
+                "need_mfa": bool(out.get("need_mfa")),
+                "error": out.get("error") or "补全失败"}
+
+    store = Store(DB)
+    try:
+        store.set_meta(BACKFILL_META, nxt.isoformat())
+    finally:
+        store.conn.close()
+
+    return {"ok": True, "done": done,
+            "start": start.isoformat(), "end": end.isoformat(),
+            "fetched": out.get("fetched", 0), "skipped": out.get("skipped", 0),
+            "activities": out.get("activities", 0),
+            "cursor": nxt.isoformat(), "floor": floor.isoformat()}
+
+
+def _activity_days(today: str) -> set[str]:
+    """本地库里有活动的日期（含高驰）。
+
+    高驰记录的活动根本不会出现在佳明日历里，只看日历会把「已经练了」算成
+    「没练」——所以完成度必须以本地库为准，日历只是补充。
+    """
+    try:
+        store = Store(DB)
+        try:
+            lo = (dt.date.fromisoformat(today) - dt.timedelta(days=21)).isoformat()
+            hi = (dt.date.fromisoformat(today) + dt.timedelta(days=1)).isoformat()
+            rows = store.conn.execute(
+                "SELECT DISTINCT date FROM activities WHERE date >= ? AND date <= ?",
+                (lo, hi)).fetchall()
+            return {r[0] for r in rows if r[0]}
+        finally:
+            store.conn.close()
+    except Exception:
+        return set()
+
+
+def _plan_local(today: str, days: set[str], note: str = "") -> dict:
+    """没有佳明会话时的本地课表兜底。
+
+    纯高驰用户拿不到佳明日历（高驰没有对外计划接口），以前这里直接
+    返回 ok:false，今日页整块课表就不渲染。现在退成「备赛计划 > 今日处方」，
+    至少让人看到今天该练什么。
+    """
+    from .plan import from_coach
+
+    try:
+        res = derive(Store(DB), today)
+        data = from_coach(res, today, days)
+    except Exception as e:  # noqa: BLE001 - 兜底失败就老实说，别假装有计划
+        from . import diag
+
+        diag.log_exc("plan:local", e)
+        return {"ok": False, "kind": "local",
+                "error": f"本地课表算不出来：{type(e).__name__}: {e}"}
+    if note:
+        data["note"] = note
+    return {"ok": True, **data}
+
+
 def plan(refresh: bool = False, date: str | None = None,
          source: str = "auto") -> dict:
     """训练安排（佳明日历优先，Garmin Coach 兜底）。
@@ -660,29 +871,38 @@ def plan(refresh: bool = False, date: str | None = None,
     `source`：auto / calendar / coach，见 `plan.fetch()`。
     高驰没有对外计划接口，这里只处理佳明。
     """
-    from .plan import fetch, load
+    from .plan import annotate, fetch, load
 
     today = date or dt.date.today().isoformat()
     path = HOME / "data" / "plan.json"
+    days = _activity_days(today)
     data = None if refresh else load(path)
     if not data:
         try:
             client = _client()
         except AuthError as e:
-            return {"ok": False, "error": f"还没登录佳明：{e}", "kind": "auth"}
+            # 没登录不是错误，是「换个数据源」：本地兜底比空白页有用
+            return _plan_local(today, days, note=f"佳明未登录：{e}")
         except Exception as e:
-            return {"ok": False, "error": f"{type(e).__name__}: {e}", "kind": "auth"}
+            return _plan_local(today, days,
+                               note=f"佳明连接失败：{type(e).__name__}")
         try:
-            data = fetch(client, today, out_path=path, source=source)
+            data = fetch(client, today, out_path=path, source=source,
+                         activity_days=days)
         except SessionExpired:
-            return {"ok": False, "error": "佳明会话过期，请重新登录", "kind": "auth"}
+            return _plan_local(today, days, note="佳明会话过期，已改用本地课表")
         except Exception as e:
             data = {"available": False, "reason": f"{type(e).__name__}: {e}"}
     if not data or not data.get("available"):
-        return {"ok": False,
-                "error": (data or {}).get("reason") or "当前没有可用的训练安排",
+        reason = (data or {}).get("reason") or ""
+        local = _plan_local(today, days, note=f"佳明无课表：{reason}" if reason else "")
+        if local.get("ok"):
+            return local
+        return {"ok": False, "error": reason or "当前没有可用的训练安排",
                 "empty": True}
-    return {"ok": True, **data}
+    # 新拉的与缓存的都重新标注一次：同步之后「今天练没练」会变，
+    # 缓存里的 done 不能一直用旧的。
+    return {"ok": True, **annotate(data, days, today)}
 
 
 def runs(limit: int = 30, days: int = 180) -> dict:
@@ -716,6 +936,152 @@ def runs(limit: int = 30, days: int = 180) -> dict:
         return {"ok": True, "items": out}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def history_stats(start: str | None = None, end: str | None = None,
+                  types: str = "run") -> dict:
+    """历史页首的统计：本月 / 本年 / 累计 + 近 12 个月柱状图 + 周/月/年分组。
+
+    一次把活动表全读出来在 Python 里聚合（几千行也就几十毫秒），比在 SQL 里
+    拼 ISO 周函数干净——SQLite 没有 `isocalendar()`，而周分组是用户明确要的。
+    `types="run"` 只看跑步（和列表的「只看跑步」同一套 `_RUN_TYPES`）；
+    传空串则统计全部运动。
+    """
+    try:
+        store = Store(DB)
+        try:
+            e = end or dt.date.today().isoformat()
+            try:
+                dt.date.fromisoformat(e)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "日期格式应为 YYYY-MM-DD"}
+            # 起点不设上限：活动表里最早那条就是全部家当
+            rows = store.activities(start or "2000-01-01", e)
+        finally:
+            store.conn.close()
+    except Exception as ex:
+        return {"ok": False, "error": f"{type(ex).__name__}: {ex}"}
+
+    kind = (types or "").strip().lower()
+    allow = set(_RUN_TYPES) if kind == "run" else None
+    picked = [r for r in rows if allow is None or (r.get("type") or "") in allow]
+
+    months: dict[str, dict] = {}
+    years: dict[str, dict] = {}
+    weeks: dict[str, dict] = {}
+    days: dict[str, dict] = {}
+
+    def bump(bucket: dict, key: str, km: float, dur: float) -> dict:
+        b = bucket.get(key)
+        if b is None:
+            b = bucket[key] = {"km": 0.0, "count": 0, "dur_h": 0.0}
+        b["km"] += km
+        b["count"] += 1
+        b["dur_h"] += dur
+        return b
+
+    for r in picked:
+        d = str(r.get("date") or "")
+        if len(d) < 10:
+            continue
+        km = float(r.get("distance_m") or 0) / 1000.0
+        dur = float(r.get("duration_s") or 0) / 3600.0
+        bump(months, d[:7], km, dur)
+        bump(years, d[:4], km, dur)
+        bump(days, d, km, dur)
+        try:
+            iso = dt.date.fromisoformat(d).isocalendar()
+        except ValueError:
+            continue
+        wk = f"{iso[0]}-W{iso[1]:02d}"
+        b = weeks.get(wk)
+        if b is None:
+            b = weeks[wk] = {"km": 0.0, "count": 0, "dur_h": 0.0,
+                             "start": d, "end": d}
+        b["km"] += km
+        b["count"] += 1
+        b["dur_h"] += dur
+        if d < b["start"]:
+            b["start"] = d
+        if d > b["end"]:
+            b["end"] = d
+
+    today = dt.date.fromisoformat(e)
+    ds = de = None
+    if start and end:
+        try:
+            ds, de = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
+        except ValueError:
+            ds = de = None
+    # 月份序列：给了范围就按范围铺（年视图要正好 12 根），
+    # 没给就是「近 12 个月」——两种都连续，没跑的月份占一根空柱
+    keys: list[str] = []
+    if ds and de:
+        yy, mm = ds.year, ds.month
+        while (yy, mm) <= (de.year, de.month):
+            keys.append(f"{yy:04d}-{mm:02d}")
+            mm += 1
+            if mm > 12:
+                mm = 1
+                yy += 1
+    else:
+        for i in range(11, -1, -1):
+            mm, yy = today.month - i, today.year
+            while mm <= 0:
+                mm += 12
+                yy -= 1
+            keys.append(f"{yy:04d}-{mm:02d}")
+    months_out = [{"key": k, "label": f"{int(k[5:7])}月",
+                   "km": round(months.get(k, {}).get("km", 0), 1),
+                   "count": months.get(k, {}).get("count", 0),
+                   "dur_h": round(months.get(k, {}).get("dur_h", 0), 1)}
+                  for k in keys]
+
+    # 周用 start 排序（ISO 周号跨年会回绕，字符串排序不可靠）
+    wk_sorted = sorted(weeks.items(), key=lambda kv: kv[1]["start"], reverse=True)[:12]
+    wk_sorted.reverse()
+    weeks_out = [{"key": k, "label": f"{v['start'][5:]}~{v['end'][5:]}",
+                  "start": v["start"], "end": v["end"],
+                  "km": round(v["km"], 1), "count": v["count"],
+                  "dur_h": round(v["dur_h"], 1)} for k, v in wk_sorted]
+
+    years_out = [{"key": k, "km": round(v["km"], 1), "count": v["count"],
+                  "dur_h": round(v["dur_h"], 1)}
+                 for k, v in sorted(years.items(), key=lambda kv: kv[0], reverse=True)]
+
+    # 逐日序列只给周/月视图用：范围上限 400 天，误传 3 年也不会把页面撑爆
+    days_out: list[dict] = []
+    if ds and de and 0 < (de - ds).days + 1 <= 400:
+        cur = ds
+        while cur <= de:
+            k = cur.isoformat()
+            b = days.get(k, {})
+            days_out.append({"key": k, "label": str(cur.day),
+                             "km": round(b.get("km", 0), 1),
+                             "count": b.get("count", 0)})
+            cur += dt.timedelta(days=1)
+
+    cur_m = months.get(today.strftime("%Y-%m"), {})
+    cur_y = years.get(today.strftime("%Y"), {})
+    total_km = sum(v["km"] for v in months.values())
+    total_h = sum(v["dur_h"] for v in months.values())
+    return {
+        "ok": True,
+        "total": {"km": round(total_km, 1), "count": len(picked),
+                  "dur_h": round(total_h, 1)},
+        "month": {"key": today.strftime("%Y-%m"),
+                  "km": round(cur_m.get("km", 0), 1),
+                  "count": cur_m.get("count", 0)},
+        "year": {"key": today.strftime("%Y"),
+                 "km": round(cur_y.get("km", 0), 1),
+                 "count": cur_y.get("count", 0)},
+        "months": months_out,
+        "days": days_out,
+        "weeks": weeks_out,
+        "years": years_out,
+        "range": {"first": min((r["date"] for r in picked), default=""),
+                  "last": max((r["date"] for r in picked), default="")},
+    }
 
 
 def activities(start: str | None = None, end: str | None = None,
@@ -1000,7 +1366,11 @@ def _synth_route(detail: dict) -> dict:
             ts[i] = ts[i - 1]
     if ts[-1] <= 0:
         return {}
-    return {"t0": int(t0), "n": len(track), "t": ts,
+    # t0 必须是**毫秒**：`photo.match` 用 (t_utc_ms - t0) / 1000 算相对秒。
+    # 这里原来直接给秒，照片和素材全部被判成「不在活动时段」丢掉——
+    # 手机上「加了素材但回放里没有」就是这个原因（桌面路径走 route.build，
+    # 那边的 t0 本来就是毫秒，只有这条合成路径漏了换算）。
+    return {"t0": int(t0 * 1000), "n": len(track), "t": ts,
             "lat": [round(a, 6) for a, _ in track],
             "lon": [round(b, 6) for _, b in track],
             "d": [round(x, 1) for x in dist],
@@ -1048,37 +1418,163 @@ def motion_html(activity_id: str, fps: int = 24, duration: int = 30,
         except (TypeError, ValueError):
             fps, dur = 24, 30
         run = secrets.token_hex(6)
+        # 超时/失败后用户会反复重试，每次都是新 run，旧帧目录（一版 720 帧
+        # 几百 MB）却一直留在磁盘上。开新一轮时顺手清掉过期的，正在导出的
+        # run 远没到这个年龄，不会被误删。
+        _sweep_motion_frames()
         out = OUT / f"motion-{aid}.html"
-        clips = _clips_for_motion()
+        # 传 rt 进去：素材按这次活动的时间窗过滤，库里残留的旧素材
+        # （上一次跑步加的）不会被贴到活动两端混进成片
+        clips = _clips_for_motion(rt)
+        pl: dict = {}
         # web=True：App 里的播放器走 http，必须把底图/照片/视频换成本源 URL，
         # 否则真机上绝对路径 404 → 页面 ready=false → 一帧都不推
         M.render(row, detail, None, out, duration=float(dur), clips=clips,
-                 clip_cache=HOME / "data" / "motion_cache", web=True)
+                 clip_cache=HOME / "data" / "motion_cache", web=True,
+                 payload_out=pl)
+        # 帧数必须按**真实总时长**算：巡航 30 秒 + 素材停留（视频自身时长、
+        # 图片 3 秒/张）。以前按 30 秒算，素材一多尾巴就被截掉——最后几段
+        # 视频干脆没出现在成片里，看起来就像「锚点错了」。
+        total = float(pl.get("total") or dur)
+        # 视频素材清单交给原生抽帧：WebView 里 `drawImage(<video>)` 会同步等
+        # 解码，真机上一段 6 秒素材要 5 分钟，直接把导出拖到「5 分钟没有新帧」
+        # 判死（提示「第 N 帧没送到」）。原生 MediaMetadataRetriever 快一两个
+        # 数量级，页面只读抽好的 <img>。`ci` 与页面 payload 里的 clip.ci 一致。
+        clip_list = [{"ci": (p["clip"].get("ci") if p["clip"].get("ci") is not None else -1),
+                      "name": p["clip"].get("name") or "",
+                      "file": p["clip"].get("local") or "",
+                      "dur": float(p["clip"].get("dur") or 0),
+                      "w": int(p["clip"].get("w") or 0),
+                      "h": int(p["clip"].get("h") or 0),
+                      "rotate": int(p["clip"].get("rotate") or 0) % 360}
+                     for p in (pl.get("photos") or [])
+                     if p.get("clip") and p["clip"].get("kind") != "image"]
         return {"ok": True, "html": str(out), "run": run,
-                "frames": int(dur * fps), "fps": fps, "duration": dur,
-                "width": 1080, "height": 1920, "clips": len(clips),
-                "privacy": mode, "name": row.get("name") or "跑步回放"}
+                "frames": max(1, int(round(total * fps))), "fps": fps,
+                "duration": round(total, 2), "play": dur,
+                "width": 1080, "height": 1920, "clips": clip_list,
+                "dir": str(OUT / "_frames" / run),
+                "privacy": mode, "name": row.get("name") or "跑步回放",
+                # 真机排查「底图缩放」用：App 会写进 Logcat
+                "view": pl.get("view") or {}}
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-def _clips_for_motion() -> list[dict]:
-    """素材片段 → motion.build_payload 要的 shot 结构。"""
+STILL_SEC = 3.0          # 图片素材在回放里停留多久
+
+
+def _meta_val(it: dict, info: dict, key: str):
+    """记录里存过就用存的，否则回落到现场探测。
+
+    登记时从源文件读到的拍摄时间比成品的更可信（重封装会丢 creation_time），
+    所以存下来的值优先。
+    """
+    v = it.get(key)
+    return v if v is not None else info.get(key)
+
+
+def _clips_for_motion(rt: dict | None = None,
+                      pre_s: float = 24 * 3600, post_s: float = 24 * 3600) -> list[dict]:
+    """素材（视频 / 图片）→ motion.build_payload 要的 shot 结构。
+
+    必须带上 `t_utc`：`photo.match` 靠拍摄时间把素材挂到轨迹上。
+    之前这里只给路径和时长，结果全部以「没有拍摄时间」被丢掉 ——
+    表现就是「加了素材，回放里却什么都没有」。
+    视频读 mvhd 的 creation_time，图片读 EXIF；都没有的留空，
+    由 `motion` 那边均匀铺开，至少能出现在画面上。
+
+    时长以**文件真实时长**为准，不信登记时记的那个值：
+    登记时传的 dur 可能为 0（原生侧还没量出来），这里如果照用就退化成
+    3 秒——用户加了一段 51 秒的视频，回放里只播 3 秒，等于被裁掉了。
+    所以视频一律重新探文件，读不到才退回登记值。
+
+    `rt` 是这次活动的路线（带 t0 与时序）。给了它就按**活动时间附近**过滤：
+    素材登记在手机上是全局的，上一次跑步/上一次比赛加的素材还留在库里，
+    不筛的话 `photo.match(clamp_ends=True)` 会把那些「时间离这次活动很远的」
+    素材强行贴到活动两端塞进成片——上次比赛（11-03）的视频就混进了这次
+    （11-08）的回放，看着像放错了片子。
+    容差取 24 小时：差几小时的素材照旧保留（用户加的不许凭空消失），
+    差好几天的才剔除。读不到拍摄时间的素材一律保留（无法判定归属）。
+    """
+    t0 = (rt or {}).get("t0")
+    dur = 0.0
+    ts = (rt or {}).get("t") or []
+    if ts:
+        dur = float(ts[-1])
     out = []
     for it in _clips_read():
         p = Path(str(it.get("path") or ""))
         if not p.is_file():
             continue
+        info = _probe_material(p, name_hint=str(it.get("name") or ""))
+        kind = it.get("kind") or info.get("kind") or "video"
+        # 视频：文件真实时长优先；探不到才用登记值
+        dur = float(info.get("dur") or 0) or float(it.get("dur") or 0)
+        if dur <= 0:
+            dur = STILL_SEC if kind == "image" else 3.0
+        t_utc = _meta_val(it, info, "t_utc")
+        if t0 and t_utc:
+            rel = (float(t_utc) - float(t0)) / 1000.0
+            if rel < -pre_s or rel > dur + post_s:
+                # 时间明确不在这次活动里 → 跳过，别让它贴到活动两端
+                continue
         out.append({
             "path": str(p),
             "name": it.get("name") or p.stem,
-            "dur": float(it.get("dur") or 3.0),
-            "w": int(it.get("w") or 1080),
-            "h": int(it.get("h") or 1920),
+            "kind": kind,
+            "dur": round(dur, 2),
+            "w": int(it.get("w") or info.get("w") or 1080),
+            "h": int(it.get("h") or info.get("h") or 1920),
+            "orientation": int(info.get("orientation") or 1),
+            "t_utc": t_utc,
+            "lat": _meta_val(it, info, "lat"),
+            "lon": _meta_val(it, info, "lon"),
+            "codec": info.get("codec") or "",
+            "bytes": info.get("bytes") or 0,
+            # 显示旋转：无损剪辑不转码，方向只能在绘制/抽帧时兑现。
+            # 0/90/180/270，只影响呈现，不影响锚定。
+            "rotate": int(it.get("rotate") or 0) % 360,
         })
     return out
+
+
+def _probe_material(p: Path, name_hint: str = "") -> dict:
+    """按扩展名判类型再读元数据。读不出来也返回带 kind 的骨架，绝不抛异常——
+    素材缺元数据只该「定位不准」，不该让整次回放失败。
+
+    `name_hint` 是登记时的原始文件名：成品被改名成 `clip-…` 之后，
+    相机名里的 `20261103_180036` 还能兜出拍摄时间。
+    """
+    ext = p.suffix.lower()
+    if ext in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"):
+        from . import photo as photo_mod
+        try:
+            j = photo_mod.read(p)
+        except Exception as e:
+            j = {"error": f"{type(e).__name__}: {e}"}
+        return {"kind": "image",
+                "w": j.get("w"), "h": j.get("h"),
+                "orientation": j.get("orientation") or 1,
+                "t_utc": j.get("t_utc"), "t_source": j.get("t_source") or "",
+                "t_why": "" if j.get("t_utc") else (j.get("error") or "图片里没有 EXIF 拍摄时间"),
+                "lat": j.get("lat"), "lon": j.get("lon"),
+                "bytes": j.get("bytes") or 0, "dur": None}
+    from . import clip as clip_mod
+    try:
+        v = clip_mod.probe(p, name_hint=name_hint)
+    except Exception as e:
+        # 以前这里静默吞掉异常，界面只显示「加入 xx」，用户完全无从判断
+        # 是「文件没时间」还是「读崩了」。现在把原因带出去。
+        v = {"t_why": f"读取失败：{type(e).__name__}: {e}"}
+    return {"kind": "video",
+            "w": v.get("w"), "h": v.get("h"), "orientation": 1,
+            "t_utc": v.get("t_utc"), "t_source": v.get("t_source") or "",
+            "t_why": v.get("t_why") or "",
+            "lat": v.get("lat"), "lon": v.get("lon"), "dur": v.get("dur"),
+            "codec": v.get("codec") or "", "bytes": v.get("bytes") or 0}
 
 
 def motion_status(run: str) -> dict:
@@ -1101,6 +1597,111 @@ def motion_status(run: str) -> dict:
             "diag": diag}
 
 
+def _audio_local(raw: str) -> Path | None:
+    """时间轴里的素材标识 → 本机磁盘路径。
+
+    页面给 WebView 用的是 `/data/media/xxx.mp4` 这种同源 URL（见 motion._web_url），
+    MediaExtractor 打不开 URL；桌面导出的老页面则直接回传绝对路径。两种都认，
+    但**只放行 data/ 下的素材目录**：时间轴是页面 POST 上来的，不能让一个
+    JSON 就把任意文件交给解码器。
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    data = (HOME / "data").resolve()
+    try:
+        # 真机上素材的绝对路径是 /data/user/0/<包名>/files/data/media/...，
+        # 开头也是 /data/！先按「确实存在的绝对路径」认，别把它当成同源 URL
+        # 再拼一次家目录（那样拼出的文件不存在，原声会整段丢掉）。
+        if Path(s).is_absolute() and Path(s).is_file():
+            p = Path(s).resolve()
+        elif s.startswith("/data/"):
+            p = (data / s[len("/data/"):]).resolve()
+        elif s.startswith("/media/"):
+            p = (data / "media" / s[len("/media/"):]).resolve()
+        elif s.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", s):
+            return None                    # 绝对路径但文件不在，不做二次解释
+        else:
+            return None
+        p.relative_to(data)
+        # 只允许素材与转码缓存，basemaps / garmin.db 一律不碰
+        if p.parent.name not in ("media", "motion_cache"):
+            return None
+        if p.suffix.lower() not in (".mp4", ".mov", ".m4v"):
+            return None
+        return p if p.is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
+def motion_audio(run: str) -> dict:
+    """给原生侧的混音清单：把 `/__timeline` 回传的素材窗口翻译成磁盘文件 + 起点。
+
+    手机端的 `MotionEncoder` 没有 ffmpeg，靠 MediaCodec 自己解码原声；它需要知道
+    每段素材的**本地文件**和在成片里的**起始秒**。页面只给 URL 和窗口位置，
+    这里做 URL→路径的映射与白名单校验，顺便丢掉图片段（dur=0）、越界和丢文件的。
+
+    返回 `items: [{file, at, dur}]`；空列表是正常情况（没加视频素材 / 导出失败），
+    原生侧据此退回原来的无音轨编码。
+    """
+    run = str(run or "")
+    if not _RUN_RE.fullmatch(run):
+        return {"ok": False, "error": "run 不合法"}
+    f = OUT / "_frames" / run / "_timeline.json"
+    if not f.is_file():
+        return {"ok": True, "items": [], "total": 0}
+    try:
+        rows = json.loads(f.read_text("utf-8"))
+    except (OSError, ValueError) as e:
+        return {"ok": False, "error": f"时间轴读不出来：{e}"}
+    items: list[dict] = []
+    for w in rows if isinstance(rows, list) else []:
+        if not isinstance(w, dict):
+            continue
+        try:
+            dur = float(w.get("dur") or 0)
+        except (TypeError, ValueError):
+            continue
+        if dur <= 0:
+            continue                     # 图片素材没有音轨
+        p = _audio_local(str(w.get("file") or w.get("src") or ""))
+        if p is None:
+            continue
+        try:
+            at = max(0.0, float(w.get("a") or 0) + float(w.get("lead") or 0))
+        except (TypeError, ValueError):
+            at = 0.0
+        items.append({"file": str(p), "at": round(at, 3), "dur": round(dur, 3)})
+    items.sort(key=lambda x: x["at"])
+    return {"ok": True, "items": items, "total": len(items)}
+
+
+def _sweep_motion_frames(max_age_h: float = 24) -> int:
+    """清掉上次导出（尤其是超时重试）留下的过期帧目录，返回删掉的个数。
+
+    只认 `output/_frames/<合法 run>` 且最后写入超过 `max_age_h` 小时的目录；
+    别的目录、别的命名一律不碰。24 小时的门槛远长于一次正常导出，就算
+    慢机器跑满一两个小时，重试也不会把正在收帧的目录删掉。
+    """
+    root = OUT / "_frames"
+    if not root.is_dir():
+        return 0
+    cutoff = time.time() - max_age_h * 3600
+    n = 0
+    for d in root.iterdir():
+        try:
+            if not d.is_dir() or not _RUN_RE.fullmatch(d.name):
+                continue
+            if d.stat().st_mtime > cutoff:
+                continue
+            shutil.rmtree(d, ignore_errors=True)
+            if not d.exists():
+                n += 1
+        except OSError:
+            continue
+    return n
+
+
 def motion_cleanup(run: str) -> dict:
     """出片后清掉帧序列（几百张 JPEG 很占地方）。"""
     run = str(run or "")
@@ -1111,44 +1712,438 @@ def motion_cleanup(run: str) -> dict:
 
 
 def clips_list() -> dict:
+    """素材清单。顺便把拍摄时间/真实时长探出来，界面上要显示给用户看。
+
+    文件可能被外部删掉（清缓存、换机），所以每条都带 `exists`，
+    界面据此标「文件已丢失」而不是让人对着一条点不动的记录发呆。
+    """
     MEDIA.mkdir(parents=True, exist_ok=True)
-    return {"ok": True, "items": _clips_read(), "dir": str(MEDIA)}
+    items = _clips_read()
+    repairs: dict[str, tuple] = {}
+    for it in items:
+        p = Path(str(it.get("path") or ""))
+        it["kind"] = it.get("kind") or _kind_of(p)
+        it["exists"] = p.is_file()
+        if not it["exists"]:
+            it["t_why"] = "文件已丢失"
+            continue
+        info = _probe_material(p, name_hint=str(it.get("name") or ""))
+        native = _norm_taken_ms(it.get("t_native"))
+        had = bool(it.get("t_utc"))
+        # 老版本登记时探不到时间。现在能从 udta / 原始文件名 / 原生兜底
+        # 补回来的直接落盘，免得界面一直显示「加入」、回放一直按数量均分。
+        found = info.get("t_utc") or native
+        if not had and found:
+            src = (info.get("t_source") or "") if info.get("t_utc") else "相册/视频日期标签"
+            it["t_utc"], it["t_source"] = found, src
+            repairs[str(it.get("id") or it.get("path") or "")] = (found, src)
+        it["t_utc"] = _meta_val(it, info, "t_utc") or native or None
+        it["t_source"] = it.get("t_source") or info.get("t_source") \
+            or ("相册/视频日期标签" if native else "")
+        it["t_why"] = "" if it.get("t_utc") else (info.get("t_why") or "读不到拍摄时间")
+        it["w"] = it.get("w") or info.get("w") or 0
+        it["h"] = it.get("h") or info.get("h") or 0
+        # 视频用文件的真实时长：登记时传的是剪辑结果，可能和时间轴差几十毫秒
+        if info.get("dur"):
+            it["dur"] = round(float(info["dur"]), 2)
+    if repairs:
+        # 只把补到的两个字段写回原始记录，别把 exists/t_why 这些临时字段落盘
+        raw = _clips_read()
+        for x in raw:
+            got = repairs.get(str(x.get("id") or x.get("path") or ""))
+            if got and not x.get("t_utc"):
+                x["t_utc"], x["t_source"] = got
+        _clips_write(raw)
+    return {"ok": True, "items": items, "dir": str(MEDIA)}
+
+
+def _norm_taken_ms(v) -> int:
+    """原生侧传来的拍摄时间统一成 UTC 毫秒。
+
+    各 ROM 的 `DATE_TAKEN` 有给毫秒的、也有给秒的；`MediaMetadataRetriever`
+    解析出来也是毫秒。范围外的（0、1970、加进来时的系统时间被误传）一律
+    丢掉——把「加入时间」当拍摄时间会直接把素材锚到错误的轨迹位置。
+    """
+    try:
+        n = int(float(v or 0))
+    except (TypeError, ValueError):
+        return 0
+    if 1_000_000_000 <= n < 100_000_000_000:
+        n *= 1000
+    if not (946_684_800_000 <= n < 4_102_444_800_000):   # 2000-01-01 ~ 2100-01-01
+        return 0
+    return n
+
+
+def _kind_of(p: Path) -> str:
+    return "image" if p.suffix.lower() in (
+        ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif") else "video"
+
+
+def clips_reprobe(clip_id: str) -> dict:
+    """素材列表里的「重新读取时间」：成品、原始文件名、原生兜底时间再探一遍。
+
+    以前这个按钮只是把列表重刷一次，成品被改名成 `clip-…`、又没写回时间时，
+    点多少次都一样。现在会重新探测、把补到的时间写回成品的 mvhd 并落盘。
+    """
+    items = _clips_read()
+    for it in items:
+        if str(it.get("id") or "") != str(clip_id):
+            continue
+        p = Path(str(it.get("path") or ""))
+        if not p.is_file():
+            return {"ok": False, "error": "文件已丢失，删掉重新添加一次"}
+        info = _probe_material(p, name_hint=str(it.get("name") or ""))
+        native = _norm_taken_ms(it.get("t_native"))
+        t = info.get("t_utc") or it.get("t_utc") or native
+        if not t:
+            why = info.get("t_why") or "文件里没有拍摄时间，剪辑前的源文件也没留下"
+            it["t_why"] = why
+            _clips_write(items)
+            return {"ok": True, "t_utc": 0,
+                    "error": "还是读不到：" + why + "。请删掉这条，重新从相册添加一次"}
+        it["t_utc"] = int(t)
+        it["t_source"] = (info.get("t_source") or it.get("t_source")
+                          or "相册/剪辑前")
+        it["t_why"] = ""
+        if (it.get("kind") or _kind_of(p)) == "video":
+            from . import clip as clip_mod
+            clip_mod.stamp_creation(p, int(t))
+        _clips_write(items)
+        return {"ok": True, "t_utc": int(t), "t_source": it["t_source"]}
+    return {"ok": False, "error": "没有这段素材"}
 
 
 def clips_add(path: str, name: str = "", dur: float = 0,
-              w: int = 0, h: int = 0) -> dict:
-    """登记一段素材。剪辑本身由原生侧用 MediaExtractor/Muxer 无损完成，
-    这里只记录结果（文件应落在 `data/media/` 下）。"""
+              w: int = 0, h: int = 0, kind: str = "",
+              probe_from: str = "", taken_ms: float = 0,
+              rotate: int = 0, keep_src: str = "") -> dict:
+    """登记一段素材。视频的剪辑由原生侧用 MediaExtractor/Muxer 无损完成，
+    图片直接拷进来即可；这里只记录结果（文件应落在 `data/media/` 下）。
+
+    `probe_from` 是**剪辑前的源文件**：视频一旦被 MediaMuxer 重封装，
+    `mvhd.creation_time` 就没了（实测转码/重封装后的 mp4 一律读不到），
+    只探成品会永远拿不到拍摄时间，回放里就只能按数量均匀铺开、位置不准。
+
+    `taken_ms` 是原生侧从**相册/视频解码器**读到的拍摄时间。真机上「相册里
+    明明显示拍摄时间、App 里却是无拍摄时间」多半就是这个：时间只存在于
+    MediaStore 的 DATE_TAKEN 或 MediaMetadataRetriever 的日期标签里，
+    拷进 cache 的 mp4、以及裁出来的成品都不带它。所以必须在一开始就取出来。
+
+    `rotate` 是显示旋转（0/90/180/270）。无损剪辑不能真的转码旋转，所以
+    记在素材上，回放绘制和原生抽帧时再转 —— 竖拍视频才不会在卡片里被压成横屏。
+
+    `keep_src` 是**保留下来**的原始文件（不是临时 cache）：再次剪辑要回到
+    未裁的原片，否则只能在已经裁过的成品上二次裁，首段永远找不回来。
+    """
     p = Path(str(path or ""))
     if not p.is_file():
         return {"ok": False, "error": "素材文件不存在"}
     items = _clips_read()
     cid = f"c{secrets.token_hex(4)}"
+    k = kind or _kind_of(p)
+    if k == "image" and dur <= 0:
+        dur = STILL_SEC
+    # 源文件优先：它才带得住拍摄时间。name 是原始文件名，
+    # 即使源片自己没写 creation_time，也能从 VID_20261103_180036 兜出来。
+    src = Path(str(probe_from)) if probe_from else p
+    meta = _probe_material(src, name_hint=str(name)) if src.is_file() else {}
+    fallback = _probe_material(p, name_hint=str(name))
+    # 时长也以文件为准：原生侧传的 dur 可能是剪辑结果的估算值，
+    # 有真实时长就别用它——登记 0 更糟（后面会退化成 3 秒）。
+    if k == "video":
+        dur = float(fallback.get("dur") or meta.get("dur") or 0) or float(dur or 0)
+    native = _norm_taken_ms(taken_ms)
+    t_utc = meta.get("t_utc") or fallback.get("t_utc") or native or None
+    if meta.get("t_utc"):
+        t_src = meta.get("t_source") or "剪辑前源文件"
+    elif fallback.get("t_utc"):
+        t_src = fallback.get("t_source") or "成品文件"
+    elif native:
+        t_src = "相册/视频日期标签"
+    else:
+        t_src = ""
+    t_why = "" if t_utc else (meta.get("t_why") or fallback.get("t_why") or "读不到拍摄时间")
+    # 把时间写回成品的 mvhd：以后就算 clips.json 丢了，也还能从文件本身读回来。
+    if t_utc and k == "video":
+        from . import clip as clip_mod
+        clip_mod.stamp_creation(p, int(t_utc))
+    try:
+        rot = int(rotate or 0) % 360
+    except (TypeError, ValueError):
+        rot = 0
+    if rot not in (0, 90, 180, 270):
+        rot = 0
     items.append({
         "id": cid, "path": str(p), "name": (name or p.stem)[:60],
+        "kind": k,
         "dur": round(float(dur or 0), 2), "w": int(w or 0), "h": int(h or 0),
+        "t_utc": t_utc, "t_source": t_src, "t_why": t_why,
+        # 原生兜底时间存下来：以后「重新读取时间」、clips.json 被重写都还在
+        "t_native": native or None,
+        "lat": meta.get("lat") if meta.get("lat") is not None else fallback.get("lat"),
+        "lon": meta.get("lon") if meta.get("lon") is not None else fallback.get("lon"),
         "added_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # 显示旋转：无损剪辑不转码，方向只能在绘制端兑现
+        "rotate": rot,
+        # 原始文件（再次剪辑用）。为空表示这条是旧记录或图片，不能再改起点
+        "src": str(Path(keep_src)) if keep_src else "",
     })
     _clips_write(items)
-    return {"ok": True, "id": cid, "items": items}
+    return {"ok": True, "id": cid, "t_utc": t_utc, "t_source": t_src,
+            "items": items}
 
 
 def clips_remove(clip_id: str) -> dict:
+    r = clips_remove_many([clip_id])
+    if not r.get("ok"):
+        return {"ok": False, "error": "没有这段素材"}
+    return {"ok": True, "items": r.get("items") or []}
+
+
+def clips_remove_many(ids: list) -> dict:
+    """一次删多条：写一次盘、删一批文件。
+
+    批量删除时逐条调 `clips_remove` 会写 N 次 clips.json，几十条就明显卡；
+    而且要删的文件里还有「保留的原始片」，不一起删会一直占着几百 MB。
+    """
+    want = {str(x) for x in (ids or []) if x}
+    if not want:
+        return {"ok": False, "error": "没有选中素材"}
     items = _clips_read()
-    keep, gone = [], None
+    keep, gone = [], []
     for it in items:
-        if it.get("id") == clip_id:
-            gone = it
+        if str(it.get("id") or "") in want:
+            gone.append(it)
         else:
             keep.append(it)
-    if gone is None:
-        return {"ok": False, "error": "没有这段素材"}
+    if not gone:
+        return {"ok": False, "error": "选中的素材已经不在列表里"}
     _clips_write(keep)
+    for it in gone:
+        for key in ("path", "src"):
+            try:
+                fp = Path(str(it.get(key) or ""))
+                if fp.is_file():
+                    fp.unlink()
+            except OSError:
+                pass
+    return {"ok": True, "removed": len(gone), "items": keep}
+
+
+def clips_update(clip_id: str, dur: float = 0, w: int = 0, h: int = 0,
+                 rotate: int = -1, name: str = "") -> dict:
+    """再次剪辑 / 手动旋转后回写记录（成品文件已由原生侧替换好）。
+
+    `rotate=-1` 表示这次不动旋转，避免只想改时长时把方向写回 0。
+    """
+    items = _clips_read()
+    hit = None
+    for it in items:
+        if str(it.get("id") or "") == str(clip_id):
+            hit = it
+            break
+    if hit is None:
+        return {"ok": False, "error": "没有这段素材"}
+    if dur > 0:
+        hit["dur"] = round(float(dur), 2)
+    if w > 0:
+        hit["w"] = int(w)
+    if h > 0:
+        hit["h"] = int(h)
+    if name:
+        hit["name"] = str(name)[:60]
+    if rotate is not None and int(rotate) >= 0:
+        try:
+            rot = int(rotate) % 360
+        except (TypeError, ValueError):
+            rot = 0
+        hit["rotate"] = rot if rot in (0, 90, 180, 270) else 0
+    _clips_write(items)
+    return {"ok": True, "item": hit, "items": items}
+
+
+# ---------------------------------------------------------------- 数据搬迁
+# 换手机 / 重装 App 时把历史带走。App 是 allowBackup=false，不导出就等于清零。
+#
+# 只搬「自己练出来的东西」：日汇总、活动、明细、体成分、成绩、教练点评，
+# 再带上计划快照、手工补录、饮食与素材清单。
+# **账号凭据一律不进包**（session.json / coros_auth.json / mi_auth.json / amap.json）：
+# 那些是登录态，换机应该重新登录，复制过去只会让两台设备抢同一个会话。
+
+BUNDLE_KIND = "runnercoach-data"
+BUNDLE_VER = 1
+BUNDLE_EXTRAS = ("plan.json", "manual.json", "meals.json", "clips.json")
+BUNDLE_TABLES = ("daily", "activities", "activity_detail", "body",
+                 "race_results", "coach_notes")
+
+_BUNDLE_README = """RunnerCoach 数据包
+==================
+
+这个包里是你的训练与健康数据，用来换手机或重装后恢复。
+
+包含：
+  garmin.db      日汇总、活动、活动明细、体成分、赛事成绩、教练点评
+  extras/        计划快照、手工补录、饮食记录、素材清单（有就带）
+  manifest.json  导出时间、版本与各表条数
+
+不包含（故意的）：
+  * 任何账号凭据与会话（换机后在新设备上重新登录即可）
+  * 照片与视频原文件（相册里还有原件，导入后重新添加素材即可）
+  * 高德底图 Key
+
+怎么导入：
+  App 里：我的 → 本地数据 → 导入数据，选这个 zip。
+  命令行：run.bat import <这个文件.zip>
+
+导入会用包里的库**覆盖**当前数据，覆盖前自动备份一份 garmin.db.bak-时间戳。
+"""
+
+
+def _db_stats(path: Path) -> dict:
+    """各表条数。导出时给人看，导入后用来核对是否一致。"""
+    out: dict = {}
     try:
-        Path(str(gone.get("path") or "")).unlink()
-    except OSError:
-        pass
-    return {"ok": True, "items": keep}
+        conn = sqlite3.connect(str(path))
+    except sqlite3.Error as e:
+        return {"error": str(e)}
+    try:
+        for t in BUNDLE_TABLES:
+            try:
+                out[t] = conn.execute(f"select count(*) from {t}").fetchone()[0]
+            except sqlite3.Error:
+                out[t] = -1
+    finally:
+        conn.close()
+    return out
+
+
+def db_export() -> dict:
+    """把本地库打成一个 zip，返回路径给系统分享。"""
+    if not DB.is_file():
+        return {"ok": False, "error": "还没有本地数据，先同步一次"}
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
+    # 每次现算：OUT 会被测试/调用方替换，模块级常量会指向老路径
+    out = OUT / "exports" / f"RunnerCoach-data-{stamp}.zip"
+    tmp = out.with_suffix(".db.part")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # 用 sqlite 的 backup API 复制，避免直接抄一个正在写的库
+        src = sqlite3.connect(str(DB))
+        try:
+            dst = sqlite3.connect(str(tmp))
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+        counts = _db_stats(tmp)
+        extras = [n for n in BUNDLE_EXTRAS if (HOME / "data" / n).is_file()]
+        manifest = {
+            "kind": BUNDLE_KIND,
+            "bundle": BUNDLE_VER,
+            "app": __version__,
+            "exported_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "counts": counts,
+            "extras": extras,
+        }
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+            z.writestr("manifest.json",
+                       json.dumps(manifest, ensure_ascii=False, indent=1) + "\n")
+            z.write(tmp, "garmin.db")
+            for n in extras:
+                z.write(HOME / "data" / n, f"extras/{n}")
+            z.writestr("README.txt", _BUNDLE_README)
+    except (OSError, sqlite3.Error, zipfile.BadZipFile) as e:
+        return {"ok": False, "error": f"导出失败：{type(e).__name__}: {e}"}
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return {"ok": True, "path": str(out), "name": out.name,
+            "size": out.stat().st_size, "counts": counts, "extras": extras}
+
+
+def db_import(zip_path: str = "") -> dict:
+    """用数据包覆盖本地库。覆盖前一定先备份，失败也能退回去。"""
+    p = Path(str(zip_path or "")).expanduser()
+    if not p.is_file():
+        return {"ok": False, "error": "找不到这个文件"}
+    try:
+        z = zipfile.ZipFile(p)
+    except (zipfile.BadZipFile, OSError):
+        return {"ok": False, "error": "不是有效的 zip 文件"}
+    with z:
+        names = set(z.namelist())
+        if "garmin.db" not in names or "manifest.json" not in names:
+            return {"ok": False, "error": "包不完整：缺 garmin.db 或 manifest.json"}
+        try:
+            man = json.loads(z.read("manifest.json").decode("utf-8"))
+        except (KeyError, ValueError):
+            return {"ok": False, "error": "manifest.json 读不出来"}
+        if man.get("kind") != BUNDLE_KIND:
+            return {"ok": False, "error": "这不是 RunnerCoach 的数据包"}
+        try:
+            newer = int(man.get("bundle") or 0) > BUNDLE_VER
+        except (TypeError, ValueError):
+            newer = False
+        if newer:
+            return {"ok": False,
+                    "error": "这个包来自更新的版本，请先把 App 升级到最新再导入"}
+
+        tmp = HOME / "data" / ".import.part"
+        try:
+            tmp.write_bytes(z.read("garmin.db"))
+        except (KeyError, OSError) as e:
+            return {"ok": False, "error": f"解包失败：{type(e).__name__}"}
+
+        backup = ""
+        try:
+            if DB.is_file():
+                bp = DB.with_name(f"garmin.db.bak-{dt.datetime.now():%Y%m%d-%H%M%S}")
+                shutil.copy2(DB, bp)
+                backup = str(bp)
+            src = sqlite3.connect(str(tmp))
+            try:
+                dst = sqlite3.connect(str(DB))
+                try:
+                    src.backup(dst)
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+        except (OSError, sqlite3.Error) as e:
+            return {"ok": False, "error": f"写库失败：{type(e).__name__}: {e}"}
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+        restored = []
+        for n in BUNDLE_EXTRAS:
+            key = f"extras/{n}"
+            if key in names:
+                try:
+                    (HOME / "data" / n).write_bytes(z.read(key))
+                    restored.append(n)
+                except (KeyError, OSError):
+                    pass
+
+    return {"ok": True, "counts": _db_stats(DB), "restored": restored,
+            "backup": backup, "exported_at": str(man.get("exported_at") or "")}
+
+
+def diag_text(lines: int = 200) -> dict:
+    """最近若干条异常，给「我的 → 诊断日志」弹窗用。"""
+    from . import diag
+
+    txt = diag.read_text(lines)
+    return {"ok": True,
+            "text": txt or "（还没有异常记录）",
+            "path": str(diag.log_path())}
 
 
 def read_html(path: str) -> dict:

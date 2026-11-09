@@ -32,6 +32,10 @@ tools/ffmpeg.exe
 tools/ffmpeg.zip
 *.apk
 *.aab
+# 正式签名：keystore 与口令都不许进仓库，丢了就无法覆盖升级
+*.jks
+*.keystore
+keys/
 __pycache__/
 *.pyc
 

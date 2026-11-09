@@ -62,8 +62,8 @@ JDK 17（清华镜像）+ Gradle 8.7（华为镜像）+ SDK 34。
 APK 实测结构：
 
 ```
-package: com.garmincoach.app  versionName 0.1.5  versionCode 6  minSdk 29  targetSdk 34
-launchable-activity: com.garmincoach.app.MainActivity
+package: mm.runnercoach.app  versionName 0.6.0  versionCode 66  minSdk 29  targetSdk 34
+launchable-activity: mm.runnercoach.app.MainActivity
 python_version: 3.13   abi: arm64-v8a
 assets/chaquopy/app.imy  →  34 个 garmin_cn/*.pyc（含 privacy / exportspec / appapi）
 签名：Android Debug（APK Signature Scheme v2）

@@ -338,7 +338,7 @@ def _at_time(rt: dict, rel: float) -> int:
 def match(photos: list[dict], rt: dict, *, t0_ms: int | None = None,
           pre_s: int = 300, post_s: int = 900, max_m: float = 80.0,
           cluster_m: float = 25.0, keep: tuple[str, ...] = (),
-          allow_time_only: bool = True) -> dict:
+          allow_time_only: bool = True, clamp_ends: bool = False) -> dict:
     """把照片挂到轨迹上。
 
     判定三条同时满足才吸附：落在活动时间窗内（前后各留一段余量）、到轨迹
@@ -347,6 +347,9 @@ def match(photos: list[dict], rt: dict, *, t0_ms: int | None = None,
 
     `cluster_m`：相距 25 m 以内的多张照片合成一个点，播放时并排显示。
     同地连拍是常态，一个点弹 5 张卡会把节奏打乱。
+
+    `clamp_ends`：时间落在活动之外的照样要（用户手动加的素材属于这种），
+    贴到最近的一端而不是丢掉——「素材一片都不许丢」，位置不准可以标 approx。
     """
     t0 = t0_ms if t0_ms is not None else rt.get("t0")
     dur = (rt.get("t") or [0])[-1] if rt.get("n") else 0
@@ -368,6 +371,7 @@ def match(photos: list[dict], rt: dict, *, t0_ms: int | None = None,
             continue
         rel = (ph["t_utc"] - t0) / 1000.0
         tz_shift = 0
+        forced = False
         if rel < -pre_s or rel > dur + post_s:
             # 有些相机把「本地时间」原样写进 creation_time 却当 UTC 解释，
             # 结果整整差一个时区（最常见就是 8 小时）。照片 EXIF 一般不会，
@@ -378,13 +382,16 @@ def match(photos: list[dict], rt: dict, *, t0_ms: int | None = None,
                     rel, tz_shift = alt, hrs
                     break
             else:
-                when = dt.datetime.fromtimestamp(ph["t_utc"] / 1000).strftime("%m-%d %H:%M")
-                loose.append({"name": name,
-                              "why": f"不在活动时段（文件时间 {when}，活动时长 {int(dur // 60)} 分钟）"})
-                continue
+                if not clamp_ends:
+                    when = dt.datetime.fromtimestamp(ph["t_utc"] / 1000).strftime("%m-%d %H:%M")
+                    loose.append({"name": name,
+                                  "why": f"不在活动时段（文件时间 {when}，活动时长 {int(dur // 60)} 分钟）"})
+                    continue
+                # 时间明显不在这次活动里：贴到最近的一端，而不是丢掉
+                rel, forced = (0.0, True) if rel < 0 else (dur, True)
 
         lat, lon = ph.get("lat"), ph.get("lon")
-        approx = False
+        approx = forced
         if lat is None or lon is None:
             # 没有坐标：跑步时拍的东西，时间本身就定位了位置
             # （轨迹在那一刻只有一个点），坐标只是用来交叉验证的。
@@ -406,16 +413,20 @@ def match(photos: list[dict], rt: dict, *, t0_ms: int | None = None,
             j = _at_time(rt, min(max(rel, 0.0), dur))
             if i >= 0 and j >= 0 and abs(rt["d"][i] - rt["d"][j]) > 300:
                 i, gap = j, None
-                approx = False
+                approx = forced
             elif i < 0:
                 if j < 0:
                     loose.append({"name": name, "why": "坐标和时间都对不上轨迹"})
                     continue
                 i, gap = j, None
             if gap is not None and gap > max_m:
-                loose.append({"name": name,
-                              "why": f"离轨迹 {gap:.0f} m（阈值 {max_m:.0f} m）"})
-                continue
+                # 素材是用户手动加的，离轨迹远也照挂——按时间点吸到轨迹上
+                if clamp_ends and j >= 0:
+                    i, gap, approx = j, None, True
+                else:
+                    loose.append({"name": name,
+                                  "why": f"离轨迹 {gap:.0f} m（阈值 {max_m:.0f} m）"})
+                    continue
         item = {
             "name": name, "path": ph.get("path"),
             "t": float(max(min(rel, dur), 0)),
