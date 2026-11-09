@@ -30,6 +30,9 @@ tools/make_card.py
 # ── 构建产物与大二进制 ──────────────────────────────────────
 tools/ffmpeg.exe
 tools/ffmpeg.zip
+# 本机工具链与虚拟环境：几十万个文件，只在本地，不进仓库
+.tools/
+.venv/
 *.apk
 *.aab
 # 正式签名：keystore 与口令都不许进仓库，丢了就无法覆盖升级
