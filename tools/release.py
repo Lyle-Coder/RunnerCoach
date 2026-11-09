@@ -503,6 +503,11 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         if p.stat().st_size > MAX_ASSET:
             print(f"! {p.name} 超过 {human(MAX_ASSET)}，Gitee 附件可能上传失败")
     print(f"  下一步：tag --push，然后 upload --tag {tag}")
+    # dist 是分发中转站，不是归档处：每次 prepare 顺手清掉过期产物，
+    # 否则几十个快照堆到几百 MB，还容易把旧包当新包发出去。
+    pr = prune_dist(keep_versions=1, keep_snaps=0, apply=True)
+    if pr["removed"]:
+        print(f"√ 已清理 {len(pr['removed'])} 个历史产物，释放 {human(pr['freed'])}")
     return 0
 
 
@@ -568,6 +573,147 @@ def cmd_upload(args: argparse.Namespace) -> int:
     return 0
 
 
+# ── dist 清理 ───────────────────────────────────────────────────────────
+
+VER_IN_NAME = re.compile(r"^RunnerCoach-v(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)-")
+SNAP_IN_NAME = re.compile(r"^RunnerCoach-snap-")
+# 发布说明也要跟着版本一起清，否则 dist 里永远躺着一堆没人看的旧文档
+NOTES_IN_NAME = re.compile(r"^RELEASE_NOTES-(.+)\.md$")
+# 快照分组键：`snap-dev-xxx-20261109-1146`，apk / zip / notes 三种名字都能抓出来
+SNAP_TAG = re.compile(r"(snap-[A-Za-z0-9_.-]+?-\d{8}-\d{4})")
+# 这些不是某个版本的产物，任何情况下都留着
+DIST_KEEP = {"SHA256SUMS.txt", ".snapshot-tag"}
+
+
+def _ver_key(v: str) -> tuple:
+    m = re.match(r"(\d+)\.(\d+)\.(\d+)", v)
+    return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+
+
+def prune_dist(keep_versions: int = 1, keep_snaps: int = 0,
+               apply: bool = True) -> dict:
+    """清掉 dist 里已经发过、不会再分发的旧产物。
+
+    分三类处理：
+      * 正式版 `RunnerCoach-vX.Y.Z-*`：按版本号保留最近 N 个（当前 + 上一个）；
+      * 开发快照 `RunnerCoach-snap-*`：默认全删（本机只是构建中转站，
+        真需要回溯去 Gitee Release 下，远端 snapshot.py 会留最近 5 个）；
+      * 其他 `RunnerCoach-*`：文件名里的版本号等于当前工作版本才留，
+        其余视为手工临时包一起清。
+
+    只动 `dist/` 一层，不递归、不碰 git、不碰远端 —— 删错了还能从 Release 下回来。
+    """
+    removed: list[Path] = []
+    freed = 0
+    if not DIST.is_dir():
+        return {"removed": [], "freed": 0}
+    current = current_version()
+
+    versions: dict[str, list[Path]] = {}
+    snaps: list[Path] = []
+    loose: list[Path] = []
+    for p in sorted(DIST.iterdir()):
+        if not p.is_file() or p.name in DIST_KEEP:
+            continue
+        m = VER_IN_NAME.match(p.name)
+        if m:
+            versions.setdefault(m.group(1), []).append(p)
+            continue
+        n = NOTES_IN_NAME.match(p.name)
+        if n:
+            tag = n.group(1)
+            if tag.startswith("v"):
+                versions.setdefault(tag[1:], []).append(p)
+            elif tag.startswith("snap-"):
+                snaps.append(p)
+            else:
+                loose.append(p)      # 说不清归属的说明文档，按杂项处理
+            continue
+        if SNAP_IN_NAME.match(p.name):
+            snaps.append(p)
+            continue
+        if p.name.startswith("RunnerCoach-") or p.name.startswith("SHA256SUMS"):
+            loose.append(p)
+
+    keep_set = set(sorted(versions, key=_ver_key, reverse=True)[:max(1, keep_versions)])
+    # 当前工作版本无条件保留：万一是回退发版（0.5.1 而不是最新的 0.6.x），
+    # 按「版本号最大的 N 个」会把它自己删掉。
+    keep_set.add(current_version())
+    for v, paths in versions.items():
+        if v not in keep_set:
+            removed.extend(paths)
+
+    # 快照按文件名里的时间戳排序（20261109-1146 这种），留最新 N 组
+    snap_groups: dict[str, list[Path]] = {}
+    for p in snaps:
+        hit = SNAP_TAG.search(p.name)
+        key = hit.group(1) if hit else p.name
+        snap_groups.setdefault(key, []).append(p)
+    for key in sorted(snap_groups, reverse=True)[max(0, keep_snaps):]:
+        removed.extend(snap_groups[key])
+
+    for p in loose:
+        if p.name.startswith("SHA256SUMS"):
+            removed.append(p)        # 只留 SHA256SUMS.txt（在当前版本的清单里）
+            continue
+        m = re.search(r"RunnerCoach-(\d+\.\d+\.\d+)", p.name)
+        if not m or m.group(1) != current:
+            removed.append(p)
+
+    for p in removed:
+        try:
+            freed += p.stat().st_size
+            if apply:
+                p.unlink()
+        except OSError:
+            pass
+    if apply and removed:
+        _rewrite_sums()
+    return {"removed": removed, "freed": freed}
+
+
+def _rewrite_sums() -> None:
+    """按 dist 里实际剩下的产物重写 SHA256SUMS.txt。
+
+    不重算的话，清掉旧版本后清单还列着一堆已经不存在的文件，
+    下次 `sha256sum -c` 直接报错 —— 比没有清单更误导。
+    """
+    rows = []
+    for p in sorted(DIST.iterdir()):
+        if p.is_file() and p.name != "SHA256SUMS.txt" and p.suffix in (".apk", ".zip"):
+            try:
+                rows.append(f"{sha256(p)}  {p.name}")
+            except OSError:
+                continue
+    try:
+        (DIST / "SHA256SUMS.txt").write_text(
+            "\n".join(rows) + ("\n" if rows else ""),
+            encoding="utf-8", newline="\n")
+    except OSError:
+        pass
+
+
+def cmd_prune(args: argparse.Namespace) -> int:
+    r = prune_dist(keep_versions=args.keep, keep_snaps=args.keep_snap,
+                   apply=not args.dry_run)
+    removed = r["removed"]
+    if not removed:
+        print("√ dist 已经是干净的")
+        return 0
+    verb = "将删除" if args.dry_run else "已删除"
+    for p in removed:
+        print(f"  {verb} {p.name}  {human(p.stat().st_size) if p.exists() else ''}")
+    print(f"{'√' if not args.dry_run else '·'} {verb} {len(removed)} 个文件，"
+          f"释放 {human(r['freed'])}"
+          + ("（dry-run，未动磁盘）" if args.dry_run else ""))
+    if not args.dry_run:
+        left = sorted(p.name for p in DIST.iterdir() if p.is_file())
+        print(f"  剩余 {len(left)} 个文件：")
+        for n in left:
+            print(f"    {n}")
+    return 0
+
+
 def cmd_selftest(args: argparse.Namespace) -> int:
     """脚本自身的离线自检：不碰 git 状态、不联网、不读凭据。"""
     assert SEMVER.fullmatch("0.1.0") and SEMVER.fullmatch("1.2.3-rc.1")
@@ -602,6 +748,14 @@ def main() -> int:
     q.set_defaults(func=cmd_check)
     q = sub.add_parser("prepare", help="生成源码包 / APK / SHA256SUMS / Release Notes")
     q.set_defaults(func=cmd_prepare)
+    q = sub.add_parser("prune", help="清理 dist 里过期的历史产物")
+    q.add_argument("--keep", type=int, default=1,
+                   help="保留最近 N 个正式版（默认 1；历史版本在 Gitee Release 里）")
+    q.add_argument("--keep-snap", type=int, default=0, dest="keep_snap",
+                   help="保留最近 N 组开发快照（默认 0 = 全清，远端另有 5 个）")
+    q.add_argument("--dry-run", action="store_true",
+                   help="只列出会删什么，不动磁盘")
+    q.set_defaults(func=cmd_prune)
     q = sub.add_parser("tag", help="创建附注标签")
     q.add_argument("--push", action="store_true", help="同时把标签推到 origin")
     q.set_defaults(func=cmd_tag)

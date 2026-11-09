@@ -2254,6 +2254,34 @@ def run() -> int:
     assert "本地推算" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
         "本地兜底课表没有标注，用户会以为那是手表里的计划"
 
+    # ---- dist 清理：发版时自动清掉过期产物 ----
+    # 只动 dist 一层、只删「发过且不会再分发」的东西；当前版本永远保留。
+    _dd = Path(tempfile.mkdtemp())
+    _cur = _rel.current_version()
+    for _n in (f"RunnerCoach-v{_cur}-release.apk",
+               "RELEASE_NOTES-v0.0.1.md",
+               "RunnerCoach-v0.0.1-release.apk",
+               "RunnerCoach-snap-dev-x-20260101-0000-release.apk",
+               "RELEASE_NOTES-snap-dev-x-20260101-0000.md",
+               "RunnerCoach-0.0.1-release.apk",
+               "SHA256SUMS-0.0.1.txt",
+               ".snapshot-tag"):
+        (_dd / _n).write_bytes(b"x")
+    with _mock.patch.object(_rel, "DIST", _dd):
+        _out = _rel.prune_dist(keep_versions=1, keep_snaps=0, apply=True)
+    _left = {p.name for p in _dd.iterdir()}
+    assert f"RunnerCoach-v{_cur}-release.apk" in _left, "当前版本的包被清理掉了"
+    assert "RunnerCoach-v0.0.1-release.apk" not in _left, "过期正式版没清"
+    assert "RELEASE_NOTES-v0.0.1.md" not in _left, "过期发布说明没清（用户明确要求）"
+    assert "RunnerCoach-snap-dev-x-20260101-0000-release.apk" not in _left, "开发快照没清"
+    assert "RELEASE_NOTES-snap-dev-x-20260101-0000.md" not in _left, "快照说明没清"
+    assert "RunnerCoach-0.0.1-release.apk" not in _left, "过期的手工包没清"
+    assert ".snapshot-tag" in _left, "snapshot 标记不该删（下次上传要用）"
+    assert _out["removed"], "清理没有返回删了哪些文件"
+    assert (ROOT / "tools/release.py").read_text(encoding="utf-8").count("prune_dist(") >= 2, \
+        "prepare 没有调用 prune_dist，发版时不会自动清"
+    shutil.rmtree(_dd, ignore_errors=True)
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):
