@@ -2199,13 +2199,15 @@ def run() -> int:
                   "runHistorySync", "pickDateRange"):
         assert _gone not in _main_src, f"旧的补拉入口还留着：{_gone}"
 
-    # 首页：睡眠/体重卡 + 趋势线 + 页头小按钮，且不再有覆盖区块
+    # 首页：身体 2×2 + 趋势线 + 页头小按钮，且不再有覆盖区块
     _home = U.home_page()
-    assert _home.count('class="vital"') == 2, "首页缺睡眠/体重卡"
-    assert _home.count('class="spark"') >= 2, "睡眠/体重卡没有趋势线"
-    assert "欠债" in _home and "体脂" in _home, "睡眠/体重卡没带关键数值"
-    assert 'class="mm"' in _home and _home.count('class="i"') == 4, \
-        "恢复度分项不是 4 个带分数条的格子"
+    assert _home.count('class="rc-cell"') == 4, "身体面板不是 2×2 四格"
+    assert _home.count('class="spark"') >= 2, "身体面板没有趋势线"
+    assert "7 日欠债" in _home or "评分" in _home, "睡眠格没带关键数值"
+    assert "42 天指数均线" in _home and "28 天基线" in _home, \
+        "关键数字没带窗口标签"
+    assert _home.count('class="rc-part"') == 3, \
+        "恢复度分解不是 3 条（环本身就是总进度，卡底那条已删）"
     assert "数据覆盖" not in _home, "首页的覆盖区块又回来了（和「我的」重复）"
 
     # 缓存淘汰：超上限才删、只删白名单后缀、最近用过的不能动
@@ -2554,7 +2556,7 @@ def run() -> int:
     assert not _re.search(r"background-attachment\s*:\s*fixed\s*;", _u.CSS), \
         "背景又用回 fixed 了，WebView 滚动会重绘整面"
     # 触控目标
-    for _sel, _min in ((".more", "40"), (".btn", "44"), (".back", "40")):
+    for _sel, _min in ((".more", "44"), (".btn", "44"), (".back", "44")):
         assert _min in _u.CSS.split(_sel + "{")[-1].split("}")[0], \
             f"{_sel} 的可点高度没到 {_min}px"
     # 文案：不给用户看开发口径
@@ -2613,6 +2615,80 @@ def run() -> int:
     assert "from garmin_cn.brand import" in (
         ROOT / "tools/gen_icon.py").read_text(encoding="utf-8"), \
         "启动器图标还在自己维护一套坐标"
+
+    # ---- 0.6.7：首屏 = 一页大屏（《主页面设计说明》） -------------------
+    from garmin_cn import screen as _SC
+
+    _css = _u.CSS
+    # 竖屏规则单取一份：大屏里也有同名选择器，别让 split 取到后者。
+    _base_css = _SC.SCREEN_CSS.split("@media(min-width:900px)")[0]
+    assert "@media(min-width:900px)" in _css and "grid-template-areas" in _css, \
+        "宽屏没有用同一份 DOM 重排成五面板"
+    assert "html.rc-big .rc-screen" in _css, "大屏模式开关没共用同一套栅格"
+    assert _css.count('"h h h h l l l l b b b b"') == 2, \
+        "自动大屏与手动开关用了两套栅格，迟早漂移"
+    _h = U.home_page()
+    # 只在 DOM 里找按钮：CSS 注释提到旧做法不算「按钮还在」。
+    _h_dom = _h.split("<main>")[1]
+    assert '<div class="rc-screen">' in _h and 'class="app rc-page"' in _h, \
+        "首屏没套上专属作用域"
+    assert _h.find('<section class="rc-verdict"') < _h.find(
+        '<section class="rc-panel rc-hero-panel"'), "结论条没提到第一行"
+    for _seg in ('<section class="rc-verdict"', "rc-hero-panel",
+                 '<section class="rc-load', "rc-body-panel",
+                 "rc-plan-panel", "rc-week-panel"):
+        assert _seg in _h, f"首屏缺段：{_seg}"
+    assert 'class="sec"' not in _h and 'class="more"' not in _h, \
+        "又把首页排成四个等高 section + 四个重复按钮了"
+    for _btn in ("完整看板", "完整课表", "导出今日一图流"):
+        assert _btn not in _h_dom, f"冗余入口没删干净：{_btn}"
+    assert '<div class="t">今天休息</div>' not in _h_dom, \
+        "计划一条又重复了结论条的判断"
+    assert 'data-screen-toggle' in _h and 'aria-pressed="false"' in _h, \
+        "「完整看板」没换成正常的大屏模式按钮"
+    assert "rc-big" in _u.BRIDGE_JS and "landscape" in _u.BRIDGE_JS, \
+        "大屏开关没接到桥接脚本"
+    assert "ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE" in _kt2, \
+        "原生没接横屏，手机上点大屏模式不会真的转过去"
+
+    # 恢复环 r45 / 描边 9；常态不亮、异常才亮；id 固定保证可复现
+    _r70, _r30 = _SC.ring_svg(70), _SC.ring_svg(30, alert=True)
+    assert _SC.ring_svg(70) == _r70, "恢复环 SVG 不是确定性的"
+    assert 'r="45"' in _r70 and 'stroke-width="9"' in _r70
+    assert 'id="rc-ring"' in _r70
+    assert 'class="rc-ring alert"' not in _r70 and 'class="rc-ring alert"' in _r30, \
+        "辉光没有只在异常日才亮"
+    _hp = _h.find('<section class="rc-panel rc-hero-panel"')
+    _hsec = _h[_hp:_h.find("</section>", _hp)]
+    assert 'class="bar"' not in _hsec, "卡底总进度条又回来了（和环重复）"
+
+    # 窗口标签、体重不截断、触控 ≥44、柱 ≥32、柱间 7
+    for _w in ("28 天基线", "42 天指数均线", "近 7 天累计", "最近 7 天",
+               "7 日变化"):
+        assert _w in _h, f"窗口标签丢了：{_w}"
+    assert "text-overflow:ellipsis" not in _base_css.split(
+        ".rc-cell .sub{")[1].split("}")[0], "体重那行又被截成「较…」"
+    for _sel, _needle in ((".rc-day{", "min-height:44px"),
+                          (".rc-day{", "min-width:32px"),
+                          (".rc-days{", "gap:7px"),
+                          (".rc-sample{", "min-height:44px"),
+                          (".rc-mode{", "min-height:44px")):
+        assert _needle in _base_css.split(_sel)[1].split("}")[0], \
+            f"{_sel} 缺 {_needle}"
+
+    # 最近 7 天：7 根柱、当天高亮、3 条样本、力量课不写假距离、零值不画假柱
+    assert _h.count('<a class="rc-day') == 7, "不是每天一柱"
+    assert "rc-day on" in _h or "rc-day zero on" in _h, "当天柱子没高亮"
+    assert _h.count('class="rc-sample"') == 3, "样本不是最近 3 条"
+    assert "0.00 km · 配速 —" not in _h, "力量训练又写成了跑了 0 公里"
+    assert ".rc-day.zero .bar{height:0" in _base_css, "零值还在画假柱"
+    _bars = _SC.week_bars([("2026-11-03", 0), ("2026-11-04", 5.0)],
+                          "2026-11-04")
+    assert 'class="rc-day zero"' in _bars and 'height:0px' in _bars, \
+        "零值柱没退化成基线点"
+    assert "/view?date=" in _bars, "柱子不能点进当天详情"
+    assert 'versionCode = 73' in (
+        ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")

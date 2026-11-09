@@ -7,6 +7,7 @@ import android.app.AlertDialog
 import android.app.Dialog
 import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -418,6 +419,12 @@ class MainActivity : Activity() {
                     "dbExport" -> doExportData()
                     "dbImport" -> doImportData()
                     "diag" -> showDiag()
+                    // 首屏「大屏模式」：同一份 DOM 铺成 12 栅格，顺手把屏幕
+                    // 转过去。manifest 已声明 configChanges，旋转不重建页面。
+                    "landscape" -> requestedOrientation =
+                        ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                    "portrait" -> requestedOrientation =
+                        ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                     else -> toast("未知操作：$name")
                 }
             }
