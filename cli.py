@@ -1781,6 +1781,41 @@ def cmd_nap(args) -> int:
     return 0
 
 
+def cmd_export(args) -> int:
+    """把本地数据打成一个 zip：换手机 / 重装时用。"""
+    from garmin_cn import appapi
+
+    r = appapi.db_export()
+    if not r.get("ok"):
+        print("! " + str(r.get("error")))
+        return 1
+    c = r.get("counts") or {}
+    print(f"√ 已导出：{r['path']}（{r['size'] / 1048576:.1f} MB）")
+    print(f"  日汇总 {c.get('daily', 0)} 天 / 活动 {c.get('activities', 0)} 条"
+          f" / 明细 {c.get('activity_detail', 0)} 条")
+    print("  不含账号凭据与照片原文件；导入用 run.bat import <这个 zip>")
+    return 0
+
+
+def cmd_import(args) -> int:
+    """用数据包覆盖本地数据；覆盖前自动备份旧库。"""
+    from garmin_cn import appapi
+
+    r = appapi.db_import(args.path)
+    if not r.get("ok"):
+        print("! " + str(r.get("error")))
+        return 1
+    c = r.get("counts") or {}
+    print(f"√ 已导入（来自 {r.get('exported_at') or '未知时间'}）")
+    print(f"  日汇总 {c.get('daily', 0)} 天 / 活动 {c.get('activities', 0)} 条"
+          f" / 明细 {c.get('activity_detail', 0)} 条")
+    if r.get("restored"):
+        print("  附带恢复：" + "、".join(r["restored"]))
+    if r.get("backup"):
+        print(f"  原库已备份：{r['backup']}")
+    return 0
+
+
 def cmd_status(args) -> int:
     store = Store(DB)
     st = store.stats()
@@ -2037,10 +2072,19 @@ def cmd_ai(args) -> int:
 
 
 def cmd_demo(args) -> int:
-    from garmin_cn.demo import build
+    from garmin_cn.demo import DEMO_REV, build
 
     demo_db = HOME / "data" / "demo.db"
-    if args.fresh or not demo_db.exists():
+    # 复用旧库之前先看生成逻辑版本：demo 里加过东西（比如活动明细），
+    # 旧库不会自己长出来，结果就是「代码明明改了，demo 里看不到」。
+    stale = args.fresh or not demo_db.exists()
+    if not stale:
+        try:
+            old = Store(demo_db)
+            stale = old.get_meta("demo_rev") != str(DEMO_REV)
+        except Exception:
+            stale = True
+    if stale:
         if demo_db.exists():
             try:
                 demo_db.unlink()
@@ -2344,6 +2388,13 @@ def main() -> int:
 
     q = sub.add_parser("status", help="查看状态")
     q.set_defaults(func=cmd_status)
+
+    q = sub.add_parser("export", help="导出本地数据包（换机 / 重装用）")
+    q.set_defaults(func=cmd_export)
+
+    q = sub.add_parser("import", help="导入数据包（覆盖当前数据，先自动备份）")
+    q.add_argument("path", help="导出的 zip 路径")
+    q.set_defaults(func=cmd_import)
 
     q = sub.add_parser("doctor", help="环境自检（排查跑不通）")
     q.set_defaults(func=cmd_doctor)

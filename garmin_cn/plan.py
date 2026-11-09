@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 from pathlib import Path
 
 DOW = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6: "周六", 7: "周日"}
@@ -596,3 +597,123 @@ def item_line(item: dict) -> str:
     if _sp and _sp != "跑步" and _sp not in str(item.get("name") or ""):
         bits.append(_sp)
     return " · ".join(bits)
+
+
+# ---------------------------------------------------------------- 本地兜底
+# 纯高驰用户永远拿不到佳明日历（高驰没有对外计划接口）。以前 plan() 直接
+# 返回 ok:false，今日页整块课表就不渲染 —— 明明本地有备赛课表和恢复度，
+# 能算出「今天练什么」，却让人以为这个功能根本不存在。
+
+def _minutes_of(text) -> int | None:
+    """从「45 分钟」「60-75 分钟」「已练 30 分钟」里取分钟数，取上限。"""
+    m = re.search(r"(\d+)\s*(?:[-~到]\s*(\d+))?\s*分", str(text or ""))
+    if not m:
+        return None
+    return int(m.group(2) or m.group(1))
+
+
+def from_coach(res: dict, today: str | None = None,
+               activity_days: set[str] | None = None) -> dict:
+    """本地兜底课表：备赛计划优先，没有就退回今日处方。
+
+    输出结构与 `normalize()` / `from_calendar()` 完全一致，展示层不用区分
+    数据来自佳明日历还是本地推的 —— 否则每加一个兜底就要改一遍页面。
+    """
+    from . import raceplan
+    from .coach import pick_session
+
+    today = today or dt.date.today().isoformat()
+    d0 = dt.date.fromisoformat(today)
+    try:
+        has_race = bool(raceplan.available())
+    except Exception:
+        has_race = False
+
+    monday = d0 - dt.timedelta(days=d0.weekday())
+    week: list[dict] = []
+    for i in range(7):
+        day = monday + dt.timedelta(days=i)
+        date = day.isoformat()
+        items: list[dict] = []
+        if has_race:
+            try:
+                info = raceplan.day_info(day)
+            except Exception:
+                info = None
+            if info and not info.get("is_rest"):
+                items.append({
+                    "name": info.get("title") or info.get("abbr") or "训练",
+                    "detail": info.get("tip") or info.get("sub") or "",
+                    "sport": "跑步",
+                    "sport_key": "running",
+                    "minutes": info.get("minutes") or None,
+                    "effect": None,
+                    "rest": False,
+                    "status": None,
+                    "priority": None,
+                    "uuid": None,
+                    "note": info.get("note") or "",
+                })
+        week.append({"date": date, "dow": DOW[day.isoweekday()],
+                     "items": items, "rest": not items})
+
+    today_items = next((w["items"] for w in week if w["date"] == today), [])
+    from_coach_source = "raceplan"
+    today_note = ""
+    today_rest = False
+    if not today_items:
+        # 今天没排备赛课（或压根没挂计划）：用恢复度算一个处方，
+        # 至少让人知道该练什么强度，而不是看到一片空白。
+        try:
+            s = pick_session(res)
+        except Exception:
+            s = {}
+        _kind = str(s.get("type") or "")
+        if _kind and "休息" in _kind and "加练" not in _kind:
+            # 处方是「休息」时不能塞成一条 20 分钟 Z1 的课 —— 那正是
+            # v64 修过的坑（把记录当课表，看着像要练）。保持休息，
+            # 把「为什么休息」写进 note，页面在标题下面显示。
+            today_rest = True
+            today_note = str(s.get("why") or "")
+            from_coach_source = "coach"
+        elif _kind:
+            today_items = [{
+                "name": _kind,
+                "detail": s.get("why") or "",
+                "sport": "跑步",
+                "sport_key": "running",
+                "minutes": _minutes_of(s.get("duration")),
+                "effect": s.get("intensity"),
+                "rest": False,
+                "status": None,
+                "priority": None,
+                "uuid": None,
+                "note": s.get("duration") or "",
+            }]
+            from_coach_source = "coach"
+            week = [{**w, "items": today_items, "rest": False}
+                    if w["date"] == today else w for w in week]
+
+    data = {
+        "available": True,
+        "classify": CLASSIFY_REV,
+        "plan_id": None,
+        "name": "本地教练计划" if from_coach_source == "coach" else "本地备赛计划",
+        "description": "由备赛课表与恢复度在本地算出，不依赖任何账号",
+        "level": None,
+        "version": None,
+        "weeks": None,
+        "per_week": None,
+        "start": None,
+        "end": None,
+        "status": "local",
+        "phase": None,
+        "source": from_coach_source,
+        "today": {"date": today, "items": today_items, "acts": [],
+                  "rest": today_rest, "note": today_note},
+        "week": week,
+        "next_date": None,
+        "next_items": [],
+        "rest_days_in_week": sum(1 for w in week if w["rest"]),
+    }
+    return annotate(data, activity_days, today)

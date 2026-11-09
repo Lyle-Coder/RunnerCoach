@@ -14,6 +14,12 @@ import random
 
 from .store import Store
 
+# 生成逻辑的版本。改了「造哪些数据」就 +1：
+# `cli.py demo` 发现库里记的版本不一致会重建，否则老 demo.db 会一直缺新东西
+# （踩过一次：代码已经在写 activity_detail，而复用的旧库里那表是空的，
+# 活动图直接报「明细还没缓存」）。
+DEMO_REV = 2
+
 TYPES = [
     ("running", "晨跑", 45, 8.2, 148, 520, 62),
     ("running", "轻松跑", 38, 6.4, 138, 380, 45),
@@ -269,6 +275,7 @@ def build(path, days: int = 60, seed: int = 7) -> Store:
     # 打上标记：看板/卡片的数据源徽标会写「DEMO 仿真数据」，
     # 免得截图或演示被当成真实账号数据。
     store.set_meta("demo", "1")
+    store.set_meta("demo_rev", str(DEMO_REV))
 
     # 体重/体成分：隔三天称一次，缓慢下降 + 体脂同步降，用来验证趋势卡
     from . import body as body_mod

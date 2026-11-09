@@ -27,11 +27,14 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import sys
 import threading
 import time
+import zipfile
 from pathlib import Path
 
+from . import __version__
 from .auth import AuthError, GarminCNAuth, MfaRequired
 from .client import GarminCNClient, SessionExpired
 from .exportspec import BG_ACT, BG_CARD, spec as export_spec
@@ -135,6 +138,7 @@ _API = {
     "dashboard", "card_html", "act_card_html", "runs", "activities", "days_index",
     "history_stats", "backfill_next",
     "plan", "set_amap_key", "start_server", "recent", "read_html",
+    "db_export", "db_import", "diag_text",
     "motion_html", "motion_status", "motion_cleanup", "motion_audio",
     "clips_list", "clips_add", "clips_remove", "clips_reprobe",
     "clips_remove_many", "clips_update",
@@ -202,6 +206,11 @@ def call(name: str, args_json: str = "[]") -> str:
     try:
         return json.dumps(globals()[name](*args), ensure_ascii=False)
     except Exception as e:
+        # 异常在 App 里只表现为一句 toast，用户复述不清。留一份到 diag.log，
+        # 「我的 → 诊断日志」能一键复制，远程排查才有依据。
+        from . import diag
+
+        diag.log_exc(f"api:{name}", e)
         return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"},
                           ensure_ascii=False)
 
@@ -830,6 +839,29 @@ def _activity_days(today: str) -> set[str]:
         return set()
 
 
+def _plan_local(today: str, days: set[str], note: str = "") -> dict:
+    """没有佳明会话时的本地课表兜底。
+
+    纯高驰用户拿不到佳明日历（高驰没有对外计划接口），以前这里直接
+    返回 ok:false，今日页整块课表就不渲染。现在退成「备赛计划 > 今日处方」，
+    至少让人看到今天该练什么。
+    """
+    from .plan import from_coach
+
+    try:
+        res = derive(Store(DB), today)
+        data = from_coach(res, today, days)
+    except Exception as e:  # noqa: BLE001 - 兜底失败就老实说，别假装有计划
+        from . import diag
+
+        diag.log_exc("plan:local", e)
+        return {"ok": False, "kind": "local",
+                "error": f"本地课表算不出来：{type(e).__name__}: {e}"}
+    if note:
+        data["note"] = note
+    return {"ok": True, **data}
+
+
 def plan(refresh: bool = False, date: str | None = None,
          source: str = "auto") -> dict:
     """训练安排（佳明日历优先，Garmin Coach 兜底）。
@@ -849,19 +881,24 @@ def plan(refresh: bool = False, date: str | None = None,
         try:
             client = _client()
         except AuthError as e:
-            return {"ok": False, "error": f"还没登录佳明：{e}", "kind": "auth"}
+            # 没登录不是错误，是「换个数据源」：本地兜底比空白页有用
+            return _plan_local(today, days, note=f"佳明未登录：{e}")
         except Exception as e:
-            return {"ok": False, "error": f"{type(e).__name__}: {e}", "kind": "auth"}
+            return _plan_local(today, days,
+                               note=f"佳明连接失败：{type(e).__name__}")
         try:
             data = fetch(client, today, out_path=path, source=source,
                          activity_days=days)
         except SessionExpired:
-            return {"ok": False, "error": "佳明会话过期，请重新登录", "kind": "auth"}
+            return _plan_local(today, days, note="佳明会话过期，已改用本地课表")
         except Exception as e:
             data = {"available": False, "reason": f"{type(e).__name__}: {e}"}
     if not data or not data.get("available"):
-        return {"ok": False,
-                "error": (data or {}).get("reason") or "当前没有可用的训练安排",
+        reason = (data or {}).get("reason") or ""
+        local = _plan_local(today, days, note=f"佳明无课表：{reason}" if reason else "")
+        if local.get("ok"):
+            return local
+        return {"ok": False, "error": reason or "当前没有可用的训练安排",
                 "empty": True}
     # 新拉的与缓存的都重新标注一次：同步之后「今天练没练」会变，
     # 缓存里的 done 不能一直用旧的。
@@ -1924,6 +1961,189 @@ def clips_update(clip_id: str, dur: float = 0, w: int = 0, h: int = 0,
         hit["rotate"] = rot if rot in (0, 90, 180, 270) else 0
     _clips_write(items)
     return {"ok": True, "item": hit, "items": items}
+
+
+# ---------------------------------------------------------------- 数据搬迁
+# 换手机 / 重装 App 时把历史带走。App 是 allowBackup=false，不导出就等于清零。
+#
+# 只搬「自己练出来的东西」：日汇总、活动、明细、体成分、成绩、教练点评，
+# 再带上计划快照、手工补录、饮食与素材清单。
+# **账号凭据一律不进包**（session.json / coros_auth.json / mi_auth.json / amap.json）：
+# 那些是登录态，换机应该重新登录，复制过去只会让两台设备抢同一个会话。
+
+BUNDLE_KIND = "runnercoach-data"
+BUNDLE_VER = 1
+BUNDLE_EXTRAS = ("plan.json", "manual.json", "meals.json", "clips.json")
+BUNDLE_TABLES = ("daily", "activities", "activity_detail", "body",
+                 "race_results", "coach_notes")
+
+_BUNDLE_README = """RunnerCoach 数据包
+==================
+
+这个包里是你的训练与健康数据，用来换手机或重装后恢复。
+
+包含：
+  garmin.db      日汇总、活动、活动明细、体成分、赛事成绩、教练点评
+  extras/        计划快照、手工补录、饮食记录、素材清单（有就带）
+  manifest.json  导出时间、版本与各表条数
+
+不包含（故意的）：
+  * 任何账号凭据与会话（换机后在新设备上重新登录即可）
+  * 照片与视频原文件（相册里还有原件，导入后重新添加素材即可）
+  * 高德底图 Key
+
+怎么导入：
+  App 里：我的 → 本地数据 → 导入数据，选这个 zip。
+  命令行：run.bat import <这个文件.zip>
+
+导入会用包里的库**覆盖**当前数据，覆盖前自动备份一份 garmin.db.bak-时间戳。
+"""
+
+
+def _db_stats(path: Path) -> dict:
+    """各表条数。导出时给人看，导入后用来核对是否一致。"""
+    out: dict = {}
+    try:
+        conn = sqlite3.connect(str(path))
+    except sqlite3.Error as e:
+        return {"error": str(e)}
+    try:
+        for t in BUNDLE_TABLES:
+            try:
+                out[t] = conn.execute(f"select count(*) from {t}").fetchone()[0]
+            except sqlite3.Error:
+                out[t] = -1
+    finally:
+        conn.close()
+    return out
+
+
+def db_export() -> dict:
+    """把本地库打成一个 zip，返回路径给系统分享。"""
+    if not DB.is_file():
+        return {"ok": False, "error": "还没有本地数据，先同步一次"}
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
+    # 每次现算：OUT 会被测试/调用方替换，模块级常量会指向老路径
+    out = OUT / "exports" / f"RunnerCoach-data-{stamp}.zip"
+    tmp = out.with_suffix(".db.part")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # 用 sqlite 的 backup API 复制，避免直接抄一个正在写的库
+        src = sqlite3.connect(str(DB))
+        try:
+            dst = sqlite3.connect(str(tmp))
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+        counts = _db_stats(tmp)
+        extras = [n for n in BUNDLE_EXTRAS if (HOME / "data" / n).is_file()]
+        manifest = {
+            "kind": BUNDLE_KIND,
+            "bundle": BUNDLE_VER,
+            "app": __version__,
+            "exported_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "counts": counts,
+            "extras": extras,
+        }
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+            z.writestr("manifest.json",
+                       json.dumps(manifest, ensure_ascii=False, indent=1) + "\n")
+            z.write(tmp, "garmin.db")
+            for n in extras:
+                z.write(HOME / "data" / n, f"extras/{n}")
+            z.writestr("README.txt", _BUNDLE_README)
+    except (OSError, sqlite3.Error, zipfile.BadZipFile) as e:
+        return {"ok": False, "error": f"导出失败：{type(e).__name__}: {e}"}
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return {"ok": True, "path": str(out), "name": out.name,
+            "size": out.stat().st_size, "counts": counts, "extras": extras}
+
+
+def db_import(zip_path: str = "") -> dict:
+    """用数据包覆盖本地库。覆盖前一定先备份，失败也能退回去。"""
+    p = Path(str(zip_path or "")).expanduser()
+    if not p.is_file():
+        return {"ok": False, "error": "找不到这个文件"}
+    try:
+        z = zipfile.ZipFile(p)
+    except (zipfile.BadZipFile, OSError):
+        return {"ok": False, "error": "不是有效的 zip 文件"}
+    with z:
+        names = set(z.namelist())
+        if "garmin.db" not in names or "manifest.json" not in names:
+            return {"ok": False, "error": "包不完整：缺 garmin.db 或 manifest.json"}
+        try:
+            man = json.loads(z.read("manifest.json").decode("utf-8"))
+        except (KeyError, ValueError):
+            return {"ok": False, "error": "manifest.json 读不出来"}
+        if man.get("kind") != BUNDLE_KIND:
+            return {"ok": False, "error": "这不是 RunnerCoach 的数据包"}
+        try:
+            newer = int(man.get("bundle") or 0) > BUNDLE_VER
+        except (TypeError, ValueError):
+            newer = False
+        if newer:
+            return {"ok": False,
+                    "error": "这个包来自更新的版本，请先把 App 升级到最新再导入"}
+
+        tmp = HOME / "data" / ".import.part"
+        try:
+            tmp.write_bytes(z.read("garmin.db"))
+        except (KeyError, OSError) as e:
+            return {"ok": False, "error": f"解包失败：{type(e).__name__}"}
+
+        backup = ""
+        try:
+            if DB.is_file():
+                bp = DB.with_name(f"garmin.db.bak-{dt.datetime.now():%Y%m%d-%H%M%S}")
+                shutil.copy2(DB, bp)
+                backup = str(bp)
+            src = sqlite3.connect(str(tmp))
+            try:
+                dst = sqlite3.connect(str(DB))
+                try:
+                    src.backup(dst)
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+        except (OSError, sqlite3.Error) as e:
+            return {"ok": False, "error": f"写库失败：{type(e).__name__}: {e}"}
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+        restored = []
+        for n in BUNDLE_EXTRAS:
+            key = f"extras/{n}"
+            if key in names:
+                try:
+                    (HOME / "data" / n).write_bytes(z.read(key))
+                    restored.append(n)
+                except (KeyError, OSError):
+                    pass
+
+    return {"ok": True, "counts": _db_stats(DB), "restored": restored,
+            "backup": backup, "exported_at": str(man.get("exported_at") or "")}
+
+
+def diag_text(lines: int = 200) -> dict:
+    """最近若干条异常，给「我的 → 诊断日志」弹窗用。"""
+    from . import diag
+
+    txt = diag.read_text(lines)
+    return {"ok": True,
+            "text": txt or "（还没有异常记录）",
+            "path": str(diag.log_path())}
 
 
 def read_html(path: str) -> dict:

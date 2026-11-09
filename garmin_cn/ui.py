@@ -767,6 +767,9 @@ def _today_plan_card(pl: dict) -> str:
     nxt = pl.get("next_date")
     if nxt:
         tip = f'下一次：{esc(nxt)} · {esc(_plan_items_line(pl.get("next_items") or []))}'
+    elif t.get("note"):
+        # 本地兜底给的「为什么休息」比「本周没有排课」有用得多
+        tip = esc(t["note"])
     else:
         tip = "本周没有排课，按恢复度安排轻松活动"
 
@@ -811,6 +814,11 @@ def plan_page(qs: dict | None = None) -> str:
         chips = (chip("佳明日历", "ok") +
                  chip(f'{r.get("start")} ~ {r.get("end")}') +
                  chip(_wk))
+    elif r.get("source") in ("raceplan", "coach"):
+        # 没有佳明账号 / 日历没排课时的本地兜底：说清来源，别让人以为
+        # 这是从手表里读出来的课表
+        chips = (chip("本地生成", "ok") +
+                 chip(str(r.get("name") or "本地课表")))
     else:
         chips = (chip("教练计划", "ok") +
                  (chip(str(r["level"])) if r.get("level") else "") +
@@ -855,8 +863,11 @@ def plan_page(qs: dict | None = None) -> str:
     src_label = "佳明日历" if r.get("source") == "calendar" else (r.get("name") or "教练计划")
     info = ('<div class="card">'
             f'<div class="kvline"><span>来源</span><b>{esc(src_label)}</b></div>'
-            f'<div class="kvline"><span>覆盖</span><b>{esc(r.get("start") or "—")}'
-            f' ~ {esc(r.get("end") or "—")}</b></div>'
+            + (f'<div class="kvline"><span>覆盖</span><b>{esc(r.get("start") or "—")}'
+               f' ~ {esc(r.get("end") or "—")}</b></div>'
+               if (r.get("start") or r.get("end")) else "")
+            + (f'<div class="kvline"><span>说明</span><b>{esc(r["note"])}</b></div>'
+               if r.get("note") else "")
             + (f'<div class="kvline"><span>当前阶段</span><b>{esc(ph.get("label"))}</b></div>'
                if ph.get("label") else "")
             + f'<div class="kvline"><span>本周完成</span>'
@@ -954,12 +965,23 @@ def me_page() -> str:
                 ("已配置 · 活动图带高德底图" if _map_on()
                  else "未配置 · 活动图为矢量轨迹"), act="amap", tone="a") +
             row("✂", "素材",
-                f"{_clip_count()} 个 · 图片 / 视频，回放时自动插入", act="clips", tone="b"))
+                f"{_clip_count()} 个 · 图片 / 视频，回放时自动插入", act="clips", tone="b") +
+            # 换手机就靠这两行：App 是 allowBackup=false，不导出等于历史清零。
+            # 导入会覆盖当前库，所以弹窗里要再说一次「覆盖前自动备份」。
+            row("⇩", "导出数据", "打包历史与设置，换手机 / 重装时用",
+                act="dbExport", tone="a") +
+            row("⇧", "导入数据", "选数据包覆盖当前数据（会先自动备份）",
+                act="dbImport", tone="b") +
+            # 崩溃时只有一句 toast，用户复述不清；这里能直接把最近几条异常复制出来
+            row("!", "诊断日志", "出问题时把这段发出来，能定位到具体一步",
+                act="diag", tone="a"))
 
     about = (f'<div class="card"><div class="lab">RunnerCoach · v{esc(VER)}</div>'
              '<div class="note" style="margin-top:8px;font-size:12.5px;line-height:1.8">'
              '凭据与健康数据只存在这台设备的 App 私有目录；看板、图片、回放全部本地生成，'
-             '页面不加载任何 CDN、远程字体或统计脚本。卸载 App 即清空本地数据。</div></div>')
+             '页面不加载任何 CDN、远程字体或统计脚本。卸载 App 即清空本地数据。'
+             '<br><a href="/privacy" style="color:var(--brand-ink)">完整隐私说明 →</a>'
+             '</div></div>')
 
     stat_line = (f'<div class="grid three">' +
                  stat("日汇总", f"{cov['days']} 天", f"{cov['first']} ~ {cov['last']}") +
@@ -975,6 +997,48 @@ def me_page() -> str:
             sec("本地数据", stat_line) +
             sec("关于", about))
     return page("ME · 我的", "数据与设置", "账号、同步、产物和隐私都在这里", body, chips)
+
+
+def privacy_page() -> str:
+    """隐私说明：App 内可独立引用的一页。
+
+    内容与 docs/隐私说明.md 同口径。改这里记得同步那份，反之亦然 ——
+    公开分发时用户/审核看到的必须是同一套说法。
+    """
+    def p(txt: str) -> str:
+        return f'<div class="card"><div class="note" style="line-height:1.85">{txt}</div></div>'
+
+    collect = p(
+        "<b>不收集。</b>没有账号体系、没有遥测、没有崩溃上报。<br>"
+        "「诊断日志」只写在这台设备上，发不发由你决定。")
+
+    where = p(
+        "日汇总、活动、明细、体成分、素材清单都存 App 私有目录里的 SQLite，"
+        "卸载即清空。<b>账号密码不进数据库</b>：佳明/高驰的会话保存在私有目录，"
+        "安卓版密码放在系统的 Keystore 里。")
+
+    net = p(
+        "只有三类请求会出网，且都由你主动触发：<br>"
+        "1. <b>官方接口</b>：佳明国区、高驰、小米健康云，用你自己的账号登录后同步；<br>"
+        "2. <b>AI 服务</b>（可选）：你填自己的 base_url 与 key，提问内容直连你选的服务商；<br>"
+        "3. <b>高德底图</b>（可选）：只请求地图瓦片，用于活动图与回放底图。<br>"
+        "没有中间服务器，任何数据都不经过本项目作者。")
+
+    share = p(
+        "活动图与轨迹回放<b>包含 GPS 轨迹</b>，起终点可能暴露住址。"
+        "出图前会先问脱敏档位（裁剪 / 隐藏），脱敏在生成产物之前完成，"
+        "产物里不留原始折线。是否分享由你决定。")
+
+    never = p(
+        "不做代登录服务（佳明条款不允许把凭据交给第三方）；"
+        "不把任何数据托管到服务器；不转卖、不用于训练模型。")
+
+    body = (sec("收集", collect) + sec("存在哪里", where) +
+            sec("什么时候出网", net) + sec("分享前", share) +
+            sec("不会做的事", never))
+    return page("PRIVACY · 隐私", "隐私说明",
+                "数据留在本机；出网的只有你自己触发的请求",
+                body, chip("本地优先"), back=("返回我的", "/me"))
 
 
 def files_page(root: Path) -> str:

@@ -129,6 +129,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._html(ui.plan_page(parse_qs(u.query)))
         if u.path in ("/files", "/files.html"):
             return self._html(ui.files_page(root))
+        if u.path in ("/privacy", "/privacy.html"):
+            return self._html(ui.privacy_page())
         if u.path.startswith("/basemap/"):
             return self._basemap(u.path)
         if u.path.startswith("/media/"):

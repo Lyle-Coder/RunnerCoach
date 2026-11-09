@@ -53,6 +53,11 @@ SENSITIVE_PATHS = {"tools/make_plan.py", "tools/make_card.py"}
 SENSITIVE_PREFIX = ("data/", "output/", "dist/", "site/", ".git/")
 SENSITIVE_SUFFIX = (".db", ".db-journal", ".apk", ".aab", ".log", ".pyc", ".genie")
 
+# 不参与分发的目录：留在仓库里自己用，但不进源码包。
+# server/ 是一套**未启用**的服务端（短信/支付/订单/中转），与「数据不出本机」
+# 的产品定位无关；混进源码包会让人以为这是产品的一部分，也让包变大。
+PACK_EXCLUDE_PREFIX = ("server/",)
+
 APK_SOURCES = (
     ("debug", ROOT / "android/app/build/outputs/apk/debug", "app-debug*.apk"),
     ("release", ROOT / "android/app/build/outputs/apk/release", "app-release*.apk"),
@@ -142,6 +147,13 @@ def tracked_files() -> list[str]:
     return files
 
 
+def packed_files() -> list[str]:
+    """真正进源码包的文件：跟踪文件里去掉不参与分发的目录。"""
+    files = tracked_files()
+    return [f for f in files
+            if not any(f.startswith(p) for p in PACK_EXCLUDE_PREFIX)]
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -171,7 +183,74 @@ def preflight(version: str) -> list[str]:
     lines.append("√ 与 origin/main 同步")
     files = tracked_files()
     lines.append(f"√ {len(files)} 个跟踪文件，未发现敏感路径")
+    dropped = [p for p in PACK_EXCLUDE_PREFIX
+               if any(f.startswith(p) for f in files)]
+    if dropped:
+        lines.append("· 不进源码包：" + "、".join(dropped) + "（未启用，与 App 无关）")
+    lines.extend(signing_lines(version))
     return lines
+
+
+# ── 正式签名 ────────────────────────────────────────────────────────────
+
+SIGN_KEYS = ("rc.storeFile", "rc.storePassword", "rc.keyAlias")
+
+
+def _local_props() -> dict[str, str]:
+    """读 android/local.properties。只取 rc.* 四行，不回显口令。"""
+    props: dict[str, str] = {}
+    f = ROOT / "android" / "local.properties"
+    if not f.is_file():
+        return props
+    for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        props[k.strip()] = v.strip()
+    return props
+
+
+def signing_state() -> tuple[bool, str]:
+    """正式签名是否就绪。
+
+    只看 local.properties 有没有四要素、keystore 在不在，不去解包验证证书
+    （那要口令，脚本不碰口令）。真正的签名结果留给 apksigner 核对。
+    """
+    props = _local_props()
+    missing = [k for k in SIGN_KEYS if not props.get(k)]
+    if missing:
+        return False, "local.properties 缺 " + "、".join(missing)
+    p = Path(props["rc.storeFile"])
+    if not p.is_absolute():
+        p = (ROOT / "android" / p).resolve()
+    if not p.is_file():
+        return False, f"keystore 不存在：{p}"
+    if p.suffix.lower() not in (".jks", ".keystore"):
+        return False, f"keystore 后缀不像密钥库：{p.name}"
+    return True, f"{p.name}（别名 {props['rc.keyAlias']}）"
+
+
+def signing_lines(version: str) -> list[str]:
+    """签名检查：1.0 起必须正式签名，之前只提示。
+
+    debug 签名每台机器不同、还带有效期，换签名后老用户无法覆盖安装，
+    而 App 的 allowBackup=false —— 等于历史全丢。所以这条不能只是建议。
+    """
+    ok, detail = signing_state()
+    if ok:
+        return [f"√ 正式签名：{detail}"]
+    try:
+        major = int(str(version).split(".")[0])
+    except (TypeError, ValueError):
+        major = 0
+    if major >= 1:
+        raise ReleaseError(
+            f"1.0 起必须用正式 keystore 签名，当前未就绪（{detail}）。\n"
+            "  在 android/local.properties 填 rc.storeFile / rc.storePassword /\n"
+            "  rc.keyAlias / rc.keyPassword 四行，详见 docs/发布流程.md"
+        )
+    return [f"! 仍是 debug 签名（{detail}）—— 打 1.0 之前必须换成正式签名"]
 
 
 def apk_version() -> str:
@@ -371,6 +450,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     v = current_version()
     print(f"版本      {v}（tag {tag_for(v)}）")
     print(f"APK 版本  {apk_version()}")
+    ok, detail = signing_state()
+    print(f"签名      {'正式：' + detail if ok else 'debug（' + detail + '）'}")
     print(f"仓库      {'/'.join(repo_slug())}")
     print(f"最近 tag  {git('describe', '--tags', '--abbrev=0', check=False) or '(无)'}")
     if DIST.is_dir():
@@ -398,7 +479,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     DIST.mkdir(parents=True, exist_ok=True)
     for old in DIST.glob(f"RunnerCoach-{tag}-*"):
         old.unlink()
-    files = tracked_files()
+    files = packed_files()
     zipped = build_source_zip(tag, files)
     apks = collect_apks(tag)
     notes_path = DIST / f"RELEASE_NOTES-{tag}.md"

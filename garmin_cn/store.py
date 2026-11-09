@@ -24,6 +24,11 @@ ACT_COLS = [
     "pace_s_km", "ascent", "source", "raw",
 ]
 
+# 结构版本。1 = 2026-11 之前的库（没有版本号，只能靠逐列探测认），
+# 2 = 起用 PRAGMA user_version 记账。以后改表就 +1，并在这里写清楚改了什么：
+#   2: 引入 user_version（补齐既有的 nap/体重/电量/source 列）
+SCHEMA_VERSION = 2
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS daily (
     date TEXT PRIMARY KEY,
@@ -82,7 +87,20 @@ class Store:
         self.conn = sqlite3.connect(str(self.path))
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
-        # 旧库没有新列：CREATE TABLE IF NOT EXISTS 不会补，逐列 ALTER
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """结构升级：缺列就补，最后把结构版本记进 `PRAGMA user_version`。
+
+        以前只有逐列探测、没有版本号：能补列，但没人知道这个库升到哪一步，
+        以后要改表就只能继续 PRAGMA 全表扫。从 1.0 起 user_version 是账本，
+        新增列/表直接按版本分支写，别再堆 if。
+
+        幂等：跑过就 return，老库（user_version = 0）先补齐再记账。
+        """
+        cur = int(self.conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+        if cur >= SCHEMA_VERSION:
+            return
         have = {r[1] for r in self.conn.execute("PRAGMA table_info(daily)")}
         for c in ("nap_min", "naps", "sleep_need_min"):
             if c not in have:
@@ -109,6 +127,7 @@ class Store:
         have_act = {r[1] for r in self.conn.execute("PRAGMA table_info(activities)")}
         if "source" not in have_act:
             self.conn.execute("ALTER TABLE activities ADD COLUMN source TEXT")
+        self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self.conn.commit()
 
     # ---------- 写入 ----------

@@ -2102,6 +2102,98 @@ def run() -> int:
     assert _prev["freed"] == _got["freed"], "预览与实际释放量不一致"
     shutil.rmtree(_cd, ignore_errors=True)
 
+    # ---- 1.0：数据搬迁 / 诊断日志 / 无账号课表兜底 / 结构版本 / 发布签名 ----
+    # 这一节全部在临时目录里跑：绝不碰真实的 data/garmin.db。
+    import unittest.mock as _mock
+
+    from garmin_cn import appapi as _AP
+    from garmin_cn import demo as _demo
+    from garmin_cn import diag as _diag
+    from garmin_cn.store import SCHEMA_VERSION as _SV
+
+    _bk = Path(tempfile.mkdtemp())
+    (_bk / "data").mkdir()
+    (_bk / "output").mkdir()
+    shutil.copy2(tmp_db, _bk / "data" / "garmin.db")
+    _patches = [
+        _mock.patch.object(_AP, "HOME", _bk),
+        _mock.patch.object(_AP, "DB", _bk / "data" / "garmin.db"),
+        _mock.patch.object(_AP, "OUT", _bk / "output"),
+    ]
+    for _p in _patches:
+        _p.start()
+    try:
+        # 结构版本：老库打开后必须被记账，否则以后没法按版本迁移
+        assert _AP.Store(_AP.DB).conn.execute(
+            "PRAGMA user_version").fetchone()[0] == _SV, "user_version 没写进去"
+
+        # 导出 → 破坏 → 导入：条数必须回到原样，且覆盖前有备份
+        _e = _AP.db_export()
+        assert _e.get("ok"), f"导出失败：{_e.get('error')}"
+        assert _e["counts"]["daily"] > 0, "导出包里没有日汇总"
+        assert not any(k in str(_e.get("extras")) for k in ("session", "auth")), \
+            "导出包把账号凭据带上了"
+        import sqlite3 as _sq
+
+        _c = _sq.connect(str(_AP.DB))
+        _c.execute("delete from daily")
+        _c.commit()
+        _c.close()
+        _i = _AP.db_import(_e["path"])
+        assert _i.get("ok"), f"导入失败：{_i.get('error')}"
+        assert _i["counts"]["daily"] == _e["counts"]["daily"], "导入后条数对不上"
+        assert _i.get("backup") and Path(_i["backup"]).is_file(), "导入前没有备份旧库"
+        # 包来自更新版本时必须拒绝，别把新库写坏
+        assert not _AP.db_import(str(_bk / "不存在.zip")).get("ok"), "不存在的包没被拒"
+
+        # 诊断日志：异常要能落盘并被读出来
+        with _mock.patch.dict(os.environ, {"GARMIN_HOME": str(_bk)}):
+            _diag.log_exc("selftest", ValueError("故意的测试异常"))
+            assert "故意的测试异常" in _diag.read_text(20), "诊断日志没写进去"
+        _d = _AP.diag_text(20)
+        assert _d.get("ok") and "假" not in _d.get("text", "")[:2], "诊断日志读不出来"
+
+        # 无佳明会话：课表必须退成本地兜底，不能返回 ok:false 让今日页空着
+        with _mock.patch.object(_AP, "_client",
+                                side_effect=AuthError("没有会话")):
+            _pl = _AP.plan(False)
+        assert _pl.get("ok"), f"没登录时课表又空了：{_pl.get('error')}"
+        assert _pl.get("source") in ("coach", "raceplan"), \
+            f"兜底来源不对：{_pl.get('source')}"
+        assert (_pl.get("today") or {}).get("date"), "兜底课表没有当天"
+
+        # demo 有生成版本号：旧 demo.db 才会被自动重建
+        assert isinstance(getattr(_demo, "DEMO_REV", None), int), "demo 没有版本号"
+        assert "demo_rev" in (ROOT / "cli.py").read_text(encoding="utf-8"), \
+            "cli demo 复用旧库时没比对版本，新数据会一直看不到"
+    finally:
+        for _p in reversed(_patches):
+            _p.stop()
+        shutil.rmtree(_bk, ignore_errors=True)
+
+    # 发布签名：1.0 起没配 keystore 必须直接拦下，0.x 只提示
+    sys.path.insert(0, str(ROOT / "tools"))
+    import release as _rel  # noqa: E402
+
+    with _mock.patch.object(_rel, "_local_props", return_value={}):
+        try:
+            _rel.signing_lines("1.0.0")
+            _blocked = False
+        except _rel.ReleaseError:
+            _blocked = True
+        assert _blocked, "1.0 起仍是 debug 签名却没被拦住"
+        assert _rel.signing_lines("0.9.0"), "0.x 不该因为签名就直接报错"
+
+    # 隐私说明：App 内可达，仓库里也有同一份
+    _pv = U.privacy_page()
+    assert "不收集" in _pv and "GPS" in _pv, "隐私页缺关键声明"
+    assert "/privacy" in U.me_page(), "「我的」里进不去隐私页"
+    assert (ROOT / "docs" / "隐私说明.md").is_file(), "仓库里没有隐私说明"
+
+    # 源码包不带 server/（未启用的服务端，与 App 无关）
+    assert "server/" in _rel.PACK_EXCLUDE_PREFIX, "server/ 又被打进源码包了"
+    assert "server/" not in "\n".join(_rel.packed_files()), "打包清单里仍有 server/"
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):

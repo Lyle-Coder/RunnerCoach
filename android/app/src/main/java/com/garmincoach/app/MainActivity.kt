@@ -241,6 +241,7 @@ class MainActivity : Activity() {
             path.startsWith("/view") -> goTab(if (uri?.getQueryParameter("from") == "today") 0 else 1)
             path.startsWith("/plan") -> goTab(0)     // 训练计划属于今日
             path.startsWith("/files") -> goTab(3)    // 产物属于我的
+            path.startsWith("/privacy") -> goTab(3)  // 隐私说明也挂在我的下面
             activeTab != 0 -> goTab(0)               // 其它 tab 先回今日
             else -> finish()                         // 已在今日根页面，退出
         }
@@ -281,6 +282,9 @@ class MainActivity : Activity() {
                     "planRefresh" -> refreshPlan()
                     "amap" -> showAmapDialog()
                     "clips" -> showClips()
+                    "dbExport" -> doExportData()
+                    "dbImport" -> doImportData()
+                    "diag" -> showDiag()
                     else -> toast("未知操作：$name")
                 }
             }
@@ -365,7 +369,8 @@ class MainActivity : Activity() {
         val path = url.substringAfter(":$port", url)
         val t = when {
             path.startsWith("/ai") -> 2
-            path.startsWith("/me") || path.startsWith("/files") -> 3
+            path.startsWith("/me") || path.startsWith("/files") ||
+                path.startsWith("/privacy") -> 3
             path.startsWith("/history") || path.startsWith("/view") -> 1
             else -> 0
         }
@@ -1384,6 +1389,10 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_BUNDLE && resultCode == android.app.Activity.RESULT_OK) {
+            data?.data?.let { askImportBundle(it) }
+            return
+        }
         if (requestCode == REQ_VIDEO && resultCode == android.app.Activity.RESULT_OK) {
             val got = data ?: return
             val uris = mutableListOf<Uri>()
@@ -1954,6 +1963,203 @@ class MainActivity : Activity() {
                 } else {
                     toast("体重同步失败：${r.optString("error")}")
                 }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 诊断
+    /**
+     * 最近几条异常。用可选中复制的 TextView 而不是 WebView 页面：
+     * 用户要的是「把这段发给你」，多一次跳转就多一次放弃。
+     */
+    private fun showDiag() {
+        busy(true)
+        thread {
+            val r = apiCall("diag_text", 300)
+            ui {
+                busy(false)
+                val txt = r.optString("text", "（读不出来）")
+                val tv = TextView(this).apply {
+                    text = txt
+                    setTextIsSelectable(true)
+                    textSize = 11.5f
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    setPadding(dp(16), dp(12), dp(16), dp(12))
+                }
+                val sv = ScrollView(this).apply { addView(tv) }
+                AlertDialog.Builder(this)
+                    .setTitle("诊断日志")
+                    .setView(sv)
+                    .setPositiveButton("关闭", null)
+                    .setNeutralButton("复制") { _, _ ->
+                        val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("diag", txt))
+                        toast("已复制，直接发给开发者即可")
+                    }
+                    .show()
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 数据搬迁
+    /**
+     * 导出数据包。
+     *
+     * App 是 allowBackup=false，卸载/换机就等于历史清零，所以必须给用户一条
+     * 自己把数据搬走的通路。zip 先由 Python 侧用 sqlite backup API 生成，
+     * 这里再复制到公共「下载/RunnerCoach」，用户既能自己在文件管理器里找到，
+     * 也能一口气分享出去。
+     */
+    private fun doExportData() {
+        if (port == 0) {
+            toast("还在启动，稍等一下")
+            return
+        }
+        busy(true)
+        thread {
+            val r = apiCall("db_export")
+            ui {
+                busy(false)
+                if (!r.optBoolean("ok")) {
+                    toast("导出失败：${r.optString("error")}")
+                    return@ui
+                }
+                val src = File(r.optString("path"))
+                val name = r.optString("name", "runnercoach-data.zip")
+                val uri = try {
+                    publishToDownloads(src, name)
+                } catch (t: Throwable) {
+                    Log.e(TAG, "publish bundle failed", t)
+                    null
+                }
+                if (uri == null) {
+                    toast("导出失败：写不进下载目录")
+                    return@ui
+                }
+                val c = r.optJSONObject("counts")
+                val days = c?.optInt("daily", 0) ?: 0
+                val acts = c?.optInt("activities", 0) ?: 0
+                val mb = String.format(Locale.US, "%.1f", src.length() / 1048576.0)
+                AlertDialog.Builder(this)
+                    .setTitle("已导出")
+                    .setMessage(
+                        "$days 天日汇总 / $acts 条活动，共 $mb MB。\n\n" +
+                            "已存到「下载/RunnerCoach/$name」，也可以直接分享出去。\n\n" +
+                            "包里不含账号密码、会话与照片原文件。"
+                    )
+                    .setPositiveButton("分享") { _, _ -> shareZip(uri) }
+                    .setNegativeButton("知道了", null)
+                    .show()
+            }
+        }
+    }
+
+    /** 写进公共下载目录，返回可分享的 content:// uri。 */
+    private fun publishToDownloads(src: File, name: String): Uri? {
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, name)
+            put(MediaStore.Downloads.MIME_TYPE, "application/zip")
+            put(MediaStore.Downloads.RELATIVE_PATH,
+                Environment.DIRECTORY_DOWNLOADS + "/RunnerCoach")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: return null
+        try {
+            contentResolver.openOutputStream(uri)?.use { out ->
+                src.inputStream().use { it.copyTo(out) }
+            } ?: return null
+        } catch (t: Throwable) {
+            contentResolver.delete(uri, null, null)
+            throw t
+        }
+        values.clear()
+        values.put(MediaStore.Downloads.IS_PENDING, 0)
+        contentResolver.update(uri, values, null, null)
+        return uri
+    }
+
+    private fun shareZip(uri: Uri) {
+        val i = Intent(Intent.ACTION_SEND).apply {
+            type = "application/zip"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(i, "分享数据包"))
+    }
+
+    private fun doImportData() {
+        try {
+            startActivityForResult(
+                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                    // 有的文件管理器把 zip 报成 octet-stream，两个都收；
+                    // 真正的校验在 Python 侧（看 manifest.json），不靠后缀。
+                    putExtra(Intent.EXTRA_MIME_TYPES,
+                        arrayOf("application/zip", "application/octet-stream"))
+                },
+                REQ_BUNDLE,
+            )
+        } catch (t: Throwable) {
+            toast("打不开文件选择器：${t.message}")
+        }
+    }
+
+    private fun askImportBundle(uri: Uri) {
+        AlertDialog.Builder(this)
+            .setTitle("导入数据？")
+            .setMessage(
+                "会用数据包里的库覆盖当前数据。\n" +
+                    "覆盖前会自动备份一份 garmin.db.bak-时间戳，导错了还能换回来。\n\n" +
+                    "账号需要重新登录，照片素材需要重新添加（包里不含这些）。"
+            )
+            .setPositiveButton("导入") { _, _ -> doImportBundle(uri) }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun doImportBundle(uri: Uri) {
+        busy(true)
+        thread {
+            val tmp = File(cacheDir, "import-bundle.zip")
+            val copied = try {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    tmp.outputStream().use { input.copyTo(it) }
+                }
+                tmp.isFile && tmp.length() > 0
+            } catch (t: Throwable) {
+                Log.e(TAG, "copy bundle failed", t)
+                false
+            }
+            if (!copied) {
+                ui { busy(false); toast("读不出这个文件") }
+                return@thread
+            }
+            val r = apiCall("db_import", tmp.absolutePath)
+            tmp.delete()
+            ui {
+                busy(false)
+                if (!r.optBoolean("ok")) {
+                    toast("导入失败：${r.optString("error")}")
+                    return@ui
+                }
+                val c = r.optJSONObject("counts")
+                val days = c?.optInt("daily", 0) ?: 0
+                val acts = c?.optInt("activities", 0) ?: 0
+                val bak = r.optString("backup")
+                AlertDialog.Builder(this)
+                    .setTitle("导入完成")
+                    .setMessage(
+                        "$days 天日汇总 / $acts 条活动。\n" +
+                            (if (bak.isEmpty()) "" else "\n原库已备份到：\n${File(bak).name}")
+                    )
+                    .setPositiveButton("好") { _, _ ->
+                        goTab(0)
+                        reload()
+                    }
+                    .show()
             }
         }
     }
@@ -2800,6 +3006,7 @@ class MainActivity : Activity() {
 
         /** 相册选素材的请求号。 */
         const val REQ_VIDEO = 1001
+        const val REQ_BUNDLE = 1002
 
         /**
          * 读 HTML 里的导出探针；旧版 Python 没有探针时返回空串，走尺寸兜底。
