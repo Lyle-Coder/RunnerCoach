@@ -200,6 +200,9 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .wrow .done{flex:0 0 auto;font-size:10.5px;color:var(--brand-ink);
   background:rgba(59,130,246,.12);border:1px solid rgba(96,165,250,.26);
   border-radius:999px;padding:2px 8px}
+/* 计划了但没做：虚线灰标签，比「已完成」弱一档，但不至于被藏起来 */
+.wrow .miss{flex:0 0 auto;font-size:10.5px;color:var(--muted);background:transparent;
+  border:1px dashed var(--line);border-radius:999px;padding:2px 8px}
 .wrow.rest .wb{color:var(--muted);font-weight:400}
 .kvline{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;
   color:var(--ink2);padding:7px 0;border-bottom:1px solid var(--line2)}
@@ -581,24 +584,51 @@ def _plan_items_line(items: list[dict]) -> str:
 
 
 def _today_plan_card(pl: dict) -> str:
-    """今日课表卡片：有课就写课名 + 说明，没课就写休息和下一次。"""
+    """今日课表卡片：分开「今天要练的」和「今天已经练完的」。
+
+    旧版把「已完成」只做成一个小角标，主体还写着「今天休息」——日历里当天的
+    活动记录被丢掉了，看起来就像「练了但 App 不知道」。
+    """
     t = pl.get("today") or {}
     items = t.get("items") or []
-    done = bool(t.get("done"))
-    badge = '<div class="n" style="color:var(--brand-ink)">已完成</div>' if done else ""
+    acts = t.get("acts") or []
+    done = bool(t.get("done")) or bool(acts)
+
     if items:
         it = items[0]
         more = "".join(
             f'<div class="n">另：{esc(x.get("name") or "训练")} · {esc(_plan_meta(x))}</div>'
             for x in items[1:])
+        badge = ('<div class="n" style="color:var(--brand-ink)">今天已完成</div>'
+                 if done else "")
+        # 计划里的课 + 实际做完了：把完成的记录也列出来，别只放一个小角标
+        if acts:
+            more += "".join(
+                f'<div class="n">已完成：{esc(a.get("name"))} · {esc(_plan_meta(a))}</div>'
+                for a in acts[:2])
         return (f'<div class="plan-hero"><div class="t">{esc(it.get("name") or "训练")}</div>'
                 + (f'<div class="d">{esc(it.get("detail"))}</div>' if it.get("detail") else "")
                 + f'<div class="n">{esc(_plan_meta(it))}</div>{badge}{more}</div>')
+
+    if acts:                     # 今天没排课，但确实练了
+        a = acts[0]
+        more = "".join(
+            f'<div class="n">另：{esc(x.get("name"))} · {esc(_plan_meta(x))}</div>'
+            for x in acts[1:])
+        return (f'<div class="plan-hero"><div class="t">今天已完成</div>'
+                f'<div class="d">{esc(a.get("name") or "训练")}</div>'
+                f'<div class="n">{esc(_plan_meta(a))}</div>{more}</div>')
+
     nxt = pl.get("next_date")
-    tip = (f'下一次：{esc(nxt)} · {esc(_plan_items_line(pl.get("next_items") or []))}'
-           if nxt else "本周没有排课，按恢复度安排轻松活动")
-    return (f'<div class="plan-hero"><div class="t">今天休息</div>'
-            f'<div class="d">{tip}</div>{badge}</div>')
+    if done:                     # 本地库有活动，但日历里没有对应记录
+        tip = "计划里今天没有排课，训练记录已经同步进来了（含高驰）。"
+    elif nxt:
+        tip = f'下一次：{esc(nxt)} · {esc(_plan_items_line(pl.get("next_items") or []))}'
+    else:
+        tip = "本周没有排课，按恢复度安排轻松活动"
+    title = "今天已完成" if done else "今天休息"
+    return (f'<div class="plan-hero"><div class="t">{title}</div>'
+            f'<div class="d">{tip}</div></div>')
 
 
 def plan_page(qs: dict | None = None) -> str:
@@ -620,9 +650,11 @@ def plan_page(qs: dict | None = None) -> str:
 
     ph = r.get("phase") or {}
     if r.get("source") == "calendar":
+        _wk = (f'{r.get("week_done") or 0}/{r.get("week_planned") or 0} 完成'
+               if r.get("week_planned") else f'本周 {7 - (r.get("rest_days_in_week") or 0)} 练')
         chips = (chip("佳明日历", "ok") +
                  chip(f'{r.get("start")} ~ {r.get("end")}') +
-                 chip(f'本周 {7 - (r.get("rest_days_in_week") or 0)} 练'))
+                 chip(_wk))
     else:
         chips = (chip("教练计划", "ok") +
                  (chip(str(r["level"])) if r.get("level") else "") +
@@ -637,16 +669,26 @@ def plan_page(qs: dict | None = None) -> str:
         cls = "wrow today" if is_today else "wrow"
         if d.get("rest"):
             cls += " rest"
-        if d.get("rest"):
-            wb = '<span class="wb">休息</span>'
-        else:
-            first = (d["items"] or [{}])[0]
+        its = d.get("items") or []
+        act = d.get("acts") or []
+        if its:
+            first = its[0]
             wb = (f'<span class="wb">{esc(first.get("name") or "训练")}'
                   f'<em>{esc(_plan_meta(first))}</em></span>')
+        elif act:
+            # 当天没排课、却有实际训练：显示「练了什么」，而不是「休息」
+            a = act[0]
+            wb = (f'<span class="wb">{esc(a.get("name") or "训练")}'
+                  f'<em>{esc(_plan_meta(a))}</em></span>')
+        else:
+            wb = '<span class="wb">休息</span>'
         if is_today:
             tag = '<span class="now">今天</span>'
         elif d.get("done"):
             tag = '<span class="done">已完成</span>'
+        elif d.get("missed"):
+            # 计划了但没做：以前这种日子被直接标成「已完成」藏起来了
+            tag = '<span class="miss">未完成</span>'
         else:
             tag = ""
         rows += f'<div class="{cls}"><span class="wd">{esc(d["dow"])}</span>{wb}{tag}</div>'
@@ -658,6 +700,8 @@ def plan_page(qs: dict | None = None) -> str:
             f' ~ {esc(r.get("end") or "—")}</b></div>'
             + (f'<div class="kvline"><span>当前阶段</span><b>{esc(ph.get("label"))}</b></div>'
                if ph.get("label") else "")
+            + f'<div class="kvline"><span>本周完成</span>'
+              f'<b>{r.get("week_done") or 0} / {r.get("week_planned") or 0} 次</b></div>'
             + f'<div class="kvline"><span>本周休息</span>'
               f'<b>{r.get("rest_days_in_week") or 0} 天</b></div>'
             '</div>')

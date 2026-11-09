@@ -57,7 +57,8 @@ def _task_date(task: dict) -> str | None:
     return _iso((task.get("taskWorkout") or {}).get("scheduledDate"))
 
 
-def normalize(detail: dict, today: str | None = None) -> dict:
+def normalize(detail: dict, today: str | None = None,
+              activity_days: set[str] | None = None) -> dict:
     """把 taskList 展开成「按日期分组的本周课表 + 今天的建议 + 下一次训练」。"""
     today = today or dt.date.today().isoformat()
     tasks = detail.get("taskList") or []
@@ -109,8 +110,9 @@ def normalize(detail: dict, today: str | None = None) -> dict:
                 cur_phase = p
                 break
 
-    return {
+    data = {
         "available": True,
+        "classify": CLASSIFY_REV,
         "plan_id": detail.get("trainingPlanId"),
         "name": detail.get("name"),
         "description": detail.get("description"),
@@ -127,12 +129,16 @@ def normalize(detail: dict, today: str | None = None) -> dict:
             "start": _iso((cur_phase or {}).get("startDate")),
             "end": _iso((cur_phase or {}).get("endDate")),
         } if cur_phase else None,
-        "today": {"date": today, "items": today_items, "rest": not today_items},
+        "today": {"date": today, "items": today_items, "acts": [],
+                  "rest": not today_items},
         "week": week,
         "next_date": upcoming[0] if upcoming else None,
         "next_items": [x for x in by_date.get(upcoming[0], []) if not x["rest"]] if upcoming else [],
         "rest_days_in_week": sum(1 for w in week if w["rest"]),
     }
+    # 教练计划以前完全没有「完成」概念，本周永远是「已排」，也算不出来；
+    # 用同一套证据（本地库 / 日历活动）统一标注。
+    return annotate(data, activity_days, today)
 
 
 def _num(v) -> float:
@@ -204,12 +210,57 @@ def _cal_item(it: dict) -> dict:
     }
 
 
-def from_calendar(items: list[dict] | None, today: str | None = None) -> dict:
+CLASSIFY_REV = 2      # 课表分类口径的版本号，见 annotate() 里的迁移说明
+
+
+def annotate(data: dict, activity_days: set[str] | None = None,
+             today: str | None = None) -> dict:
+    """按「完成证据」重算 done / missed，不靠日期猜。
+
+    证据只有两种：
+      1. 日历里**带 activityId** 的记录（已经做完的活动）；
+      2. 本地库里那天确实有活动 —— 这条很重要：高驰记录的活动压根不会出现在
+         佳明日历里，只看日历会把「已经练了」误判成「没练」。
+
+    `done_days` 只有在新口径（CLASSIFY_REV ≥ 2）落盘的快照里才可信：旧版本把
+    「今天之前的所有项」都写成已完成，那是错的，读旧快照时直接丢掉重算。
+    """
+    today = today or dt.date.today().isoformat()
+    done = set(data.get("done_days") or []) if int(data.get("classify") or 0) >= CLASSIFY_REV else set()
+    done |= {d for d in (activity_days or set()) if d}
+
+    for w in data.get("week") or []:
+        w["done"] = w["date"] in done
+        # 今天还没过完，谈不上「没完成」
+        w["missed"] = bool(w.get("items")) and not w["done"] and w["date"] < today
+    t = data.get("today") or {}
+    if t:
+        t["done"] = t.get("date") in done
+        t["missed"] = False
+
+    data["done_days"] = sorted(done)
+    data["week_done"] = sum(1 for w in data.get("week") or [] if w.get("done"))
+    data["week_planned"] = sum(1 for w in data.get("week") or [] if w.get("items"))
+    return data
+
+
+def from_calendar(items: list[dict] | None, today: str | None = None,
+                  activity_days: set[str] | None = None) -> dict:
     """日历项 → 与 `normalize()` 相同结构的课表。
 
-    只取排课（workout / race，以及任何带 workoutId 的项）；`activity` 是同一天
-    已完成的记录，只用来给当天打「已完成」标记，不再重复成一条课。
-    日期限定在「本周一 ~ 今天 + 62 天」，避免把上个月拉来对齐时带出的旧项算进来。
+    日历里三类东西必须分开，分不清就会出现「计划没做被标成已完成」：
+
+    | 形态 | 含义 | 处理 |
+    |---|---|---|
+    | `workout` / `race` | 排进日历的课 | **计划**，今天之后要练的 |
+    | `activity` + activityId | 真做完的活动 | **完成证据**，当天没排课时单独显示 |
+    | `activity` 无 id | 佳明把「排入计划的训练」也记成 activity | **计划**，不能因为日期在过去就算完成 |
+
+    最后一条是旧实现的坑：它把「今天之前的所有项」都当已完成，于是上周计划了
+    但没跑的课被悄悄抹掉，历史完成率永远是 100%。
+
+    日期窗口是「本周一 ~ 今天 + 140 天」；`activity_days` 是本地库里有活动的日期，
+    用来兜住「高驰记录、佳明日历里没有」的情况。
     """
     today = today or dt.date.today().isoformat()
     d = dt.date.fromisoformat(today)
@@ -218,7 +269,8 @@ def from_calendar(items: list[dict] | None, today: str | None = None) -> dict:
     hi = (d + dt.timedelta(days=LOOKAHEAD_DAYS)).isoformat()
 
     workouts: dict[str, list[dict]] = {}
-    done: set[str] = set()
+    acts: dict[str, list[dict]] = {}
+    done_ids: set[str] = set()
     seen: set[tuple] = set()
     for it in items or []:
         if not isinstance(it, dict):
@@ -227,57 +279,66 @@ def from_calendar(items: list[dict] | None, today: str | None = None) -> dict:
         if not day or not (lo <= day <= hi):
             continue
         kind = str(it.get("itemType") or "").lower()
-        if kind == "activity":
-            # 佳明把「计划但还没跑」的安排也记成 activity：没有 activityId。
-            # 只有已经执行过的（有 activityId，或日期在今天之前）才算完成标记，
-            # 否则会把未来每一天的课全当成「已完成」而漏掉。
-            aid = it.get("activityId") or it.get("activityUUID")
-            if day < today or aid:
-                done.add(day)
-                continue
-        elif kind in _SKIP_TYPES:
+        if kind in _SKIP_TYPES:
             continue
-        # 没有标题也没有课程 id 的，不当作排课
+
+        # 已经做完的活动：只当「完成证据」，不当排课
+        if kind == "activity" and (it.get("activityId") or it.get("activityUUID")):
+            done_ids.add(day)
+            row = _cal_item(it)
+            row["completed"] = True
+            row["name"] = it.get("title") or row.get("name") or "已完成的训练"
+            seen_act = (day, row.get("name"), it.get("activityId"))
+            if seen_act not in seen:
+                seen.add(seen_act)
+                acts.setdefault(day, []).append(row)
+            continue
+
+        # 其余都是「计划」：workout / race / 无 id 的 activity（计划活动）
         if not (it.get("title") or it.get("workoutId") or it.get("workoutUuid")):
             continue
         key = (day, str(it.get("title") or ""), it.get("workoutId"))
         if key in seen:                      # 多拉了相邻月份时可能重复
             continue
         seen.add(key)
-        workouts.setdefault(day, []).append(_cal_item(it))
+        row = _cal_item(it)
+        row["planned"] = True
+        workouts.setdefault(day, []).append(row)
 
-    d = dt.date.fromisoformat(today)
-    monday = d - dt.timedelta(days=d.weekday())
     week_dates = [(monday + dt.timedelta(days=i)).isoformat() for i in range(7)]
-
     week = []
     for date in week_dates:
         its = workouts.get(date, [])
+        act = acts.get(date, [])
         week.append({"date": date, "dow": DOW[dt.date.fromisoformat(date).isoweekday()],
-                     "items": its, "rest": not its, "done": date in done})
+                     "items": its, "acts": act,
+                     "rest": not its and not act})
 
     today_items = workouts.get(today, [])
+    today_acts = acts.get(today, [])
     upcoming = sorted(k for k in workouts if k > today)
-    days = sorted(workouts)
+    days = sorted(set(workouts) | set(acts))
 
-    return {
+    data = {
         "available": True,
         "scheduled": bool(workouts),
         "source": "calendar",
+        "classify": CLASSIFY_REV,
         "name": "佳明日历",
         "description": "来自佳明 Connect 日历的排课（自己排入的课程与比赛）",
         "level": None, "weeks": None, "per_week": None, "version": None,
         "start": days[0] if days else today,
         "end": days[-1] if days else today,
         "status": None, "phase": None,
-        "today": {"date": today, "items": today_items,
-                  "rest": not today_items, "done": today in done},
+        "today": {"date": today, "items": today_items, "acts": today_acts,
+                  "rest": not today_items and not today_acts},
         "week": week,
         "next_date": upcoming[0] if upcoming else None,
         "next_items": workouts.get(upcoming[0], []) if upcoming else [],
         "rest_days_in_week": sum(1 for w in week if w["rest"]),
-        "done_days": sorted(done),
+        "done_days": sorted(done_ids),
     }
+    return annotate(data, activity_days, today)
 
 
 def _months(today: str, span: int = LOOKAHEAD_DAYS) -> list[tuple[int, int]]:
@@ -296,7 +357,8 @@ def _months(today: str, span: int = LOOKAHEAD_DAYS) -> list[tuple[int, int]]:
     return out
 
 
-def fetch_calendar(client, today: str | None = None) -> dict:
+def fetch_calendar(client, today: str | None = None,
+                   activity_days: set[str] | None = None) -> dict:
     """按月拉日历并归一化。一个排课都没有时返回 available=False。"""
     today = today or dt.date.today().isoformat()
     items: list[dict] = []
@@ -314,7 +376,7 @@ def fetch_calendar(client, today: str | None = None) -> dict:
             items.extend(data)
     if not items:
         return {"available": False, "reason": "佳明日历里还没有排课"}
-    return from_calendar(items, today)
+    return from_calendar(items, today, activity_days)
 
 
 def diag(client, today: str | None = None) -> dict:
@@ -372,16 +434,22 @@ def diag(client, today: str | None = None) -> dict:
     parsed = from_calendar(items, today)
     out["parsed"] = {
         "today": [i.get("name") for i in parsed["today"]["items"]],
+        "today_acts": [i.get("name") for i in (parsed["today"].get("acts") or [])],
         "next_date": parsed["next_date"],
-        "week": [{"date": w["date"], "items": [i.get("name") for i in w["items"]]}
+        "week": [{"date": w["date"], "dow": w["dow"],
+                  "items": [i.get("name") for i in w["items"]],
+                  "acts": [i.get("name") for i in (w.get("acts") or [])],
+                  "done": w.get("done"), "missed": w.get("missed")}
                  for w in parsed["week"]],
+        "week_done": parsed.get("week_done"),
+        "week_planned": parsed.get("week_planned"),
         "start": parsed["start"], "end": parsed["end"],
     }
     return out
 
 
 def fetch(client, today: str | None = None, out_path: Path | None = None,
-          source: str = "auto") -> dict:
+          source: str = "auto", activity_days: set[str] | None = None) -> dict:
     """拉一次训练安排。取不到就返回 available=False，不抛异常。
 
     `source`：
@@ -396,7 +464,7 @@ def fetch(client, today: str | None = None, out_path: Path | None = None,
 
     if source in ("auto", "calendar"):
         try:
-            cal = fetch_calendar(client, today)
+            cal = fetch_calendar(client, today, activity_days)
         except Exception as e:
             cal = {"available": False, "reason": f"{type(e).__name__}: {e}"}
         use = cal.get("scheduled") if source == "auto" else cal.get("available")
@@ -422,7 +490,7 @@ def fetch(client, today: str | None = None, out_path: Path | None = None,
         detail = client.adaptive_plan(plan.get("trainingPlanId"))
     except Exception:
         detail = None
-    data = normalize(detail or plan, today)
+    data = normalize(detail or plan, today, activity_days)
     data["source"] = "coach"
 
     if out_path:

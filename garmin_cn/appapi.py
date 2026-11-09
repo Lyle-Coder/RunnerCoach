@@ -689,6 +689,27 @@ def card_html(date: str | None = None) -> dict:
             **export_spec(BG_CARD, trim=False)}
 
 
+def _activity_days(today: str) -> set[str]:
+    """本地库里有活动的日期（含高驰）。
+
+    高驰记录的活动根本不会出现在佳明日历里，只看日历会把「已经练了」算成
+    「没练」——所以完成度必须以本地库为准，日历只是补充。
+    """
+    try:
+        store = Store(DB)
+        try:
+            lo = (dt.date.fromisoformat(today) - dt.timedelta(days=21)).isoformat()
+            hi = (dt.date.fromisoformat(today) + dt.timedelta(days=1)).isoformat()
+            rows = store.conn.execute(
+                "SELECT DISTINCT date FROM activities WHERE date >= ? AND date <= ?",
+                (lo, hi)).fetchall()
+            return {r[0] for r in rows if r[0]}
+        finally:
+            store.conn.close()
+    except Exception:
+        return set()
+
+
 def plan(refresh: bool = False, date: str | None = None,
          source: str = "auto") -> dict:
     """训练安排（佳明日历优先，Garmin Coach 兜底）。
@@ -698,10 +719,11 @@ def plan(refresh: bool = False, date: str | None = None,
     `source`：auto / calendar / coach，见 `plan.fetch()`。
     高驰没有对外计划接口，这里只处理佳明。
     """
-    from .plan import fetch, load
+    from .plan import annotate, fetch, load
 
     today = date or dt.date.today().isoformat()
     path = HOME / "data" / "plan.json"
+    days = _activity_days(today)
     data = None if refresh else load(path)
     if not data:
         try:
@@ -711,7 +733,8 @@ def plan(refresh: bool = False, date: str | None = None,
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}", "kind": "auth"}
         try:
-            data = fetch(client, today, out_path=path, source=source)
+            data = fetch(client, today, out_path=path, source=source,
+                         activity_days=days)
         except SessionExpired:
             return {"ok": False, "error": "佳明会话过期，请重新登录", "kind": "auth"}
         except Exception as e:
@@ -720,7 +743,9 @@ def plan(refresh: bool = False, date: str | None = None,
         return {"ok": False,
                 "error": (data or {}).get("reason") or "当前没有可用的训练安排",
                 "empty": True}
-    return {"ok": True, **data}
+    # 新拉的与缓存的都重新标注一次：同步之后「今天练没练」会变，
+    # 缓存里的 done 不能一直用旧的。
+    return {"ok": True, **annotate(data, days, today)}
 
 
 def runs(limit: int = 30, days: int = 180) -> dict:

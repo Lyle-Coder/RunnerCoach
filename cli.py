@@ -2246,14 +2246,17 @@ def cmd_selftest(args) -> int:
     assert "planRefresh" in pp
     assert ('class="plan-hero"' in pp) or ("还没读到训练计划" in pp)
 
-    # 训练计划：日历优先。workout/race 归一化成同一结构，activity 只用来打
-    # 「已完成」标记，note 等其它日历项不能当成课。
+    # 训练计划：「计划」和「已完成」必须分开。
+    # workout / race = 计划；带 activityId 的 activity = 完成证据；
+    # 没有 activityId 的 activity 是「计划活动」，日期在过去也不能算完成。
     from garmin_cn import plan as PL
 
     cal_items = [
         {"itemType": "workout", "date": "2026-11-03", "title": "轻松跑",
          "duration": 3000, "distance": 8000, "sportTypeKey": "running"},
-        {"itemType": "activity", "date": "2026-11-03", "title": "跑步"},
+        {"itemType": "activity", "date": "2026-11-03", "title": "跑步",
+         "activityId": 12345, "duration": 2400, "distance": 6000},
+        {"itemType": "workout", "date": "2026-11-05", "title": "周四的课"},
         {"itemType": "workout", "date": "2026-11-07", "title": "节奏跑",
          "duration": 2400, "distance": 7000},
         {"itemType": "race", "date": "2026-11-15", "title": "半马",
@@ -2264,19 +2267,52 @@ def cmd_selftest(args) -> int:
     assert cal["source"] == "calendar" and cal["scheduled"], cal
     assert cal["today"]["items"][0]["minutes"] == 40
     assert cal["today"]["items"][0]["km"] == 7.0
-    assert cal["week"][1]["done"] is True, "周二有 activity，应标已完成"
+    assert cal["week"][1]["done"] is True, "周二有带 activityId 的记录，应标已完成"
+    assert cal["week"][3]["done"] is False and cal["week"][3]["missed"] is True, \
+        "周四计划了但没做，应该标「未完成」——旧版按日期一律当已完成"
     assert cal["next_date"] == "2026-11-15", cal["next_date"]  # 11-09 是 note，跳过
     assert PL.from_calendar([], "2026-11-07")["scheduled"] is False
-    # 未来未执行的 activity（没有 activityId）要当排课，不能当成已完成
-    fut = PL.from_calendar([
-        {"itemType": "activity", "date": "2026-11-08", "title": "明天的课",
-         "duration": 3600, "distance": 10000},
-        {"itemType": "workout", "date": "2026-11-05", "title": "周四的课"},
-        {"itemType": "activity", "date": "2026-11-05", "title": "跑步",
-         "activityId": 999},
-    ], "2026-11-07")
-    assert fut["week"][6]["items"], "未来 activity 应算课"
-    assert fut["week"][3]["done"] is True, "带 activityId 的才算已完成"
+
+    # 没有 activityId 的 activity 是「计划活动」，不能因为日期在过去就算完成
+    plan_only = PL.from_calendar([
+        {"itemType": "activity", "date": "2026-11-03", "title": "计划中的骑行",
+         "sportTypeKey": "cycling", "duration": 3600}], "2026-11-07")
+    assert plan_only["week"][1]["items"], "无 id 的 activity 要当排课保留"
+    assert plan_only["week"][1]["done"] is False, "无 id 的 activity 不能算已完成"
+    assert plan_only["week"][1]["missed"] is True
+    # 本地库那天有活动（含高驰）也算完成
+    with_local = PL.from_calendar([
+        {"itemType": "workout", "date": "2026-11-03", "title": "轻松跑"}],
+        "2026-11-07", {"2026-11-03"})
+    assert with_local["week"][1]["done"] is True, \
+        "本地库有活动应判完成（高驰的活动不在佳明日历里）"
+    # 今天没排课但已经练了：不能写成「今天休息」
+    today_act = PL.from_calendar([
+        {"itemType": "activity", "date": "2026-11-07", "title": "晨跑",
+         "activityId": 9, "duration": 1800, "distance": 5000}], "2026-11-07")
+    assert today_act["today"]["acts"][0]["name"] == "晨跑"
+    _tc = U._today_plan_card(today_act)
+    assert "今天已完成" in _tc and "晨跑" in _tc, "今天的完成记录被丢掉了，页面还写「今天休息」"
+    # 旧快照里「过去即已完成」的脏标记要丢掉重算
+    _old_snap = {"available": True, "source": "calendar",
+                 "today": {"date": "2026-11-07", "items": []},
+                 "week": [{"date": "2026-11-03", "dow": "周二",
+                           "items": [{"name": "x"}], "acts": [], "rest": False}],
+                 "done_days": ["2026-11-03"]}
+    _fixed = PL.annotate(_old_snap, set(), "2026-11-07")
+    assert _fixed["week"][0]["done"] is False and _fixed["week"][0]["missed"] is True, \
+        "旧快照里「过去即完成」的脏标记没被清掉"
+    assert cal.get("classify") == PL.CLASSIFY_REV, \
+        "课表分类口径没打版本号，旧快照没法学法迁移"
+    # 页面必须能把「未完成」标出来，也不能再把「已练」写成「今天休息」
+    _ui_plan_src = Path(U.__file__).read_text(encoding="utf-8")
+    assert 'class="miss">未完成' in _ui_plan_src, "周视图没有「未完成」标签"
+    assert "今天已完成" in _ui_plan_src, "今日卡片没有「今天已完成」分支"
+    assert "本周完成" in _ui_plan_src, "计划页没有统计本周完成情况"
+    # 计划接口读缓存时也要按本地库重算：同步之后「今天练没练」会变
+    _aa_plan_src = (Path(__file__).parent / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    assert "annotate(data, days, today)" in _aa_plan_src, \
+        "计划接口直接用缓存里的完成度，同步后不会更新"
     assert PL._months("2026-11-07")[0] == (2026, 10), "要连上个月一起拉，兼容月份语义"
 
     # 一图流读计划快照必须走 GARMIN_HOME：APK 里代码在只读 assets、数据在
