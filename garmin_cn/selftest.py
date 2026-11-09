@@ -1192,9 +1192,12 @@ def run() -> int:
     assert "100.0 km" in _html and "8 次" in _html, "周期汇总行没带上跑量/次数"
     assert 'href="/history?mode=month&amp;sel=2026-11&amp;type=run"' in _html, \
         "周期行没链回本粒度并带上选中的周期"
-    # 柱状图：12 根柱 + 当月实色
+    # 柱状图：12 个刻度位 = 有数据的柱子 + 没数据的基线点。
+    # 0.6.3 起零值不再画 6px 假柱（和「跑了 0.4km」长得一样），改成圆点。
     _bars = _H._month_bars(_hs["months"])
-    assert _bars.count("<rect ") == 12, "柱状图不是 12 根柱"
+    _spots = _bars.count("<rect x=") + _bars.count("<circle ")
+    assert _spots == 12, f"柱状图刻度数不对：{_spots}"
+    assert "<circle " in _bars, "没跑的日子没画基线点（还是假柱）"
     assert 'viewBox="0 0 400 210"' in _bars, "柱状图 viewBox 变了，字号会被缩没"
 
     # ---- v56：柱状图跟着周/月/年切粒度，并挪进「活动」章节 -----------------
@@ -1235,8 +1238,9 @@ def run() -> int:
     _pg_new = _H.history_page({"mode": ["month"], "sel": [_new_m]})
     assert f"{_old_m} 每日跑量" in _pg_old and f"{_new_m} 每日跑量" in _pg_new, \
         "柱状图标题没跟着选中的月份走"
-    assert _pg_old.count("<rect ") == _days_old, \
-        "选中历史月份后柱状图不是那个月的天数（还在画最近 12 个月？）"
+    _spots_old = _pg_old.count("<rect ") + _pg_old.count("<circle ")
+    assert _spots_old == _days_old, \
+        f"选中历史月份后柱状图不是那个月的天数：{_spots_old} vs {_days_old}"
     assert 'class="row on"' in _pg_old and f"sel={_old_m}" in _pg_old, \
         "选中的周期行没有高亮"
     # 非法/过期的 sel 要回落到最新一期，不能空图或报错
@@ -1252,7 +1256,8 @@ def run() -> int:
                     None) or (_hs.get("weeks") or [{}])[-1]
     _wk_key = str(_wk_part.get("key") or "")
     _pg_wk = _H.history_page({"mode": ["week"], "sel": [_wk_key]})
-    assert _pg_wk.count("<rect ") == 7, "周视图不是 7 根柱（只画了有跑的日子）"
+    _spots_wk = _pg_wk.count("<rect ") + _pg_wk.count("<circle ")
+    assert _spots_wk == 7, f"周视图不是 7 个刻度位（只画了有跑的日子）：{_spots_wk}"
     assert ">一</text>" in _pg_wk and ">日</text>" in _pg_wk, "周视图刻度不是星期"
     # 行的日期也必须是完整 ISO 周，否则「11-03~11-05」和 7 根柱对不上
     _ws, _we = _H._week_span(_wk_key)
@@ -1262,9 +1267,11 @@ def run() -> int:
     _ys = [y["key"] for y in (_hs.get("years") or [])]
     if len(_ys) > 1:
         _pg_y = _H.history_page({"mode": ["year"], "sel": [_ys[-1]]})
-        assert f"{_ys[-1]} 年各月跑量" in _pg_y and \
-            _pg_y.count('fill="url(#mb)"') == 12, \
-            "点旧年份没有切到那一年的 12 个月"
+        # 年视图的柱子带点击热区（多一层透明 rect），所以只数「有渐变填充的柱」
+        # 与「零值点」——直接数 rect 会把热区也算进去（12 柱 + 12 热区 = 24）。
+        _spots_y = _pg_y.count('fill="url(#mb)"') + _pg_y.count("<circle ")
+        assert f"{_ys[-1]} 年各月跑量" in _pg_y and _spots_y == 12, \
+            f"点旧年份没有切到那一年的 12 个月：{_spots_y} 个刻度位"
     # hot：只有「今天那一根」是实色，历史柱不该也实色
     # hot 指第一根：必须第一根实色、第二根半透明（反过来就说明还在按「最后一根」高亮）
     _hb = _H._month_bars([{"key": "2026-09", "label": "9月", "km": 5.0},
@@ -2313,15 +2320,16 @@ def run() -> int:
     _hm = _hist.history_page({"mode": ["month"]}).split("</style>")[-1]
     _sv = re.search(r"<svg.*?</svg>", _hm, re.S)
     assert _sv, "月视图没有柱状图"
-    _bars = len(re.findall(r"<rect x=", _sv.group(0)))
+    # 0.6.3 起零值画圆点，所以刻度位 = 柱 + 点
+    _bars = len(re.findall(r"<rect x=|<circle ", _sv.group(0)))
     _t = dt.date.today()
     _dim = (_t.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1)
     assert _bars == _dim.day, \
         f"月视图只画了 {_bars} 根，应铺满整月 {_dim.day} 根（未来日期为 0）"
     _hw = _hist.history_page({"mode": ["week"]}).split("</style>")[-1]
     _svw = re.search(r"<svg.*?</svg>", _hw, re.S)
-    assert _svw and len(re.findall(r"<rect x=", _svw.group(0))) == 7, \
-        "周视图不是固定 7 根（周中打开也要铺满整周）"
+    _n_wk = len(re.findall(r"<rect x=|<circle ", _svw.group(0))) if _svw else 0
+    assert _n_wk == 7, f"周视图不是固定 7 个刻度位（周中打开也要铺满整周）：{_n_wk}"
 
     # ---- 产物页批量管理：勾选 + 二次确认删除 ----
     _fp = U.files_page(ROOT / "output")
@@ -2360,6 +2368,62 @@ def run() -> int:
     # 素材预览：按 rotate 算外接框，与卡片同比例
     assert re.search(r"val swap = rot == 90 \|\| rot == 270\s*\n\s*val visW", _main), \
         "素材预览没有按显示旋转算外接框，和成片卡片对不上"
+
+    # rotate 必须穿过 photo.match。它会重建 item dict，不在 keep 白名单里的
+    # 字段一律丢 —— 漏掉 rotate 时，回放拿到的永远是 0，
+    # 表现就是「不管怎么旋转，插进成片都还是同一个方向」。
+    from garmin_cn import photo as _ph
+    _T0 = 1_700_000_000_000
+    _rt = {"t0": _T0, "n": 2, "t": [0.0, 20.0],
+           "lat": [34.0, 34.001], "lon": [108.0, 108.001], "d": [0.0, 150.0]}
+    _cl = [{"name": "x", "path": "C:/x.mp4", "t_utc": _T0 + 5000, "w": 1920,
+            "h": 1080, "dur": 6.0, "kind": "video",
+            "lat": 34.001, "lon": 108.001, "rotate": 90}]
+    _hit = _ph.match(_cl, _rt, t0_ms=_T0, cluster_m=0.0, clamp_ends=True,
+                     keep=("dur", "kind", "rotate"))
+    assert _hit["points"] and _hit["points"][0]["shots"][0].get("rotate") == 90, \
+        "rotate 在 photo.match 里被吃掉了，回放会按原始方向画"
+    assert 'keep=("dur", "codec", "bytes", "kind", "rotate")' in \
+        (ROOT / "garmin_cn/motion.py").read_text(encoding="utf-8"), \
+        "motion 调 match 时没把 rotate 放进 keep"
+
+    # ---- 0.6.3：可读性 / 触控 / 文案 的闸门（不依赖浏览器，纯静态） ----
+    from garmin_cn import ui as _u
+
+    def _lum(h: str) -> float:
+        h = h.lstrip("#")
+        c = [int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+        c = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+    def _contrast(fg: str, bg: str) -> float:
+        a, b = _lum(fg), _lum(bg)
+        return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+
+    import re as _re
+    _root = _re.search(r":root\{(.+?)\}", _u.CSS, _re.S).group(1)
+    _tok = dict(_re.findall(r"--([a-z0-9-]+)\s*:\s*(#[0-9A-Fa-f]{6})", _root))
+    assert _contrast(_tok["faint"], _tok["surface"]) >= 4.5, \
+        f"辅助色对比度仍不足 AA：{_contrast(_tok['faint'], _tok['surface']):.2f}"
+    assert _contrast(_tok["muted"], _tok["surface"]) >= 4.5, "次要色对比度不足 AA"
+    # 最小字号：CSS 里不该再有 10px / 10.5px
+    assert not _re.search(r"font-size:10(\.5)?px", _u.CSS), "还有 10px 级别的字号"
+    # 背景不能用 background-attachment:fixed（滚动重绘整面）
+    # 匹配声明而不是注释：注释里提到这个词是正常的（那是在解释为什么不用）
+    assert not _re.search(r"background-attachment\s*:\s*fixed\s*;", _u.CSS), \
+        "背景又用回 fixed 了，WebView 滚动会重绘整面"
+    # 触控目标
+    for _sel, _min in ((".more", "40"), (".btn", "44"), (".back", "40")):
+        assert _min in _u.CSS.split(_sel + "{")[-1].split("}")[0], \
+            f"{_sel} 的可点高度没到 {_min}px"
+    # 文案：不给用户看开发口径
+    _pages = "".join([U.home_page(), U.plan_page({}), U.me_page()])
+    for _bad in ("未标注强度", "TypeError", "出图缩放", "W2 周"):
+        assert _bad not in _pages, f"页面里还有「{_bad}」"
+    # 无障碍：可点容器要有 role/label，图标要标 aria-hidden
+    assert _pages.count('role="button"') >= 1 and 'aria-label=' in _pages, \
+        "可点容器没有 role/aria-label，TalkBack 读不出来"
+    assert 'aria-hidden="true"' in _pages, "装饰性图标没标 aria-hidden"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")

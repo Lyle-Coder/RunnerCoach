@@ -154,20 +154,33 @@ def _month_bars(months: list[dict], hot: str = "", link: str = "") -> str:
     bars = []
     for i, m in enumerate(months):
         km = float(m.get("km") or 0)
-        h = 6 + (H - pad_b - pad_t) * (km / vapor)
         x = i * (bw + gap)
-        y = H - pad_b - h
         cur = bool(today_hint) and str(m.get("key") or "") == today_hint
         show_lab = (not dense) or i == 0 or (i + 1) % 5 == 0 or i == n - 1
+        lab = (f'<text x="{x + bw / 2:.0f}" y="{H - 12}" text-anchor="middle" '
+               f'font-size="11" fill="#7C8FA8">{_esc(m.get("label") or "")}</text>'
+               if show_lab else "")
+        if km <= 0:
+            # 没跑的日子画一个基线点，不再画 6px 的「假柱」。
+            # 以前零值和「跑了 0.4 km」长得一样，扫一眼分不出哪天没跑。
+            bars.append(f'<circle cx="{x + bw / 2:.0f}" cy="{H - pad_b - 2.5:.0f}" '
+                        f'r="2" fill="#7689A2" opacity=".55"/>' + lab)
+            if link and not dense:
+                hit = (f'<rect x="{x:.0f}" y="{pad_t - 12:.0f}" width="{bw:.0f}" '
+                       f'height="{H - pad_b - pad_t + 12:.0f}" fill="transparent" '
+                       f'pointer-events="all"/>')
+                href = link.format(key=str(m.get("key") or ""))
+                bars[-1] = f'<a href="{_esc(href)}" data-nopush>{hit}{bars[-1]}</a>'
+            continue
+        h = 6 + (H - pad_b - pad_t) * (km / vapor)
+        y = H - pad_b - h
         bars.append(
             f'<rect x="{x:.0f}" y="{y:.0f}" width="{bw:.0f}" height="{h:.0f}" rx="4" '
             f'fill="url(#mb)" opacity="{1 if cur else 0.52}"/>'
             + (f'<text x="{x + bw / 2:.0f}" y="{y - 7:.0f}" text-anchor="middle" '
                f'font-size="11" fill="{"#8CC2FF" if cur else "#7C8FA8"}">{km:.0f}</text>'
-               if km > 0 and not dense else "")
-            + (f'<text x="{x + bw / 2:.0f}" y="{H - 12}" text-anchor="middle" '
-               f'font-size="11" fill="#7C8FA8">{_esc(m.get("label") or "")}</text>'
-               if show_lab else ""))
+               if not dense else "")
+            + lab)
         if link and not dense:
             # 柱子够粗（≤14 根）时才做成可点：30 根柱只有 9px 宽，
             # 手指根本点不准，宁可让下面的周期行去承担这个交互。
@@ -287,13 +300,18 @@ def history_page(qs: dict) -> str:
              ui.chip("本机 · 离线可用"))
 
     # ---- 页首：三个数和一张柱状图
+    # 单位从值里拆出去：`.val` 只放数字（21px，约 55px 宽），
+    # 「13.5 km」整串塞进去要 82px，而卡片内容宽就是 82px —— 必然折行。
     hero = ('<div class="grid three">' +
-            ui.stat("本月跑量", f"{float(cur_m.get('km') or 0):.1f} km",
-                    f"{cur_m.get('count') or 0} 次 · {cur_m.get('key') or ''}") +
-            ui.stat("本年跑量", f"{float(cur_y.get('km') or 0):.0f} km",
-                    f"{cur_y.get('count') or 0} 次 · {cur_y.get('key') or ''}") +
-            ui.stat("累计跑量", f"{float(total.get('km') or 0):.0f} km",
-                    f"{total.get('count') or 0} 次 · {float(total.get('dur_h') or 0):.0f} 小时") +
+            ui.stat("本月跑量", f"{float(cur_m.get('km') or 0):.1f}",
+                    f"{cur_m.get('count') or 0} 次 · {cur_m.get('key') or ''}",
+                    unit="km") +
+            ui.stat("本年跑量", f"{float(cur_y.get('km') or 0):.0f}",
+                    f"{cur_y.get('count') or 0} 次 · {cur_y.get('key') or ''}",
+                    unit="km") +
+            ui.stat("累计跑量", f"{float(total.get('km') or 0):.0f}",
+                    f"{total.get('count') or 0} 次 · "
+                    f"{float(total.get('dur_h') or 0):.0f} 小时", unit="km") +
             '</div>')
     today = dt.date.today().isoformat()
 

@@ -17,6 +17,7 @@ DASH_FIX 做移动端适配；AI 页同理注入 AI_FIX。这样一套改动两�
 from __future__ import annotations
 
 import datetime as dt
+import re
 import html
 from pathlib import Path
 
@@ -28,7 +29,7 @@ CSS = """
   /* 深空色：不用纯黑，带一点蓝，屏幕上有层次；辉光统一走 --glow */
   --bg:#070B12; --surface:#0F1622; --surface2:#131C2B;
   --line:rgba(96,165,250,.16); --line2:rgba(96,165,250,.09);
-  --ink:#E8F0FB; --ink2:#B7C7DD; --muted:#7C8FA8; --faint:#4E6076;
+  --ink:#E8F0FB; --ink2:#B7C7DD; --muted:#7C8FA8; --faint:#7689A2;
   --brand:#3B82F6; --brand-soft:rgba(59,130,246,.14); --brand-ink:#8CC2FF;
   --cyan:#22D3EE; --cyan-soft:rgba(34,211,238,.13);
   --amber:#F5A524; --amber-soft:rgba(245,165,36,.14);
@@ -41,16 +42,20 @@ CSS = """
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;color:var(--ink);line-height:1.6;font-size:14px;
-  background:
-    radial-gradient(900px 520px at 78% -8%, rgba(59,130,246,.17), transparent 62%),
-    radial-gradient(680px 420px at 6% 2%, rgba(34,211,238,.10), transparent 60%),
-    var(--bg);
-  background-attachment:fixed;
+  background:var(--bg);
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
   -webkit-font-smoothing:antialiased}
+/* 两层辉光挪到固定伪元素：`background-attachment:fixed` 会让 WebView 在每次
+   滚动时重绘整面背景（而不是缓存成层），中低端机就是「滚动发涩、下拉闪一下」。
+   伪元素只合成一次，视觉效果完全一样。 */
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(900px 520px at 78% -8%, rgba(59,130,246,.17), transparent 62%),
+    radial-gradient(680px 420px at 6% 2%, rgba(34,211,238,.10), transparent 60%)}
 a{color:var(--brand-ink);text-decoration:none}
 .app{max-width:820px;margin:0 auto;padding:0 14px calc(30px + env(safe-area-inset-bottom))}
-.back{display:inline-flex;align-items:center;gap:5px;margin:14px 0 -6px;
+.back{display:inline-flex;align-items:center;gap:5px;margin:8px 0 -4px;
+  min-height:40px;padding:0 2px;
   font-size:12.5px;color:var(--brand-ink);text-decoration:none}
 .back:active{opacity:.6}
 /* 页头只用一道渐隐的蓝线收尾，比整条实线更像仪表面板 */
@@ -60,8 +65,9 @@ a{color:var(--brand-ink);text-decoration:none}
 .page-head.after-back{padding-top:14px}
 /* 页头右上角的单动作按钮（今日页就是「分享」出图）。
    以前它是页面里的一整张快捷卡，占掉半屏却只做一件事。 */
-.head-act{position:absolute;top:16px;right:0;display:inline-flex;align-items:center;
-  gap:5px;font-size:12px;font-weight:600;padding:7px 13px;border-radius:999px;
+.head-act{position:absolute;top:12px;right:0;display:inline-flex;align-items:center;
+  justify-content:center;gap:5px;font-size:12.5px;font-weight:600;padding:0 14px;
+  min-height:40px;border-radius:999px;
   color:var(--brand-ink);background:var(--brand-soft);cursor:pointer;
   border:1px solid rgba(59,130,246,.36);box-shadow:0 0 18px -6px rgba(59,130,246,.9)}
 .head-act:active{background:rgba(59,130,246,.28)}
@@ -75,16 +81,18 @@ a{color:var(--brand-ink);text-decoration:none}
 .chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:4px 10px;
   border-radius:999px;background:rgba(15,22,34,.72);border:1px solid var(--line);color:var(--ink2)}
 .chip.ok{background:var(--brand-soft);border-color:rgba(59,130,246,.34);color:var(--brand-ink)}
+a.chip{min-height:40px;padding:0 14px;justify-content:center}
 .chip.warn{background:var(--amber-soft);border-color:rgba(245,165,36,.32);color:#F5C26B}
 .sec{margin-top:24px}
-.sec-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:0 0 10px}
+.sec-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px}
 .sec-head h2{margin:0;font-size:11.5px;font-weight:700;letter-spacing:1.4px;
   color:var(--muted);position:relative;padding-left:12px}
 .sec-head h2::before{content:"";position:absolute;left:0;top:50%;width:3px;height:12px;
   margin-top:-6px;border-radius:2px;
   background:linear-gradient(180deg,var(--cyan),var(--brand));
   box-shadow:0 0 10px rgba(34,211,238,.7)}
-.sec-head .more{font-size:12px;color:var(--brand-ink)}
+.sec-head .more{font-size:12.5px;color:var(--brand-ink);display:inline-flex;
+  align-items:center;min-height:40px;padding:0 2px}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}
 .grid.one{grid-template-columns:1fr}
@@ -93,10 +101,10 @@ a{color:var(--brand-ink);text-decoration:none}
 .mm{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}
 .mm .i{background:rgba(9,14,22,.52);border:1px solid var(--line2);
   border-radius:10px;padding:8px 10px;min-width:0}
-.mm .n{font-size:10.5px;color:var(--muted);letter-spacing:.3px}
+.mm .n{font-size:11px;color:var(--muted);letter-spacing:.3px}
 .mm .v{font-size:14px;font-weight:650;margin-top:1px;
   font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.mm .d{font-size:10px;color:var(--faint);margin-top:1px;
+.mm .d{font-size:11px;color:var(--faint);margin-top:1px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mm .b{height:3px;border-radius:999px;background:rgba(255,255,255,.07);
   overflow:hidden;margin-top:6px}
@@ -106,16 +114,18 @@ a{color:var(--brand-ink);text-decoration:none}
 .vital{background:linear-gradient(180deg,rgba(19,28,43,.92),rgba(14,21,33,.95));
   border:1px solid var(--line);border-radius:14px;padding:12px 13px 10px;
   box-shadow:var(--shadow);min-width:0}
-.vital .k{font-size:10.5px;letter-spacing:.6px;color:var(--muted)}
+.vital .k{font-size:11px;letter-spacing:.6px;color:var(--muted)}
 .vital .num{font-size:24px;font-weight:700;line-height:1.15;margin-top:3px;
   letter-spacing:-.6px;font-variant-numeric:tabular-nums;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .vital .num small{font-size:11.5px;font-weight:500;letter-spacing:0;
   color:var(--muted);margin-left:3px}
-.vital .sub{font-size:11px;color:var(--muted);margin-top:3px;line-height:1.45;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.vital .sub2{font-size:10.5px;color:var(--faint);margin-top:1px;line-height:1.45;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vital .sub{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.5;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+  overflow:hidden}
+.vital .sub2{font-size:11.5px;color:var(--faint);margin-top:2px;line-height:1.5;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+  overflow:hidden}
 .vital .spark{margin-top:6px;display:block}
 .vital .none{font-size:12px;color:var(--faint);margin-top:8px}
 .card{background:linear-gradient(180deg,rgba(19,28,43,.92),rgba(14,21,33,.95));
@@ -148,8 +158,10 @@ a{color:var(--brand-ink);text-decoration:none}
   background:linear-gradient(90deg,var(--cyan),var(--brand));
   box-shadow:0 0 14px rgba(59,130,246,.75)}
 .lab{font-size:11.5px;color:var(--muted);letter-spacing:.2px}
-.val{font-size:23px;font-weight:650;line-height:1.2;margin-top:4px;
-  font-variant-numeric:tabular-nums;color:var(--ink)}
+.val{font-size:22px;font-weight:650;line-height:1.2;margin-top:4px;
+  font-variant-numeric:tabular-nums;color:var(--ink);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.val.sm{font-size:18px}
 .note{font-size:11.5px;color:var(--faint);margin-top:3px}
 .row{display:flex;align-items:center;gap:12px;
   background:linear-gradient(180deg,rgba(19,28,43,.88),rgba(14,21,33,.92));
@@ -196,11 +208,14 @@ a{color:var(--brand-ink);text-decoration:none}
 .act .ad{font-size:11.5px;color:var(--muted);line-height:1.5}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
   border:1px solid var(--line);background:rgba(15,22,34,.72);color:var(--ink2);
-  border-radius:999px;padding:8px 14px;font-size:12.5px;font-family:inherit;cursor:pointer}
+  border-radius:999px;padding:0 16px;min-height:44px;font-size:13px;
+  font-family:inherit;cursor:pointer}
 .btn.primary{background:linear-gradient(135deg,#3B82F6,#22D3EE);border-color:transparent;
   color:#04121F;font-weight:650;box-shadow:0 8px 22px -10px rgba(59,130,246,.85)}
 .btn:active{opacity:.85}
 .empty{padding:20px 4px;font-size:13px;color:var(--muted);line-height:1.8}
+.link-act{display:inline-flex;align-items:center;min-height:40px;
+  color:var(--brand-ink);text-decoration:none}
 .foot{margin-top:30px;padding-top:14px;border-top:1px solid var(--line2);
   font-size:11px;color:var(--faint);line-height:1.8}
 form.filters{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
@@ -233,17 +248,17 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .wrow.today{background:linear-gradient(90deg,rgba(59,130,246,.18),rgba(59,130,246,.04));
   border-color:rgba(96,165,250,.34);box-shadow:0 0 24px -12px rgba(59,130,246,.9)}
 .wrow.today .wd{color:var(--brand-ink)}
-.wrow .now{flex:0 0 auto;font-size:10.5px;color:#04121F;font-weight:700;
+.wrow .now{flex:0 0 auto;font-size:11px;color:#04121F;font-weight:700;
   background:linear-gradient(135deg,#3B82F6,#22D3EE);
   border-radius:999px;padding:2px 8px;box-shadow:0 0 12px -2px rgba(59,130,246,.8)}
-.wrow .done{flex:0 0 auto;font-size:10.5px;color:var(--brand-ink);
+.wrow .done{flex:0 0 auto;font-size:11px;color:var(--brand-ink);
   background:rgba(59,130,246,.12);border:1px solid rgba(96,165,250,.26);
   border-radius:999px;padding:2px 8px}
 /* 计划了但没做：虚线灰标签，比「已完成」弱一档，但不至于被藏起来 */
-.wrow .miss{flex:0 0 auto;font-size:10.5px;color:var(--muted);background:transparent;
+.wrow .miss{flex:0 0 auto;font-size:11px;color:var(--muted);background:transparent;
   border:1px dashed var(--line);border-radius:999px;padding:2px 8px}
 /* 没排课但练过了：琥珀色，说清「这不是计划内的完成」 */
-.wrow .extra{flex:0 0 auto;font-size:10.5px;color:var(--amber);
+.wrow .extra{flex:0 0 auto;font-size:11px;color:var(--amber);
   background:rgba(245,165,36,.10);border:1px solid rgba(245,165,36,.28);
   border-radius:999px;padding:2px 8px}
 .wrow.rest .wb{color:var(--muted);font-weight:400}
@@ -430,9 +445,15 @@ def _week_load_txt(load: dict) -> str:
 
 
 def stat(label: str, value, note: str = "", unit: str = "") -> str:
+    """统计卡。值太长时自动降一档字号。
+
+    `.val` 是 nowrap + ellipsis：360 宽的屏上三列卡内容只有 ~82px，
+    「1163 km」在 22px 下会超宽，被省略号吃掉尾数 —— 数字被截比字小更糟。
+    """
     u = f'<small style="font-size:12px;color:var(--muted)"> {esc(unit)}</small>' if unit else ""
+    long = len(str(value)) >= 4
     return (f'<div class="card"><div class="lab">{esc(label)}</div>'
-            f'<div class="val">{esc(value)}{u}</div>'
+            f'<div class="val{" sm" if long else ""}">{esc(value)}{u}</div>'
             f'<div class="note">{esc(note)}</div></div>')
 
 
@@ -453,9 +474,13 @@ def row(icon: str, title: str, desc: str, *, act: str = "", href: str = "",
         attr += f' data-act="{esc(act)}"'
     if aid:
         attr += f' data-aid="{esc(aid)}"'
-    arrow = '<span class="go">›</span>' if go else ""
+    arrow = '<span class="go" aria-hidden="true">›</span>' if go else ""
     cls = "row on" if on else "row"
-    return (f'<{tag} class="{cls}"{attr}><span class="ic {esc(tone)}">{esc(icon)}</span>'
+    # 可点元素要么是 <a>（天然可访问），要么补上 role/tabindex/aria-label
+    a11y = ("" if href else
+            f' role="button" tabindex="0" aria-label="{esc(title)}"')
+    return (f'<{tag} class="{cls}"{attr}{a11y}>'
+            f'<span class="ic {esc(tone)}" aria-hidden="true">{esc(icon)}</span>'
             f'<span class="tx"><span class="t">{esc(title)}</span>'
             f'<span class="d">{esc(desc)}</span></span>{arrow}</{tag}>')
 
@@ -463,7 +488,9 @@ def row(icon: str, title: str, desc: str, *, act: str = "", href: str = "",
 def act(icon: str, title: str, desc: str, action: str = "", href: str = "") -> str:
     tag = "a" if href else "div"
     attr = f' href="{esc(href)}"' if href else f' data-act="{esc(action)}"'
-    return (f'<{tag} class="act"{attr}><span class="ai">{esc(icon)}</span>'
+    a11y = "" if href else f' role="button" tabindex="0" aria-label="{esc(title)}"'
+    return (f'<{tag} class="act"{attr}{a11y}>'
+            f'<span class="ai" aria-hidden="true">{esc(icon)}</span>'
             f'<span class="at">{esc(title)}</span>'
             f'<span class="ad">{esc(desc)}</span></{tag}>')
 
@@ -672,11 +699,8 @@ def home_page() -> str:
     rows = ""
     for a in acts[:4]:
         aid = str(a.get("activity_id") or "")
-        dist = (a.get("distance_m") or 0) / 1000
-        pace = a.get("pace_s_km") or 0
-        p = f"{int(pace) // 60}'{int(pace) % 60:02d}\"" if pace else "—"
         rows += row("▶", a.get("name") or "活动",
-                    f"{a.get('date') or ''} · {dist:.2f} km · 配速 {p}",
+                    f"{a.get('date') or ''} · {_act_metric(a)}",
                     aid=aid, tone="b")
     if not rows:
         rows = ('<div class="empty">还没有活动数据。下拉同步一次，'
@@ -700,8 +724,8 @@ def home_page() -> str:
                  sec("身体", f'<div class="grid">'
                              f'{sleep_card}{weight_card}</div>') +
                  sec("最近活动", rows))
-    action = ('<div class="head-act" data-act="export">'
-              '<span>⇪</span>一图流</div>')
+    action = ('<div class="head-act" data-act="export" role="button" tabindex="0" '
+              'aria-label="导出一图流"><span aria-hidden="true">⇪</span>一图流</div>')
     return page("TODAY · 今日", "今天该怎么练",
                 "恢复、负荷、睡眠与体重，一屏看完", body_html, chips,
                 action=action)
@@ -717,6 +741,57 @@ def _session(res: dict) -> str:
         return "按恢复度安排"
 
 
+def _mask_email(v) -> str:
+    """邮箱打码：`a***@qq.com`。
+
+    页面里直接显示完整登录邮箱，和项目自己的隐私立场不一致
+    （`appapi._mask_uid` 早就在打码了）。打码规则对短账号也要安全。
+    """
+    s = str(v or "").strip()
+    if not s or "@" not in s:
+        return s
+    name, _, domain = s.partition("@")
+    if not name:
+        return s
+    keep = name[0]
+    return f"{keep}***@{domain}"
+
+
+def _act_metric(a: dict) -> str:
+    """活动行的一行摘要。按类型给不同指标 —— 力量课写「0.00 km · 配速 —」
+    会被读成「跑了 0 公里」，明明是没跑。"""
+    dist = float(a.get("distance_m") or 0) / 1000.0
+    dur = float(a.get("duration_s") or 0) / 60.0
+    pace = a.get("pace_s_km") or 0
+    kind = str(a.get("type") or "")
+    bits: list[str] = []
+    if kind in ("running", "trail_running", "walking") or dist >= 0.1:
+        if dist >= 0.1:
+            bits.append(f"{dist:.2f} km")
+        if pace:
+            bits.append(f"配速 {int(pace) // 60}'{int(pace) % 60:02d}\"")
+        elif dur >= 1:
+            bits.append(f"{dur:.0f} 分钟")
+    else:
+        # 骑行/力量/游泳这类：距离要么是 0 要么不是一个量级，只报时长
+        if dist >= 0.1:
+            bits.append(f"{dist:.2f} km")
+        if dur >= 1:
+            bits.append(f"{dur:.0f} 分钟")
+    te = a.get("training_load") or a.get("load")
+    if te:
+        bits.append(f"负荷 {int(te)}")
+    return " · ".join(bits) or "已记录"
+
+
+def _plan_name(name) -> str:
+    """课名去掉「W2 周二」前缀。左侧已经有星期，标题里再写一遍是重复。"""
+    t = str(name or "").strip()
+    if not t:
+        return "训练"
+    return re.sub(r"^W\d+\s*周[一二三四五六日]\s*", "", t) or t
+
+
 def _plan_meta(item: dict) -> str:
     """一条课表的副标题：距离 · 时长 · 训练效果 · 运动类型。"""
     bits = []
@@ -730,12 +805,14 @@ def _plan_meta(item: dict) -> str:
     _sp = str(item.get("sport") or "")
     if _sp and _sp != "跑步" and _sp not in str(item.get("name") or ""):
         bits.append(_sp)
-    return " · ".join(bits) or "未标注强度"
+    # 没有元信息就返回空串，由调用方决定不渲染副标题。
+    # 以前兜底成「未标注强度」：七行课表七个「未标注」，像解析失败。
+    return " · ".join(bits)
 
 
 def _plan_items_line(items: list[dict]) -> str:
     return "；".join(
-        (x.get("name") or "训练") + (f' {x["minutes"]}′' if x.get("minutes") else "")
+        _plan_name(x.get("name")) + (f' {x["minutes"]}′' if x.get("minutes") else "")
         for x in items) or "—"
 
 
@@ -777,7 +854,7 @@ def _today_plan_card(pl: dict) -> str:
             more += "".join(
                 f'<div class="n">另练了：{esc(a.get("name"))} · {esc(_plan_meta(a))}</div>'
                 for a in acts[:2])
-        return (f'<div class="plan-hero"><div class="t">{esc(it.get("name") or "训练")}</div>'
+        return (f'<div class="plan-hero"><div class="t">{esc(_plan_name(it.get("name")))}</div>'
                 + (f'<div class="d">{esc(it.get("detail"))}</div>' if it.get("detail") else "")
                 + f'<div class="n">{esc(_plan_meta(it))}</div>{badge}{more}{local_tag}</div>')
 
@@ -855,8 +932,9 @@ def plan_page(qs: dict | None = None) -> str:
         act = d.get("acts") or []
         if its:
             first = its[0]
-            wb = (f'<span class="wb">{esc(first.get("name") or "训练")}'
-                  f'<em>{esc(_plan_meta(first))}</em></span>')
+            _meta = _plan_meta(first)
+            wb = (f'<span class="wb">{esc(_plan_name(first.get("name")))}'
+                  + (f'<em>{esc(_meta)}</em>' if _meta else "") + '</span>')
         elif act:
             # 当天没排课、却有实际训练：**标题仍然是「休息」**（这是课表），
             # 练了什么写在副行。以前直接把活动名顶上来，通勤骑车会看着像当天的课。
@@ -961,7 +1039,7 @@ def me_page() -> str:
     chips = (chip("本机数据", "ok") + chip(f"v{VER}") + chip("零第三方依赖"))
 
     # 每个数据源一行、点了直接进对应登录，不再先弹「选哪个账号」的二级选择器
-    sources = (row("G", "佳明 Garmin", f"{g} · {esc(st.get('email') or '未设置账号')}",
+    sources = (row("G", "佳明 Garmin", f"{g} · {esc(_mask_email(st.get('email')) or '未设置账号')}",
                    act="login:garmin") +
                row("C", "高驰 COROS", f"{c_ok} · 可独立同步活动", act="login:coros", tone="b") +
                row("W", "小米体重", f"{m_ok} · 体脂秤数据", act="mi", tone="a"))
@@ -1003,13 +1081,14 @@ def me_page() -> str:
              '<div class="note" style="margin-top:8px;font-size:12.5px;line-height:1.8">'
              '凭据与健康数据只存在这台设备的 App 私有目录；看板、图片、回放全部本地生成，'
              '页面不加载任何 CDN、远程字体或统计脚本。卸载 App 即清空本地数据。'
-             '<br><a href="/privacy" style="color:var(--brand-ink)">完整隐私说明 →</a>'
+             '<br><a class="link-act" href="/privacy">完整隐私说明 →</a>'
              '</div></div>')
 
     stat_line = (f'<div class="grid three">' +
                  stat("日汇总", f"{cov['days']} 天", f"{cov['first']} ~ {cov['last']}") +
                  stat("活动", f"{cov['activities']} 条", "全部本地") +
-                 stat("上次同步", str(st.get("last_sync") or "—")[5:16], "下拉可随时刷新") +
+                 stat("上次同步", str(st.get("last_sync") or "—")[5:10],
+                     (str(st.get("last_sync") or "")[11:16] + " 同步 · 下拉可刷新").lstrip(" ·")) +
                  '</div>'
                  '<div class="note" style="margin-top:10px;line-height:1.7">'
                  '历史由 App 在后台自动补齐：每次刷新从最近往前挪一段（一年一段，'

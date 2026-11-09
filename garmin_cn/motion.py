@@ -386,7 +386,11 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
         # （比如起跑前拍的几秒）也贴到最近的一端，不许丢。
         cg = photo_mod.match(clips, rt, t0_ms=rt.get("t0"),
                              cluster_m=0.0, clamp_ends=True,
-                             keep=("dur", "codec", "bytes", "kind"))
+                             # `rotate` 必须显式透传：photo.match 会重建 item，
+                             # 不在白名单里的字段一律丢。漏掉它的话，页面拿到的
+                             # clip.rotate 永远是 0 —— 表现就是「不管怎么旋转，
+                             # 插进回放里始终是同一个方向」。
+                             keep=("dur", "codec", "bytes", "kind", "rotate"))
         loose.extend(cg["loose"])
         for g in cg["points"]:
             if not g["shots"]:
