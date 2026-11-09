@@ -17,6 +17,10 @@
     py -3 tools/snapshot.py upload      # 创建 prerelease 并上传附件
     py -3 tools/snapshot.py run         # 两步一起做
 
+上传前会自动**只保留最近 5 个快照的 APK**（`--keep N` 可改，0 = 不清理）：
+Gitee 的附件配额是仓库总量 1 GB，一个 APK 约 22.7 MB，四十来个快照就满，
+满额后上传直接 400。清理只删 `.apk`，tag、说明、源码包、SHA256SUMS 都留着。
+
 APK 由 `android/build.bat assembleRelease` 产出；本脚本不代跑 Gradle，
 避免在发布流程里藏一个几分钟的构建步骤。
 """
@@ -24,7 +28,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -36,6 +42,7 @@ import release as R  # noqa: E402
 
 DIST = R.DIST
 TAG_FILE = DIST / ".snapshot-tag"
+KEEP_APK = 5      # 只保留最近 N 个快照的 .apk 附件（仓库附件配额只有 1 GB 总量）
 
 
 def branch() -> str:
@@ -129,6 +136,95 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _rel_time(rel: dict) -> str:
+    """Release 的时间序：优先 created_at，退回 tag 末尾的 YYYYMMDD-HHMM。"""
+    created = str(rel.get("created_at") or "")
+    if created:
+        return created
+    m = re.search(r"-(\d{8})-(\d{4})$", str(rel.get("tag_name") or ""))
+    if not m:
+        return ""
+    d, hm = m.group(1), m.group(2)
+    return f"{d[:4]}-{d[4:6]}-{d[6:]} {hm[:2]}:{hm[2:]}"
+
+
+def _all_releases(owner: str, repo: str, token: str) -> list[dict]:
+    out: list[dict] = []
+    page = 1
+    while page <= 20:
+        url = (f"{R.API}/repos/{owner}/{repo}/releases"
+               f"?access_token={token}&per_page=100&page={page}")
+        batch = json.loads(R.http(url, token=token) or "[]") or []
+        out.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    return out
+
+
+def _attach_files(owner: str, repo: str, rid, token: str) -> list[dict]:
+    url = (f"{R.API}/repos/{owner}/{repo}/releases/{rid}/attach_files"
+           f"?access_token={token}")
+    return json.loads(R.http(url, token=token) or "[]") or []
+
+
+def _delete_asset(owner: str, repo: str, rid, asset_id, token: str) -> None:
+    R.http(f"{R.API}/repos/{owner}/{repo}/releases/{rid}"
+           f"/attach_files/{asset_id}?access_token={token}",
+           method="DELETE", token=token)
+
+
+def gitee_drop_assets(owner: str, repo: str, token: str, tag: str,
+                      names: set[str]) -> int:
+    """删掉某个 Release 上已存在的同名附件（同一个 tag 重跑上传时避免两份）。
+
+    只按「这次要传的文件名」删：重跑一次上传，上次留下的源码包/校验和/APK
+    都会先清掉再传，否则 Gitee 不会覆盖，Release 页上会出现两个同名文件。
+    """
+    rels = _all_releases(owner, repo, token)
+    rel = next((r for r in rels if str(r.get("tag_name")) == tag), None)
+    if not rel:
+        return 0
+    freed = 0
+    for f in _attach_files(owner, repo, rel["id"], token):
+        if str(f.get("name") or "") not in names:
+            continue
+        freed += int(f.get("size") or 0)
+        _delete_asset(owner, repo, rel["id"], f["id"], token)
+    return freed
+
+
+def gitee_prune_apks(owner: str, repo: str, token: str, *,
+                     keep: int = KEEP_APK) -> int:
+    """只保留最近 `keep` 个快照的 .apk 附件，返回释放的字节数。
+
+    为什么必须在上传**之前**跑：Gitee 的附件配额是仓库总量 1 GB（一个 APK
+    约 22.7 MB，四十来个快照就满），满额后上传直接 400 —— 不先腾地方，
+    新快照根本传不上去。
+
+    只删 `.apk`：tag、Release 说明、源码包、SHA256SUMS 全部保留，旧快照
+    仍然能查说明、下源码，只是不再提供「装上就试」的成品。
+    """
+    rels = [r for r in _all_releases(owner, repo, token)
+            if str(r.get("tag_name") or "").startswith("snap-")]
+    rels.sort(key=_rel_time, reverse=True)
+    allowed = {str(r.get("tag_name")) for r in rels[:max(0, keep)]}
+    freed = 0
+    for rel in rels:
+        tag, rid = str(rel.get("tag_name") or ""), rel["id"]
+        if tag in allowed:
+            continue                    # 保留名单里的，不用问接口
+        for f in _attach_files(owner, repo, rid, token):
+            name = str(f.get("name") or "")
+            if not name.endswith(".apk"):
+                continue
+            size = int(f.get("size") or 0)
+            _delete_asset(owner, repo, rid, f["id"], token)
+            freed += size
+            print(f"× 清理旧 APK：{tag} / {name}（{R.human(size)}）")
+    return freed
+
+
 def cmd_upload(args: argparse.Namespace) -> int:
     tag = args.tag or (TAG_FILE.read_text(encoding="utf-8").strip()
                        if TAG_FILE.is_file() else "")
@@ -157,6 +253,19 @@ def cmd_upload(args: argparse.Namespace) -> int:
     rid = R.gitee_ensure_release(owner, repo, tag,
                                  notes_path.read_text(encoding="utf-8"), token,
                                  prerelease=True, target=branch())
+    # 先按「只留最近 N 个」清旧 APK，再传新的：配额满时上传会直接 400。
+    keep = int(getattr(args, "keep", KEEP_APK) or 0)
+    if keep > 0:
+        freed = gitee_prune_apks(owner, repo, token, keep=keep)
+        if freed:
+            print(f"√ 已清理旧 APK 附件，释放 {R.human(freed)}（保留最近 {keep} 个）")
+    else:
+        print("! 已按 --keep 0 跳过旧 APK 清理，配额满时上传会失败")
+    # 同一 tag 重跑上传：先删掉上次那几个同名附件，避免出现两份
+    dup = gitee_drop_assets(owner, repo, token, tag,
+                            {p.name for p in (zipped, sums, *apks)})
+    if dup:
+        print(f"√ 清掉本 tag 上的旧附件（{R.human(dup)}），避免重复")
     for p in (zipped, sums, *apks):
         if p.stat().st_size > R.MAX_ASSET:
             print(f"! 跳过 {p.name}：超过附件上限")
@@ -183,6 +292,10 @@ def main() -> int:
     ):
         q = sub.add_parser(name, help=helptext)
         q.add_argument("--tag", help="指定快照 tag（默认按分支+时间生成）")
+        if name in ("upload", "run"):
+            q.add_argument(
+                "--keep", type=int, default=KEEP_APK,
+                help=f"只保留最近 N 个快照的 APK 附件（默认 {KEEP_APK}，0 = 不清理）")
         q.set_defaults(func=fn)
     args = p.parse_args()
     try:

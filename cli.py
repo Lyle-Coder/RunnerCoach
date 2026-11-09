@@ -3234,6 +3234,20 @@ def cmd_selftest(args) -> int:
     _cl_src = Path(_CL.__file__).read_text(encoding="utf-8")
     assert "body_battery_day(self, date: str, *, timeout: int = 30" in _cl_src, \
         "client 层不支持短超时"
+
+    # ---- 发布脚本：快照只保留最近 5 个 APK ---------------------------------
+    _snap = Path(__file__).parent / "tools/snapshot.py"
+    assert _snap.is_file(), "缺 tools/snapshot.py"
+    _snap_src = _snap.read_text(encoding="utf-8")
+    assert "KEEP_APK = 5" in _snap_src, "快照保留数量不是 5"
+    assert 'endswith(".apk")' in _snap_src, "清理没限定 .apk，会误删源码包/说明"
+    # 清理必须排在上传之前：配额是仓库总量 1 GB，满了上传直接 400
+    _i_prune = _snap_src.find("gitee_prune_apks(owner, repo, token, keep=keep)")
+    _i_up = _snap_src.find("for p in (zipped, sums, *apks):", _i_prune)
+    assert _i_prune > 0 and _i_up > _i_prune, \
+        "旧 APK 清理没排在上传之前，配额满时新快照传不上去"
+    assert "--keep" in _snap_src and "0 = 不清理" in _snap_src, \
+        "没有 --keep 开关，清理策略改不了"
     assert "putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)" in _main, \
         "相册不能多选，批量添加不成立"
     assert "val u = pendingVideos.removeFirstOrNull()" in _main and \
