@@ -313,11 +313,19 @@ def preferred_source(store) -> str:
 
 
 def source_settings(store) -> dict:
-    """只读取本地记录，不表示某个云服务已连接或已支持。"""
+    """只读取本地记录，不表示某个云服务已连接或已支持。
+
+    `available` 是库里实际有数据的来源；`choices` 是偏好弹窗该展示的
+    全量候选——没数据的来源也要能预设，否则用户永远等不到「能切换」的那天
+    （典型：先选华为，再在电脑上导入会话，数据到账自动生效）。
+    """
     ensure(store)
     available = [r[0] for r in store.conn.execute(
         "SELECT DISTINCT source FROM body WHERE source IS NOT NULL ORDER BY source")]
+    ranked = sorted(set(SOURCE_LABELS) | set(available),
+                    key=lambda s: (SRC_RANK.get(s, 99), str(s)))
     return {"preferred": preferred_source(store), "available": available,
+            "choices": ["auto"] + ranked,
             "labels": SOURCE_LABELS.copy()}
 
 

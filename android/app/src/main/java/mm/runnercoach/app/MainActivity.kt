@@ -279,6 +279,7 @@ class MainActivity : Activity() {
                     "login:coros" -> askCorosLogin()
                     "login" -> showLoginPicker()
                     "mi" -> showMiPanel()
+                    "hw" -> showHwPanel()
                     "bodySource" -> showBodySourcePicker()
                     "planRefresh" -> refreshPlan()
                     "amap" -> showAmapDialog()
@@ -1729,18 +1730,28 @@ class MainActivity : Activity() {
                     toast("读取体重来源失败：${s.optString("error")}")
                     return@ui
                 }
+                // choices 是全量候选（auto + 所有已知来源），没数据的也能预设；
+                // 旧版 Python 不返回 choices 时回退到 available + preferred。
                 val ids = mutableListOf("auto")
-                val available = s.optJSONArray("available")
-                if (available != null) {
-                    for (i in 0 until available.length()) {
-                        val id = available.optString(i)
+                val choices = s.optJSONArray("choices")
+                if (choices != null) {
+                    for (i in 0 until choices.length()) {
+                        val id = choices.optString(i)
                         if (id.isNotBlank() && id !in ids) ids.add(id)
+                    }
+                } else {
+                    val available = s.optJSONArray("available")
+                    if (available != null) {
+                        for (i in 0 until available.length()) {
+                            val id = available.optString(i)
+                            if (id.isNotBlank() && id !in ids) ids.add(id)
+                        }
                     }
                 }
                 val preferred = s.optString("preferred", "auto")
                 if (preferred !in ids) ids.add(preferred)
                 val names = ids.map { id ->
-                    if (id == "auto") "自动（同日小米优先于华为）"
+                    if (id == "auto") "自动（按来源权重挑选）"
                     else s.optJSONObject("labels")?.optString(id, id) ?: id
                 }.toTypedArray()
                 AlertDialog.Builder(this)
@@ -1794,6 +1805,139 @@ class MainActivity : Activity() {
                     dlg.setPositiveButton("登录小米账号") { _, _ -> askMiLogin() }
                 }
                 dlg.show()
+            }
+        }
+    }
+
+    /** 华为运动健康体重：密码模式走不通，入口是「粘贴会话 JSON」导入。
+     *  已导入时提供同步 / 体检 / 退出，与小米面板对齐。 */
+    private fun showHwPanel() {
+        thread {
+            val s = apiCall("hw_status")
+            ui {
+                if (!s.optBoolean("ok")) {
+                    toast("状态读取失败：${s.optString("error")}")
+                    return@ui
+                }
+                val logged = s.optBoolean("logged_in")
+                val uid = s.optString("open_id")
+                val refresh = if (s.optBoolean("has_refresh")) "可自动续期" else "过期需重新导入"
+                val dlg = AlertDialog.Builder(this)
+                    .setTitle("华为体重")
+                    .setMessage(
+                        if (logged)
+                            "已导入华为会话（$uid），$refresh。\n\n" +
+                                "「同步体重」拉取运动健康的体成分记录并回填看板；\n" +
+                                "「体检」逐项检查账号 / 体重读取 / 会话续期。"
+                        else
+                            "还没有导入华为会话。\n\n" +
+                                "华为不支持密码登录，两种导入方式：\n" +
+                                "1. 电脑上抓包后 run.bat hw import --capture <HAR>；\n" +
+                                "2. 在本机粘贴会话 JSON（App 里登录华为运动健康时\n" +
+                                "    抓到的 healthsession obtain 响应）。\n" +
+                                "凭据只存本机。"
+                    )
+                    .setNegativeButton("关闭", null)
+                if (logged) {
+                    dlg.setPositiveButton("同步体重") { _, _ -> doHwSync() }
+                    dlg.setNeutralButton("体检") { _, _ -> doHwProbe() }
+                    dlg.setNegativeButton("退出登录") { _, _ -> doHwLogout() }
+                } else {
+                    dlg.setPositiveButton("粘贴会话导入") { _, _ -> askHwImport() }
+                }
+                dlg.show()
+            }
+        }
+    }
+
+    private fun askHwImport() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(56, 24, 56, 0)
+        }
+        val eJson = EditText(this).apply {
+            hint = "粘贴会话 JSON：{\"accessToken\":\"…\",\"refreshToken\":\"…\",\"uid\":\"…\"}"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 3
+        }
+        box.addView(eJson)
+        AlertDialog.Builder(this)
+            .setTitle("导入华为会话")
+            .setMessage("会话 JSON 只存本机 data/huawei_auth.json；" +
+                "带 refreshToken 的会话可自动续期。")
+            .setView(box)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("导入") { _, _ ->
+                val raw = eJson.text.toString().trim()
+                if (raw.isBlank()) toast("要先粘贴会话 JSON")
+                else doHwImport(raw)
+            }
+            .show()
+    }
+
+    private fun doHwImport(payload: String) {
+        busy(true)
+        thread {
+            val r = apiCall("hw_import", payload)
+            ui {
+                busy(false)
+                if (r.optBoolean("ok")) {
+                    toast("已导入华为会话（${r.optString("open_id")}）")
+                    web.reload()
+                } else toast("导入失败：${r.optString("error")}")
+            }
+        }
+    }
+
+    private fun doHwSync() {
+        busy(true)
+        thread {
+            val r = apiCall("hw_sync")
+            ui {
+                busy(false)
+                if (r.optBoolean("ok")) {
+                    val n = r.optInt("count", 0)
+                    toast(if (n > 0) "入库 $n 条体重记录"
+                          else "云端没有新记录：这个账号可能还没称过")
+                    web.reload()
+                } else toast("同步失败：${r.optString("error")}")
+            }
+        }
+    }
+
+    private fun doHwProbe() {
+        busy(true)
+        thread {
+            val r = apiCall("hw_probe")
+            ui {
+                busy(false)
+                if (!r.optBoolean("ok")) {
+                    toast("体检失败：${r.optString("error")}")
+                    return@ui
+                }
+                val gates = r.optJSONObject("gates")
+                val names = mapOf("account" to "账号登录",
+                                  "weight" to "体重读取", "renew" to "会话续期")
+                val lines = names.mapNotNull { (k, label) ->
+                    val g = gates?.optJSONObject(k) ?: return@mapNotNull null
+                    "${if (g.optBoolean("ok")) "√" else "×"} $label　${g.optString("detail")}"
+                }
+                AlertDialog.Builder(this)
+                    .setTitle(if (r.optBoolean("all_ok")) "体检通过" else "体检未通过")
+                    .setMessage(lines.joinToString("\n").ifBlank { "没有返回体检明细" })
+                    .setPositiveButton("关闭", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun doHwLogout() {
+        thread {
+            val r = apiCall("hw_logout")
+            ui {
+                toast(if (r.optBoolean("ok")) "已删除华为会话（云端数据不受影响）"
+                      else "退出失败：${r.optString("error")}")
+                web.reload()
             }
         }
     }
