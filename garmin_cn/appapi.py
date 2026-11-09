@@ -146,6 +146,7 @@ _API = {
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
     "hw_status", "hw_import", "hw_login", "hw_probe", "hw_sync", "hw_logout",
+    "hw_login_start", "hw_login_finish", "hw_login_cancel",
     "body_sources", "body_set_source",
     "coros_status", "coros_login", "coros_logout", "coros_sync",
 }
@@ -491,6 +492,46 @@ def mi_sync(days: int = 30) -> dict:
 # ---------------------------------------------------------------- 华为运动健康
 # 与小米同一套交互：状态 → 登录/导入授权 → 同步 → 退出。
 # 差别只在闸门：华为没走完协议验证时，`hw_sync` 会明确拒绝，不会装作同步成功。
+_HW_LOGIN: dict = {"state": "", "started": 0, "lock": threading.Lock()}
+
+
+def hw_login_start() -> dict:
+    import secrets
+    import time
+    from . import huawei as H
+
+    with _HW_LOGIN["lock"]:
+        state = secrets.token_urlsafe(32)
+        _HW_LOGIN.update(state=state, started=time.monotonic())
+    return {"ok": True, "url": H.login_url(state), "redirect_uri": H.LOGIN_REDIRECT}
+
+
+def hw_login_cancel() -> dict:
+    with _HW_LOGIN["lock"]:
+        _HW_LOGIN.update(state="", started=0)
+    return {"ok": True}
+
+
+def hw_login_finish(callback: str) -> dict:
+    import time
+    from . import huawei as H
+
+    with _HW_LOGIN["lock"]:
+        state, started = _HW_LOGIN["state"], _HW_LOGIN["started"]
+        _HW_LOGIN.update(state="", started=0)  # 一次性消费，拒绝重复回调
+    if not state or time.monotonic() - started > 900:
+        return {"ok": False, "error": "登录已过期，请重新登录"}
+    try:
+        code = H.login_code(callback, state)
+        cloud = H.HuaweiCloud(HOME)
+        cloud.login(code)
+        return {"ok": True, "logged_in": True, "open_id": _mask_uid(cloud.uid)}
+    except H.HwError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception:
+        return {"ok": False, "error": "华为登录未完成，请重试"}
+
+
 def hw_status() -> dict:
     """华为登录态与协议状态（只看本地文件，不联网）。"""
     try:
@@ -688,9 +729,9 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
 
     if with_body:
         try:
-            from . import mi as M
+            from . import body as B
 
-            n, recs = M.sync(store, HOME, days=min(max(days, 7), 120))
+            n, recs = B.sync_preferred(store, HOME, days=min(max(days, 7), 120))
             out["body"] = {"count": n, "latest": recs[-1]["date"] if recs else None}
         except Exception as e:
             out["body"] = {"count": 0, "error": f"{type(e).__name__}: {e}"}

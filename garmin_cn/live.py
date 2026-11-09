@@ -142,11 +142,7 @@ def scale(store, home, *, ttl: int = SCALE_TTL) -> dict:
             pass
 
     try:
-        if source == "huawei":
-            from . import huawei as M       # 延迟导入：没登录就不该拖慢出图
-        else:
-            from . import mi as M
-        n, recs = M.sync(store, home, days=7)
+        n, recs = B.sync_preferred(store, home, days=7)
     except Exception:
         return {"n": 0, "latest": None, "weight": None, "live": False, "source": source}
 

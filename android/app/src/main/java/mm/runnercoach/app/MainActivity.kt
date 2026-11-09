@@ -1391,6 +1391,16 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 7301) {
+            val callback = data?.getStringExtra("callback")
+            if (resultCode == RESULT_OK && !callback.isNullOrBlank()) {
+                finishHwLogin(callback)
+            } else {
+                thread { apiCall("hw_login_cancel") }
+                toast("已取消华为登录")
+            }
+            return
+        }
         if (requestCode == REQ_BUNDLE && resultCode == android.app.Activity.RESULT_OK) {
             data?.data?.let { askImportBundle(it) }
             return
@@ -1730,30 +1740,11 @@ class MainActivity : Activity() {
                     toast("读取体重来源失败：${s.optString("error")}")
                     return@ui
                 }
-                // choices 是全量候选（auto + 所有已知来源），没数据的也能预设；
-                // 旧版 Python 不返回 choices 时回退到 available + preferred。
-                val ids = mutableListOf("auto")
-                val choices = s.optJSONArray("choices")
-                if (choices != null) {
-                    for (i in 0 until choices.length()) {
-                        val id = choices.optString(i)
-                        if (id.isNotBlank() && id !in ids) ids.add(id)
-                    }
-                } else {
-                    val available = s.optJSONArray("available")
-                    if (available != null) {
-                        for (i in 0 until available.length()) {
-                            val id = available.optString(i)
-                            if (id.isNotBlank() && id !in ids) ids.add(id)
-                        }
-                    }
+                val ids = listOf("mi", "huawei")
+                val preferred = s.optString("preferred", "mi").let {
+                    if (it in ids) it else "mi"
                 }
-                val preferred = s.optString("preferred", "auto")
-                if (preferred !in ids) ids.add(preferred)
-                val names = ids.map { id ->
-                    if (id == "auto") "自动（按来源权重挑选）"
-                    else s.optJSONObject("labels")?.optString(id, id) ?: id
-                }.toTypedArray()
+                val names = arrayOf("小米", "华为")
                 AlertDialog.Builder(this)
                     .setTitle("首选体重来源")
                     .setSingleChoiceItems(names, ids.indexOf(preferred)) { dialog, which ->
@@ -1790,7 +1781,7 @@ class MainActivity : Activity() {
                         if (logged)
                             "已登录小米账号（$uid）。\n\n" +
                                 "「同步体重」拉取最近的称重记录并回填看板；\n" +
-                                "日常下拉刷新也会自动带一次，一般不用手动。"
+                                "选择小米为首选体重来源后，日常下拉刷新也会自动同步。"
                         else
                             "还没登录小米账号。\n\n" +
                                 "秤的数据存在「小米运动健康」的云端，佳明云里没有；\n" +
@@ -1809,8 +1800,7 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 华为运动健康体重：密码模式走不通，入口是「粘贴会话 JSON」导入。
-     *  已导入时提供同步 / 体检 / 退出，与小米面板对齐。 */
+    /** 华为网页登录授权后自动换健康会话，随后使用共用的体重同步流程。 */
     private fun showHwPanel() {
         thread {
             val s = apiCall("hw_status")
@@ -1821,21 +1811,20 @@ class MainActivity : Activity() {
                 }
                 val logged = s.optBoolean("logged_in")
                 val uid = s.optString("open_id")
-                val refresh = if (s.optBoolean("has_refresh")) "可自动续期" else "过期需重新导入"
+                val refresh = if (s.optBoolean("has_refresh")) "可自动续期" else "过期需重新登录"
                 val dlg = AlertDialog.Builder(this)
                     .setTitle("华为体重")
                     .setMessage(
                         if (logged)
-                            "已导入华为会话（$uid），$refresh。\n\n" +
+                            "已登录华为账号（$uid），$refresh。\n\n" +
                                 "「同步体重」拉取运动健康的体成分记录并回填看板；\n" +
-                                "「体检」逐项检查账号 / 体重读取 / 会话续期。"
+                                "选择华为为首选体重来源后，日常下拉刷新也会自动同步。"
                         else
-                            "还没有导入华为会话。\n\n" +
-                                "华为不支持密码登录，两种导入方式：\n" +
-                                "1. 电脑上抓包后 run.bat hw import --capture <HAR>；\n" +
-                                "2. 在本机粘贴会话 JSON（App 里登录华为运动健康时\n" +
-                                "    抓到的 healthsession obtain 响应）。\n" +
-                                "凭据只存本机。"
+                            "还没登录华为账号。\n\n" +
+                                "登录绑定体重秤的华为账号，在华为页面完成验证和授权，" +
+                                "之后自动同步运动健康云端的体重。\n\n" +
+                                "当前借助运动健康的授权入口，页面可能显示「运动健康」。" +
+                                "密码仅提交给华为；同步会话只存本机。"
                     )
                     .setNegativeButton("关闭", null)
                 if (logged) {
@@ -1843,9 +1832,48 @@ class MainActivity : Activity() {
                     dlg.setNeutralButton("体检") { _, _ -> doHwProbe() }
                     dlg.setNegativeButton("退出登录") { _, _ -> doHwLogout() }
                 } else {
-                    dlg.setPositiveButton("粘贴会话导入") { _, _ -> askHwImport() }
+                    dlg.setPositiveButton("登录华为账号") { _, _ -> askHwLogin() }
                 }
                 dlg.show()
+            }
+        }
+    }
+
+    private fun askHwLogin() {
+        busy(true)
+        thread {
+            val r = apiCall("hw_login_start")
+            ui {
+                busy(false)
+                if (r.optBoolean("ok")) {
+                    startActivityForResult(
+                        Intent(this, HuaweiLoginActivity::class.java)
+                            .putExtra("url", r.optString("url"))
+                            .putExtra("redirect_uri", r.optString("redirect_uri")),
+                        7301
+                    )
+                } else toast("打开华为登录失败：${r.optString("error")}")
+            }
+        }
+    }
+
+    private fun finishHwLogin(callback: String) {
+        busy(true)
+        thread {
+            val r = apiCall("hw_login_finish", callback)
+            ui {
+                busy(false)
+                if (r.optBoolean("ok")) {
+                    toast("华为账号登录成功")
+                    doHwSync()
+                } else {
+                    AlertDialog.Builder(this)
+                        .setTitle("华为登录未完成")
+                        .setMessage(r.optString("error"))
+                        .setPositiveButton("重新登录") { _, _ -> askHwLogin() }
+                        .setNegativeButton("关闭", null)
+                        .show()
+                }
             }
         }
     }
@@ -1883,27 +1911,13 @@ class MainActivity : Activity() {
                 busy(false)
                 if (r.optBoolean("ok")) {
                     toast("已导入华为会话（${r.optString("open_id")}）")
-                    web.reload()
+                    doHwSync()
                 } else toast("导入失败：${r.optString("error")}")
             }
         }
     }
 
-    private fun doHwSync() {
-        busy(true)
-        thread {
-            val r = apiCall("hw_sync")
-            ui {
-                busy(false)
-                if (r.optBoolean("ok")) {
-                    val n = r.optInt("count", 0)
-                    toast(if (n > 0) "入库 $n 条体重记录"
-                          else "云端没有新记录：这个账号可能还没称过")
-                    web.reload()
-                } else toast("同步失败：${r.optString("error")}")
-            }
-        }
-    }
+    private fun doHwSync() = doScaleSync("huawei")
 
     private fun doHwProbe() {
         busy(true)
@@ -2123,11 +2137,16 @@ class MainActivity : Activity() {
     }
 
     /** 拉体重入库 + 回填 daily，然后重出看板让页面上能立刻看到数。 */
-    private fun doMiSync() {
+    private fun doMiSync() = doScaleSync("mi")
+
+    private fun doScaleSync(source: String) {
+        val huawei = source == "huawei"
+        val brand = if (huawei) "华为" else "小米"
+        val healthApp = if (huawei) "华为运动健康" else "小米运动健康"
         busy(true)
-        ui { subtitle.text = "正在拉取小米体重…" }
+        ui { subtitle.text = "正在拉取${brand}体重…" }
         thread {
-            val r = apiCall("mi_sync", 60)
+            val r = apiCall(if (huawei) "hw_sync" else "mi_sync", 60)
             ui {
                 busy(false)
                 subtitle.text = "下拉同步 · 点活动名出图"
@@ -2138,15 +2157,15 @@ class MainActivity : Activity() {
                             String.format(Locale.US, "%.1f", r.optDouble("weight", 0.0)) +
                             " kg（最新 ${r.optString("latest")}，$n 条）"
                     else
-                        "云端这段时间没有新称重记录——上秤称一次，打开「小米运动健康」让它上传后再试"
+                        "云端这段时间没有新称重记录——上秤称一次，打开「${healthApp}」让它上传后再试"
                     toast(msg)
                     thread {
                         apiCall("dashboard")
                         ui { reload() }
                     }
                 } else if (r.optBoolean("need_login")) {
-                    toast("小米登录已失效，请重新登录")
-                    askMiLogin()
+                    toast("${brand}登录已失效，请重新授权")
+                    if (huawei) askHwLogin() else askMiLogin()
                 } else {
                     toast("体重同步失败：${r.optString("error")}")
                 }

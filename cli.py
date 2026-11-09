@@ -319,17 +319,14 @@ def cmd_sync(args) -> int:
 
 
 def _sync_body(store, days: int = 30) -> int:
-    """顺手拉小米秤的体重/体成分，并回填进 daily。
+    """按体重偏好同步小米或华为体重/体成分，并回填进 daily。
 
     没登录、云端没记录都只提示一句：主流程（佳明数据）已经成功，体重是附加项。
     """
-    from garmin_cn import mi as M
+    from garmin_cn import body as B
 
     try:
-        n, recs = M.sync(store, HOME, days=days)
-    except M.MiAuthError as e:
-        print(f"· 体重未同步：{e}")
-        return 0
+        n, recs = B.sync_preferred(store, HOME, days=days)
     except Exception as e:
         print(f"· 体重未同步：{type(e).__name__}: {e}")
         return 0
@@ -2234,7 +2231,7 @@ def main() -> int:
                    help="整段重拉（默认增量：已稳定且拉过的日子直接跳过）")
     q.add_argument("--no-cards", action="store_true", help="不为新活动生成活动图")
     q.add_argument("--no-body", dest="body", action="store_false",
-                   help="跳过体重/体成分（默认会顺手拉一次小米秤）")
+                   help="跳过体重/体成分（默认同步首选的小米或华为秤）")
     q.set_defaults(func=cmd_sync, body=True)
 
     q = sub.add_parser("report", help="生成每日看板")
@@ -2379,7 +2376,8 @@ def main() -> int:
                    help="导入 CSV/JSON（小米运动健康数据副本、Zepp Life 导出）")
     q.add_argument("--source", help="标记来源，默认 csv（mifitness/zepp/ble）")
     q.add_argument("--prefer-source", metavar="来源",
-                   help="保存首选体重来源：auto/mi/huawei/ble/csv/garmin 或已有来源；不执行云端登录")
+                   choices=("mi", "huawei"),
+                   help="保存首选体重来源：mi（小米）/huawei（华为）；不执行云端登录")
     q.add_argument("--garmin", action="store_true", help="从佳明拉取 weigh-in")
     q.add_argument("--mi", action="store_true", help="从小米健康云拉体脂秤数据")
     q.add_argument("--mi-days", type=int, default=120, help="往小米云端回溯多少天，默认 120")
