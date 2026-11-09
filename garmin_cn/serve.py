@@ -338,11 +338,61 @@ class _Handler(SimpleHTTPRequestHandler):
         except BrokenPipeError:
             pass
 
+    def _files_delete(self) -> None:
+        """批量删除产物。只允许本机，且只认 output 一层的产物后缀。
+
+        校验全部放在服务端：页面上的勾选只是 UI，真正决定删什么的在这里。
+        三个拒绝条件 —— 非本机、带路径分隔符或 `..`、不是产物后缀 ——
+        保证最坏情况也只是删掉 output 里的一个 html/png/mp4。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许在本机删除"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n > 256 * 1024:
+            return self._json({"ok": False, "error": "请求过大"}, 413)
+        try:
+            payload = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+            names = payload.get("names") or []
+            if not isinstance(names, list) or not names:
+                raise ValueError("names 必须是非空数组")
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+
+        root = Path(self.directory).resolve()
+        removed: list[str] = []
+        freed = 0
+        skipped: list[str] = []
+        for raw in names[:200]:
+            name = str(raw or "")
+            if (not name or name.startswith("_") or "/" in name
+                    or "\\" in name or ".." in name):
+                skipped.append(name)
+                continue
+            p = (root / name).resolve()
+            if p.parent != root or p.suffix.lower() not in LIST_EXT or not p.is_file():
+                skipped.append(name)
+                continue
+            try:
+                freed += p.stat().st_size
+                p.unlink()
+                removed.append(name)
+            except OSError:
+                skipped.append(name)
+        self._json({"ok": True, "removed": removed, "skipped": skipped,
+                    "freed": freed})
+
     def do_POST(self) -> None:  # noqa: N802
         u = urlparse(self.path)
         # 回放视频：动画页 `?export=1` 会自己逐帧 POST 上来，这里只负责收。
         if u.path.startswith(("/__frame", "/__done", "/__timeline", "/__diag")):
             return self._frame_post(u)
+        if u.path == "/__files/delete":
+            # 产物页的批量删除。放在 gate 之前反而更安全：这里自己做本机校验，
+            # 不带访问码的局域网访客一律 403。
+            return self._files_delete()
         if not u.path.startswith("/ai/"):
             return self._json({"ok": False, "error": "不支持的接口"}, 404)
         if not self._is_loopback():

@@ -2299,6 +2299,21 @@ def run() -> int:
     assert _svw and len(re.findall(r"<rect x=", _svw.group(0))) == 7, \
         "周视图不是固定 7 根（周中打开也要铺满整周）"
 
+    # ---- 产物页批量管理：勾选 + 二次确认删除 ----
+    _fp = U.files_page(ROOT / "output")
+    assert 'class="row pick"' in _fp and 'type="checkbox"' in _fp, "产物行没有勾选框"
+    assert "pickbar" in _fp and "/__files/delete" in _fp, "产物页没有批量删除条"
+    # 行必须是 div 不是 label：label 会把「点右侧箭头」也转发成勾选
+    assert '<label class="row pick"' not in _fp, "行又变回 label，点箭头会误勾"
+    _srv_src = (ROOT / "garmin_cn/serve.py").read_text(encoding="utf-8")
+    assert "def _files_delete" in _srv_src and '"/__files/delete"' in _srv_src, \
+        "服务端没有删除接口"
+    # 破坏性操作的三道闸：本机、纯文件名、产物后缀，缺一个都可能删到别的东西
+    assert '".." in name' in _srv_src and "p.parent != root" in _srv_src, \
+        "删除接口没做路径逃逸防护"
+    assert "_is_loopback()" in _srv_src.split("def _files_delete")[1][:900], \
+        "删除接口没有限制本机调用"
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):

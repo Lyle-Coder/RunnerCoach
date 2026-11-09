@@ -1077,10 +1077,115 @@ def files_page(root: Path) -> str:
                 href = "/view?date=" + d
             except ValueError:
                 pass
-        rows += row("▤", title, f"{group} · {kind} · {when} · {_size(p.stat().st_size)}",
-                    href=href, tone="b")
+        # 行本身是 <label>：点整行 = 勾选；右侧箭头单独是链接，点它才打开文件。
+        # 以前整行是 <a>，一碰就跳走，没法做多选。
+        rows += (f'<div class="row pick">'
+                 f'<input type="checkbox" class="ck" value="{esc(p.name)}">'
+                 f'<span class="ic b">▤</span>'
+                 f'<span class="tx"><span class="t">{esc(title)}</span>'
+                 f'<span class="d">{esc(group)} · {esc(kind)} · {esc(when)} · '
+                 f'{esc(_size(p.stat().st_size))}</span></span>'
+                 f'<a class="go" href="{esc(href)}" data-nopush>›</a></div>')
     if not rows:
         rows = '<div class="empty">还没有生成任何产物。同步或出一次图，这里就会出现文件。</div>'
+
+    # 批量管理：全选 / 反选 / 二次确认删除。确认走页面内联，
+    # 不用 window.confirm —— WebView 没挂 WebChromeClient，confirm 点了没反应。
+    picker = f"""
+<style>
+.row.pick{{cursor:default;gap:10px}}
+.row.pick .ck{{width:18px;height:18px;flex:0 0 auto;margin:0;accent-color:#3B82F6}}
+.row.pick .go{{text-decoration:none;font-size:20px;line-height:1;color:var(--muted);
+  padding:0 4px;flex:0 0 auto}}
+.row.pick .go:active{{color:var(--brand-ink)}}
+.pickbar{{position:fixed;left:10px;right:10px;bottom:10px;z-index:40;display:none;
+  gap:8px;align-items:center;padding:10px 12px;border-radius:16px;
+  background:rgba(15,22,34,.97);border:1px solid var(--line);
+  box-shadow:0 18px 40px -18px rgba(0,0,0,.92)}}
+.pickbar.on{{display:flex}}
+.pickbar .n{{flex:1;font-size:12.5px;color:var(--ink2);min-width:0}}
+.btn.danger{{border-color:rgba(242,85,90,.45);color:#FF9AA0}}
+.btn.danger.armed{{background:rgba(242,85,90,.92);color:#1A0708;border-color:transparent;
+  font-weight:650}}
+body.has-pick{{padding-bottom:74px}}
+</style>
+<div class="pickbar" id="pickbar">
+  <span class="n" id="pickinfo"></span>
+  <button class="btn" id="pickall" type="button">全选</button>
+  <button class="btn danger" id="pickdel" type="button">删除</button>
+</div>
+<script>(function(){{
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('.row.pick .ck'));
+  var bar = document.getElementById('pickbar');
+  if (!boxes.length || !bar) return;
+  var info = document.getElementById('pickinfo');
+  var all = document.getElementById('pickall');
+  var del = document.getElementById('pickdel');
+  var armed = false, timer = null;
+
+  function chosen() {{
+    return boxes.filter(function(b) {{ return b.checked; }});
+  }}
+  function reset() {{
+    armed = false;
+    if (timer) {{ clearTimeout(timer); timer = null; }}
+    del.classList.remove('armed');
+    del.textContent = '删除';
+    del.disabled = false;
+  }}
+  function sync() {{
+    var n = chosen().length;
+    info.textContent = n ? ('已选 ' + n + ' 项') : '点左侧方框选择要删除的产物';
+    bar.classList.toggle('on', n > 0);
+    document.body.classList.toggle('has-pick', n > 0);
+    if (!n) reset();
+  }}
+  boxes.forEach(function(b) {{
+    b.addEventListener('change', sync);
+    // 整行点击 = 勾选；点右侧箭头是「打开文件」，不跟着勾。
+    var r = b.closest('.row');
+    if (!r) return;
+    r.addEventListener('click', function(e) {{
+      if (e.target.closest('a')) return;
+      b.checked = !b.checked;
+      sync();
+    }});
+  }});
+  all.addEventListener('click', function() {{
+    var on = chosen().length === boxes.length;
+    boxes.forEach(function(b) {{ b.checked = !on; }});
+    sync();
+  }});
+  del.addEventListener('click', function() {{
+    var list = chosen().map(function(b) {{ return b.value; }});
+    if (!list.length) return;
+    // 第一次点只是「备战」：按钮变红显示要删几项，5 秒内不确认就自动撤销
+    if (!armed) {{
+      armed = true;
+      del.classList.add('armed');
+      del.textContent = '确认删除 ' + list.length + ' 项？';
+      timer = setTimeout(reset, 5000);
+      return;
+    }}
+    reset();
+    del.disabled = true;
+    info.textContent = '删除中…';
+    fetch('/__files/delete', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{names: list}})
+    }}).then(function(r) {{ return r.json(); }}).then(function(d) {{
+      if (d && d.ok) {{ location.reload(); return; }}
+      del.disabled = false;
+      info.textContent = '删除失败：' + ((d && d.error) || '未知错误');
+    }}).catch(function() {{
+      del.disabled = false;
+      info.textContent = '删除失败：无法连接本机服务';
+    }});
+  }});
+  sync();
+}})();</script>
+"""
 
     # 「正在生成」由 JS 轮询 /__progress 渲染：回放要跑几分钟，用户不必守在
     # 出图那一页看转圈，切到产物这里能看到真实百分比；生成完页面自动刷新。
@@ -1122,4 +1227,5 @@ def files_page(root: Path) -> str:
 })();</script>
 """
     return page("FILES · 产物", "本机产物文件", "看板、图片、视频都只存在这台设备上",
-                jobs + sec("最近生成", rows), chip("只读"), back=("返回我的", "/me"))
+                jobs + sec("最近生成", rows) + picker,
+                chip(f"{len(files)} 个"), back=("返回我的", "/me"))
