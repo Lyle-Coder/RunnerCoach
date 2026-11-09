@@ -280,7 +280,11 @@ def run() -> int:
     assert not plan_only["week"][1]["items"], \
         "无 id 的 activity 又变成排课了（通勤会被当成今日课表）"
     assert plan_only["week"][1]["acts"], "无 id 的 activity 应该进「已完成记录」"
-    assert plan_only["week"][1]["done"] is True, "日历里的 activity 就是做完了"
+    # 没有排课的那天，活动只能是「计划外」，不能算成课表完成 ——
+    # 用户报的「骑了趟车就显示 1/6」正是这条旧判定造成的。
+    assert plan_only["week"][1]["trained"] is True, "日历里的 activity 就是练过了"
+    assert plan_only["week"][1]["extra"] is True, "没排课日的活动应记为「计划外」"
+    assert plan_only["week"][1]["done"] is False, "计划外活动不能算课表完成"
 
     # 距离单位：同 duration 一样，日历的 distance 也可能是厘米。
     # 4.09 km 的通勤若按米读会变成 409.3 公里（一次 1364 km/h 的骑行）。
@@ -298,8 +302,8 @@ def run() -> int:
     _tc = U._today_plan_card(_cm)
     assert "今天休息" in _tc, "没排课时课表应该是休息，而不是显示一条通勤"
     assert "409" not in _tc, "课表里的通勤距离仍然是错的"
-    assert "4.1 km" in _tc and "今天已完成" in _tc, \
-        "练过的记录没有单列出来"
+    assert "4.1 km" in _tc and "今天练过" in _tc, \
+        "练过的记录没有单列出来（且措辞应是「练过」而不是「完成」）"
     # 本地库那天有活动（含高驰）也算完成
     with_local = PL.from_calendar([
         {"itemType": "workout", "date": "2026-11-03", "title": "轻松跑"}],
@@ -313,7 +317,7 @@ def run() -> int:
     assert today_act["today"]["acts"][0]["name"] == "晨跑"
     _tc = U._today_plan_card(today_act)
     assert "今天休息" in _tc, "没排课时课表被实际活动顶掉了"
-    assert "今天已完成" in _tc and "晨跑" in _tc, "练过的记录没有单列出来"
+    assert "今天练过" in _tc and "晨跑" in _tc, "练过的记录没有单列出来"
     # 旧快照里「过去即已完成」的脏标记要丢掉重算
     _old_snap = {"available": True, "source": "calendar",
                  "today": {"date": "2026-11-07", "items": []},
@@ -323,6 +327,23 @@ def run() -> int:
     _fixed = PL.annotate(_old_snap, set(), "2026-11-07")
     assert _fixed["week"][0]["done"] is False and _fixed["week"][0]["missed"] is True, \
         "旧快照里「过去即完成」的脏标记没被清掉"
+    # 计划外活动不能算进完成率：周一没排课只骑了车，本周应仍是 0/N，
+    # 那天的活动单列为「计划外」。用户看到「已完成 1/6」就是这里错了。
+    _mix = PL.annotate({
+        "available": True, "source": "calendar", "classify": PL.CLASSIFY_REV,
+        "today": {"date": "2026-11-09", "items": []},
+        "week": [
+            {"date": "2026-11-09", "dow": "周一", "items": [], "acts": [], "rest": True},
+            {"date": "2026-11-10", "dow": "周二",
+             "items": [{"name": "12km"}], "acts": [], "rest": False},
+        ]}, {"2026-11-09"}, "2026-11-09")
+    assert _mix["week_done"] == 0 and _mix["week_planned"] == 1, \
+        f"计划外活动被算进完成率了：{_mix['week_done']}/{_mix['week_planned']}"
+    assert _mix["week_extra"] == 1 and _mix["week"][0]["extra"] is True, \
+        "计划外的那天没有被单独记为 extra"
+    assert _mix["week"][1]["extra"] is False and _mix["week"][1]["done"] is False, \
+        "有计划但没做的那天，状态判定不对"
+
     assert cal.get("classify") == PL.CLASSIFY_REV, \
         "课表分类口径没打版本号，旧快照没法学法迁移"
     # 旧口径的快照必须作废：里面的 items/acts 是按老规则分的，就地修不了。
@@ -343,6 +364,8 @@ def run() -> int:
     _ui_plan_src = Path(U.__file__).read_text(encoding="utf-8")
     assert 'class="miss">未完成' in _ui_plan_src, "周视图没有「未完成」标签"
     assert "今天已完成" in _ui_plan_src, "今日卡片没有「今天已完成」分支"
+    assert "今天练过" in _ui_plan_src and 'class="extra">计划外' in _ui_plan_src, \
+        "没有把「练过」和「完成课表」分开，也没有计划外标签"
     assert "本周完成" in _ui_plan_src, "计划页没有统计本周完成情况"
     # 计划接口读缓存时也要按本地库重算：同步之后「今天练没练」会变
     _aa_plan_src = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")

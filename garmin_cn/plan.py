@@ -271,17 +271,27 @@ def annotate(data: dict, activity_days: set[str] | None = None,
     done |= {d for d in (activity_days or set()) if d}
 
     for w in data.get("week") or []:
-        w["done"] = w["date"] in done
+        has_plan = bool(w.get("items"))
+        trained = w["date"] in done
+        # 「完成」必须落在**有排课的那天**。以前只要当天有活动就算完成，
+        # 于是周一没排课、只骑了趟通勤，本周就显示「已完成 1/6」——
+        # 计划外的活动被算进了计划完成率。
+        w["trained"] = trained
+        w["done"] = has_plan and trained
+        # 有计划以外还练过：单独记一笔，界面上叫「计划外」，不计入完成率
+        w["extra"] = (not has_plan) and trained and w["date"] <= today
         # 今天还没过完，谈不上「没完成」
-        w["missed"] = bool(w.get("items")) and not w["done"] and w["date"] < today
+        w["missed"] = has_plan and not w["done"] and w["date"] < today
     t = data.get("today") or {}
     if t:
-        t["done"] = t.get("date") in done
+        t["trained"] = t.get("date") in done
+        t["done"] = bool(t.get("items")) and t.get("trained")
         t["missed"] = False
 
     data["done_days"] = sorted(done)
     data["week_done"] = sum(1 for w in data.get("week") or [] if w.get("done"))
     data["week_planned"] = sum(1 for w in data.get("week") or [] if w.get("items"))
+    data["week_extra"] = sum(1 for w in data.get("week") or [] if w.get("extra"))
     return data
 
 

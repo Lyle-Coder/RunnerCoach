@@ -242,6 +242,10 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 /* 计划了但没做：虚线灰标签，比「已完成」弱一档，但不至于被藏起来 */
 .wrow .miss{flex:0 0 auto;font-size:10.5px;color:var(--muted);background:transparent;
   border:1px dashed var(--line);border-radius:999px;padding:2px 8px}
+/* 没排课但练过了：琥珀色，说清「这不是计划内的完成」 */
+.wrow .extra{flex:0 0 auto;font-size:10.5px;color:var(--amber);
+  background:rgba(245,165,36,.10);border:1px solid rgba(245,165,36,.28);
+  border-radius:999px;padding:2px 8px}
 .wrow.rest .wb{color:var(--muted);font-weight:400}
 .kvline{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;
   color:var(--ink2);padding:7px 0;border-bottom:1px solid var(--line2)}
@@ -743,13 +747,16 @@ def _today_plan_card(pl: dict) -> str:
     以前把它当计划显示，结果课表上写着「骑行 409.3 公里 · 18 分钟」——
     那是早上骑车上班，跟今天的训练安排没关系。
 
-    现在：没排课 → 标题就是「休息」；确实练过 → 底下加一行「今天已完成：…」，
+    现在：没排课 → 标题就是「休息」；确实练过 → 底下加一行「今天练过：…」，
     数据仍可读，但不会被误当成课表。
     """
     t = pl.get("today") or {}
     items = t.get("items") or []
     acts = t.get("acts") or []
-    done = bool(t.get("done")) or bool(acts)
+    # done 现在是「有计划且已完成」；trained 只表示「今天练过了」。
+    # 没排课但去骑了车，是 trained 而不是 done —— 不能算课表完成。
+    done = bool(t.get("done"))
+    trained = bool(t.get("trained")) or bool(acts)
 
     # 本地兜底（备赛课表 / 今日处方）不是佳明课表，必须写出来 —— 而且要写原因：
     # 只说「本地推算」，用户不知道该去重新登录还是该怪数据。
@@ -768,7 +775,7 @@ def _today_plan_card(pl: dict) -> str:
         # 计划里的课 + 实际做完了：把完成的记录也列出来，别只放一个小角标
         if acts:
             more += "".join(
-                f'<div class="n">已完成：{esc(a.get("name"))} · {esc(_plan_meta(a))}</div>'
+                f'<div class="n">另练了：{esc(a.get("name"))} · {esc(_plan_meta(a))}</div>'
                 for a in acts[:2])
         return (f'<div class="plan-hero"><div class="t">{esc(it.get("name") or "训练")}</div>'
                 + (f'<div class="d">{esc(it.get("detail"))}</div>' if it.get("detail") else "")
@@ -787,14 +794,15 @@ def _today_plan_card(pl: dict) -> str:
     done_html = ""
     if acts:
         a = acts[0]
-        done_html = (f'<div class="n">今天已完成：{esc(a.get("name") or "训练")}'
+        done_html = (f'<div class="n">今天练过：{esc(a.get("name") or "训练")}'
                      f' · {esc(_plan_meta(a))}</div>')
         done_html += "".join(
             f'<div class="n">另：{esc(x.get("name"))} · {esc(_plan_meta(x))}</div>'
             for x in acts[1:3])
-    elif done:
-        # 本地库有活动但日历没有记录（高驰的活动不进佳明日历）
-        done_html = '<div class="n">今天已完成：训练记录已同步（含高驰）</div>'
+    elif trained:
+        # 本地库有活动但日历没有记录（高驰的活动不进佳明日历）。
+        # 这句说的是「练过了」，不是「完成了课表」。
+        done_html = '<div class="n">今天练过：训练记录已同步（含高驰）</div>'
 
     return (f'<div class="plan-hero"><div class="t">今天休息</div>'
             f'<div class="d">{tip}</div>{done_html}{local_tag}</div>')
@@ -866,6 +874,9 @@ def plan_page(qs: dict | None = None) -> str:
         elif d.get("missed"):
             # 计划了但没做：以前这种日子被直接标成「已完成」藏起来了
             tag = '<span class="miss">未完成</span>'
+        elif d.get("extra"):
+            # 没排课但练过：不叫「完成」，只如实说这是计划外的
+            tag = '<span class="extra">计划外</span>'
         else:
             tag = ""
         rows += f'<div class="{cls}"><span class="wd">{esc(d["dow"])}</span>{wb}{tag}</div>'
@@ -884,7 +895,9 @@ def plan_page(qs: dict | None = None) -> str:
               f'<b>{r.get("week_done") or 0} / {r.get("week_planned") or 0} 次</b></div>'
             + f'<div class="kvline"><span>本周休息</span>'
               f'<b>{r.get("rest_days_in_week") or 0} 天</b></div>'
-            '</div>')
+            + (f'<div class="kvline"><span>计划外训练</span>'
+               f'<b>{r["week_extra"]} 天</b></div>' if r.get("week_extra") else "")
+            + '</div>')
 
     nxt = r.get("next_date")
     next_sec = ""
