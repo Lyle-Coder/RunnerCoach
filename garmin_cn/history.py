@@ -59,10 +59,10 @@ def nav_html(day: str, cov: dict, from_: str = "history") -> str:
 
 
 def index_section(cov: dict) -> str:
-    """「历史」页顶部的覆盖情况卡片（也是首页数据覆盖区块的素材）。"""
+    """「历史」页顶部的覆盖情况与按日期查看看板的入口。"""
     if not cov.get("days"):
         return ('<div class="card"><div class="empty">本地库还是空的。'
-                '下拉同步一次，或用「补拉更多历史」拉取更早的区间。</div></div>')
+                '下拉同步一次，或到「我的 → 历史数据」补全更早的区间。</div></div>')
     first, last = cov["first"], cov["last"]
     quick = "".join(
         f'<a class="chip" href="/view?date={_esc(d)}&from=history" data-nopush>{_esc(d[5:])}</a>'
@@ -81,8 +81,7 @@ def index_section(cov: dict) -> str:
 
 
 def _message(title: str, text: str, cov: dict) -> str:
-    links = ('<div class="pager">'
-             '<div class="btn primary" data-act="historySync">补拉更早的数据</div>')
+    links = '<div class="pager">'
     if cov.get("last"):
         links += (f'<a class="btn" href="/view?date={cov["last"]}&from=history">'
                   '看最新一天的看板</a>')
@@ -105,7 +104,7 @@ def view_page(qs: dict) -> str:
         return _message(
             "这天还没有日汇总",
             f"{day} 不在已覆盖的日汇总区间 {cov['first']} ~ {cov['last']} 内。"
-            "要更早的看板，请先用「补拉更多历史」同步；已经落库的历史活动"
+            "要更早的看板，请先到「我的 → 历史数据」补全；已经落库的历史活动"
             "可以直接在「历史活动」里查到。", cov)
     r = A.dashboard(day, False)
     if not r.get("ok"):
@@ -141,7 +140,7 @@ def _month_bars(months: list[dict], hot: str = "", link: str = "") -> str:
     """
     today_hint = hot
     if not months:
-        return '<div class="empty">还没有活动，先同步或补拉历史</div>'
+        return '<div class="empty">还没有活动，先同步，或到「我的 → 历史数据」补全</div>'
     n = len(months)
     # 周/月视图会给到 28~31 根：密排时隐藏数值、轴标签每 5 格标一次，
     # 否则 9px 宽的柱子上挤一堆字比柱子本身还乱。
@@ -451,7 +450,7 @@ def history_page(qs: dict) -> str:
             for i in items)
         if not rows:
             rows = ('<div class="empty">这个区间没有活动。可以放宽日期，'
-                    '或用「补拉更早的数据」同步更早的区间。</div>')
+                    '或到「我的 → 历史数据」补全。</div>')
 
         pager = '<div class="pager">'
         if offset:
@@ -464,10 +463,6 @@ def history_page(qs: dict) -> str:
                       f'data-nopush>↓ 加载更早的活动</a>')
         pager += '</div>'
 
-        more_data = ('<div class="pager">'
-                     '<div class="btn primary" data-act="historySync">补拉更早的数据</div>'
-                     '<div class="btn" data-act="historySyncAll">一键拉全部历史</div>'
-                     '</div>')
         # 柱子可点：点哪个月就切到「按月」并选中它，省得先去按月再翻。
         chart = chart_card("近 12 个月跑量（km） · 点柱子看当月", months,
                            hot=str((stats.get("month") or {}).get("key") or ""),
@@ -476,7 +471,7 @@ def history_page(qs: dict) -> str:
                          '<div class="note" style="margin-top:8px">'
                          f'当前 {offset + 1}~{offset + len(items)} 条 · 共 {r.get("total", 0)} 条 · {_esc(scope)}'
                          '</div>') +
-                  ui.sec("筛选", form + more_data))
+                  ui.sec("筛选", form))
 
     body = ui.sec("概览", hero) + grouping + detail
     return ui.page("HISTORY · 历史", "历史数据",

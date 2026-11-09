@@ -202,17 +202,24 @@ def run() -> int:
     hp = HW.history_page({"type": ["run"]})
     assert "page-head" in hp and 'name="start"' in hp
     assert "data-aid=" in hp and "GC.activity" in hp
-    # 「补拉历史」只在历史页出现一次，今日/我的都不再重复
-    assert hp.count('data-act="historySync"') == 1
+    # 「补全历史」全 App 只留一个入口（我的 → 历史数据）。它是一次性动作，
+    # 正常由登录后自动跑；历史页和今日页再放按钮只是重复。
+    assert 'data-act="historySync"' not in hp, "历史页不该再放补拉入口，统一到「我的」"
+    assert 'data-act="historySyncAll"' not in hp, "历史页不该再放一键补全"
     home = U.home_page()
-    assert "page-head" in home and 'data-act="export"' in home and "data-aid=" in home
+    assert "page-head" in home and 'data-aid=' in home
     assert 'href="/history"' not in home, "首页不该再给历史入口，底部 tab 已经有了"
+    # 一图流从「一整张快捷卡」退成页头右上角的小按钮
+    assert 'class="head-act"' in home and 'data-act="export"' in home, \
+        "首页页头没有一图流按钮"
+    assert "导出今日一图流" not in home, "一图流不该再占一整张卡片"
+    # 首页不再重复「数据覆盖」：「我的 → 本地数据」已经有同样三个数
+    assert "数据覆盖" not in home, "首页的覆盖区块和「我的」页重复了"
     me = U.me_page()
     assert "page-head" in me and 'data-act="login:garmin"' in me
     assert 'data-act="login:coros"' in me, "数据源行要直达对应登录"
-    # 「补拉历史」主入口在历史页；「我的」页再给一处明确入口（用户反馈在
-    # 历史页找不到），今日页仍然不放。settings 是 AI 设置，只许在教练页齿轮里。
-    assert 'data-act="historySync"' in me, "我的页要有补拉历史入口"
+    # settings 是 AI 设置，只许在教练页齿轮里
+    assert 'data-act="historySync"' in me, "我的页要有补全历史入口"
     assert 'data-act="settings"' not in me
     assert 'data-act="historySync"' not in home, "今日页不该重复放补拉入口"
     assert 'href="/files"' in me
@@ -1025,7 +1032,7 @@ def run() -> int:
     assert "client = _client(email, password, revalidate=True)" in _aa_src, \
         "同步入口没有先校验会话"
     # 3) 补拉：旧版拿「本地有没有密码」当门槛，密码为空时按钮点了只弹登录
-    assert 'row("↻", "补拉更多历史"' in _ui_src, "我的页没有补拉入口"
+    assert 'row("↻", "历史数据"' in _ui_src, "我的页没有补全历史入口"
     assert "if (email.isNullOrBlank() || pwd.isNullOrBlank())" not in _main, \
         "补拉仍被本地密码拦截，点了只会弹登录"
     # 4) 素材：多选批量删除 / 批量添加 / 再次剪辑 / 旋转 / 竖横屏
@@ -1080,9 +1087,12 @@ def run() -> int:
         assert _kw in _h_src, f"历史页首缺统计项：{_kw}"
     assert 'mchip("按周", "week")' in _h_src and 'mchip("按月", "month")' in _h_src \
         and 'mchip("按年", "year")' in _h_src, "没有周/月/年切换"
-    assert 'data-act="historySyncAll"' in _h_src, "历史页缺「一键拉全部历史」入口"
+    # 一键补全只从「我的 → 历史数据」的对话框进（也不在历史页）；
+    # 正常情况它由登录后自动触发，按钮只是兜底重跑。
+    assert 'data-act="historySyncAll"' not in _h_src, "历史页又放回一键补全了"
     assert '"historySyncAll" -> runHistorySyncAll()' in _main and \
-        "private fun runHistorySyncAll()" in _main, "App 没接一键补全"
+        "private fun runHistorySyncAll(quiet: Boolean = false)" in _main, \
+        "App 没接一键补全"
     assert '"sync_range", start, end, email, pwd, false, false, 40' in _main, \
         "一键补全没把活动翻页数拉满，3 年历史只能补到前 1200 条"
     # 统计接口的实际输出：必须是连续 12 个月（缺月补 0），周/年各是列表
@@ -1972,6 +1982,41 @@ def run() -> int:
         "历史日期的出图仍在实时拉身体电量，白等一次网络"
     assert 'f"bb_fetch:{date}"' in _aa_now, \
         "TTL 内的出图没提前退出，连点两次导出会各拉一次"
+
+    # ---- v63：首页信息密度 + 补全历史自动化 --------------------------------
+    # 「补全历史」是一次性动作：登录后后台跑一次，跑完落标记，之后不再触发。
+    from garmin_cn import appapi as _AP2
+
+    assert "needs_backfill" in _AP2.status(), "status 没告诉 App 还欠不欠一次全量补全"
+    _tmpbf = Path(tempfile.mkdtemp()) / "bf.db"
+    Store(_tmpbf).conn.close()
+    with _mock.patch.object(_AP2, "DB", _tmpbf):
+        assert _AP2.mark_backfill(False)["needs_backfill"] is True, \
+            "补全失败时不该落标记（下次登录要能重试）"
+        assert _AP2.mark_backfill(True)["ok"], "mark_backfill 写库失败"
+        assert _AP2.mark_backfill(True)["needs_backfill"] is False, \
+            "标记写进去了但状态没变，登录后会每次都重跑三年"
+    shutil.rmtree(_tmpbf.parent, ignore_errors=True)
+    _main_src = (ROOT / "android/app/src/main/java/com/garmincoach/app/MainActivity.kt") \
+        .read_text(encoding="utf-8")
+    assert "private fun maybeAutoBackfill()" in _main_src and \
+        "maybeAutoBackfill()" in _main_src.replace(
+            "private fun maybeAutoBackfill()", ""), "登录后没有自动补全的调用"
+    # 两条登录路径（密码登录 / 验证码登录）都要置位：只改一处时另一处仍能绕过
+    assert _main_src.count("autoBackfillPending = true") >= 2, \
+        "登录成功没置位，自动补全永远不会触发"
+    assert 'apiCall("mark_backfill", true)' in _main_src and \
+        "if (lastErr.isEmpty()) apiCall(\"mark_backfill\", true)" in _main_src, \
+        "补全跑完没落标记，会被反复触发"
+
+    # 首页：睡眠/体重卡 + 趋势线 + 页头小按钮，且不再有覆盖区块
+    _home = U.home_page()
+    assert _home.count('class="vital"') == 2, "首页缺睡眠/体重卡"
+    assert _home.count('class="spark"') >= 2, "睡眠/体重卡没有趋势线"
+    assert "欠债" in _home and "体脂" in _home, "睡眠/体重卡没带关键数值"
+    assert 'class="mm"' in _home and _home.count('class="i"') == 4, \
+        "恢复度分项不是 4 个带分数条的格子"
+    assert "数据覆盖" not in _home, "首页的覆盖区块又回来了（和「我的」重复）"
 
     # 缓存淘汰：超上限才删、只删白名单后缀、最近用过的不能动
     from garmin_cn import housekeeping as _hk

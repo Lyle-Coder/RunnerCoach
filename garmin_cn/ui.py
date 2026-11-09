@@ -54,10 +54,19 @@ a{color:var(--brand-ink);text-decoration:none}
   font-size:12.5px;color:var(--brand-ink);text-decoration:none}
 .back:active{opacity:.6}
 /* 页头只用一道渐隐的蓝线收尾，比整条实线更像仪表面板 */
-.page-head{padding:20px 0 15px;margin-bottom:4px;
+.page-head{padding:20px 0 15px;margin-bottom:4px;position:relative;
   background:linear-gradient(90deg,rgba(59,130,246,.60),rgba(34,211,238,.12) 46%,transparent)
     bottom / 100% 1px no-repeat}
 .page-head.after-back{padding-top:14px}
+/* 页头右上角的单动作按钮（今日页就是「分享」出图）。
+   以前它是页面里的一整张快捷卡，占掉半屏却只做一件事。 */
+.head-act{position:absolute;top:16px;right:0;display:inline-flex;align-items:center;
+  gap:5px;font-size:12px;font-weight:600;padding:7px 13px;border-radius:999px;
+  color:var(--brand-ink);background:var(--brand-soft);cursor:pointer;
+  border:1px solid rgba(59,130,246,.36);box-shadow:0 0 18px -6px rgba(59,130,246,.9)}
+.head-act:active{background:rgba(59,130,246,.28)}
+/* 有右上角动作时给标题和副标题留出位置，长标题不会钻到按钮底下 */
+.page-head.with-act h1,.page-head.with-act .lede{padding-right:92px}
 .kicker{font-size:11px;font-weight:700;letter-spacing:2px;color:var(--cyan);
   text-shadow:0 0 12px rgba(34,211,238,.45)}
 .page-head h1{margin:6px 0 4px;font-size:24px;font-weight:650;letter-spacing:-.5px;line-height:1.3}
@@ -79,6 +88,36 @@ a{color:var(--brand-ink);text-decoration:none}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}
 .grid.one{grid-template-columns:1fr}
+/* 恢复度卡里的 4 个分项：一行两项、各带一条 3px 的分数条。
+   原来这里是「睡眠 35% / HRV 30% …」一整行字，读得出权重却读不出得分。 */
+.mm{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}
+.mm .i{background:rgba(9,14,22,.52);border:1px solid var(--line2);
+  border-radius:10px;padding:8px 10px;min-width:0}
+.mm .n{font-size:10.5px;color:var(--muted);letter-spacing:.3px}
+.mm .v{font-size:14px;font-weight:650;margin-top:1px;
+  font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mm .d{font-size:10px;color:var(--faint);margin-top:1px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mm .b{height:3px;border-radius:999px;background:rgba(255,255,255,.07);
+  overflow:hidden;margin-top:6px}
+.mm .b i{display:block;height:100%;border-radius:999px;
+  background:linear-gradient(90deg,var(--brand),var(--cyan))}
+/* 睡眠 / 体重这类「一项一个数」的卡：大数字 + 一行说明 + 迷你趋势线 */
+.vital{background:linear-gradient(180deg,rgba(19,28,43,.92),rgba(14,21,33,.95));
+  border:1px solid var(--line);border-radius:14px;padding:12px 13px 10px;
+  box-shadow:var(--shadow);min-width:0}
+.vital .k{font-size:10.5px;letter-spacing:.6px;color:var(--muted)}
+.vital .num{font-size:24px;font-weight:700;line-height:1.15;margin-top:3px;
+  letter-spacing:-.6px;font-variant-numeric:tabular-nums;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vital .num small{font-size:11.5px;font-weight:500;letter-spacing:0;
+  color:var(--muted);margin-left:3px}
+.vital .sub{font-size:11px;color:var(--muted);margin-top:3px;line-height:1.45;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vital .sub2{font-size:10.5px;color:var(--faint);margin-top:1px;line-height:1.45;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vital .spark{margin-top:6px;display:block}
+.vital .none{font-size:12px;color:var(--faint);margin-top:8px}
 .card{background:linear-gradient(180deg,rgba(19,28,43,.92),rgba(14,21,33,.95));
   border:1px solid var(--line);border-radius:var(--r);padding:16px;
   box-shadow:var(--shadow);position:relative;overflow:hidden}
@@ -316,16 +355,20 @@ def coverage() -> dict:
 
 def page(kicker: str, title: str, lede: str, body: str,
          chips: str = "", foot: str = "数据只保存在本机，不上传任何第三方。",
-         back: tuple[str, str] | None = None) -> str:
+         back: tuple[str, str] | None = None, action: str = "") -> str:
     """所有 tab 页与二级页的统一外壳。
 
     `back` 只给二级页（/view、/files）用：一级 tab 之间靠底部导航切换，
     页内不再放返回链接，避免和底部 tab 形成两条并行导航。
+    `action` 是页头右上角那个单动作按钮的 HTML（今日页放「分享/出图」）——
+    低频但常用的动作放这儿，比在正文里占一整张卡片划算得多。
     """
     back_html, head_cls = "", ""
     if back:
         back_html = f'<a class="back" href="{esc(back[1])}">← {esc(back[0])}</a>'
-        head_cls = " after-back"
+        head_cls += " after-back"
+    if action:
+        head_cls += " with-act"
     return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070B12">
@@ -333,6 +376,7 @@ def page(kicker: str, title: str, lede: str, body: str,
 <style>{CSS}</style></head><body><div class="app">
 {back_html}
 <header class="page-head{head_cls}">
+  {action}
   <div class="kicker">{esc(kicker)}</div>
   <h1>{esc(title)}</h1><p class="lede">{esc(lede)}</p>
   <div class="meta">{chips}</div>
@@ -456,13 +500,81 @@ def nav_html(day: str, cov: dict, from_: str = "history") -> str:
 </div>"""
 
 
+def _hm(minutes) -> str:
+    """81 → `1h21`；不足一小时 → `45′`。睡眠分项用，比「81 分钟」短一截。"""
+    m = int(minutes or 0)
+    return f"{m // 60}h{m % 60:02d}" if m >= 60 else f"{m}′"
+
+
+def _spark(pairs, *, w: int = 120, h: int = 30, pad: int = 2) -> str:
+    """迷你趋势线（内联 SVG）：`pairs` 是 [(日期, 数值), ...]。
+
+    值可能是 None（那天没测），跳过但**保留 x 位置**——否则缺测的日子会被
+    挤掉，趋势看起来像连续记录，反而骗人。点数不足 2 个就返回空串，
+    让卡片落到「未同步」文案上，而不是画一条假直线。
+    """
+    pts = [(i, v) for i, (_d, v) in enumerate(pairs or [])
+           if isinstance(v, (int, float))]
+    if len(pts) < 2:
+        return ""
+    vals = [v for _, v in pts]
+    lo, hi = min(vals), max(vals)
+    span = (hi - lo) or 1.0
+    n = max(len(pairs) - 1, 1)
+
+    def x(i: int) -> float:
+        return pad + (w - 2 * pad) * i / n
+
+    def y(v: float) -> float:
+        return h - pad - (h - 2 * pad) * (v - lo) / span
+
+    line = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in pts)
+    area = (f"{x(pts[0][0]):.1f},{h - pad} " + line
+            + f" {x(pts[-1][0]):.1f},{h - pad}")
+    gid = f"sp{abs(hash(tuple(vals))) % 9999}"
+    return (f'<svg class="spark" viewBox="0 0 {w} {h}" width="100%" height="{h}" '
+            f'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">'
+            f'<defs><linearGradient id="{gid}" x1="0" y1="0" x2="0" y2="1">'
+            f'<stop offset="0" stop-color="#3B82F6" stop-opacity=".42"/>'
+            f'<stop offset="1" stop-color="#3B82F6" stop-opacity="0"/>'
+            f'</linearGradient></defs>'
+            f'<polygon points="{area}" fill="url(#{gid})"/>'
+            f'<polyline points="{line}" fill="none" stroke="#5EA0FF" '
+            f'stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>'
+            f'</svg>')
+
+
+def _vital(label: str, value, unit: str, sub: str, spark: str,
+           empty: str, sub2: str = "") -> str:
+    """一项一个数的卡：大数字 + 一到两行说明 + 趋势线。
+
+    两行是刻意的：半屏宽的卡片放不下「评分 80 · 深睡 1h25 · REM 1h51 · 欠债 11.3h」
+    这么长一行，单行省略会把最后那个最该看的数字切掉。拆成两行短句，
+    每行都能完整读完。
+    """
+    if value in (None, "", "—"):
+        return (f'<div class="vital"><div class="k">{esc(label)}</div>'
+                f'<div class="none">{esc(empty)}</div></div>')
+    _s2 = f'<div class="sub2">{esc(sub2)}</div>' if sub2 else ""
+    return (f'<div class="vital"><div class="k">{esc(label)}</div>'
+            f'<div class="num">{esc(value)}<small>{esc(unit)}</small></div>'
+            f'<div class="sub">{esc(sub)}</div>{_s2}{spark}</div>')
+
+
 def home_page() -> str:
-    """「今日」tab：概览 + 分区卡片，不再是产物文件列表。"""
+    """「今日」tab：一屏看完恢复、课表、身体和最近训练。
+
+    密度优先。这一版挪走了三类「低频又占地方」的块：
+    - **数据覆盖**：「我的」页的「本地数据」已经有同样三个数，首页重复一遍只是噪音；
+    - **两张快捷卡**：完整看板退成页头链接，一图流退成右上角小按钮；
+    - **纯权重文字**：恢复度的四个分项换成带分数条的格子，权重和得分一起读。
+    空出来的一屏放了睡眠与体重的实际数值和近两周趋势 —— 这两个是每天都会变、
+    但以前只藏在「完整看板」里的东西。
+    """
     from . import appapi as A
 
     today = dt.date.today().isoformat()
     st = A.status()
-    cov = coverage()
     day = st.get("last") or today
     res: dict = {}
     try:
@@ -480,25 +592,71 @@ def home_page() -> str:
 
     rd = res.get("readiness") or {}
     load = res.get("load") or {}
+    sleep = res.get("sleep") or {}
+    body = res.get("body") or {}
+    series = res.get("series") or {}
     score = rd.get("score")
     level = rd.get("level") or "暂无数据"
     acts = res.get("activities") or []
-
     week = "一二三四五六日"[dt.date.fromisoformat(day).weekday()] if day else ""
+
     chips = (chip(f"{day} 周{week}", "ok") +
-             chip(f"已同步 {st.get('days') or 0} 天") +
-             chip(f"上次同步 {esc(str(st.get('last_sync') or '—')[5:16])}") +
-             chip("本机 · 离线可用"))
+             chip(f"{st.get('days') or 0} 天数据") +
+             chip(f"上次同步 {esc(str(st.get('last_sync') or '—')[5:16])}"))
+
+    # 恢复度的四个分项：名字、得分、一行依据，外加一条分数条
+    mm = ""
+    for p in (rd.get("parts") or [])[:4]:
+        _v = p.get("score")
+        _pct = max(0, min(100, int(_v or 0)))
+        mm += (f'<div class="i"><div class="n">{esc(p.get("name") or "")}</div>'
+               f'<div class="v">{esc(_v if _v is not None else "—")}</div>'
+               f'<div class="d">{esc(p.get("detail") or "")}</div>'
+               f'<div class="b"><i style="width:{_pct}%"></i></div></div>')
 
     hero = f"""<div class="card brand"><div class="hero">
       <div><div class="lab">恢复度</div>
         <div class="big">{esc(score if score is not None else '—')}<small>/ 100</small></div>
         <div class="note" style="margin-top:6px;font-size:13px;color:var(--brand-ink)">
-          {esc(level)} · 睡眠 35% / HRV 30% / 静息心率 20% / 身体电量 15%</div>
+          {esc(level)}</div>
       </div>
       <div class="hero-side">今日建议<b>{esc(_session(res))}</b>
-        <span>{esc(day)} 的本地分析结果</span></div>
-    </div><div class="bar"><i style="width:{max(0, min(100, int(score or 0)))}%"></i></div></div>"""
+        <span>{esc(day)} 的本地分析</span></div>
+    </div><div class="mm">{mm}</div>
+    <div class="bar"><i style="width:{max(0, min(100, int(score or 0)))}%"></i></div></div>"""
+
+    # 睡眠：总分 + 深睡/REM，趋势取近两周；欠债单独提一句（它才是「今天困不困」）
+    sh = sleep.get("total_h")
+    _sub, _sub2 = [], []
+    if sleep.get("score") is not None:
+        _sub.append(f"评分 {sleep['score']:.0f}")
+    if sleep.get("deep_min"):
+        _sub.append(f"深睡 {_hm(sleep['deep_min'])}")
+    if sleep.get("rem_min"):
+        _sub2.append(f"REM {_hm(sleep['rem_min'])}")
+    _debt = (sleep.get("debt") or {}).get("deficit_h")
+    if _debt:
+        _sub2.append(f"欠债 {_debt:.1f}h")
+    sleep_card = _vital("睡眠", f"{sh:.1f}" if sh else None, "h",
+                        " · ".join(_sub), _spark((series.get("sleep_h") or [])[-14:]),
+                        "昨夜没同步到睡眠", " · ".join(_sub2))
+
+    # 体重：最新值 + 7 日均 + 体脂；太久没称就把「多久」写在最前面
+    w = body.get("latest")
+    _wsub = []
+    if body.get("stale_days") and body["stale_days"] >= 3:
+        _wsub.append(f"{body['stale_days']} 天未称重")
+    if body.get("avg7"):
+        _wsub.append(f"7 日均 {body['avg7']:.1f}")
+    if body.get("body_fat"):
+        _wsub.append(f"体脂 {body['body_fat']:.1f}%")
+    # 变化量四舍五入到 0.1 kg 后是 0.0 就不要写了 ——「较前 7 天 -0.0 kg」是噪音
+    _dw = body.get("delta_w")
+    if _dw is not None and abs(_dw) >= 0.05:
+        _wsub.append(f"较前 7 天 {_dw:+.1f} kg")
+    weight_card = _vital("体重", f"{w:.2f}" if w else None, "kg",
+                         " · ".join(_wsub), _spark((body.get("series") or [])[-14:]),
+                         "还没有体重记录（小米秤或体成分 CSV）")
 
     stats = ('<div class="grid three">' +
              stat("今日负荷", _today_load_txt(load, day),
@@ -507,14 +665,8 @@ def home_page() -> str:
              stat("TSB 状态", load.get("tsb") or "—", "体能 − 疲劳") +
              '</div>')
 
-    quick = ('<div class="acts">' +
-             act("▣", "导出今日一图流", "生成 1080×1920 竖图并分享", action="export") +
-             act("◫", "完整看板", "睡眠 / 恢复 / 负荷 / 课表",
-                 href=f"/view?date={day}&from=today") +
-             '</div>')
-
     rows = ""
-    for a in acts[:5]:
+    for a in acts[:4]:
         aid = str(a.get("activity_id") or "")
         dist = (a.get("distance_m") or 0) / 1000
         pace = a.get("pace_s_km") or 0
@@ -524,31 +676,28 @@ def home_page() -> str:
                     aid=aid, tone="b")
     if not rows:
         rows = ('<div class="empty">还没有活动数据。下拉同步一次，'
-                '或到「历史」里补拉更早的区间。</div>')
-
-    cover = (f'<div class="grid three">' +
-             stat("日汇总覆盖", f"{cov['days']} 天", f"{cov['first']} ~ {cov['last']}") +
-             stat("活动", f"{cov['activities']} 条", f"最早 {cov['act_first'] or '—'}") +
-             stat("数据源", "佳明", "可切换高驰 / 小米体重") +
-             '</div>')
+                '或到「我的 → 历史数据」补全更早的区间。</div>')
 
     # 今日课表：读同步落下的 plan.json，零请求；没有计划就不占版面。
-    plan_html, plan_more = "", ""
+    plan_html = ""
     try:
         _pl = A.plan(False)
         if _pl.get("ok"):
             plan_html = _today_plan_card(_pl)
-            plan_more = ("本周计划", "/plan?from=today")
     except Exception:
         plan_html = ""
 
-    body = (sec("今日状态", hero + '<div style="height:10px"></div>' + stats) +
-            (sec("今日课表", plan_html, plan_more) if plan_html else "") +
-            sec("快捷操作", quick) +
-            sec("最近活动", rows) +
-            sec("数据覆盖", cover))
-    return page("TODAY · 今日", "今天该怎么练", "一屏看完恢复、负荷和最近几次训练",
-                body, chips)
+    body_html = (sec("今日状态", hero + '<div style="height:10px"></div>' + stats,
+                     ("完整看板", f"/view?date={day}&from=today")) +
+                 (sec("今日课表", plan_html) if plan_html else "") +
+                 sec("身体", f'<div class="grid">'
+                             f'{sleep_card}{weight_card}</div>') +
+                 sec("最近活动", rows))
+    action = ('<div class="head-act" data-act="export">'
+              '<span>⇪</span>一图流</div>')
+    return page("TODAY · 今日", "今天该怎么练",
+                "恢复、负荷、睡眠与体重，一屏看完", body_html, chips,
+                action=action)
 
 
 def _session(res: dict) -> str:
@@ -786,9 +935,13 @@ def me_page() -> str:
     else:
         ai_txt = "未配置"
 
+    # 「补全历史」是全 App 唯一的入口：首页的覆盖区、历史页底部的按钮都撤了。
+    # 它本来就是一次性动作，正常情况登录后后台自动跑完，这里只是兜底重跑。
+    _bf = ("还没补齐，点这里补更早的" if st.get("needs_backfill")
+           else "已补齐，登录后会自动跑一次")
     more = (row("◫", "产物文件", "看板 / 图片 / 视频清单", href="/files") +
-            row("↻", "补拉更多历史",
-                f"已覆盖 {cov['first']} ~ {cov['last']}，可再往前补",
+            row("↻", "历史数据",
+                f"已覆盖 {cov['first']} ~ {cov['last']}（{cov['days']} 天）· {_bf}",
                 act="historySync", tone="a") +
             row("◍", "AI 模型服务", f"{ai_txt} · 在「教练」页右上角设置", tone="b", go=False) +
             row("⌖", "地图底图",
@@ -806,7 +959,10 @@ def me_page() -> str:
                  stat("日汇总", f"{cov['days']} 天", f"{cov['first']} ~ {cov['last']}") +
                  stat("活动", f"{cov['activities']} 条", "全部本地") +
                  stat("上次同步", str(st.get("last_sync") or "—")[5:16], "下拉可随时刷新") +
-                 '</div>')
+                 '</div>'
+                 '<div class="note" style="margin-top:10px;line-height:1.7">'
+                 '首次登录后会在后台自动补全一次最早可用的历史（最多回溯 3 年），'
+                 '之后不再重复；中途失败或想重跑，点上面的「历史数据」。</div>')
 
     body = (sec("数据源", sources) +
             sec("更多", more) +

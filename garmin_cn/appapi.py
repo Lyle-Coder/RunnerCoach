@@ -133,7 +133,7 @@ def _today(store: Store) -> dict:
 _API = {
     "env_info", "status", "login", "submit_mfa", "sync", "sync_range",
     "dashboard", "card_html", "act_card_html", "runs", "activities", "days_index",
-    "history_stats",
+    "history_stats", "mark_backfill",
     "plan", "set_amap_key", "start_server", "recent", "read_html",
     "motion_html", "motion_status", "motion_cleanup", "motion_audio",
     "clips_list", "clips_add", "clips_remove", "clips_reprobe",
@@ -242,6 +242,16 @@ def status() -> dict:
         except Exception:
             session_ok = False
 
+    today_info = _today(store) if st.get("days") else None
+    last_sync = store.get_meta("last_sync")
+    # 「补全历史」是一次性动作，以前要用户自己去「我的」里点。现在登录后
+    # 由 App 在后台自动跑一次，跑完写 `backfill_at`；没写过就还欠一次。
+    need_bf = not bool(store.get_meta("backfill_at"))
+    try:
+        store.conn.close()
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "logged_in": session_ok,
@@ -250,8 +260,9 @@ def status() -> dict:
         "activities": st.get("activities", 0),
         "first": st.get("first"),
         "last": st.get("last"),
-        "last_sync": store.get_meta("last_sync"),
-        "today": _today(store) if st.get("days") else None,
+        "last_sync": last_sync,
+        "today": today_info,
+        "needs_backfill": need_bf,
     }
 
 
@@ -705,6 +716,28 @@ def card_html(date: str | None = None) -> dict:
     # 新 APK 用的成品画幅契约（9:16），两者含义不同，别混用。
     return {"ok": True, "html": str(out), "date": d, "width": 1080, "height": 1920,
             **export_spec(BG_CARD, trim=False)}
+
+
+def mark_backfill(ok: bool = True) -> dict:
+    """标记「全量历史已经补过一次」。
+
+    只在 App 的「一键补全」真正跑完后由原生侧调用。之后 `status()` 的
+    `needs_backfill` 变成 false，登录时就**不会**再自动跑一遍 —— 补全是
+    一次性动作，每次登录都拉三年既慢又没意义。
+    失败不落标记，下次登录会重试。
+    """
+    if not ok:
+        return {"ok": True, "needs_backfill": True}
+    try:
+        store = Store(DB)
+        try:
+            store.set_meta("backfill_at",
+                           dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        finally:
+            store.conn.close()
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "needs_backfill": False}
 
 
 def _activity_days(today: str) -> set[str]:

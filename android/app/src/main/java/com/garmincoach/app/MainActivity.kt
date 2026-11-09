@@ -469,22 +469,43 @@ class MainActivity : Activity() {
     }
 
     /**
+     * 登录成功后自动补一次全量历史。
+     *
+     * 「补全历史」是**一次性**动作：正常情况登录后后台跑完就再也不需要了。
+     * 以前它是「我的」里的一个按钮，用户不点就永远只有最近 30 天 —— 而绝大多数
+     * 人根本不知道该点。这里改成登录后自动跑，跑完 `mark_backfill` 落标记，
+     * 下次登录 `needs_backfill` 为 false 就不再触发。
+     */
+    private fun maybeAutoBackfill() {
+        thread {
+            val st = apiCall("status")
+            if (st.optBoolean("needs_backfill")) {
+                ui { toast("正在后台补全更早的历史，可以正常使用") }
+                runHistorySyncAll(quiet = true)
+            }
+        }
+    }
+
+    /**
      * 一键补齐全部历史：从今天往前按 365 天一段循环，最多 3 段（`sync_range` 的上限）。
      *
      * 一次拉 3 年的话中间没有任何反馈，用户只会觉得卡死；按年分段可以在标题栏
      * 显示「第 2/3 段」，而且某一段全是缓存就提前停（说明更早的也都在本地了）。
      */
-    private fun runHistorySyncAll() {
+    private fun runHistorySyncAll(quiet: Boolean = false) {
         val email = secrets.email() ?: ""
         val pwd = secrets.password() ?: ""
-        busy(true)
-        subtitle.text = "补全历史 准备中…"
+        // quiet：登录后自动跑的那次。不弹全屏 loading，只在标题栏写进度 ——
+        // 用户是来「登录」的，不是来等三年的历史搬完。
+        if (!quiet) busy(true)
+        subtitle.text = if (quiet) "后台补齐历史…" else "补全历史 准备中…"
         thread {
             var end = todayISO()
             var seg = 0
             var fetched = 0
             var skipped = 0
             var lastErr = ""
+            var needLogin = false
             while (seg < 3) {
                 val start = shiftISO(end, -364)
                 ui { subtitle.text = "补全历史 第 ${seg + 1}/3 段：$start ~ $end" }
@@ -495,8 +516,9 @@ class MainActivity : Activity() {
                 if (!r.optBoolean("ok")) {
                     lastErr = r.optString("error")
                     if (r.optBoolean("need_login") || r.optBoolean("need_mfa")) {
-                        ui { busy(false); toast("登录已失效：$lastErr"); askGarminLogin() }
-                        return@thread
+                        needLogin = true
+                        lastErr = "登录已失效"
+                        break
                     }
                     break
                 }
@@ -507,13 +529,24 @@ class MainActivity : Activity() {
                 end = shiftISO(start, -1)
                 seg++
             }
+            // 跑完（没报错）才落标记：失败的话下次登录会自动重试
+            if (lastErr.isEmpty()) apiCall("mark_backfill", true)
+            Log.i(TAG, "history sync-all done fetched=$fetched skipped=$skipped quiet=$quiet err=$lastErr")
+
             ui {
-                busy(false)
+                if (!quiet) busy(false)
                 updateSubtitle()
-                toast(if (lastErr.isNotEmpty())
-                    "补全历史中断：$lastErr（已补 $fetched 天）"
-                else
-                    "补全历史完成：新拉 $fetched 天、跳过 $skipped 天（最多回溯 3 年）")
+                if (needLogin) {
+                    toast("登录已失效，补全中止")
+                    askGarminLogin()
+                    return@ui
+                }
+                if (!quiet || fetched > 0) {
+                    toast(if (lastErr.isNotEmpty())
+                        "补全历史中断：$lastErr（已补 $fetched 天）"
+                    else
+                        "补全历史完成：新拉 $fetched 天、跳过 $skipped 天（最多回溯 3 年）")
+                }
                 thread {
                     apiCall("dashboard")
                     setStatus(apiCall("status"))
@@ -674,6 +707,11 @@ class MainActivity : Activity() {
                             if (garminDead) toast("佳明登录已失效，请在「账号登录」里重登")
                             else if (corosDead) toast("高驰登录已过期，请在「账号登录」里重登")
                             reload()
+                            // 刚登录：历史还没补过就顺手补一次（一次性，跑完落标记）
+                            if (autoBackfillPending) {
+                                autoBackfillPending = false
+                                maybeAutoBackfill()
+                            }
                         }
                     }
                 } else {
@@ -804,6 +842,7 @@ class MainActivity : Activity() {
                     }
                     r.optBoolean("ok") -> {
                         secrets.save(email, pwd)
+                        autoBackfillPending = true
                         toast("登录成功")
                         doSync()
                     }
@@ -835,6 +874,7 @@ class MainActivity : Activity() {
             ui {
                 busy(false)
                 if (r.optBoolean("ok")) {
+                    autoBackfillPending = true
                     toast("登录成功")
                     doSync()
                 } else {
@@ -1010,6 +1050,9 @@ class MainActivity : Activity() {
 
     /** 当前列表数据；缩略图线程回来时要用，所以挂在类上而不是闭包里。 */
     private var clipArray: JSONArray = JSONArray()
+    /** 刚登录成功：等这次同步跑完就自动补一次全量历史（只触发一次）。 */
+    private var autoBackfillPending = false
+
     /** 当前素材对话框。重建前必须先关掉它，否则会一层层叠起来。 */
     private var clipDialog: Dialog? = null
     /** 标题在列表里要动态改成「已选 N 个」，所以单独留个引用。 */
