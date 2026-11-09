@@ -1304,25 +1304,56 @@ class MainActivity : Activity() {
     }
 
     /** 大图预览：图片看原图，视频看第一帧（要看动态得去生成回放）。 */
+    /**
+     * 素材预览。**按回放卡片的比例开框**，不只按原图比例 ——
+     * 卡片的框是「旋转后的外接框」，预览要是用 FIT_CENTER 随便撑，
+     * 同一段素材在列表里和在成片里看起来就是两个形状。
+     */
     private fun previewClip(o: JSONObject) {
         val path = o.optString("path", "")
         val kind = o.optString("kind", "video")
         val name = o.optString("name", "素材")
+        val rot = o.optInt("rotate", 0)
+        val w = o.optInt("w", 0)
+        val h = o.optInt("h", 0)
+        val swap = rot == 90 || rot == 270
+        val visW = if (swap) h else w
+        val visH = if (swap) w else h
+
+        val dm = resources.displayMetrics
+        val maxW = (dm.widthPixels * 0.92f).toInt()
+        val maxH = (dm.heightPixels * 0.62f).toInt()
+        var fw = maxW
+        var fh = if (visW > 0 && visH > 0) (maxW.toFloat() * visH / visW).toInt()
+                 else (maxW * 9 / 16)
+        if (fh > maxH) {
+            fh = maxH
+            fw = if (visW > 0 && visH > 0) (maxH.toFloat() * visW / visH).toInt() else maxH
+        }
+
         val iv = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            setBackgroundColor(0xFF12161B.toInt())
-            minimumHeight = dp(160)
+            // 框已经是正确的比例，CENTER_CROP 在这里等于「刚好铺满、不裁」
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            // 跟卡片一样是圆角深色底板，预览与成片观感一致
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = dp(14).toFloat()
+                setColor(0xFF12161B.toInt())
+            }
+            clipToOutline = true
+        }
+        // 用 FrameLayout 兜住尺寸：直接把带 LinearLayout.LayoutParams 的 View
+        // 塞进 AlertDialog 会在 measure 时因为父容器不是 LinearLayout 而崩。
+        val box = FrameLayout(this).apply {
+            addView(iv, FrameLayout.LayoutParams(fw, fh))
         }
         val dlg = AlertDialog.Builder(this)
             .setTitle(name)
-            .setView(iv)
+            .setView(box)
             .setNegativeButton("关闭", null)
             .create()
         dlg.show()
-        dlg.window?.setLayout(
-            (resources.displayMetrics.widthPixels * 0.92f).toInt(), WRAP_CONTENT)
-        loadClipThumb(path, kind, resources.displayMetrics.widthPixels,
-            o.optInt("rotate", 0)) { bmp ->
+        dlg.window?.setLayout(fw + dp(32), WRAP_CONTENT)
+        loadClipThumb(path, kind, maxOf(fw, fh), rot) { bmp ->
             if (bmp != null) iv.setImageBitmap(bmp)
         }
     }

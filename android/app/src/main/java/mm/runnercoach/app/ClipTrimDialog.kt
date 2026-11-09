@@ -332,8 +332,19 @@ class ClipTrimDialog(
 
     private fun dp(v: Int) = (v * density).roundToInt()
 
-    /** 视频显示宽高（已按 tkhd rotation 交换），读不到就给竖屏兜底。 */
-    private fun readSize(): Pair<Int, Int> {
+    /**
+     * 原始画幅 + 容器旋转（tkhd）。三者必须分开，预览才对得上成片：
+     *
+     *  - `MediaPlayer` 输出到 Surface 时**不会**替我们应用 tkhd，竖拍视频
+     *    （w>h + rotation=90）直接铺满横框就是一截被拉宽的横条；
+     *  - `MediaMetadataRetriever.getFrameAtTime` **会**应用 tkhd，拿到的静帧
+     *    已经是视觉方向。
+     *
+     * 所以两层的旋转量不一样：静帧只叠用户旋转，TextureView 要叠
+     * 「容器旋转 + 用户旋转」。以前两者都只叠用户旋转，于是竖拍素材
+     * 预览永远是横的，旋了也看不出变化。
+     */
+    private fun readMeta(): Triple<Int, Int, Int> {
         val mmr = MediaMetadataRetriever()
         return try {
             mmr.setDataSource(src.absolutePath)
@@ -343,11 +354,10 @@ class ClipTrimDialog(
                 MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
             val r = mmr.extractMetadata(
                 MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
-            val sw = if (r == 90 || r == 270) h else w
-            val sh = if (r == 90 || r == 270) w else h
-            if (sw > 0 && sh > 0) sw to sh else 1080 to 1920
+            if (w > 0 && h > 0) Triple(w, h, ((r % 360) + 360) % 360)
+            else Triple(1080, 1920, 0)
         } catch (t: Throwable) {
-            1080 to 1920
+            Triple(1080, 1920, 0)
         } finally {
             try { mmr.release() } catch (_: Throwable) {}
         }
@@ -393,28 +403,62 @@ class ClipTrimDialog(
         // ---- 预览区
         // 按素材真实宽高比摆：竖屏给竖向的框，横屏给横向的。旧版固定 200dp 高
         // + MATCH_PARENT 宽 + CENTER_CROP，竖拍视频会被裁成一截横条。
-        val (vw, vh) = readSize()
+        val (w0, h0, videoRot) = readMeta()
+        val tkhdSwap = videoRot == 90 || videoRot == 270
+        val baseW = if (tkhdSwap) h0 else w0        // 视觉宽（不含用户旋转）
+        val baseH = if (tkhdSwap) w0 else h0
         val maxW = (act.resources.displayMetrics.widthPixels - dp(32)).toFloat()
-        val maxH = dp(if (vh > vw) 300 else 200).toFloat()
-        var fw = maxW
-        var fh = fw * vh.toFloat() / max(1, vw)
-        if (fh > maxH) {
-            fh = maxH
-            fw = fh * vw.toFloat() / max(1, vh)
-        }
+
         val frame = FrameLayout(act).apply {
             setBackgroundColor(0xFF12161B.toInt())
         }
         val tex = TextureView(act)
         frame.addView(tex, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER))
 
         still = ImageView(act).apply {
             scaleType = ImageView.ScaleType.FIT_CENTER
             visibility = View.GONE
         }
         frame.addView(still, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER))
+
+        /**
+         * 按「容器旋转 + 用户旋转」重排预览框。旋转按钮和首次显示都走它 ——
+         * 以前只改 view 的 rotation、不换框的尺寸，转 90° 的画面直接被原来的
+         * 横框裁掉，看着就像「旋转没生效」。
+         */
+        fun applyFrame() {
+            val rot = curRotate
+            val uSwap = rot == 90 || rot == 270
+            val visW = if (uSwap) baseH else baseW
+            val visH = if (uSwap) baseW else baseH
+            val maxH = dp(if (visH > visW) 300 else 200).toFloat()
+            var fw = maxW
+            var fh = fw * visH.toFloat() / max(1, visW)
+            if (fh > maxH) {
+                fh = maxH
+                fw = fh * visW.toFloat() / max(1, visH)
+            }
+            frame.layoutParams = LinearLayout.LayoutParams(
+                fw.roundToInt(), fh.roundToInt()).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
+            // 静帧已经是视觉方向，只叠用户旋转，尺寸就是最终框
+            still.layoutParams = FrameLayout.LayoutParams(
+                fw.roundToInt(), fh.roundToInt(), Gravity.CENTER)
+            still.rotation = rot.toFloat()
+            // TextureView 还是原始方向，要叠「容器 + 用户」旋转；
+            // 按同一缩放系数给出原始方向的尺寸，转过去正好铺满 frame
+            val k = fw / visW
+            tex.layoutParams = FrameLayout.LayoutParams(
+                (w0 * k).roundToInt(), (h0 * k).roundToInt(), Gravity.CENTER)
+            tex.rotation = ((videoRot + rot) % 360).toFloat()
+            frame.requestLayout()
+        }
+        applyFrame()
 
         loading = ProgressBar(act)
         frame.addView(loading, FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER))
@@ -439,9 +483,8 @@ class ClipTrimDialog(
             setBackgroundColor(0x99000000.toInt())
             setOnClickListener {
                 curRotate = (curRotate + 90) % 360
-                tex.rotation = curRotate.toFloat()
-                still.rotation = curRotate.toFloat()
-                text = "⟳ ${curRotate}°"
+                applyFrame()
+                text = if (curRotate == 0) "⟳ 旋转" else "⟳ ${curRotate}°"
             }
         }
         frame.addView(rotBtn, FrameLayout.LayoutParams(
@@ -449,9 +492,8 @@ class ClipTrimDialog(
             Gravity.TOP or Gravity.END))
 
         root.addView(frame, LinearLayout.LayoutParams(
-            fw.roundToInt(), fh.roundToInt()).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-        })
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT))
 
         // ---- 选区信息
         info = TextView(act).apply {

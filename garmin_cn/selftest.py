@@ -1424,7 +1424,8 @@ def run() -> int:
         "素材没有旋转入口"
     assert "curRotate" in _clip_dlg and "onPick(startMs, endMs, curRotate)" in _clip_dlg, \
         "裁剪界面没有旋转状态或没回传角度"
-    assert "readSize()" in _clip_dlg and "if (fh > maxH) {" in _clip_dlg, \
+    # 0.6.1 起 readSize() 拆成 readMeta()（原始画幅 + 容器旋转分开）
+    assert "private fun readMeta()" in _clip_dlg and "if (fh > maxH) {" in _clip_dlg, \
         "裁剪预览没按素材宽高比摆放，竖屏会被裁成横条"
     assert "function drawRotated(" in _msrc and "drawRotated(frame, p.clip" in _msrc, \
         "回放绘制没处理 rotate，登记了角度也不生效"
@@ -2313,6 +2314,23 @@ def run() -> int:
         "删除接口没做路径逃逸防护"
     assert "_is_loopback()" in _srv_src.split("def _files_delete")[1][:900], \
         "删除接口没有限制本机调用"
+
+    # ---- 预览与成片一致：剪辑预览 + 素材预览都要按「旋转后的外接框」摆 ----
+    _trim_src2 = (KT / "ClipTrimDialog.kt").read_text(encoding="utf-8")
+    assert "private fun readMeta(): Triple<Int, Int, Int>" in _trim_src2, \
+        "剪辑预览没有把「原始画幅 / 容器旋转」分开读"
+    assert "fun applyFrame()" in _trim_src2, "剪辑预览没有按旋转重排布局"
+    # 关键：旋转必须走 applyFrame（换框），不能只改 view.rotation ——
+    # 只转 view 的话 90° 的画面会被原来的横框裁掉，看着像「旋转没生效」。
+    assert re.search(r"curRotate = \(curRotate \+ 90\) % 360\s*\n\s*applyFrame\(\)", _trim_src2), \
+        "旋转按钮没有重排预览框"
+    assert "tex.rotation = ((videoRot + rot) % 360).toFloat()" in _trim_src2, \
+        "TextureView 没有叠容器旋转，竖拍素材预览还是横的"
+    assert "still.rotation = rot.toFloat()" in _trim_src2, \
+        "静帧层旋转量不对（MMR 已经应用过 tkhd，不能再叠一次）"
+    # 素材预览：按 rotate 算外接框，与卡片同比例
+    assert re.search(r"val swap = rot == 90 \|\| rot == 270\s*\n\s*val visW", _main), \
+        "素材预览没有按显示旋转算外接框，和成片卡片对不上"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
