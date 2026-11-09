@@ -652,12 +652,14 @@ def prune_dist(keep_versions: int = 1, keep_snaps: int = 0,
     for key in sorted(snap_groups, reverse=True)[max(0, keep_snaps):]:
         removed.extend(snap_groups[key])
 
+    # 一旦当前版本已经有了正式产物，手工放的临时包就是重复的，可以清掉
+    official = (DIST / f"RunnerCoach-v{current}-release.apk").is_file()
     for p in loose:
         if p.name.startswith("SHA256SUMS"):
             removed.append(p)        # 只留 SHA256SUMS.txt（在当前版本的清单里）
             continue
         m = re.search(r"RunnerCoach-(\d+\.\d+\.\d+)", p.name)
-        if not m or m.group(1) != current:
+        if not m or m.group(1) != current or official:
             removed.append(p)
 
     for p in removed:
