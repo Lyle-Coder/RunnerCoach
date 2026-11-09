@@ -1420,6 +1420,13 @@ def cmd_mi(args) -> int:
     return 0
 
 
+def cmd_hw(args) -> int:
+    """华为运动健康：会话 / 闸门体检 / 同步（实现在 garmin_cn/huawei.py）。"""
+    from garmin_cn import huawei as H
+
+    return H.cli(args, home=HOME, db=DB)
+
+
 def cmd_coros(args) -> int:
     """高驰：登录 / 状态 / 同步（Training Hub Web API 数据源）。"""
     from garmin_cn import coros as C
@@ -1522,6 +1529,26 @@ def cmd_body(args) -> int:
             return 2
         d0, d1 = recs[0]["date"], recs[-1]["date"]
         print(f"√ 从小米云端入库 {n} 条（{d0} ~ {d1}）")
+
+    if getattr(args, "huawei", False):
+        from garmin_cn import huawei as H
+
+        days = getattr(args, "huawei_days", 120)
+        span = f"最近 {days} 天" if days else "全量"
+        print(f"→ 从华为运动健康拉取{span}体重…", flush=True)
+        try:
+            n, recs = H.sync(store, HOME, days=days)
+        except H.HwAuthError as e:
+            print(f"× {e}")
+            return 3
+        except H.HwError as e:
+            print(f"× 华为云端读取失败：{e}")
+            return 3
+        if not n:
+            print("× 云端这段时间没有体重记录。先跑 run.bat hw probe 看哪道闸门没过")
+            return 2
+        d0, d1 = recs[0]["date"], recs[-1]["date"]
+        print(f"√ 从华为端入库 {n} 条（{d0} ~ {d1}）")
 
     st = B.stats(store, args.date, args.days)
     print()
@@ -2333,6 +2360,9 @@ def main() -> int:
     q.add_argument("--garmin", action="store_true", help="从佳明拉取 weigh-in")
     q.add_argument("--mi", action="store_true", help="从小米健康云拉体脂秤数据")
     q.add_argument("--mi-days", type=int, default=120, help="往小米云端回溯多少天，默认 120")
+    q.add_argument("--huawei", action="store_true", help="从华为运动健康拉体重（需先跑 hw probe）")
+    q.add_argument("--huawei-days", type=int, default=0,
+                   help="往华为云端回溯多少天，0=全量（默认）")
     q.add_argument("--date", help="截止日期")
     q.add_argument("--days", type=int, default=28, help="看多少天，默认 28")
     q.set_defaults(func=cmd_body)
@@ -2351,6 +2381,17 @@ def main() -> int:
     q.add_argument("--json-text", help="同 --json-file，直接给 JSON 文本")
     q.add_argument("--raw", action="store_true", help="打印云端原始字段")
     q.set_defaults(func=cmd_mi)
+
+    q = sub.add_parser("hw", help="华为运动健康：会话 / 闸门体检 / 同步")
+    q.add_argument("action", nargs="?", default="status",
+                   choices=["status", "import", "probe", "verify", "sync", "logout"],
+                   help="默认 status；probe 体检三道闸门；import 导入会话或抓包")
+    q.add_argument("--json-file", metavar="文件", help="会话 JSON（healthsession 的 obtain 响应）")
+    q.add_argument("--json-text", help="同 --json-file，直接给 JSON 文本")
+    q.add_argument("--capture", metavar="HAR", help="抓包文件；import 时从中提取会话")
+    q.add_argument("--days", type=int, default=0,
+                   help="回溯天数，0=全量（默认），给 sync/verify 用")
+    q.set_defaults(func=cmd_hw)
 
     q = sub.add_parser("coros", help="高驰：登录 / 状态 / 同步（数据源）")
     q.add_argument("action", nargs="?", default="status",

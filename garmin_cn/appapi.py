@@ -145,6 +145,7 @@ _API = {
     "set_llm_config", "get_llm_config", "ai",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
+    "hw_status", "hw_import", "hw_login", "hw_probe", "hw_sync", "hw_logout",
     "coros_status", "coros_login", "coros_logout", "coros_sync",
 }
 
@@ -463,6 +464,87 @@ def mi_sync(days: int = 30) -> dict:
     return {"ok": True, "count": n,
             "latest": recs[-1]["date"] if recs else None,
             "weight": recs[-1].get("weight_kg") if recs else None}
+
+
+# ---------------------------------------------------------------- 华为运动健康
+# 与小米同一套交互：状态 → 登录/导入授权 → 同步 → 退出。
+# 差别只在闸门：华为没走完协议验证时，`hw_sync` 会明确拒绝，不会装作同步成功。
+def hw_status() -> dict:
+    """华为登录态与协议状态（只看本地文件，不联网）。"""
+    try:
+        from . import huawei as H
+
+        s = H.status(HOME)
+        return {"ok": True, **s, "open_id": _mask_uid(s.get("uid", ""))}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def hw_import(payload: str) -> dict:
+    """导入会话 JSON 文本（healthsession 的 obtain 响应即可）。"""
+    import json as _json
+    try:
+        from . import huawei as H
+
+        try:
+            d = _json.loads(payload or "")
+        except Exception:
+            return {"ok": False, "error": "这不是 JSON：请粘贴华为会话响应"}
+        r = H.HuaweiCloud(HOME).import_payload(d)
+        return {"ok": True, "open_id": _mask_uid(r["uid"]),
+                "has_refresh": r["hasRefresh"]}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def hw_login(user: str, password: str, client_id: str = "") -> dict:
+    """密码模式已证实走不通（App 的 client_id 不给密码授权），保留入口只为给出明确提示。"""
+    return {"ok": False, "need_verify": False,
+            "error": "华为不支持密码模式。请在 App 里登录一次，用 hw import 导入会话；"
+                     "或直接抓包后 hw import --capture <HAR>"}
+
+
+def hw_probe() -> dict:
+    """跑三道闸门：账号 / 体重读取 / 会话续期，逐项报告卡在哪。"""
+    try:
+        from . import huawei as H
+
+        cloud = H.HuaweiCloud(HOME)
+        cloud.load()
+        return {"ok": True, **cloud.probe()}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def hw_sync(days: int = 0) -> dict:
+    """拉一次华为体重并入库（body 表 + 回填 daily）。"""
+    from . import huawei as H
+
+    store = Store(DB)
+    try:
+        n, recs = H.sync(store, HOME, days=max(int(days), 0))
+    except H.HwAuthError as e:
+        return {"ok": False, "need_login": True, "error": str(e)}
+    except H.HwError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        store.conn.close()
+    return {"ok": True, "count": n,
+            "latest": recs[-1]["date"] if recs else None,
+            "weight": recs[-1].get("weight_kg") if recs else None}
+
+
+def hw_logout() -> dict:
+    """删除 data/huawei_auth.json（云端数据不受影响）。"""
+    try:
+        from . import huawei as H
+
+        H.HuaweiCloud(HOME).clear()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
 # ---------------------------------------------------------------- 高驰
