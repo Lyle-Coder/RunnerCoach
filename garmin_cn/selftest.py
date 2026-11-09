@@ -2444,6 +2444,14 @@ def run() -> int:
     assert _out["removed"], "清理没有返回删了哪些文件"
     assert (ROOT / "tools/release.py").read_text(encoding="utf-8").count("prune_dist(") >= 2, \
         "prepare 没有调用 prune_dist，发版时不会自动清"
+    # 覆盖当前版本 APK（没删任何文件）也必须重算清单：否则 sums 还指向上一版。
+    _apk = _dd / f"RunnerCoach-v{_cur}-release.apk"
+    _apk.write_bytes(b"new-build-content")
+    with _mock.patch.object(_rel, "DIST", _dd):
+        _rel.prune_dist(keep_versions=1, keep_snaps=0, apply=True)
+    _sums = (_dd / "SHA256SUMS.txt").read_text(encoding="utf-8")
+    assert _rel.sha256(_apk) in _sums, \
+        "同名 APK 被覆盖后 SHA256SUMS 没重算，sha256sum -c 会 FAILED"
     shutil.rmtree(_dd, ignore_errors=True)
 
     # 月/周柱状图必须铺满整个周期：11 月才到 9 号也要画 30 根，后面是 0 柱。

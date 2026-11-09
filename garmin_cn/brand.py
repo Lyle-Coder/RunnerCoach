@@ -188,11 +188,11 @@ _CSS_TMPL = """
 .brandline{display:flex;align-items:center;gap:9px}
 .brandline .kicker{letter-spacing:1.6px}
 .card.brand::before,.plan-hero::before{content:"";position:absolute;
-  right:-16px;top:-26px;width:148px;height:148px;pointer-events:none;
+  right:-24px;top:-40px;width:116px;height:116px;pointer-events:none;
   background:url("__RC_MARK_URI__") center/contain no-repeat;
-  opacity:.10;filter:drop-shadow(0 0 22px rgba(59,130,246,.55))}
+  opacity:.05;filter:drop-shadow(0 0 20px rgba(59,130,246,.45))}
 """
-BRAND_CSS = _CSS_TMPL.replace("__RC_MARK_URI__", mark_uri(148))
+BRAND_CSS = _CSS_TMPL.replace("__RC_MARK_URI__", mark_uri(116))
 
 
 # ------------------------------------------------------------- 开屏预览 ----
