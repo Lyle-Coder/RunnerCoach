@@ -2095,6 +2095,50 @@ def run() -> int:
     _a2, _b2, _nxt2, _done2 = _AP3._backfill_segment(_floor + dt.timedelta(days=1),
                                                      _floor)
     assert _done2 is True and _nxt2 == _floor, "退到下限那一段没标 done"
+    # 终点由数据源里的第一条记录决定，不再一律退 8 年。
+    # 账号 2024-05-01 才有记录，补到那天就该停——再往前全是空年份，
+    # 每段要花 365 次日汇总请求，用户看到的就是「一直在拉」。
+    _e_floor = _AP3._backfill_floor(_cur, "2024-05-01")
+    assert _e_floor.isoformat() == "2024-04-30", f"最早记录没当停止线：{_e_floor}"
+    _a3, _b3, _nxt3, _done3 = _AP3._backfill_segment(
+        dt.date(2024, 11, 9), _e_floor)
+    assert (_a3.isoformat(), _b3.isoformat()) == ("2024-04-30", "2024-11-09"), \
+        f"最后一段应停在最早记录：{_a3} ~ {_b3}"
+    assert _done3 is True and _nxt3 == _e_floor, "到最早记录那一段没标 done"
+    # 一条活动都没有的账号：只往前补两年日汇总，不去翻八年
+    _n_floor = _AP3._backfill_floor(_cur, "")
+    assert _n_floor.isoformat() == "2024-11-09", f"无活动账号的下限不对：{_n_floor}"
+    # 还不知道时退回硬下限，行为与旧版一致
+    assert _AP3._backfill_floor(_cur, None).isoformat() == "2018-11-09", \
+        "探测不到最早记录时没有退回 8 年兜底"
+
+    # 数据源判断：翻到活动列表底，返回第一条；没到底要如实说
+    assert hasattr(_AP3, "_probe_earliest"), "没有「问数据源最早一条」的实现"
+    from garmin_cn import client as _cl
+
+    assert hasattr(_cl.GarminCNClient, "activities_earliest"), \
+        "客户端没有翻活动列表找最早一条的接口"
+
+    # 翻页到底才算数：不满一页 = 看见的就是第一条；翻到上限还没到底就不能当停止线
+    class _FakeAct:
+        def __init__(self, pages):
+            self.pages = pages
+
+        def activities(self, limit=30, start=0):
+            i = start // max(1, limit)
+            return self.pages[i] if i < len(self.pages) else []
+
+    _p1 = [{"startTimeLocal": "2026-01-0%dT07:00:00" % (i + 1)} for i in range(3)]
+    _p2 = [{"startTimeLocal": "2024-05-01T07:00:00"},
+           {"startTimeLocal": "2024-06-02T07:00:00"}]
+    _got_act = _cl.GarminCNClient.activities_earliest(
+        _FakeAct([_p1, _p2]), max_pages=5, page_size=3)
+    assert _got_act["exhausted"] is True and _got_act["date"] == "2024-05-01", \
+        f"没找到最早一条：{_got_act}"
+    _got_cap = _cl.GarminCNClient.activities_earliest(
+        _FakeAct([_p1, _p1, _p1]), max_pages=2, page_size=3)
+    assert _got_cap["exhausted"] is False, "翻到上限还说「到底了」，会提前停止补全"
+
     # 到头之后不再发请求（backfill_next 在游标到下限时直接返回）
     _tmpbf = Path(tempfile.mkdtemp()) / "bf.db"
     _st = Store(_tmpbf)
@@ -2106,6 +2150,24 @@ def run() -> int:
         assert _ended.get("start") == "" and _ended.get("fetched") == 0, \
             "补到头还在请求，会一直循环"
     shutil.rmtree(_tmpbf.parent, ignore_errors=True)
+
+    # 已经有最早记录时：游标只要退到它之前就直接收工，连探测都不做
+    _tmpbf2 = Path(tempfile.mkdtemp()) / "bf2.db"
+    _st2 = Store(_tmpbf2)
+    _st2.set_meta(_AP3.BACKFILL_META, "2024-04-30")
+    _st2.set_meta(_AP3.EARLIEST_META, "2024-05-01")
+    _st2.set_meta(_AP3.EARLIEST_AT_META,
+                  dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    _st2.conn.close()
+    with _mock.patch.object(_AP3, "DB", _tmpbf2), \
+            _mock.patch.object(_AP3, "_probe_earliest",
+                               side_effect=AssertionError("不该联网探测")):
+        _ended2 = _AP3.backfill_next()
+        assert _ended2.get("done") is True and _ended2.get("earliest") == "2024-05-01", \
+            "有最早记录时没有直接收工"
+        assert _ended2.get("reason") == "reached_earliest", \
+            "收工原因没说清是不是到了最早记录"
+    shutil.rmtree(_tmpbf2.parent, ignore_errors=True)
 
     # App 侧：刷新后自动跑，进度写在标题栏，且不再弹选区间对话框
     _main_src = (KT / "MainActivity.kt") \

@@ -394,9 +394,11 @@ class MainActivity : Activity() {
      * 必须跑完才有意义的事，就干脆不让人点：**每次刷新顺手往前挪一段**。
      *
      * Python 侧用游标 `backfill_cursor` 记住「下次从哪天往前补」，默认今天，
-     * 一段一年，退到下限（8 年前）返回 `done=true`。所以：
-     * - 已经补完的库，第一次调用就返回，不发任何请求；
-     * - 没补完的库，刷新几次慢慢补齐，每次只花一段的时间。
+     * 一段一年；终点是**数据源里最早的那条活动**（平台会告诉我们），而不是
+     * 硬退 8 年——账号才注册两年时，退到 2018 只会白拉两年的空数据。
+     *
+     * 每次刷新最多推 3 段：这本来就该是后台慢慢补的事，一次把八年全拉完，
+     * 用户看到的就是「一直在拉」。没补完的，下次刷新接着补。
      */
     private fun runBackfill() {
         if (backfilling) return
@@ -407,7 +409,8 @@ class MainActivity : Activity() {
             var lastErr = ""
             var needLogin = false
             var done = false
-            while (!done && seg < 12) {            // 12 段兜底，防止死循环
+            var earliest = ""
+            while (!done && seg < 3) {             // 每次刷新最多 3 段，剩下的下次接着补
                 val r = apiCall("backfill_next")
                 if (!r.optBoolean("ok")) {
                     lastErr = r.optString("error")
@@ -416,6 +419,7 @@ class MainActivity : Activity() {
                 }
                 done = r.optBoolean("done")
                 fetched += r.optInt("fetched")
+                if (r.optString("earliest").isNotEmpty()) earliest = r.optString("earliest")
                 if (!done) {
                     seg++
                     val a = r.optString("start")
@@ -433,7 +437,11 @@ class MainActivity : Activity() {
                 // 后台任务遇到会话失效不弹登录：用户可能正在看别的页面，
                 // 下一次主动刷新时自然会提示。
                 if (needLogin) return@ui
-                if (seg > 0 && fetched > 0) toast("已补齐 $seg 段历史：新拉 $fetched 天")
+                if (seg > 0 && fetched > 0) {
+                    val tail = if (done && earliest.isNotEmpty())
+                        "，已到最早记录 $earliest" else "，下次刷新继续补齐"
+                    toast("已补 $seg 段历史：新拉 $fetched 天$tail")
+                }
                 thread {
                     setStatus(apiCall("status"))
                     ui { reload() }
