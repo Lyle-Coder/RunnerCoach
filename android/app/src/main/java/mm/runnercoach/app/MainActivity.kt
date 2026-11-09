@@ -2859,14 +2859,19 @@ class MainActivity : Activity() {
                 v.layoutParams = lp
                 forceSize(v, vw, targetH)
             }
-            // 把版本号和实测缩放系数显示出来：真机测试时一眼能确认装的是新包，
-            // 也能把 ×0.xx 直接报回来对账，不用插 adb。
-            val ver = try {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
-            } catch (t: Throwable) {
-                "?"
+            // 版本号 + 实测缩放系数只给调试包看：真机测试时一眼能确认装的是新包，
+            // 也能把 ×0.xx 直接报回来对账。正式包里这是纯噪音，还显得没打磨。
+            // 工程没开 buildConfig 特性（AGP 8 默认不生成），用 debuggable 标记判断。
+            val debuggable =
+                (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+            if (debuggable) {
+                val ver = try {
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+                } catch (t: Throwable) {
+                    "?"
+                }
+                toast("$ver 出图缩放 ×" + String.format(Locale.US, "%.2f", f))
             }
-            toast("$ver 出图缩放 ×" + String.format(Locale.US, "%.2f", f))
             if (abs(f - 1.0) > 0.02) {
                 // 画布比可视视口宽：套 transform 把版心缩进控件，等一帧再截。
                 // 这一步是修复「分享预览只剩一角」的关键，绝不靠裁图补救。
@@ -3009,6 +3014,9 @@ class MainActivity : Activity() {
         val out = Bitmap.createBitmap(dw, dh, Bitmap.Config.ARGB_8888)
         out.eraseColor(bg)
         Canvas(out).drawBitmap(scaled, (dw - tw) / 2f, (dh - th) / 2f, null)
+        // 中间位图用完立刻回收：1080×1920 的 ARGB_8888 一张就是 8.3 MB，
+        // 出图这一下同时存在原图 + 缩放图 + 成品，低端机容易顶到堆上限。
+        if (scaled !== src) scaled.recycle()
         return out
     }
 

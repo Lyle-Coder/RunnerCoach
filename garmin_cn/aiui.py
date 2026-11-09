@@ -87,6 +87,8 @@ ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:
 .err{border-left:3px solid var(--red);background:var(--red-soft);border-radius:10px;padding:12px 14px;
   font-size:13px;color:#8C2F2A;line-height:1.65}
 .err b{display:block;margin-bottom:4px}
+.det{margin-top:8px;font-size:11.5px;color:var(--faint)}
+.det summary{cursor:pointer;min-height:32px;display:flex;align-items:center}
 .quote{font-size:12px;color:var(--muted);background:rgba(9,14,22,.9);border-radius:8px;padding:8px 10px;
   margin-top:8px;white-space:pre-wrap;max-height:160px;overflow:auto}
 .kv{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:4px}
@@ -324,8 +326,12 @@ function errBox(j, retry) {
   d.appendChild(el('div', null, esc(j.error || '')));
   if (m[1]) d.appendChild(el('div', 'note', esc(m[1])));
   if (j.detail) {
-    const q = el('div', 'quote', esc(j.detail));
-    d.appendChild(q);
+    /* 原文（"TypeError: Failed to fetch" 之类）收进折叠块：排障要看，
+       但默认摊在红卡里只会让人觉得这是个没做完的东西。 */
+    const det = el('details', 'det');
+    det.appendChild(el('summary', null, '技术细节'));
+    det.appendChild(el('div', 'quote', esc(j.detail)));
+    d.appendChild(det);
   }
   const bar = el('div', 'act');
   if (m[2] === 'retry' && retry) {
