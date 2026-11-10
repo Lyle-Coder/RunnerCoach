@@ -1630,6 +1630,15 @@ def act_card_html(activity_id: str, title: str | None = None,
                 return {"ok": False,
                         "source": provider,
                         "error": f"获取佳明活动明细失败：{e}"}
+        elif "training" not in detail:
+            # 旧缓存没有训练模式（间歇版式依赖它）：补抓一次。失败就继续用
+            # 旧数据、版式退回默认——不让活动图因为联网问题打不开。
+            try:
+                from . import activity as act
+
+                detail = act.ensure(store, _client(email, password), aid, force=True)
+            except Exception:
+                pass
         if not detail:
             return {"ok": False, "error": "没拿到活动明细"}
 

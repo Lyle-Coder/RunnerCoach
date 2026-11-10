@@ -1,38 +1,30 @@
-"""间歇训练识别：从「逐点速度序列」或「分圈」里找出快慢交替，并汇总成两组。
+"""间歇训练展示：判定权交给佳明的训练模式，不再靠速度猜。
 
-纯标准库、零 IO。输入是 `activity.py` 产出的 `series.points` / `laps`，
-输出是给活动图底部双栏用的纯数据；识别不出来返回 `None`，版式完全不变。
+为什么改
+--------
+以前用「快慢交替」的速度模式判定间歇，问题是有快慢交替的匀速长跑（等红灯、
+爬坡、起跑热身与结束放松）会被误判成间歇，而真正的间歇课里若组间恢复是
+原地站立，速度曲线又可能判不出来。真机对比 63 条跑步明细：速度判定多认了
+10 条佳明未标记间歇的活动。
 
-为什么要两条路
---------------
-佳明有两种记圈方式：手动按圈（热身 2 km、快 400 m、慢 400 m……放松 1 km）
-时，`laps` 的配速直接呈快慢交替；但自动「每公里分圈」会把 400 m 快跑和
-400 m 慢跑平均进同一圈，`laps` 看起来几乎是匀速。所以优先看逐点速度
-（`spd`，m/s），不满足条件再回落到分圈。
+现在的口径
+----------
+佳明活动自带 `hasIntensityIntervals`——设备/训练课执行时写入的「本次训练
+包含强度间歇」标记，是官方口径，等价于「训练里设置了间歇」。规则只有一条：
 
-防误报优先于多召回
-------------------
-间歇的本质是「刻意重复的快慢循环」，不是「跑得不太均匀」。早期版本只看
-Otsu 二分 + 少量切换，于是匀速长跑里等两次红灯、爬一段坡、起跑热身和结束
-放松，都会被切成「快组 / 慢组」并套上双栏版式——慢段明明只占全程 2%，
-却被当成一组恢复。现在的门禁要求「结构」而不仅是「有速度差」：
+* 标记为间歇 → 用速度把全程切成快 / 慢两组，走底部分双栏版式；
+* 没标记 → 一律默认版式（分圈表），即使速度看起来快慢交替也不切。
 
-* 二分本身要成立：高组均值相对低组均值至少高 `MIN_SPLIT_GAP`，
-  否则匀速跑的自然抖动只是被硬切成两半；
-* 快段、慢段都至少 `MIN_SETS` 组且各自有最小长度（短慢段并回相邻快段），
-  一次偶发减速构不成循环；
-* 快慢真正交替（段切换 >= `MIN_SWITCHES` 次）；
-* 慢段总时长占全程 >= `MIN_SLOW_SHARE`：等红灯 / 上坡只占百分之一二，
-  真实间歇的恢复段通常占四五成；
-* 快组平均速度至少比慢组高 `MIN_RATIO` 倍。
+也就是说，这里仍然需要「怎么切」，但不再需要「猜是不是间歇」。切不出
+快慢两组（全程匀速）时返回 `None`，退回默认版式——空的双栏没有意义。
 
-阈值用一维 Otsu 自动二分，不写死配速，节奏跑 / 法特莱克 / 坡冲仍能覆盖。
-漏判只是保留原来的分圈表，误判却会把整张活动图换成错误的版式，所以宁可
-保守。门槛都集中在下面的常量里，要放宽只改这里。
+纯标准库、零 IO。输入是 `activity.py` 产出的明细，输出是给活动图底部
+双栏用的纯数据。
 """
 from __future__ import annotations
 
-# 一组快跑至少持续这么久、跑这么远，才不是 GPS 抖动或起跑冲刺
+# 以下门槛只用于「切得干不干净」（短段并回、快慢差不至于太小），
+# 不再用于判断「是不是间歇」——那由佳明标记决定。
 MIN_SEG_S = 20.0
 MIN_SEG_M = 80.0
 # 慢段同样要有实际长度。只按时长判、不按距离判：真实的组间恢复常常是
@@ -49,6 +41,9 @@ MIN_SWITCHES = 5
 MIN_SLOW_SHARE = 0.15
 # Otsu 两组均值的相对落差下限：(hi - lo) / hi
 MIN_SPLIT_GAP = 0.18
+# 标记模式下也要求的最低落差：已确认是间歇课，但全程匀速（GPS 抖动只有
+# 百分之几）时切出来的「快慢」是假的，宁可不显示双栏。
+MIN_FORCED_GAP = 0.05
 # 每栏最多列几行（常见的 400 m 间歇是 12~15 组，行距压紧后能全部列全），
 # 再多才折叠成「其余 N 组」。
 MAX_GROUPS = 16
@@ -153,15 +148,29 @@ def _agg(segs: list[dict], fast: bool) -> dict:
     }
 
 
-def _finish(segs: list[dict], source: str,
-            min_ratio: float = MIN_RATIO) -> dict | None:
-    """占比 / 组数 / 交替性 / 速度差四重门禁，全过才认定是间歇。
+def _finish(segs: list[dict], source: str, min_ratio: float = MIN_RATIO,
+            forced: bool = False) -> dict | None:
+    """汇总成快 / 慢两组。
 
-    慢段数量也要求 `MIN_SETS`：一次等红灯、一段上坡只是「减速」，只有重复
-    出现的慢段才可能是组间恢复。光看快段组数会把长跑主体切成一堆「快组」。
+    `forced=True` 表示「佳明已经确认这是间歇课」，这里只负责切得能看：
+    必须有快有慢、至少两组快跑、快组确实比慢组快一点。原来的四重门禁
+    （组数 / 切换次数 / 慢段占比 / 速度差）是给「靠速度猜间歇」用的，
+    标记模式下不再需要——真实的间歇课哪怕恢复段很短也要如实展示。
     """
     fasts = [s for s in segs if s["fast"]]
     slows = [s for s in segs if not s["fast"]]
+    if forced:
+        if not fasts or not slows or len(fasts) < 2:
+            return None
+        total = sum(s["dur_s"] for s in segs)
+        share = sum(s["dur_s"] for s in slows) / total if total > 0 else 0.0
+        vf = _wmean([s["spd"] for s in fasts], [s["dur_s"] for s in fasts]) or 0
+        vs = _wmean([s["spd"] for s in slows], [s["dur_s"] for s in slows]) or 0
+        if vs <= 0 or vf <= vs:
+            return None
+        return {"source": source, "sets": len(fasts), "ratio": round(vf / vs, 2),
+                "slow_share": round(share, 3), "forced": True,
+                "fast": _agg(segs, True), "slow": _agg(segs, False)}
     if len(fasts) < MIN_SETS or len(slows) < MIN_SETS:
         return None
     switches = sum(1 for i in range(1, len(segs))
@@ -191,7 +200,7 @@ def _split_ok(lo: float, hi: float) -> bool:
     return hi > 0 and (hi - lo) / hi >= MIN_SPLIT_GAP
 
 
-def from_series(points: list[dict] | None) -> dict | None:
+def from_series(points: list[dict] | None, forced: bool = False) -> dict | None:
     """逐点速度识别。点已由 `activity._thin()` 抽稀，量级几百个，O(n log n) 足够。
 
     **不能丢掉低速/静止点**：间歇的组间恢复常常是原地站立（spd≈0），
@@ -210,7 +219,8 @@ def from_series(points: list[dict] | None) -> dict | None:
         w = [pts[j].get("spd") or 0.0 for j in range(a, b)]
         smooth.append(sum(w) / len(w))
     thr, lo, hi = _split(smooth)
-    if not _split_ok(lo, hi):
+    if not _split_ok(lo, hi) and not (forced and hi > lo > 0
+                                     and (hi - lo) / hi >= MIN_FORCED_GAP):
         return None
     flags = [v >= thr for v in smooth]
     # 过短的段不是一组间歇：短快段并回慢段、短慢段并回快段。两轮足够让
@@ -233,10 +243,10 @@ def from_series(points: list[dict] | None) -> dict | None:
         s = _seg(pts[a:b], is_fast, smooth, a, b)
         if s and s["dur_s"] >= 5:
             segs.append(s)
-    return _finish(segs, "series")
+    return _finish(segs, "series", forced=forced)
 
 
-def from_laps(laps: list[dict] | None) -> dict | None:
+def from_laps(laps: list[dict] | None, forced: bool = False) -> dict | None:
     """分圈兜底：用「距离 / 时长」算速度，不依赖 `pace_s`。
 
     佳明对极短的休息圈（原地站立 90 秒只挪 30~60 m）经常不给 `pace_s`，
@@ -248,13 +258,15 @@ def from_laps(laps: list[dict] | None) -> dict | None:
         return None
     spds = [l["dist_m"] / l["dur_s"] for l in real]
     thr, lo, hi = _split(spds)
-    if not _split_ok(lo, hi):
+    if not _split_ok(lo, hi) and not (forced and hi > lo > 0
+                                     and (hi - lo) / hi >= MIN_FORCED_GAP):
         return None
     kinds = [v >= thr for v in spds]           # True = 快
     switches = sum(1 for i in range(1, len(kinds)) if kinds[i] != kinds[i - 1])
-    # 分圈兜底同样要防「10 公里里 2 圈爬坡就当成间歇」：慢圈也得重复出现。
-    if (switches < MIN_SWITCHES or sum(kinds) < MIN_SETS
-            or len(kinds) - sum(kinds) < MIN_SETS):
+    # 识别模式下这里要防「10 公里里 2 圈爬坡就当成间歇」；标记模式下佳明已
+    # 确认，仍需快慢都有，但不再要求重复次数达标。
+    if not forced and (switches < MIN_SWITCHES or sum(kinds) < MIN_SETS
+                       or len(kinds) - sum(kinds) < MIN_SETS):
         return None
     # 相邻同档圈合成一组（热身/放松通常连续好几圈）
     segs: list[dict] = []
@@ -273,14 +285,41 @@ def from_laps(laps: list[dict] | None) -> dict | None:
             "hr_avg": round(sum(hrs) / len(hrs)) if hrs else None,
             "cad": round(sum(cads) / len(cads), 1) if cads else None,
         })
-    return _finish(segs, "laps", MIN_RATIO_LAPS)
+    return _finish(segs, "laps", MIN_RATIO_LAPS, forced=forced)
+
+
+# 只有跑步类活动才谈得上间歇版式；力量训练、骑行等的 hasIntensityIntervals
+# 语义不同（力量训练也可能是 True），不能套同一套双栏。
+RUN_TYPES = {"running", "trail_running", "track_running", "treadmill_running",
+             "indoor_running", "virtual_run", "ultra_run"}
+
+
+def training_mode(detail: dict | None) -> dict:
+    """取 `activity.build_training()` 写进明细的训练模式。旧缓存没有这个键。"""
+    t = ((detail or {}).get("training") or {})
+    return t if isinstance(t, dict) else {}
 
 
 def detect(detail: dict | None) -> dict | None:
-    """活动明细 → 间歇结构或 None。逐点优先，识别不出再用分圈。"""
+    """活动明细 → 间歇结构或 None。
+
+    唯一判据是佳明的训练模式标记（`hasIntensityIntervals`）：
+    标记为间歇才切快慢双栏，否则一律返回 None（走默认分圈版式）。
+    标记为间歇但切不出快慢（全程匀速）时同样返回 None。
+    """
     d = detail or {}
+    t = training_mode(d)
+    if not t.get("interval"):
+        return None
+    atype = str(t.get("type") or "").lower()
+    if atype and atype not in RUN_TYPES:
+        return None
     points = ((d.get("series") or {}).get("points")) or []
-    return from_series(points) or from_laps(d.get("laps") or [])
+    got = from_series(points, forced=True) or from_laps(d.get("laps") or [], forced=True)
+    if got:
+        got["source"] = "garmin:" + str(got.get("source") or "series")
+        got["mode"] = "garmin-interval"
+    return got
 
 
 def check() -> None:
@@ -303,6 +342,23 @@ def check() -> None:
     assert iv["fast"]["pace_s"] < iv["slow"]["pace_s"], iv
     assert iv["ratio"] >= MIN_RATIO
     assert all("segs" in iv[k] for k in ("fast", "slow"))
+
+    # ---- 新口径：是不是间歇只看佳明训练模式，不再看速度 ----------------
+    marked = {"series": {"points": pts}, "training": {"interval": True, "type": "running"}}
+    assert detect(marked) and detect(marked)["mode"] == "garmin-interval"
+    assert detect(marked)["source"].startswith("garmin:")
+    # 佳明没标记：速度再像间歇也不切（这正是旧实现误报的 10 条活动）
+    assert detect({"series": {"points": pts},
+                   "training": {"interval": False, "type": "running"}}) is None
+    assert detect({"series": {"points": pts}}) is None, "旧缓存没有标记时必须走默认版式"
+    # 力量训练的 hasIntensityIntervals 语义不同，不能套跑步双栏
+    assert detect({"series": {"points": pts},
+                   "training": {"interval": True, "type": "strength_training"}}) is None
+    # 标记为间歇但全程匀速、切不出快慢：退回默认版式（空双栏没意义）
+    _even = [{"t": i * 5.0, "spd": 3.0 + (0.05 if i % 3 == 0 else -0.03),
+              "hr": 145, "cad": 176, "dist": i * 15.0} for i in range(120)]
+    assert detect({"series": {"points": _even},
+                   "training": {"interval": True, "type": "running"}}) is None
 
     # 匀速跑：围绕 3.0 m/s 的小抖动，不该判成间歇
     even = [{"t": i * 5.0, "spd": 3.0 + (0.06 if i % 3 == 0 else -0.04),
