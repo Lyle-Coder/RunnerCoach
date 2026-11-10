@@ -2879,6 +2879,34 @@ def run() -> int:
         "background:rgba(9,14,22,.42)" in _land_load, \
         "横屏负荷带没有做成和其余四块一致的卡片"
 
+    # ---- 1.0.1：高驰 1030 不再只丢一句英文，手机号账号会换类型的重试 ------
+    from garmin_cn import coros as _CO
+
+    assert _CO._looks_like_phone("138 0013 8000") and \
+        _CO._looks_like_phone("+8613800138000"), "手机号识别漏了带空格/带区号的写法"
+    assert not _CO._looks_like_phone("a@b.com") and \
+        not _CO._looks_like_phone("runner2026"), "把邮箱/昵称误判成了手机号"
+    _cloud = _CO.CorosCloud.__new__(_CO.CorosCloud)
+    _cloud.region, _cloud.email = "asia", "13800138000"
+    _tried: list[int] = []
+
+    def _boom(account: str, password: str, atype: int):
+        _tried.append(atype)
+        raise _CO.CorosError(
+            "高驰接口报错（result=1030 The login credentials you entered ...）")
+
+    _cloud._login_once = _boom          # 打桩，离线复现服务端的笼统拒绝
+    try:
+        _cloud.login("13800138000", "whatever")
+        raise AssertionError("1030 应该以认证失败抛出")
+    except _CO.CorosAuthError as _ce:
+        assert "1030" in str(_ce) and "高驰 App" in str(_ce), \
+            "1030 没给可操作的排查步骤，用户只能看到一句英文"
+    assert _tried == [1, 2], f"手机号账号没换 accountType 重试（试过 {_tried}）"
+    _kt3 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert "高驰账号（邮箱或手机号）" in _kt3, "登录框还写着只能填邮箱"
+    assert "setMessage(msg)" in _kt3, "长错误提示没走对话框，toast 会被截断"
+
     # ---- 1.0.0：内核版本与 APK 版本必须对齐（发版最容易漏的一端）-------
     from garmin_cn import __version__ as _kv
     _gradle = (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
