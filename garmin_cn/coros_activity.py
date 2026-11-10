@@ -24,8 +24,8 @@ from . import activity as act
 from . import route
 from .coros import CorosAuthError, CorosCloud, CorosError
 
-# 6 = 跑步动态全明细递归查找 + 键树诊断；废弃 5 的旧缓存（重抓后诊断才生效）
-ADAPTER_VERSION = 6
+# 7 = 垂直振幅命中 avgVertVibration、分圈空解析留诊断；废弃 6 的旧缓存
+ADAPTER_VERSION = 7
 
 
 def raw_activity(row: dict) -> dict:
@@ -58,7 +58,11 @@ def number(value, divisor: float = 1) -> float | None:
 GCT_KEYS = ("avgGroundContactTime", "groundContactTime", "avgContactTime",
             "contactTime", "contactTimeMs", "avgGct", "gct", "groundTime",
             "avgGroundTime", "avgStanceTime", "stanceTime", "stanceTimeMs")
-VO_KEYS = ("avgVerticalOscillation", "verticalOscillation", "avgVertOscillation",
+# 高驰真机 summary 里垂直振幅叫 avgVertVibration（垂直振动，cm）；
+# avgVertRatio 是「垂直步幅比 %」，值域 6~12 会撞进 2~25cm 的合理区间，
+# 绝不能混进来，否则卡片会印一个假振幅。
+VO_KEYS = ("avgVertVibration", "vertVibration", "verticalVibration",
+           "avgVerticalOscillation", "verticalOscillation", "avgVertOscillation",
            "vertOscillation", "avgVosc", "vosc", "verticalOscillationCm",
            "avgVerticalOscillationCm", "vertOsc")
 
@@ -126,22 +130,24 @@ def key_tree(data: dict, limit: int = 700) -> str:
     return " | ".join(parts)[:limit]
 
 
-def _diag_laps(groups: list, used_fallback: bool) -> None:
-    """公里分圈组缺失时记录 lapList 真实结构，用户发诊断日志即可定位。
+def _diag_laps(groups: list, selected: dict, parsed: int) -> None:
+    """分圈解析为空时记录 lapList 与首条 item 的真实字段，用户发诊断日志即可定位。
 
-    高驰官方也没在活动明细里保证分圈（2026-06 才为 MCP 单独开分圈工具），
-    运动场跑等特殊类型很可能不下发或结构不同——写日志比猜字段名可靠。
+    只在解析出 0 圈时写：既覆盖「组缺失」，也覆盖「组在但 item 字段名不
+    匹配被全跳过」——后者正是真机反馈里没有 coros.laps 条目的原因。
     """
     try:
         from . import diag as _dg
-        parts = []
-        for g in groups or []:
-            parts.append(f"type={g.get('type')} lapDistance={g.get('lapDistance')} "
-                         f"items={len(g.get('lapItemList') or [])} "
-                         f"keys={','.join(sorted(str(k) for k in g))[:80]}")
-        _dg.log_exc("coros.laps",
-                    ("type=-1 回退后 " if used_fallback else "lapList 无可用分圈组：")
-                    + " | ".join(parts) if parts else "lapList 缺失")
+        parts = [f"type={g.get('type')} lapDistance={g.get('lapDistance')} "
+                 f"items={len(g.get('lapItemList') or [])}" for g in groups or []]
+        sample = ""
+        items = (selected or {}).get("lapItemList") or []
+        if items and isinstance(items[0], dict):
+            first = items[0]
+            sample = (" | 首条 keys=" + ",".join(sorted(str(k) for k in first))[:220]
+                      + " 值=" + ",".join(f"{k}:{str(v)[:10]}"
+                                         for k, v in list(first.items())[:14]))
+        _dg.log_exc("coros.laps", f"laps={parsed} 组：" + (" | ".join(parts) or "缺失") + sample)
     except Exception:
         pass
 
@@ -219,12 +225,11 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
                     candidates[0] if candidates else {})
     if not candidates:
         # 有的活动（如运动场跑）lapList 里可能只有 type=-1 的组或干脆没有分圈，
-        # 宁可用最后一组也不静默丢掉；同时把真实结构写进诊断日志，用户发来即可定位。
+        # 宁可用最后一组也不静默丢掉。
         fallback = [g for g in groups if g.get("lapItemList")]
         if fallback:
             # 选分圈条数最多的一组（type=-1 组可能只是全程汇总，只有 1 条）
             selected = max(fallback, key=lambda g: len(g["lapItemList"]))
-        _diag_laps(groups, bool(fallback))
     items = selected.get("lapItemList") or []
     for i, lap in enumerate(items):
         if not isinstance(lap, dict):
@@ -253,6 +258,10 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
     if len(laps) > 1 and laps[-1]["dist_m"] < 900 and \
             laps[-1]["dist_m"] < max(l["dist_m"] for l in laps[:-1]) * 0.9:
         laps[-1]["is_partial"] = True
+    if not laps:
+        # 组在但一条都解析不出（字段名不匹配）时同样要留证据，
+        # 否则用户只能看到「无分圈数据」而我们无从下手。
+        _diag_laps(groups, selected, 0)
     # summary 的最大速度是「秒/公里」，换算成 m/s 给卡片用（列表接口的 maxSpeed 常为 0）
     max_pace = number(native_summary.get("maxSpeed"))
     row_metrics = {"aerobic_te": number(native_summary.get("aerobicEffect")),
