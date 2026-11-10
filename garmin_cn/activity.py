@@ -21,6 +21,7 @@ Connect 上看到的 93–98，就是单侧值被当成总步频显示了。
 from __future__ import annotations
 
 import datetime as dt
+import json
 import statistics
 from typing import Any
 
@@ -324,6 +325,25 @@ def build_training(meta: dict | None) -> dict:
     }
 
 
+def training_from_raw(raw) -> dict | None:
+    """活动列表 raw 元数据 → 训练模式。离线回填用，不联网。
+
+    同步时活动列表接口就带 `hasIntensityIntervals`（佳明把间歇标记放在
+    列表 raw 里），所以旧明细缓存缺 `training` 时，优先从活动行回填，
+    实在拿不到 raw 才考虑联网补抓。
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return None
+    if not isinstance(raw, dict) or not raw:
+        return None
+    if "hasIntensityIntervals" not in raw and "activityType" not in raw:
+        return None
+    return build_training(raw)
+
+
 def fetch(client, activity_id: int | str, *, with_track: bool = True) -> dict:
     """抓取并清洗一次活动的完整明细（不落库）。"""
     aid = str(activity_id)
@@ -338,12 +358,15 @@ def fetch(client, activity_id: int | str, *, with_track: bool = True) -> dict:
         weather = build_weather(client.get(f"/activity-service/activity/{aid}/weather"))
     except Exception:
         weather = None
-    # 训练模式（是否设置间歇）来自活动元数据，与明细/分圈是两个接口；
-    # 取不到不算失败——缺失时按「未设置间歇」处理，走默认版式。
+    # 训练模式（是否设置间歇）来自活动元数据，与明细/分圈是两个接口。
+    # 元数据取不到时**不要**把 interval=False 写死进缓存——那是永久投毒：
+    # 之后每次打开都以为「佳明没标记」，间歇版式再也回不来。留空键，
+    # 让调用方从活动行 raw 离线回填（见 training_from_raw）。
+    training: dict | None
     try:
         training = build_training(client.activity(aid))
     except Exception:
-        training = {"interval": False, "workout_id": None, "type": ""}
+        training = None
 
     series_full = build_series(details)
     points = series_full["points"]
@@ -363,8 +386,8 @@ def fetch(client, activity_id: int | str, *, with_track: bool = True) -> dict:
         "track": build_track(details) if with_track else [],
         "route": route_mod.build(details) if with_track else {},
         "weather": weather,
-        # 间歇版式的唯一依据；旧 payload 没有这个键，ensure() 会回填
-        "training": training,
+        # 间歇版式的唯一依据；元数据失败时不写这个键，调用方从 raw 回填
+        **({"training": training} if training is not None else {}),
     }
 
 

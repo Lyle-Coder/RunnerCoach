@@ -2952,6 +2952,36 @@ def run() -> int:
     _r2 = _CA.normalize({"summary": {"sportType": 100}}, "st2")
     assert _r2["laps"] == [], "完全无 lapList 时应保持空（诊断日志负责定位）"
 
+    # ---- 1.0.2：旧明细缓存缺 training 时，从活动行 raw 离线回填 -----------
+    # 真机教训：设备端明细是老版本抓的、没有 training 键，联网补抓一失败
+    # 就被 except 静默吞掉，间歇版式永远出不来。活动列表 raw 里本来就有
+    # hasIntensityIntervals，离线回填即可，不该依赖网络。
+    from garmin_cn import activity as _ACT
+
+    assert _ACT.training_from_raw({"hasIntensityIntervals": True,
+                                   "activityType": {"typeKey": "running"}}
+                                  ) == {"interval": True, "workout_id": None,
+                                        "type": "running"}, "raw 回填没命中间歇标记"
+    assert _ACT.training_from_raw(None) is None, "没有 raw 时必须返回 None"
+    assert _ACT.training_from_raw("not-json") is None, "坏 raw 不能抛异常"
+    assert _ACT.training_from_raw("{}") is None, "空 raw 不能给出假标记"
+    # 佳明元数据接口失败时不得把 interval=False 写死进缓存（永久投毒）
+    assert _ACT.training_from_raw({"activityType": {"typeKey": "running"}}) == \
+        {"interval": False, "workout_id": None, "type": "running"}, \
+        "无标记 raw 应回填 interval=False（走默认版式）"
+    _p: list[dict] = []
+    _t = 0.0
+    for _ in range(15):
+        for _spd, _secs in ((4.6, 86.0), (0.0, 90.0)):
+            for _ in range(int(_secs / 4)):
+                _p.append({"t": _t, "spd": _spd, "hr": 160, "cad": 200})
+                _t += 4.0
+    _d = {"series": {"points": _p},
+          "training": _ACT.training_from_raw(
+              {"hasIntensityIntervals": True, "activityType": {"typeKey": "running"}})}
+    assert IV.detect(_d) and IV.detect(_d)["sets"] == 15, \
+        "旧缓存 + raw 回填后 15×400 m 必须走间歇双栏"
+
     # ---- 1.0.1：高驰 1030 不再只丢一句英文，手机号账号会换类型的重试 ------
     from garmin_cn import coros as _CO
 
