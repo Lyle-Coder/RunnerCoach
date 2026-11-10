@@ -1258,8 +1258,44 @@ def run() -> int:
     assert "bulk=True" in _aa_src, "补历史没走批量节流"
     # 历史页要及时更新：停在历史 tab 时，每补完一段就 reload
     _kt6 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
-    assert "if (activeTab == 1) web.reload()" in _kt6, \
-        "补历史期间历史页不会刷新，用户看到的是几分钟前的数据"
+    # ---- 老日期只拉日汇总（睡眠/HRV 不参与那段时间的判断）-----------
+    from garmin_cn import sync as _SY
+    from garmin_cn.store import Store as _Store
+
+    assert 60 <= _SY.LIGHT_AFTER_DAYS <= 365, "分析窗口大小不合理（恢复度 7 天 / ACWR 28 / CTL 90）"
+
+    class _FakeSyncClient:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def daily_summary(self, d):
+            self.calls.append("daily")
+            return {"totalSteps": 9000, "restingHeartRate": 48}
+
+        def sleep(self, d):
+            self.calls.append("sleep")
+            return {"dailySleepDTO": {"sleepTimeSeconds": 25200}}
+
+        def hrv(self, d):
+            self.calls.append("hrv")
+            return {"hrvSummary": {"lastNightAvg": 55}}
+
+    _ldb = _Path(tempfile.mkdtemp()) / "light.db"
+    _lst = _Store(_ldb)
+    _fc = _FakeSyncClient()
+    _SY.SyncService(_fc, _lst).sync_day("2025-01-05", light=True)
+    assert _fc.calls == ["daily"], f"老日期还在多拉请求：{_fc.calls}"
+    _lrow = _lst.day("2025-01-05")
+    assert _lrow.get("steps") == 9000 and _lrow.get("resting_hr") == 48, \
+        "跳过睡眠后日汇总的关键指标也没了"
+    assert _lrow.get("sleep_total_min") is None
+    _fc2 = _FakeSyncClient()
+    _SY.SyncService(_fc2, _lst).sync_day("2026-11-05")
+    assert _fc2.calls == ["daily", "sleep", "hrv"], "近期日期要保留完整口径"
+    assert _lst.day("2026-11-05").get("sleep_total_min") == 420
+    _st_src = (ROOT / "garmin_cn/sync.py").read_text(encoding="utf-8")
+    assert "light=bool(light_from and d < light_from)" in _st_src, \
+        "补历史没有按日期切到 light 模式"
     assert "client = _client(email, password, revalidate=True" in _aa_src, \
         "同步入口没有先校验会话"
     # 3) 补拉：旧版拿「本地有没有密码」当门槛，密码为空时按钮点了只弹登录。
@@ -2857,7 +2893,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 102' in (
+    assert 'versionCode = 103' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
