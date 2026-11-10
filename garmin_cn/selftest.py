@@ -24,6 +24,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+
+def _chart_svg(doc: str) -> str:
+    """只取柱状图那一段 SVG，不碰页头的品牌角标。
+
+    0.6.6 起每个页面外壳都带一枚内联 SVG 品牌标记，「页面里第一个 <svg>」
+    不再是柱状图；所有按 SVG 数柱子/数链接的断言都必须走这里。
+    """
+    a = doc.find('<svg viewBox="0 0 400 210"')
+    if a < 0:
+        return ""
+    b = doc.find("</svg>", a)
+    return doc[a:b + 6] if b > a else ""
+
+
 from .auth import AuthError, GarminCNAuth, MfaRequired   # noqa: E402
 from .client import GarminCNClient, SessionExpired        # noqa: E402
 from .coach import context_markdown                      # noqa: E402
@@ -76,6 +90,22 @@ def run() -> int:
         raise AssertionError("非 JSON 应当报错")
     except MI.MiAuthError:
         pass
+
+    # 浏览器托管登录：Cookie 过滤 / 会话判定是纯函数，改坏了登录会静默失败。
+    # 网页端换门户 SSO 后密码通道作废，这条是唯一的登录入口，不能哑掉。
+    from garmin_cn import browser_login as BL
+
+    assert "/portal/sso/" in BL.SIGNIN_URL and "clientId=GarminConnect" in BL.SIGNIN_URL, BL.SIGNIN_URL
+    kept = BL.garmin_cookies([
+        {"name": "JWT_WEB", "value": "old", "domain": ".garmin.cn", "path": "/"},
+        {"name": "JWT_WEB", "value": "new", "domain": ".garmin.cn", "path": "/"},
+        {"name": "SESSION", "value": "s", "domain": ".sso.garmin.cn", "path": "/"},
+        {"name": "CONSENT", "value": "1", "domain": ".youtube.com", "path": "/"},
+        {"name": "blank", "value": "", "domain": ".garmin.cn", "path": "/"},
+    ])
+    assert {c["name"] for c in kept} == {"JWT_WEB", "SESSION"}, kept
+    assert [c["value"] for c in kept if c["name"] == "JWT_WEB"] == ["new"], "同名同域只留最后一条"
+    assert BL.has_session(kept) and not BL.has_session([{"name": "foo", "value": "1"}]), "会话判定错了"
 
     import tempfile
 
@@ -211,14 +241,16 @@ def run() -> int:
     home = U.home_page()
     assert "page-head" in home and 'data-aid=' in home
     assert 'href="/history"' not in home, "首页不该再给历史入口，底部 tab 已经有了"
-    # 一图流从「一整张快捷卡」退成页头右上角的小按钮
-    assert 'class="head-act"' in home and 'data-act="export"' in home, \
-        "首页页头没有一图流按钮"
+    # 0.6.13：页头那枚胶囊在横屏大屏里孤零零地压着结论条，撤掉；
+    # 一图流作为低频动作统一收进「我的」页，功能不能因此失联。
+    assert 'class="head-act"' not in home and 'data-act="export"' not in home, \
+        "首页页头还挂着那枚一图流胶囊"
     assert "导出今日一图流" not in home, "一图流不该再占一整张卡片"
     # 首页不再重复「数据覆盖」：「我的 → 本地数据」已经有同样三个数
     assert "数据覆盖" not in home, "首页的覆盖区块和「我的」页重复了"
     me = U.me_page()
     assert "page-head" in me and 'data-act="login:garmin"' in me
+    assert 'data-act="export"' in me, "一图流入口没迁到「我的」页，功能会失联"
     assert 'data-act="login:coros"' in me, "数据源行要直达对应登录"
     # settings 是 AI 设置，只许在教练页齿轮里
     assert 'data-act="historySync"' not in me, \
@@ -1076,17 +1108,18 @@ def run() -> int:
 
     # ---- v50：活动图标题溢出 / 登录态 / 补拉入口 / 素材管理 -----------------
     # 1) 活动图：长标题 + 长天气会把右侧标签挤出卡片。flex 子项默认
-    #    min-width:auto，必须显式给 0 才允许换行；标题 44→38 并限两行。
+    #    min-width:auto，必须显式给 0 才允许收缩；0.6.9 起整行不换行，
+    #    让标题自己收缩/换行，标签固定在右侧（加了品牌 icon 后左侧更宽）。
     from garmin_cn import actcard as _AC
     _ac_src = Path(_AC.__file__).read_text(encoding="utf-8")
     _clip_dlg = (_kt_dir / "ClipTrimDialog.kt").read_text(encoding="utf-8")
-    assert ".hleft{flex:1 1 520px;min-width:0}" in _ac_src, \
+    assert ".hleft{flex:1 1 460px;min-width:0}" in _ac_src, \
         "活动图标题列没有 min-width:0，长标题会把标签挤出卡片"
     assert ".hname{font-size:36px" in _ac_src and \
         "max-height:calc(36px * 1.3 * 2)" in _ac_src, \
         "标题没缩小或没限高，长标题仍会溢出"
-    assert "flex-wrap:wrap" in _ac_src, \
-        "标题行不会回绕，标签还是会被挤出卡片"
+    assert "flex-wrap:nowrap" in _ac_src, \
+        "标题行又允许回绕了，右侧标签会掉到下一行"
     assert ".htag{flex:none;white-space:nowrap" in _ac_src, \
         "标签会被长标题压缩/换行"
     # 列表行：标题从单行省略改成最多两行，参数本来就换行
@@ -1210,10 +1243,10 @@ def run() -> int:
     # 活动列表视图：柱状图必须在「活动」章节里（不在页首概览）
     _pg_list = _H.history_page({"mode": ["list"]})
     _pos_act = _pg_list.find(">活动</h2>")
-    assert _pos_act > 0 and _pg_list.find("<svg") > _pos_act, \
+    assert _pos_act > 0 and _pg_list.find('<svg viewBox="0 0 400 210"') > _pos_act, \
         "活动列表章节没有柱状图（被挪回页首了）"
     for _m in ("week", "month", "year"):
-        assert "<svg" in _H.history_page({"mode": [_m]}), f"{_m} 视图没有柱状图"
+        assert _chart_svg(_H.history_page({"mode": [_m]})), f"{_m} 视图没有柱状图"
     # 31 根柱要密排：不标数值、轴标签每 5 格一次
     # 30 根柱只该有 8 个刻度（首、每 5 格、末）；逐根标就是 30 个，
     # 柱子上挤一堆字反而读不出来。以前只看「有没有高亮色」，
@@ -1238,14 +1271,15 @@ def run() -> int:
     _pg_new = _H.history_page({"mode": ["month"], "sel": [_new_m]})
     assert f"{_old_m} 每日跑量" in _pg_old and f"{_new_m} 每日跑量" in _pg_new, \
         "柱状图标题没跟着选中的月份走"
-    _spots_old = _pg_old.count("<rect ") + _pg_old.count("<circle ")
+    _spots_old = (_chart_svg(_pg_old).count("<rect ") +
+                  _chart_svg(_pg_old).count("<circle "))
     assert _spots_old == _days_old, \
         f"选中历史月份后柱状图不是那个月的天数：{_spots_old} vs {_days_old}"
     assert 'class="row on"' in _pg_old and f"sel={_old_m}" in _pg_old, \
         "选中的周期行没有高亮"
     # 非法/过期的 sel 要回落到最新一期，不能空图或报错
     _pg_bad = _H.history_page({"mode": ["month"], "sel": ["1999-01"]})
-    assert f"{_new_m} 每日跑量" in _pg_bad and "<svg" in _pg_bad, \
+    assert f"{_new_m} 每日跑量" in _pg_bad and _chart_svg(_pg_bad), \
         "sel 越界时没有回落到最新一期"
     # 周视图：7 根柱（含没跑的日子），刻度是星期而不是日期数字。
     # 必须挑「活动只覆盖 6 天」的那一周来验 —— 拿最新一周（正好 7 天）测，
@@ -1256,7 +1290,8 @@ def run() -> int:
                     None) or (_hs.get("weeks") or [{}])[-1]
     _wk_key = str(_wk_part.get("key") or "")
     _pg_wk = _H.history_page({"mode": ["week"], "sel": [_wk_key]})
-    _spots_wk = _pg_wk.count("<rect ") + _pg_wk.count("<circle ")
+    _spots_wk = (_chart_svg(_pg_wk).count("<rect ") +
+                 _chart_svg(_pg_wk).count("<circle "))
     assert _spots_wk == 7, f"周视图不是 7 个刻度位（只画了有跑的日子）：{_spots_wk}"
     assert ">一</text>" in _pg_wk and ">日</text>" in _pg_wk, "周视图刻度不是星期"
     # 行的日期也必须是完整 ISO 周，否则「11-03~11-05」和 7 根柱对不上
@@ -1269,7 +1304,8 @@ def run() -> int:
         _pg_y = _H.history_page({"mode": ["year"], "sel": [_ys[-1]]})
         # 年视图的柱子带点击热区（多一层透明 rect），所以只数「有渐变填充的柱」
         # 与「零值点」——直接数 rect 会把热区也算进去（12 柱 + 12 热区 = 24）。
-        _spots_y = _pg_y.count('fill="url(#mb)"') + _pg_y.count("<circle ")
+        _spots_y = (_chart_svg(_pg_y).count('fill="url(#mb)"') +
+                    _chart_svg(_pg_y).count("<circle "))
         assert f"{_ys[-1]} 年各月跑量" in _pg_y and _spots_y == 12, \
             f"点旧年份没有切到那一年的 12 个月：{_spots_y} 个刻度位"
     # hot：只有「今天那一根」是实色，历史柱不该也实色
@@ -1289,8 +1325,7 @@ def run() -> int:
     # 柱子可点：列表页 12 个月、年视图 12 个月都该链到「按月 + 那一个月」；
     # 30/31 根的密排图不给链接（9px 宽点不准）。
     def _svg_only(doc: str) -> str:
-        a = doc.find("<svg")
-        return doc[a:doc.find("</svg>", a) + 6] if a >= 0 else ""
+        return _chart_svg(doc)
 
     _pg_list2 = _H.history_page({"mode": ["list"]})
     assert _svg_only(_pg_list2).count('href="/history?mode=month&amp;sel=') == 12, \
@@ -1914,9 +1949,12 @@ def run() -> int:
     h_none = ACTCARD.build_html(priv_row, priv_detail, privacy="none")
     h_trim = ACTCARD.build_html(priv_row, priv_detail, privacy="trim")
     h_hide = ACTCARD.build_html(priv_row, priv_detail, privacy="hide")
-    assert '<path d="M' in h_none and 'data-gc-privacy="none"' in h_none
+    # 品牌角标的 SVG 也带 <path d="M...">，但路径写成 "M55 34" 这种无空格
+    # 紧连数字；GPS 轨迹一律是 "M 210.9,209.0"。用后者当轨迹指纹，
+    # 否则 hide 档位会因为「有品牌图标」被误判成轨迹没藏干净。
+    assert '<path d="M ' in h_none and 'data-gc-privacy="none"' in h_none
     assert "已脱敏" in h_trim and 'data-gc-privacy="trim"' in h_trim
-    assert '<path d="M' not in h_hide and 'data-gc-private="hide"' in h_hide
+    assert '<path d="M ' not in h_hide and 'data-gc-private="hide"' in h_hide
     assert "轨迹已隐藏" in h_hide and "时间已隐藏" in h_hide
     assert "17:46" not in h_hide and "30.000" not in h_hide
     # 旧调用方不传档位时必须与 none 逐字节一致（兼容老 APK / 老 CLI）
@@ -2095,6 +2133,50 @@ def run() -> int:
     _a2, _b2, _nxt2, _done2 = _AP3._backfill_segment(_floor + dt.timedelta(days=1),
                                                      _floor)
     assert _done2 is True and _nxt2 == _floor, "退到下限那一段没标 done"
+    # 终点由数据源里的第一条记录决定，不再一律退 8 年。
+    # 账号 2024-05-01 才有记录，补到那天就该停——再往前全是空年份，
+    # 每段要花 365 次日汇总请求，用户看到的就是「一直在拉」。
+    _e_floor = _AP3._backfill_floor(_cur, "2024-05-01")
+    assert _e_floor.isoformat() == "2024-04-30", f"最早记录没当停止线：{_e_floor}"
+    _a3, _b3, _nxt3, _done3 = _AP3._backfill_segment(
+        dt.date(2024, 11, 9), _e_floor)
+    assert (_a3.isoformat(), _b3.isoformat()) == ("2024-04-30", "2024-11-09"), \
+        f"最后一段应停在最早记录：{_a3} ~ {_b3}"
+    assert _done3 is True and _nxt3 == _e_floor, "到最早记录那一段没标 done"
+    # 一条活动都没有的账号：只往前补两年日汇总，不去翻八年
+    _n_floor = _AP3._backfill_floor(_cur, "")
+    assert _n_floor.isoformat() == "2024-11-09", f"无活动账号的下限不对：{_n_floor}"
+    # 还不知道时退回硬下限，行为与旧版一致
+    assert _AP3._backfill_floor(_cur, None).isoformat() == "2018-11-09", \
+        "探测不到最早记录时没有退回 8 年兜底"
+
+    # 数据源判断：翻到活动列表底，返回第一条；没到底要如实说
+    assert hasattr(_AP3, "_probe_earliest"), "没有「问数据源最早一条」的实现"
+    from garmin_cn import client as _cl
+
+    assert hasattr(_cl.GarminCNClient, "activities_earliest"), \
+        "客户端没有翻活动列表找最早一条的接口"
+
+    # 翻页到底才算数：不满一页 = 看见的就是第一条；翻到上限还没到底就不能当停止线
+    class _FakeAct:
+        def __init__(self, pages):
+            self.pages = pages
+
+        def activities(self, limit=30, start=0):
+            i = start // max(1, limit)
+            return self.pages[i] if i < len(self.pages) else []
+
+    _p1 = [{"startTimeLocal": "2026-01-0%dT07:00:00" % (i + 1)} for i in range(3)]
+    _p2 = [{"startTimeLocal": "2024-05-01T07:00:00"},
+           {"startTimeLocal": "2024-06-02T07:00:00"}]
+    _got_act = _cl.GarminCNClient.activities_earliest(
+        _FakeAct([_p1, _p2]), max_pages=5, page_size=3)
+    assert _got_act["exhausted"] is True and _got_act["date"] == "2024-05-01", \
+        f"没找到最早一条：{_got_act}"
+    _got_cap = _cl.GarminCNClient.activities_earliest(
+        _FakeAct([_p1, _p1, _p1]), max_pages=2, page_size=3)
+    assert _got_cap["exhausted"] is False, "翻到上限还说「到底了」，会提前停止补全"
+
     # 到头之后不再发请求（backfill_next 在游标到下限时直接返回）
     _tmpbf = Path(tempfile.mkdtemp()) / "bf.db"
     _st = Store(_tmpbf)
@@ -2107,6 +2189,24 @@ def run() -> int:
             "补到头还在请求，会一直循环"
     shutil.rmtree(_tmpbf.parent, ignore_errors=True)
 
+    # 已经有最早记录时：游标只要退到它之前就直接收工，连探测都不做
+    _tmpbf2 = Path(tempfile.mkdtemp()) / "bf2.db"
+    _st2 = Store(_tmpbf2)
+    _st2.set_meta(_AP3.BACKFILL_META, "2024-04-30")
+    _st2.set_meta(_AP3.EARLIEST_META, "2024-05-01")
+    _st2.set_meta(_AP3.EARLIEST_AT_META,
+                  dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    _st2.conn.close()
+    with _mock.patch.object(_AP3, "DB", _tmpbf2), \
+            _mock.patch.object(_AP3, "_probe_earliest",
+                               side_effect=AssertionError("不该联网探测")):
+        _ended2 = _AP3.backfill_next()
+        assert _ended2.get("done") is True and _ended2.get("earliest") == "2024-05-01", \
+            "有最早记录时没有直接收工"
+        assert _ended2.get("reason") == "reached_earliest", \
+            "收工原因没说清是不是到了最早记录"
+    shutil.rmtree(_tmpbf2.parent, ignore_errors=True)
+
     # App 侧：刷新后自动跑，进度写在标题栏，且不再弹选区间对话框
     _main_src = (KT / "MainActivity.kt") \
         .read_text(encoding="utf-8")
@@ -2118,15 +2218,15 @@ def run() -> int:
                   "runHistorySync", "pickDateRange"):
         assert _gone not in _main_src, f"旧的补拉入口还留着：{_gone}"
 
-    # 首页：睡眠/体重卡 + 趋势线 + 页头小按钮，且不再有覆盖区块
-    # 趋势线至少需要两天数据；用本次构建的合成库，避免依赖本机称重历史。
-    with _mock.patch.object(AP, "DB", tmp_db):
-        _home = U.home_page()
-    assert _home.count('class="vital"') == 2, "首页缺睡眠/体重卡"
-    assert _home.count('class="spark"') >= 2, "睡眠/体重卡没有趋势线"
-    assert "欠债" in _home and "体脂" in _home, "睡眠/体重卡没带关键数值"
-    assert 'class="mm"' in _home and _home.count('class="i"') == 4, \
-        "恢复度分项不是 4 个带分数条的格子"
+    # 首页：身体 2×2 + 趋势线 + 页头小按钮，且不再有覆盖区块
+    _home = U.home_page()
+    assert _home.count('class="rc-cell"') == 4, "身体面板不是 2×2 四格"
+    assert _home.count('class="spark"') >= 2, "身体面板没有趋势线"
+    assert "7 日欠债" in _home or "评分" in _home, "睡眠格没带关键数值"
+    assert "42 天指数均线" in _home and "28 天基线" in _home, \
+        "关键数字没带窗口标签"
+    assert _home.count('class="rc-part"') == 3, \
+        "恢复度分解不是 3 条（环本身就是总进度，卡底那条已删）"
     assert "数据覆盖" not in _home, "首页的覆盖区块又回来了（和「我的」重复）"
 
     # 缓存淘汰：超上限才删、只删白名单后缀、最近用过的不能动
@@ -2283,6 +2383,58 @@ def run() -> int:
     # 看板里不该再让用户「去 WorkBuddy 说一句」——装在手机上的人没有那个入口
     assert "WorkBuddy" not in (ROOT / "garmin_cn/report.py").read_text(encoding="utf-8"), \
         "教练点评空态又把用户指到 WorkBuddy 了"
+
+    # ---- 看板页头：一个动作，一行放得下 ----
+    # 以前是两个胶囊并排（AI + 数据源），390 宽下组宽 402px，必折成第二行，
+    # 还会把整页撑出 14px 横向滚动。现在数据源退成说明文字、动作固定在右上。
+    _rep_src = (ROOT / "garmin_cn/report.py").read_text(encoding="utf-8")
+    _top_css = _rep_src.split(".top{", 1)[1].split("}", 1)[0]
+    assert "flex-wrap" not in _top_css, "看板页头又允许换行了，窄屏会分成两排"
+    assert 'class="top-act"' in _rep_src and 'class="top-main"' in _rep_src, \
+        "看板页头结构退了：动作与说明没有分开"
+    assert 'class="src"' in _rep_src, "数据源/同步时间没退成说明文字"
+
+    # ---- 教练点评：人工 > AI 缓存 > AI 生成中 > 未配置 ----
+    _note_block = _rep_src.split("note = store.note_for(day)", 1)
+    assert len(_note_block) == 2, "点评取的不是「当天的」，翻历史会看到别的日子的结论"
+    assert "aicoach.coach_note(day)" in _rep_src, "看板没接 AI 教练的自动点评"
+    assert "id=\"note-live\"" in _rep_src and "/ai/note" in _rep_src, \
+        "点评占位没有轮询脚本，配好模型也不会自己填上"
+    assert "打开 AI 教练" in _rep_src, "未配置模型时没有指到 AI 教练的入口"
+    assert 'action == "note"' in (ROOT / "garmin_cn/aiapi.py").read_text(encoding="utf-8"), \
+        "aiapi 没有 note 动作，页面轮询会 404"
+
+    from garmin_cn import aicoach as _AC
+
+    # 模型爱写「**教练点评：** 正文」，清洗后不能留着前缀和星号
+    assert _AC._clean_note("**教练点评：** 恢复度 78。\n") == "恢复度 78。", \
+        "点评清洗没去掉 markdown 前缀"
+    _old_cache = _AC.CACHE_DIR
+    _tmp_cache = Path(tempfile.mkdtemp())
+    _AC.CACHE_DIR = _tmp_cache
+    try:
+        _today = dt.date.today().isoformat()
+        assert _AC.cached_note(_today) is None, "缓存里没有却报「已生成」"
+        _fp = _AC._ctx_fingerprint(_AC._note_ctx(_today))
+        _AC._cache_write("note", _today, _fp,
+                         {"text": "测试点评", "model": "fake", "at": "01-01 09:00"})
+        _hit = _AC.cached_note(_today) or {}
+        assert _hit.get("text") == "测试点评" and _hit.get("ready") is True, \
+            "缓存写进去读不出来，看板会一直显示「正在写」"
+        # 上下文变了（同步到新活动）就不该再命中旧点评
+        assert _AC._cache_read("note", _today, _fp + "x") is None, "指纹失效机制坏了"
+    finally:
+        _AC.CACHE_DIR = _old_cache
+        import shutil as _sh
+
+        _sh.rmtree(_tmp_cache, ignore_errors=True)
+
+    # ---- 一图流也要能吃到同一段 AI 点评 ----
+    _card_src = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
+    assert "{ai_html}" in _card_src and ".sess .ai" in _card_src, \
+        "一图流没有 AI 点评位"
+    assert "aicoach.coach_note(d, wait=6)" in (ROOT / "garmin_cn/appapi.py").read_text(
+        encoding="utf-8"), "一图流出图时没去补 AI 点评（等太久或压根没调）"
     # 本地兜底课表必须自报家门，不能静默降级成佳明课表
     assert "本地推算" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
         "本地兜底课表没有标注，用户会以为那是手表里的计划"
@@ -2313,6 +2465,14 @@ def run() -> int:
     assert _out["removed"], "清理没有返回删了哪些文件"
     assert (ROOT / "tools/release.py").read_text(encoding="utf-8").count("prune_dist(") >= 2, \
         "prepare 没有调用 prune_dist，发版时不会自动清"
+    # 覆盖当前版本 APK（没删任何文件）也必须重算清单：否则 sums 还指向上一版。
+    _apk = _dd / f"RunnerCoach-v{_cur}-release.apk"
+    _apk.write_bytes(b"new-build-content")
+    with _mock.patch.object(_rel, "DIST", _dd):
+        _rel.prune_dist(keep_versions=1, keep_snaps=0, apply=True)
+    _sums = (_dd / "SHA256SUMS.txt").read_text(encoding="utf-8")
+    assert _rel.sha256(_apk) in _sums, \
+        "同名 APK 被覆盖后 SHA256SUMS 没重算，sha256sum -c 会 FAILED"
     shutil.rmtree(_dd, ignore_errors=True)
 
     # 月/周柱状图必须铺满整个周期：11 月才到 9 号也要画 30 根，后面是 0 柱。
@@ -2320,17 +2480,17 @@ def run() -> int:
     from garmin_cn import history as _hist
 
     _hm = _hist.history_page({"mode": ["month"]}).split("</style>")[-1]
-    _sv = re.search(r"<svg.*?</svg>", _hm, re.S)
+    _sv = _chart_svg(_hm)
     assert _sv, "月视图没有柱状图"
     # 0.6.3 起零值画圆点，所以刻度位 = 柱 + 点
-    _bars = len(re.findall(r"<rect x=|<circle ", _sv.group(0)))
+    _bars = len(re.findall(r"<rect x=|<circle ", _sv))
     _t = dt.date.today()
     _dim = (_t.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1)
     assert _bars == _dim.day, \
         f"月视图只画了 {_bars} 根，应铺满整月 {_dim.day} 根（未来日期为 0）"
     _hw = _hist.history_page({"mode": ["week"]}).split("</style>")[-1]
-    _svw = re.search(r"<svg.*?</svg>", _hw, re.S)
-    _n_wk = len(re.findall(r"<rect x=|<circle ", _svw.group(0))) if _svw else 0
+    _svw = _chart_svg(_hw)
+    _n_wk = len(re.findall(r"<rect x=|<circle ", _svw)) if _svw else 0
     assert _n_wk == 7, f"周视图不是固定 7 个刻度位（周中打开也要铺满整周）：{_n_wk}"
 
     # ---- 产物页批量管理：勾选 + 二次确认删除 ----
@@ -2415,7 +2575,7 @@ def run() -> int:
     assert not _re.search(r"background-attachment\s*:\s*fixed\s*;", _u.CSS), \
         "背景又用回 fixed 了，WebView 滚动会重绘整面"
     # 触控目标
-    for _sel, _min in ((".more", "40"), (".btn", "44"), (".back", "40")):
+    for _sel, _min in ((".more", "44"), (".btn", "44"), (".back", "44")):
         assert _min in _u.CSS.split(_sel + "{")[-1].split("}")[0], \
             f"{_sel} 的可点高度没到 {_min}px"
     # 文案：不给用户看开发口径
@@ -2426,6 +2586,298 @@ def run() -> int:
     assert _pages.count('role="button"') >= 1 and 'aria-label=' in _pages, \
         "可点容器没有 role/aria-label，TalkBack 读不出来"
     assert 'aria-hidden="true"' in _pages, "装饰性图标没标 aria-hidden"
+
+    # ---- 0.6.6：品牌图标统一到开屏 / 角标 / 三张出图 / 完整看板 ------------
+    from garmin_cn import brand as _BR
+    assert _BR.mark_svg(32) == _BR.mark_svg(32), \
+        "品牌 SVG 不是确定性的：同样输入两次出图不一致，缓存/回归都会失效"
+    assert _BR.TRACK_OUT in _BR.mark_svg() and _BR.PULSE_PATH in _BR.mark_svg(), \
+        "品牌图形缺了跑道或心电脉冲"
+    assert "%23" in _BR.mark_uri(), "data URI 没把 # 编码，CSS 背景图标会断"
+    _shell = U.page("TEST", "标题", "说明", "")
+    # 页头不该再挂角标（原生顶栏已有一枚），但页脚左下角的字标要留着。
+    # 只查 <header> 段：整页字符串里页脚本来就有 rc-badge，会误判。
+    _shell_head = _shell.split("<header")[1].split("</header>")[0]
+    assert "rc-badge" not in _shell_head and 'class="brandline"' in _shell, \
+        "页头又挂上品牌角标了（原生顶栏已有一枚）"
+    assert 'class="rc-badge' in _shell.split('<div class="foot">')[1], \
+        "页脚左下角的品牌字标被一起删了"
+    assert ".rc-badge" in _u.CSS and "radial-gradient" in _u.CSS, \
+        "页面 CSS 没带品牌角标与辉光"
+    for _n in ("card.py", "actcard.py", "racecard.py", "report.py"):
+        _s = (ROOT / "garmin_cn" / _n).read_text(encoding="utf-8")
+        assert "BR.BRAND_CSS" in _s and "BR.badge_html(" in _s, \
+            f"{_n} 没有接上统一品牌图形（又手画了一套？）"
+    _ac_src = (ROOT / "garmin_cn/actcard.py").read_text(encoding="utf-8")
+    assert 'BR.glow_overlay_css(' in _ac_src and 'BR.rgba(th["acc"]' in _ac_src, \
+        "活动图辉光没跟随运动主色"
+    # 出图裁边契约：body 底色必须还是纯色，渐变/辉光只能放在内容盒的装饰层里。
+    from garmin_cn import exportspec as _EX
+    from garmin_cn import actcard as _AC2
+    assert f"background:{_EX.BG_ACT}" in _AC2._CSS, \
+        "活动图 body 底色被改成渐变了，trim_bg 会整圈失效"
+    for _n, _flat in (("card.py", "background:#12161B"),
+                      ("racecard.py", "background:#12161B")):
+        assert _flat in (ROOT / "garmin_cn" / _n).read_text(encoding="utf-8"), \
+            f"{_n} 的 body 底色被改成渐变了，trim_bg 会整圈失效"
+    from garmin_cn import report as _RP
+    assert not re.search(r"background-attachment\s*:\s*fixed\s*;", _RP.CSS), \
+        "完整看板还在用 fixed 背景，WebView 滚动会重绘整面"
+    _res_dir = ROOT / "android/app/src/main/res"
+    for _n in ("drawable/ic_brand_mark.xml", "drawable/brand_badge_bg.xml",
+               "drawable/splash_bg.xml", "drawable/splash_glow.xml"):
+        assert (_res_dir / _n).is_file(), f"缺开屏/角标资源 {_n}"
+    _styles = (_res_dir / "values/styles.xml").read_text(encoding="utf-8")
+    assert "@drawable/splash_bg" in _styles, "冷启动 windowBackground 没换品牌底"
+    _vm = (_res_dir / "drawable/ic_brand_mark.xml").read_text(encoding="utf-8")
+    assert _BR.TRACK_OUT in _vm and _BR.PULSE_PATH in _vm, \
+        "原生角标的路径和网页/启动器不是同一份"
+    _kt2 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    for _needle in ("buildSplash()", "hideSplash()", "R.drawable.ic_brand_mark",
+                    "R.drawable.splash_glow"):
+        assert _needle in _kt2, f"MainActivity 缺开屏/角标代码：{_needle}"
+    assert "from garmin_cn.brand import" in (
+        ROOT / "tools/gen_icon.py").read_text(encoding="utf-8"), \
+        "启动器图标还在自己维护一套坐标"
+
+    # ---- 0.6.7：首屏 = 一页大屏（《主页面设计说明》） -------------------
+    from garmin_cn import screen as _SC
+
+    _css = _u.CSS
+    # 竖屏规则单取一份：大屏里也有同名选择器，别让 split 取到后者。
+    _base_css = _SC.SCREEN_CSS.split("@media(min-width:900px)")[0]
+    assert "@media(min-width:900px)" in _css and "grid-template-areas" in _css, \
+        "宽屏没有用同一份 DOM 重排成五面板"
+    assert "html.rc-big" not in _css and "rc-mode" not in _css, \
+        "「大屏模式」按钮/手动栅格又回来了（系统旋转入口已覆盖）"
+    assert _css.count('"h h h h l l l l b b b b"') == 1, \
+        "大屏栅格只剩一份，别再手写两遍"
+    _h = U.home_page()
+    # 只在 DOM 里找按钮：CSS 注释提到旧做法不算「按钮还在」。
+    _h_dom = _h.split("<main>")[1]
+    assert '<div class="rc-screen">' in _h and 'class="app rc-page"' in _h, \
+        "首屏没套上专属作用域"
+    assert _h.find('<section class="rc-verdict"') < _h.find(
+        '<section class="rc-panel rc-hero-panel"'), "结论条没提到第一行"
+    for _seg in ('<section class="rc-verdict"', "rc-hero-panel",
+                 '<section class="rc-load', "rc-body-panel",
+                 "rc-plan-panel", "rc-week-panel"):
+        assert _seg in _h, f"首屏缺段：{_seg}"
+    assert 'class="sec"' not in _h and 'class="more"' not in _h, \
+        "又把首页排成四个等高 section + 四个重复按钮了"
+    for _btn in ("完整看板", "完整课表", "导出今日一图流", "大屏模式"):
+        assert _btn not in _h_dom, f"冗余入口没删干净：{_btn}"
+    assert '<div class="t">今天休息</div>' not in _h_dom, \
+        "计划一条又重复了结论条的判断"
+    assert 'data-screen-toggle' not in _h and 'aria-pressed="false"' not in _h, \
+        "「大屏模式」按钮没删干净"
+    assert "rc-big" not in _u.BRIDGE_JS and "landscape" not in _u.BRIDGE_JS, \
+        "桥接脚本还在强制旋转，系统旋转按钮会重复出现"
+    assert "SCREEN_ORIENTATION_LANDSCAPE" not in _kt2, \
+        "原生还在强制横屏"
+
+    # 恢复环 r45 / 描边 9；常态不亮、异常才亮；id 固定保证可复现
+    _r70, _r30 = _SC.ring_svg(70), _SC.ring_svg(30, alert=True)
+    assert _SC.ring_svg(70) == _r70, "恢复环 SVG 不是确定性的"
+    assert 'r="45"' in _r70 and 'stroke-width="9"' in _r70
+    assert 'id="rc-ring"' in _r70
+    assert 'class="rc-ring alert"' not in _r70 and 'class="rc-ring alert"' in _r30, \
+        "辉光没有只在异常日才亮"
+    _hp = _h.find('<section class="rc-panel rc-hero-panel"')
+    _hsec = _h[_hp:_h.find("</section>", _hp)]
+    assert 'class="bar"' not in _hsec, "卡底总进度条又回来了（和环重复）"
+
+    # 窗口标签、体重不截断、触控 ≥44、柱 ≥32、柱间 7
+    for _w in ("28 天基线", "42 天指数均线", "近 7 天累计", "最近 7 天",
+               "7 日变化"):
+        assert _w in _h, f"窗口标签丢了：{_w}"
+    assert "text-overflow:ellipsis" not in _base_css.split(
+        ".rc-cell .sub{")[1].split("}")[0], "体重那行又被截成「较…」"
+    for _sel, _needle in ((".rc-day{", "min-height:44px"),
+                          (".rc-day{", "min-width:32px"),
+                          (".rc-days{", "gap:7px"),
+                          (".rc-sample{", "min-height:44px")):
+        assert _needle in _base_css.split(_sel)[1].split("}")[0], \
+            f"{_sel} 缺 {_needle}"
+
+    # 最近 7 天：7 根柱、当天高亮、3 条样本、力量课不写假距离、零值不画假柱
+    assert _h.count('<a class="rc-day') == 7, "不是每天一柱"
+    assert "rc-day on" in _h or "rc-day zero on" in _h, "当天柱子没高亮"
+    assert _h.count('class="rc-sample"') == 3, "样本不是最近 3 条"
+    assert "0.00 km · 配速 —" not in _h, "力量训练又写成了跑了 0 公里"
+    assert ".rc-day.zero .bar{height:0" in _base_css, "零值还在画假柱"
+    _bars = _SC.week_bars([("2026-11-03", 0), ("2026-11-04", 5.0)],
+                          "2026-11-04")
+    assert 'class="rc-day zero"' in _bars and 'height:0px' in _bars, \
+        "零值柱没退化成基线点"
+    assert "/view?date=" in _bars, "柱子不能点进当天详情"
+    # ---- 0.6.8：开屏只画一枚品牌图标 -----------------------------------
+    # 动画层背景若用 splash_bg（自带居中图标），会与 stack 里那枚放大的
+    # 图标 tile 错位重叠，文字上方露出半截圆环，看起来像两个标志。
+    _surf = (_res_dir / "drawable/splash_surface.xml").read_text(encoding="utf-8")
+    _bg = (_res_dir / "drawable/splash_bg.xml").read_text(encoding="utf-8")
+    assert "ic_brand_mark" not in _surf, "开屏动画层背景又带了居中图标"
+    assert "ic_brand_mark" in _bg, "冷启动第一帧的品牌图标别顺手删掉"
+    _bs = _kt2.split("private fun buildSplash()")[1].split(
+        "private fun startSplashAnim()")[0]
+    assert "R.drawable.splash_surface" in _bs, "开屏动画层没换成纯背景"
+    assert "R.drawable.splash_bg" not in _bs, "开屏动画层还在用带图标的底"
+
+    def _hex(s: str) -> set:
+        return set(re.findall(r"#[0-9A-Fa-f]{6,8}", s))
+
+    assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
+        "开屏两层背景的渐变色值漂移了"
+    assert 'versionCode = 80' in (
+        ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
+
+    # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
+    from unittest import mock as _um
+    from garmin_cn import appapi as _AP2
+
+    _today = dt.date.today().isoformat()
+    _fake = {
+        "today": {"date": _today, "items": [
+            {"name": "W2 周二 12km@E", "km": 12, "minutes": 70, "rest": False}]},
+        "next_date": (dt.date.today() + dt.timedelta(days=1)).isoformat(),
+        "next_items": [{"name": "W2 周三 10km@E", "km": 10, "rest": False}],
+    }
+    with _um.patch.object(_AP2, "plan", return_value=_fake):
+        _h_today = U.home_page()
+    assert "训练计划 · 今天" in _h_today and ">今天<" in _h_today, \
+        "今天有课，计划条却没给今天"
+    assert ">明天<" not in _h_today, "计划条又跳到明天去了"
+
+    # 复现用户场景：最后同步日比真实今天早一天，课表的 next_date 恰是今天。
+    # 旧版拿 st["last"] 当今天，会把今天的课写成「明天」。
+    _yest = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    _fake2 = {
+        "today": {"date": _yest, "items": [], "acts": []},
+        "week": [{"date": _yest, "items": []},
+                 {"date": _today, "items": [
+                     {"name": "W2 周二 12km@E", "km": 12, "rest": False}]}],
+        "next_date": _today,
+        "next_items": [{"name": "W2 周二 12km@E", "km": 12, "rest": False}],
+    }
+    with _um.patch.object(_AP2, "plan", return_value=_fake2), \
+         _um.patch.object(_AP2, "status", return_value={
+             "last": _yest, "days": 287, "last_sync": "2026-11-09 20:34"}):
+        _h_lag = U.home_page()
+    assert "训练计划 · 今天" in _h_lag and ">今天<" in _h_lag, \
+        "没同步的一天里，今天的课没显示成今天"
+    assert ">明天<" not in _h_lag, "最后同步日又被当成今天了"
+
+    # 胶囊压薄：只减纵向留白，44px 可点目标一条都不动。
+    for _sel, _needle in ((".rc-panel{", "padding:11px 12px"),
+                          (".rc-verdict{", "min-height:38px"),
+                          (".rc-cell{", "padding:7px 10px 6px"),
+                          (".rc-plan{", "min-height:60px")):
+        assert _needle in _base_css.split(_sel)[1].split("}")[0], \
+            f"{_sel} 没压薄：缺 {_needle}"
+    for _sel, _needle in ((".rc-day{", "min-height:44px"),
+                          (".rc-sample{", "min-height:44px")):
+        assert _needle in _base_css.split(_sel)[1].split("}")[0], \
+            f"压薄把可点目标也削掉了：{_sel}"
+
+    _card_src = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
+    _act_src = (ROOT / "garmin_cn/actcard.py").read_text(encoding="utf-8")
+    assert "max-width:46%" in _card_src and 'class="m1"' in _card_src, \
+        "看板一图流顶部右侧没限宽，长来源会挤出画幅"
+    assert "flex-wrap:nowrap" in _act_src, \
+        "活动图顶部标签还会换行/被挤走"
+    assert "background:#12161B" in _card_src, \
+        "看板一图流 body 纯色底被改了，trim_bg 会整圈失效"
+    assert "background:#0F1319" in _act_src, \
+        "活动图 body 纯色底被改了，trim_bg 会整圈失效"
+    assert "#141E2B" in _card_src and "#121E2C" in _act_src, \
+        "两张一图流的卡片底色没换成深空蓝"
+    assert "#4FD6A6" in _card_src and "#4FD6A6" in _act_src, \
+        "icon 起点绿没进两张出图"
+    assert "#5FA8E0" in _act_src and "#3B82F6" in _act_src, \
+        "活动图兜底配色没往品牌蓝靠"
+
+    # ---- 0.6.10：两张一图流只留页脚左下角那枚角标 ---------------------
+    # 抬头原来各挂一枚 44/48px 角标，用户觉得压着标题；页脚那枚保留。
+    # 查的是源码里的调用而不是整页字符串，因为页脚仍然要用它。
+    assert 'BR.badge_html(44)' not in _card_src and \
+        'BR.badge_html(18)' in _card_src, \
+        "看板一图流：抬头角标没删干净，或页脚角标被一起删了"
+    assert 'BR.badge_html(48' not in _act_src and \
+        'BR.badge_html(18' in _act_src, \
+        "活动图：抬头角标没删干净，或页脚角标被一起删了"
+    assert 'class="hbrand"' not in _act_src and \
+        '.rc-date .rc-badge' not in _card_src, \
+        "抬头角标的容器 / 专用 CSS 还留着"
+    assert 'class="rc-foot"' in _card_src and 'class="rc-foot"' in _act_src, \
+        "页脚左下角的品牌字标必须保留"
+    assert 'BR.BRAND_CSS' in _card_src and 'BR.BRAND_CSS' in _act_src, \
+        "角标删掉后不要把整套品牌样式也一起摘了"
+
+    # ---- 0.6.11：手机横屏紧凑大屏 + 页头角标收敛 ---------------------
+    _land_css = _css.split(
+        "@media (orientation:landscape) and (min-width:640px)")[1]
+    assert "max-height:520px" in _land_css and "max-height:340px" in _css, \
+        "手机横屏缺独立断点，或极矮屏没有二次压缩"
+    assert "height:calc(100dvh - 92px)" in _land_css and \
+        "min-height:0" in _land_css, \
+        "横屏栅格还带着 560px 下限或写死高度"
+    assert "rc-samples{display:none}" in _land_css and \
+        ".rc-load-chart{display:none}" in _land_css and \
+        "grid-template-columns:repeat(4,minmax(0,1fr))" in _land_css, \
+        "横屏没把样本/双线图收起，或身体面板仍是 2×2"
+    assert _css.count('"h h h h l l l l b b b b"') == 1, \
+        "宽屏栅格被复制成两份"
+    _u_src = (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8")
+    assert 'BR.badge_html(26' not in _u_src and 'BR.badge_html(18' in _u_src, \
+        "页头角标没删干净，或页脚字标被一起删了"
+
+    # ---- 0.6.12：横屏收掉原生上下两栏，WebView 吃满高度 -----------------
+    # manifest 声明了 configChanges，转屏不重建 Activity，必须显式监听方向变化；
+    # 否则 52dp 顶栏 + 62dp 底栏仍把 WebView 压到 ~250dp，紧凑大屏被挤扁。
+    _kt3 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    _mf = (ROOT / "android/app/src/main/AndroidManifest.xml").read_text(
+        encoding="utf-8")
+    assert 'android:configChanges="orientation|screenSize' in _mf, \
+        "转屏改成重建 Activity 了，方向切换的实现要跟着改"
+    assert "override fun onConfigurationChanged(newConfig: Configuration)" in _kt3, \
+        "不重建的 Activity 缺方向变化回调"
+    assert "Configuration.ORIENTATION_LANDSCAPE" in _kt3 and \
+        "if (land) View.GONE else View.VISIBLE" in _kt3, \
+        "横屏没有把上下两栏收起来 / 竖屏没有恢复"
+    for _v in ("toolbar", "topDivider", "bottomDivider", "tabBar"):
+        assert f"chromeBars.add({_v})" in _kt3, f"{_v} 没进横屏收纳列表"
+    assert _kt3.count("applyChromeForOrientation()") >= 3, \
+        "onCreate 初始化与方向回调里都要应用栏状态"
+    # 栏收掉后 WebView 变高，但 720p 小屏横过来只剩 264px，极矮档还得
+    # 自己吃满高度；页头动作按钮 0.6.13 已整体撤掉，样式也不该留。
+    assert "calc(100dvh - 30px)" in _css, \
+        "极矮横屏栅格没有吃满可用高度"
+    assert "head-act" not in _css, \
+        "页头动作按钮已经撤掉，横屏不该还留着它的覆写样式"
+
+    # ---- 0.6.14：极矮横屏不再「砍语义」，恢复标签并让内容撑满 -----------
+    # 真机 640×264 复核发现：0.6.12 那版把面板标题/日期/指标名全砍了，
+    # 100px 的面板里只填 36~61px，下半截空、五块数据也失去语义。
+    # 注意 340 档的 media 也带同一个前缀，split 后是第 3 段，不能复用 _land_css。
+    _tiny_css = _css.split("max-height:340px")[-1]
+    assert ".rc-panel-hd{display:flex" in _tiny_css, \
+        "极矮横屏又把面板标题藏了，五块数据会变成没有名字的数字"
+    assert ".rc-day .lbl{display:block" in _tiny_css, \
+        "极矮横屏的日期标签被藏了，柱子看不出是哪天"
+    assert "text-overflow:ellipsis" not in _tiny_css and \
+        "text-overflow:clip" in _tiny_css, \
+        "极矮横屏的指标名又被省略号截断了"
+    assert ".rc-day.zero .dot{display:none}" in _tiny_css and \
+        "min-height:4px" in _tiny_css, \
+        "0 值日还在留孤立小点，没有给浅底柱"
+    assert ".rc-panel{padding:3px 7px;display:flex;flex-direction:column}" in _tiny_css, \
+        "极矮横屏面板没改成 flex 撑满，内容会贴顶留白"
+    assert ".rc-week .rc-days{flex:1" in _tiny_css, \
+        "极矮横屏的柱子没有跟着面板长高"
+    _land_load = _land_css.split(".rc-load{")[-1].split("}")[0]
+    assert "border-radius:12px" in _land_load and \
+        "background:rgba(9,14,22,.42)" in _land_load, \
+        "横屏负荷带没有做成和其余四块一致的卡片"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")

@@ -2,10 +2,20 @@
 
 **把跑表里的数据，变成「今天该怎么练」和一张能直接发出去的成绩单。**
 
+<p align="center">
+  <a href="docs/media/promo-web.mp4"><img src="docs/media/promo-loop.gif" width="270" alt="RunnerCoach 宣传片预览"></a>
+</p>
+
+<p align="center">
+  ▶ <b>30 秒宣传片</b>（真实使用画面，GIF 即完整全片）：<a href="docs/media/promo-web.mp4">网页播放版</a>
+  ｜ <a href="docs/media/promo-30s.mp4">原版 1080×1920</a>
+</p>
+
 本地优先 · 佳明国区 + 高驰双数据源 · 零第三方依赖 · 断网可用
 
 > 下面所有截图都来自 `demo` 仿真数据（[`tools/readme_shots.py`](tools/readme_shots.py) 可一键重现），
-> 不含任何真实账号、GPS 轨迹或健康数值。
+> 不含任何真实账号、GPS 轨迹或健康数值。上方宣传片为真实使用画面，
+> 仅含聚合统计与课表名，不含账号与姓名。
 
 | 一图流 · 1080×1920 | 单次活动图 | 轨迹回放成片 |
 |:--:|:--:|:--:|
@@ -130,13 +140,22 @@ run.bat demo --open          :: Windows
 ### 接上自己的账号
 
 ```bat
-run.bat login                    :: 佳明国区登录（可能要邮箱验证码）
+run.bat login                    :: 佳明国区登录（开浏览器，验证码/Cloudflare 都在浏览器里过）
+run.bat login --timeout 600      :: 慢的时候多等一会儿
+run.bat login --force            :: 会话还能用也强制重登
+run.bat import-cookies           :: 兜底：手动粘浏览器里的 Cookie
 run.bat sync --days 30           :: 同步最近 30 天
 run.bat report --open            :: 出看板
 run.bat card                     :: 出一图流
 run.bat act --id <活动ID> --card  :: 出单次活动图
 run.bat motion --id <活动ID>      :: 出轨迹回放
 ```
+
+> 2026-11 起佳明国区网页端换成了新门户 SSO，登录页带 Cloudflare 验证，
+> 普通 HTTP 客户端过不去，旧的"账号密码直登"通道发出的票据网页端也不再接收。
+> 所以 `login` 现在会开一个真浏览器：你在窗口里登一次（含验证码），
+> 程序只负责把登录后的 Cookie 收回到 `data/session.json`。首次需要装一次
+> `py -3 -m pip install playwright`（浏览器内核直接用本机 Chrome / Edge，不额外下载）。
 
 高驰用户：
 

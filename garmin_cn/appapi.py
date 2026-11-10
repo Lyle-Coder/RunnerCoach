@@ -257,12 +257,15 @@ def status() -> dict:
     today_info = _today(store) if st.get("days") else None
     last_sync = store.get_meta("last_sync")
     # 「补全历史」是后台慢慢往前挪的游标：退到下限之前都算还欠着。
+    # 下限不再固定 8 年，而是数据源里最早那条活动（缓存值，这里不联网探测）。
     _cursor = store.get_meta(BACKFILL_META)
     try:
         _cur_day = dt.date.fromisoformat(str(_cursor)) if _cursor else None
     except ValueError:
         _cur_day = None
-    need_bf = _cur_day is None or _cur_day > _backfill_floor()
+    _earliest = _earliest_cached(store)
+    need_bf = (_cur_day is None
+               or _cur_day > _backfill_floor(dt.date.today(), _earliest))
     try:
         store.conn.close()
     except Exception:
@@ -279,6 +282,8 @@ def status() -> dict:
         "last_sync": last_sync,
         "today": today_info,
         "needs_backfill": need_bf,
+        # 数据源里最早一条活动的日期（空 = 还没有记录）；界面用它说明「补到哪为止」
+        "earliest_record": _earliest or "",
     }
 
 
@@ -725,7 +730,11 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
            "fetched": res.get("fetched", res["days"]),
            "skipped": res.get("skipped", 0),
            "requests": res.get("requests", 0),
-           "activities": res["activities"], "errors": res["errors"]}
+           "activities": res["activities"], "errors": res["errors"],
+           # 数据源自己交代的「最早一条记录」：列表翻到底时它才是权威值，
+           # 补历史靠它决定什么时候停。
+           "earliest_activity": res.get("earliest_activity"),
+           "list_exhausted": bool(res.get("list_exhausted"))}
 
     if with_body:
         try:
@@ -860,10 +869,21 @@ def card_html(date: str | None = None) -> dict:
         res = attach(derive(store, d))
         from .report import source_badge
 
+        # 一图流是「点一下就要出图」的场景，等太久会显得卡住。
+        # 这里最多等 6 秒把 AI 点评补上；等不到就不放这段文字，
+        # 图本身照常出——点评是锦上添花，不能拖累出图。
+        ai_note = ""
+        try:
+            from . import aicoach
+
+            ai_note = (aicoach.coach_note(d, wait=6) or {}).get("text") or ""
+        except Exception:
+            ai_note = ""
+
         _label, _ts = source_badge(store)
         html = build_html(res,
                           sync_at=store.get_meta("last_sync") or store.get_meta("last_sync_coros"),
-                          src=_label)
+                          src=_label, ai_note=ai_note)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -882,16 +902,88 @@ def card_html(date: str | None = None) -> dict:
 # 每次刷新由近到远补一段，游标存进 meta，直到回到最早年为止，全程后台。
 BACKFILL_META = "backfill_cursor"
 BACKFILL_SPAN_DAYS = 365      # 一段一年：太长中间没反馈，太短请求次数翻倍
-BACKFILL_MAX_YEARS = 8        # 再早的数据佳明国区也基本没有，兜个底
+BACKFILL_MAX_YEARS = 8        # 硬下限：账号再老也不翻 8 年以上
 BACKFILL_PAGES = 20           # 每段最多翻 20 页活动（约 1200 条）
 
+# 「数据到哪天为止」不再按年数猜，而是问数据源：活动列表翻到底时，
+# 最早那条活动就是账号的第一条记录。缓存 30 天，避免每次刷新都翻一遍列表。
+EARLIEST_META = "earliest_activity"      # 空串 = 账号里一条活动都没有
+EARLIEST_AT_META = "earliest_activity_at"
+EARLIEST_TTL = 30 * 86400
+EARLIEST_PROBE_PAGES = 60                # 最多翻 60 页（3600 条活动）
+EMPTY_STREAK_META = "backfill_empty_streak"
+# 账号里一条活动都没有时的下限：日汇总（步数/睡眠）仍有意义，但没必要翻八年
+BACKFILL_NO_ACT_DAYS = 730
 
-def _backfill_floor(today: dt.date | None = None) -> dt.date:
+
+def _hard_floor(today: dt.date | None = None) -> dt.date:
     t = today or dt.date.today()
     try:
         return t.replace(year=t.year - BACKFILL_MAX_YEARS)
     except ValueError:                 # 2 月 29 日
         return t.replace(year=t.year - BACKFILL_MAX_YEARS, day=28)
+
+
+def _backfill_floor(today: dt.date | None = None,
+                    earliest: str | None = None) -> dt.date:
+    """补到哪天为止。有「数据源里的第一条记录」就以它为界。
+
+    `earliest` 为空串表示「账号里确实没有活动」，这时只往前补两年日汇总；
+    `None` 表示还不知道，退回 8 年硬下限。
+    """
+    t = today or dt.date.today()
+    hard = _hard_floor(t)
+    if earliest is None:
+        return hard
+    if not earliest:
+        return max(hard, t - dt.timedelta(days=BACKFILL_NO_ACT_DAYS))
+    try:
+        e = dt.date.fromisoformat(str(earliest)[:10])
+    except ValueError:
+        return hard
+    # 留一天余量：最后一段要能包含第一条记录当天
+    return max(hard, e - dt.timedelta(days=1))
+
+
+def _earliest_cached(store) -> str | None:
+    """读缓存的「第一条记录」。只在 meta 里有记录时返回（可能是空串）。"""
+    v = store.get_meta(EARLIEST_META)
+    return None if v is None else str(v)
+
+
+def _earliest_fresh(store) -> bool:
+    at = store.get_meta(EARLIEST_AT_META)
+    if not at:
+        return False
+    try:
+        ts = dt.datetime.strptime(str(at), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return False
+    return (dt.datetime.now() - ts).total_seconds() < EARLIEST_TTL
+
+
+def _probe_earliest(store, max_pages: int = EARLIEST_PROBE_PAGES) -> str | None:
+    """问数据源「最早一条活动是哪天」，成功就写进 meta。
+
+    只在缓存过期时调用，命不中（未登录 / 网络不通）就沿用旧值，
+    不因为这一点失败影响补全本身。
+    """
+    try:
+        client = _client()
+        got = client.activities_earliest(max_pages=max_pages)
+    except Exception:
+        return _earliest_cached(store)
+    if not got.get("exhausted"):
+        # 没翻到底就说明更早还有，这个值不能当停止线
+        return _earliest_cached(store)
+    val = got.get("date") or ""
+    try:
+        store.set_meta(EARLIEST_META, val)
+        store.set_meta(EARLIEST_AT_META,
+                       dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        pass
+    return val
 
 
 def _backfill_segment(cur: dt.date, floor: dt.date,
@@ -910,22 +1002,50 @@ def _backfill_segment(cur: dt.date, floor: dt.date,
     return start, cur, nxt, nxt <= floor
 
 
+def _segment_has_data(store, start: str, end: str) -> bool:
+    """这一段区间里，库里到底有没有真数据。
+
+    sync 会给每一天写一行（哪怕全空），所以不能拿「拉了几行」判断；
+    只看有意义的三项指标，外加活动表。
+    """
+    try:
+        r = store.conn.execute(
+            "SELECT COUNT(*) FROM daily WHERE date BETWEEN ? AND ? AND "
+            "(steps IS NOT NULL OR sleep_total_min IS NOT NULL OR resting_hr IS NOT NULL)",
+            (start, end)).fetchone()
+        if r and r[0]:
+            return True
+        a = store.conn.execute(
+            "SELECT COUNT(*) FROM activities WHERE date BETWEEN ? AND ?",
+            (start, end)).fetchone()
+        return bool(a and a[0])
+    except Exception:
+        return True          # 查不出来就当有数据，宁可多补一段也不要漏
+
+
 def backfill_next(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
     """由近到远补**一段**历史，返回这一段的结果和「是否已经补到头」。
 
-    游标 `meta.backfill_cursor` 记住「下次该从哪天往前补」，默认今天。
-    每段跑完把游标往前挪一年，所以刷新几次就能把全部历史慢慢补齐，
-    而且**每次只花一段的时间**，不会让人干等。
+    游标 `meta.backfill_cursor` 记住「下次该从哪天往前补」，默认今天；
+    每段跑完把游标往前挪一年，刷新几次就把全部历史补齐。
 
-    为什么不用「拉 0 天就停」判断到头：某一年可能真的没运动记录，
-    但那不代表更早的也没有。所以只认「游标退到下限」这一个条件。
+    **补到哪为止由数据源决定**：账号第一条活动就是终点。以前只认「往前退
+    8 年」，哪怕注册才两年也会一年年空拉（每段 365 次日汇总），用户看到的
+    就是「一直在拉」。现在的顺序是：
+      1. 活动列表翻到底 → 最早那条活动（缓存 30 天，不重复翻）；
+      2. 本段同步时如果刚好翻到底，顺手更新（比专门探测更省）；
+      3. 都拿不到时退回 8 年，并加一条兜底：连续两段完全没数据就收工。
     """
     today = dt.date.today()
-    floor = _backfill_floor(today)
-
     store = Store(DB)
     try:
+        earliest = _earliest_cached(store)
+        fresh = _earliest_fresh(store)
         raw = store.get_meta(BACKFILL_META) or today.isoformat()
+        try:
+            streak = int(store.get_meta(EMPTY_STREAK_META) or 0)
+        except (TypeError, ValueError):
+            streak = 0
     finally:
         store.conn.close()
     try:
@@ -935,10 +1055,21 @@ def backfill_next(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
     if cur > today:
         cur = today
 
+    floor = _backfill_floor(today, earliest)
+    # 只有「确实还要补」时才去探测：已经补到头的库每次刷新都不该联网。
+    if cur > floor and not fresh:
+        store = Store(DB)
+        try:
+            earliest = _probe_earliest(store)
+        finally:
+            store.conn.close()
+        floor = _backfill_floor(today, earliest)
+
     if cur <= floor:
         return {"ok": True, "done": True, "start": "", "end": "",
                 "fetched": 0, "skipped": 0, "cursor": floor.isoformat(),
-                "floor": floor.isoformat()}
+                "floor": floor.isoformat(), "earliest": earliest or "",
+                "reason": "reached_earliest" if earliest else "reached_floor"}
 
     start, end, nxt, done = _backfill_segment(cur, floor, span_days)
     out = sync_range(start.isoformat(), end.isoformat(),
@@ -951,7 +1082,34 @@ def backfill_next(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
                 "error": out.get("error") or "补全失败"}
 
     store = Store(DB)
+    reason = ""
     try:
+        # 这一趟如果刚好翻到活动列表底，最早那条就是账号第一条记录：
+        # 比专门探测更权威，顺手写进缓存，下一次起就不再翻列表了。
+        if out.get("list_exhausted"):
+            got = out.get("earliest_activity") or ""
+            if got or earliest is None:
+                store.set_meta(EARLIEST_META, str(got))
+                store.set_meta(EARLIEST_AT_META,
+                               dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                earliest = str(got)
+                floor = _backfill_floor(today, earliest)
+                if nxt < floor:
+                    nxt = floor
+                done = done or nxt <= floor
+                if done:
+                    reason = "reached_earliest" if earliest else "empty_account"
+
+        # 兜底：探测拿不到时，连续两段一行数据都没有，就认为早于账号起点。
+        # 只认「完全没有」——哪天只有步数没有活动，也算有数据。
+        if _segment_has_data(store, start.isoformat(), end.isoformat()):
+            streak = 0
+        else:
+            streak += 1
+            if streak >= 2 and earliest is None:
+                done = True
+                reason = "empty_segments"
+        store.set_meta(EMPTY_STREAK_META, str(streak))
         store.set_meta(BACKFILL_META, nxt.isoformat())
     finally:
         store.conn.close()
@@ -960,7 +1118,8 @@ def backfill_next(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
             "start": start.isoformat(), "end": end.isoformat(),
             "fetched": out.get("fetched", 0), "skipped": out.get("skipped", 0),
             "activities": out.get("activities", 0),
-            "cursor": nxt.isoformat(), "floor": floor.isoformat()}
+            "cursor": nxt.isoformat(), "floor": floor.isoformat(),
+            "earliest": earliest or "", "reason": reason}
 
 
 def _activity_days(today: str) -> set[str]:

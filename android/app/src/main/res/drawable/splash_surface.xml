@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 开屏动画层的纯背景：深空蓝渐进 + 右上蓝、左下青双辉光。
+     渐变参数与 splash_bg.xml 的前三层完全一致，但这里刻意不放
+     居中品牌图标。动画层自己会画一枚放大的图标 tile，背景若再带
+     一枚，就会在「RunnerCoach」文字上方露出半截圆环，变成两个标志
+     上下重叠。冷启动 windowBackground 仍用 splash_bg（带图标），
+     Activity 首帧之前品牌可见，首帧之后只留动画层这一枚。 -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="linear"
+                android:angle="285"
+                android:startColor="#070B12"
+                android:centerColor="#0C1624"
+                android:endColor="#0A101B"/>
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="radial"
+                android:centerX="0.78"
+                android:centerY="0.14"
+                android:gradientRadius="78%p"
+                android:startColor="#3D3B82F6"
+                android:endColor="#003B82F6"/>
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="radial"
+                android:centerX="0.10"
+                android:centerY="0.86"
+                android:gradientRadius="66%p"
+                android:startColor="#2622D3EE"
+                android:endColor="#0022D3EE"/>
+        </shape>
+    </item>
+</layer-list>

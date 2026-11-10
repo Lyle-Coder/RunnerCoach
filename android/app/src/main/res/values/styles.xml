@@ -4,7 +4,10 @@
          之前直接用 @android:style/Theme.Material.NoActionBar，弹窗就吃系统默认的
          深灰直角框，和页面里的圆角卡片完全不是一个语言。 -->
     <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@color/bg</item>
+        <!-- 冷启动那一帧就带品牌：深空蓝渐进 + 双辉光 + 居中图标。
+             MainActivity 画出来后把自己的内容根设成不透明底色盖住它，
+             再叠一层会呼吸的开屏动画，首屏落地后淡出。 -->
+        <item name="android:windowBackground">@drawable/splash_bg</item>
         <item name="android:colorBackground">@color/bg</item>
         <item name="android:colorPrimary">@color/brand</item>
         <item name="android:colorAccent">@color/brand</item>

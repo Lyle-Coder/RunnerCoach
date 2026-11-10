@@ -500,7 +500,7 @@ def tool_activities(args) -> str:
     rows = _store().activities(start, end.isoformat())
     if not rows:
         return f"最近 {days} 天没有活动记录"
-    lines = ["| 日期 | 类型 | 时长min | 距离km | 配速 | 均心率 | 负荷 |", "|---|---|---|---|---|---|---|"]
+    lines = ["| 日期 | 类型 | 时长min | 距离km | 配速 | 平均心率 | 负荷 |", "|---|---|---|---|---|---|---|"]
     for a in rows[:40]:
         dur = round((a.get("duration_s") or 0) / 60)
         dist = round((a.get("distance_m") or 0) / 1000, 2)
