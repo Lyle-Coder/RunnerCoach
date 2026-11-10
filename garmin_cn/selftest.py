@@ -2728,7 +2728,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 80' in (
+    assert 'versionCode = 81' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -2878,6 +2878,16 @@ def run() -> int:
     assert "border-radius:12px" in _land_load and \
         "background:rgba(9,14,22,.42)" in _land_load, \
         "横屏负荷带没有做成和其余四块一致的卡片"
+
+    # ---- 1.0.0：内核版本与 APK 版本必须对齐（发版最容易漏的一端）-------
+    from garmin_cn import __version__ as _kv
+    _gradle = (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
+    _an = re.search(r'versionName\s*=\s*"([^"]+)"', _gradle)
+    _ac = re.search(r"versionCode\s*=\s*(\d+)", _gradle)
+    assert _an and _ac, "build.gradle.kts 里读不到 versionName / versionCode"
+    assert _an.group(1) == _kv, \
+        f"内核 {_kv} 与 APK versionName {_an.group(1)} 不一致"
+    assert int(_ac.group(1)) >= 81, "versionCode 比 1.0.0 还小，老用户覆盖安装会失败"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
