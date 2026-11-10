@@ -930,8 +930,8 @@ class MainActivity : Activity() {
             setPadding(56, 24, 56, 0)
         }
         val eEmail = EditText(this).apply {
-            hint = "高驰账号邮箱"
-            inputType = InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+            hint = "高驰账号（邮箱或手机号）"
+            inputType = InputType.TYPE_CLASS_TEXT
             setText(secrets.corosEmail() ?: "")
         }
         val ePwd = EditText(this).apply {
@@ -963,13 +963,13 @@ class MainActivity : Activity() {
         box.addView(vRegion)
         AlertDialog.Builder(this)
             .setTitle("登录 COROS 高驰")
-            .setMessage("与高驰手表 App 同一个账号。凭据只加密存在本机；token 过期后自动续登。")
+            .setMessage("与高驰手表 App 同一个账号，可用邮箱或手机号。凭据只加密存在本机；token 过期后自动续登。\n区域要与注册时一致，国内账号用「国内」。")
             .setView(box)
             .setNegativeButton("取消", null)
             .setPositiveButton("登录") { _, _ ->
                 val e = eEmail.text.toString().trim()
                 val p = ePwd.text.toString()
-                if (e.isBlank() || p.isBlank()) toast("邮箱和密码都要填")
+                if (e.isBlank() || p.isBlank()) toast("账号和密码都要填")
                 else doCorosLogin(e, p, regionKeys[regionIdx])
             }
             .show()
@@ -986,7 +986,14 @@ class MainActivity : Activity() {
                     toast("高驰登录成功（${r.optString("user_id")}）")
                     doSync()
                 } else {
-                    toast("登录失败：${r.optString("error")}")
+                    val msg = r.optString("error")
+                    if (msg.contains("\n"))
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("登录失败")
+                            .setMessage(msg)
+                            .setPositiveButton("知道了", null)
+                            .show()
+                    else toast("登录失败：$msg")
                 }
             }
         }
