@@ -168,17 +168,16 @@ def run() -> int:
                 t += 5.0
                 dist += spd * 5.0
     # 未标记：同样的速度曲线也必须是默认分圈版式（旧实现会在这里误报）
-    assert 'class="iv"' not in ACTCARD.build_html(
+    assert 'class="ivband"' not in ACTCARD.build_html(
         {}, {"series": {"points": iv_pts}, "training": {"interval": False,
                                                         "type": "running"}},
         None, None, "间歇自检-未标记")
     _iv_detail = {"series": {"points": iv_pts},
                   "training": {"interval": True, "type": "running"}}
     iv_html = ACTCARD.build_html({}, _iv_detail, None, None, "间歇自检")
-    assert 'class="iv"' in iv_html and "快组" in iv_html
-    assert "慢组 / 恢复" in iv_html and "间歇结构" in iv_html
+    assert 'class="ivband"' in iv_html and "间歇结构" in iv_html
     assert '<div class="lhead">' not in iv_html, "间歇版不该再渲染原分圈表"
-    assert 'class="iv"' not in ACTCARD.build_html({}, {}, None, None, "自检")
+    assert 'class="ivband"' not in ACTCARD.build_html({}, {}, None, None, "自检")
 
     # 原地休息型间歇（真实 15×400 m 样本形态）：静止点不能被过滤掉，
     # 右栏要写「平均恢复 1:xx」而不是几十分钟每公里的假配速，15 组逐组列全。
@@ -194,10 +193,15 @@ def run() -> int:
         {}, {"series": {"points": rest_pts},
              "training": {"interval": True, "type": "running"}},
         None, None, "间歇自检（原地恢复）")
-    assert 'class="iv"' in rest_html and "平均恢复" in rest_html
+    assert 'class="ivband"' in rest_html and "平均恢复" in rest_html
     assert "组间恢复" in rest_html and "速度差" not in rest_html
-    assert 'class="ivmore"' not in rest_html, "15 组应逐组列全"
-    assert rest_html.count('class="ivrow"') == 30, "左右各 15 行"
+    # 15 组 → 15 根柱（跑动 + 组间恢复折成一组），每根柱下三行标注
+    assert rest_html.count('class="ivc"') == 15, "15 组应逐组一根柱"
+    assert rest_html.count('class="ivcl"') == 15, "每组要有配速/时间/距离三行"
+    assert rest_html.count('class="ivrest"') == 15, "组间恢复要画成贴底细条"
+    # 柱下三行：配速 / 时间 / 距离，三行都要有内容（不是「—」）
+    assert rest_html.count(" m</em>") == 15, "每组都要标距离"
+    assert rest_html.count("<span>1:") == 15, "每组都要标时间"
 
     # ---- 三段及以上：双栏表达不了，改 N 档强度带 -------------------------
     # 400 快 / 200 中 / 200 慢跑：旧实现会把「中」并进快组，结构丢一半。
@@ -222,8 +226,11 @@ def run() -> int:
         {}, {"series": {"points": _tri}, "laps": [],
              "training": {"interval": True, "type": "running"}},
         None, None, "三段自检")
-    assert 'class="ivband"' in _tri_html and 'class="ivcol' not in _tri_html
-    assert _tri_html.count('class="ivbr"') == 3 and "ivsb" in _tri_html
+    assert 'class="ivband"' in _tri_html
+    assert _tri_html.count('class="ivbr"') == 3, "三档要三行汇总"
+    # 24 段超过逐组标注上限（16），退化为纯结构条：形状仍要看得出，只是不标数字
+    assert 'class="ivsb' in _tri_html and 'class="ivc"' not in _tri_html
+    assert _tri_html.count("ivsb") > 20
     # 两段课（15×400 + 原地恢复）仍走双栏，不能被强行切成三档
     _two = _blocks(sum(([(4.6, 86.0), (0.45, 90.0)] for _ in range(15)), []))
     _two_iv = IV.detect({"series": {"points": _two},
@@ -233,7 +240,9 @@ def run() -> int:
         {}, {"series": {"points": _two}, "laps": [],
              "training": {"interval": True, "type": "running"}},
         None, None, "两段自检")
-    assert 'class="ivcol' in _two_html and 'class="ivband"' not in _two_html
+    # 两段课也走同一版式（双栏已废弃），只有两档颜色
+    assert 'class="ivband"' in _two_html and 'class="ivcols"' in _two_html
+    assert _two_html.count('class="ivc"') == 15 and _two_html.count('class="ivbr"') == 2
     # 四档：金字塔式递进速度，最多切到 4 档，不能无限细分
     _four = _blocks(sum(([(4.9, 60.0), (4.2, 60.0), (3.5, 60.0), (2.6, 60.0)]
                          for _ in range(6)), []))
@@ -2786,7 +2795,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 92' in (
+    assert 'versionCode = 93' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
