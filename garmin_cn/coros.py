@@ -93,6 +93,41 @@ def _md5(s: str) -> str:
     return hashlib.md5(s.encode("utf-8")).hexdigest()
 
 
+def _looks_like_phone(account: str) -> bool:
+    """账号看着像手机号（去掉空格/短横后纯数字，7~15 位）。
+
+    高驰允许手机号注册，而手机号账号的 accountType 与邮箱不同；不判断就直接
+    按邮箱类型发，服务端只会回一个笼统的 1030，用户根本不知道错在哪。
+    """
+    t = "".join(ch for ch in str(account or "") if ch not in " +-()")
+    return t.isdigit() and 7 <= len(t) <= 15
+
+
+def _login_types(account: str) -> list[int]:
+    """按账号形状给 accountType 的尝试顺序。
+
+    服务端对「账号类型不对」和「密码错」回同一个 1030，实测也看不出 1/2 哪个
+    是邮箱、哪个是手机号，所以两种都试一遍（最多两次请求）：
+    邮箱形状先 2 后 1，手机号形状先 1 后 2。真实用户里「手机号能进、邮箱进不去」
+    就是账号根本不是用邮箱注册的，最多两次请求换一个明确结论，值得。
+    """
+    return [1, 2] if _looks_like_phone(account) else [2, 1]
+
+
+# 1030 是「账号或密码不匹配」的笼统回复：服务端不区分「账号不存在」「密码错」
+# 「账号类型不对」「区域选错」，也不说是哪个。所以把排查顺序写进报错里，
+# 否则普通用户只能看到一句英文然后放弃。
+LOGIN_1030_HINT = (
+    "高驰账号或密码不匹配（result=1030）。按顺序确认：\n"
+    "① 登录名只用注册时的手机号或邮箱；绑定的邮箱往往不能当登录名，"
+    "邮箱进不去就换手机号试；\n"
+    "② 账号不是手表昵称，也不要填中文；\n"
+    "③ 用微信 / Apple 一键注册的账号没有密码，要先去高驰 App 里设一个；\n"
+    "④ 账号是在海外注册的，把「账号区域」切到欧洲或美国（默认国内）；\n"
+    "⑤ 密码区分大小写，末尾别带空格。"
+)
+
+
 def _iso(yyyymmdd) -> str | None:
     s = str(yyyymmdd or "").strip()
     if len(s) == 8 and s.isdigit():
@@ -245,22 +280,41 @@ class CorosCloud:
         return out
 
     # ---------------- 登录 ----------------
+    def _login_once(self, account: str, password: str, account_type: int) -> dict:
+        """一次账号密码登录。account_type 2=邮箱、1=手机号（服务端不校验格式，
+        类型不对只会回笼统的 1030，所以要靠调用方按账号形状逐个试）。"""
+        body = {
+            "account": account,
+            "accountType": account_type,
+            "pwd": _md5(password),
+        }
+        headers = {"Content-Type": "application/json", "User-Agent": UA}
+        return self._req("POST", "/account/login", body=body, headers=headers)
+
     def login(self, email: str, password: str, region: str = "asia") -> dict:
         """账号密码登录。密码只在本次调用里用（md5 后发出，不落盘）。"""
         if not email or not password:
             raise CorosAuthError("账号和密码都要填")
         self.region = region if region in BASE_URLS else "asia"
         self.email = email
-        body = {
-            "account": email,
-            "accountType": 2,
-            "pwd": _md5(password),
-        }
-        headers = {"Content-Type": "application/json", "User-Agent": UA}
-        try:
-            out = self._req("POST", "/account/login", body=body, headers=headers)
-        except CorosAuthError as e:
-            raise CorosAuthError(f"{e}（也可能是账号或密码不对）") from None
+        # 邮箱形状先 2 后 1，手机号形状先 1 后 2；两次都失败才抛带排查步骤的报错。
+        types = _login_types(email)
+        out = None
+        last_err = ""
+        for atype in types:
+            try:
+                out = self._login_once(email, password, atype)
+                break
+            except CorosAuthError as e:
+                last_err = str(e)
+                if "1030" not in last_err:
+                    raise CorosAuthError(f"{e}（也可能是账号或密码不对）") from None
+            except CorosError as e:
+                last_err = str(e)
+                if "1030" not in last_err:
+                    raise
+        if out is None:
+            raise CorosAuthError(LOGIN_1030_HINT) from None
         data = out.get("data") or {}
         self.access_token = data.get("accessToken") or ""
         self.user_id = str(data.get("userId") or "")

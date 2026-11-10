@@ -1228,6 +1228,11 @@ def me_page() -> str:
 
     g = "已登录" if st.get("logged_in") else "未登录"
     c_ok = "已登录" if c.get("logged_in") else "未连接"
+    try:
+        _mcp = A.coros_mcp_status()
+        cs_ok = "已授权" if _mcp.get("authorized") else "未授权"
+    except Exception:
+        cs_ok = "未授权"
     m_ok = "已登录" if m.get("logged_in") else "未连接"
     h_ok = "已登录" if h.get("logged_in") else "未连接"
     bs = A.body_sources()
@@ -1239,6 +1244,8 @@ def me_page() -> str:
     sources = (row("G", "佳明 Garmin", f"{g} · {esc(_mask_email(st.get('email')) or '未设置账号')}",
                    act="login:garmin") +
                row("C", "高驰 COROS", f"{c_ok} · 可独立同步活动", act="login:coros", tone="b") +
+               row("C", "高驰睡眠", f"{cs_ok} · 官方 MCP 授权，不踢手机 App",
+                   act="corosSleep", tone="b") +
                row("W", "小米体重", f"{m_ok} · 体脂秤数据", act="mi", tone="a") +
                row("H", "华为体重", f"{h_ok} · 运动健康体成分", act="hw", tone="b") +
                row("W", "体重来源偏好", f"{esc(pref_label)} · 同日只使用一个来源",

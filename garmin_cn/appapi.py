@@ -149,6 +149,8 @@ _API = {
     "hw_login_start", "hw_login_finish", "hw_login_cancel",
     "body_sources", "body_set_source",
     "coros_status", "coros_login", "coros_logout", "coros_sync",
+    "coros_mcp_status", "coros_mcp_login_url", "coros_mcp_finish",
+    "coros_mcp_sleep", "coros_mcp_logout",
 }
 
 # 模型接口配置（App「设置」写入）：未来的 AI 点评等功能从这里读。
@@ -649,6 +651,86 @@ def coros_login(email: str, password: str, region: str = "asia") -> dict:
             "region_cn": C.REGION_CN.get(r.get("region"), r.get("region"))}
 
 
+_MCP_PENDING: dict[str, object] = {}
+
+
+def coros_mcp_status() -> dict:
+    """官方 MCP（睡眠）的授权状态。只看本地 token，不联网。"""
+    try:
+        from . import coros_mcp as MC
+
+        cloud = MC.CorosMcp(HOME, "asia")
+        st = cloud.status()
+        return {"ok": True, **st,
+                "region_cn": MC.REGION_CN.get(st["region"], st["region"])}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def coros_mcp_login_url(region: str = "asia") -> dict:
+    """生成授权页地址。verifier 留在进程里，回调回来后用 coros_mcp_finish 收尾。"""
+    try:
+        from . import coros_mcp as MC
+
+        cloud = MC.CorosMcp(HOME, region or "asia")
+        url = cloud.authorize_url()
+        _MCP_PENDING["cloud"] = cloud
+        return {"ok": True, "url": url, "callback": MC.CALLBACK,
+                "region": cloud.region,
+                "region_cn": MC.REGION_CN.get(cloud.region, cloud.region)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def coros_mcp_finish(callback: str) -> dict:
+    """把 WebView 截到的回调地址换成 token。"""
+    try:
+        from . import coros_mcp as MC
+
+        cloud = _MCP_PENDING.get("cloud")
+        if not isinstance(cloud, MC.CorosMcp):
+            return {"ok": False, "error": "授权会话已失效，请重新点一次授权"}
+        r = cloud.finish(callback)
+        _MCP_PENDING.pop("cloud", None)
+        return {"ok": True, **r}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def coros_mcp_sleep(days: int = 30) -> dict:
+    """拉高驰睡眠并写入日汇总（merge，不动佳明已写的字段）。"""
+    try:
+        from . import coros_mcp as MC
+        from .store import Store
+
+        cloud = MC.CorosMcp(HOME, "asia")
+        rows = cloud.sleep(days)
+        store = Store(DB)
+        for row in rows:
+            store.upsert_daily(dict(row), merge=True)
+        hrv = cloud.hrv(min(int(days or 7), 7))
+        for day, ms in hrv.items():
+            store.upsert_daily({"date": day, "hrv_night": ms}, merge=True)
+        return {"ok": True, "sleep_days": len(rows), "hrv_days": len(hrv),
+                "first": rows[0]["date"] if rows else "",
+                "last": rows[-1]["date"] if rows else "",
+                # 0 条时把原始返回带出去：日志/弹窗里能直接看到接口到底给了什么
+                "raw": "" if rows else (getattr(cloud, "last_text", "") or "")[:600]}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def coros_mcp_logout() -> dict:
+    try:
+        from . import coros_mcp as MC
+
+        MC.CorosMcp(HOME, "asia").clear()
+        _MCP_PENDING.pop("cloud", None)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 def coros_logout() -> dict:
     try:
         from . import coros as C
@@ -673,8 +755,20 @@ def coros_sync(days: int = 30, email: str = "", password: str = "") -> dict:
         return {"ok": False, "error": str(e)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    # 授权过官方 MCP 的话顺带补睡眠：REST 里没有睡眠，这一步失败不影响同步结果
+    sleep_days = 0
+    try:
+        from . import coros_mcp as MC
+
+        if MC.CorosMcp(HOME, "asia").status()["authorized"]:
+            sleep_days = int(coros_mcp_sleep(days).get("sleep_days") or 0)
+    except Exception as e:
+        from . import diag as _dg
+
+        _dg.log_exc("coros_mcp.sleep", e)
     return {"ok": True, "daily": r.get("daily", 0), "activities": r.get("activities", 0),
-            "range": r.get("range"), "relogged": r.get("relogged", False)}
+            "range": r.get("range"), "relogged": r.get("relogged", False),
+            "sleep_days": sleep_days}
 
 
 # ---------------------------------------------------------------- 同步
