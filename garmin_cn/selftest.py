@@ -3493,6 +3493,51 @@ def run() -> int:
         f"内核 {_kv} 与 APK versionName {_an.group(1)} 不一致"
     assert int(_ac.group(1)) >= 81, "versionCode 比 1.0.0 还小，老用户覆盖安装会失败"
 
+    # ---- 1.0.6：静息心率「App 52 / 这里 45」——数据日期必须可见 ----------
+    # 真机反馈高驰身体状态卡 52、我们 45。最可能是今天没同步时 derive 拿
+    # 库里最后一天顶上、页面却仍写「今日」；也可能是 Training Hub 与 App
+    # 两条口径不同。前者我们修掉，后者靠诊断日志自证——都不需要用户导出数据包。
+    from garmin_cn import coros as _CO3
+    assert _CO3._iso("20261110") == "2026-11-10"
+    assert _CO3._iso("2026-11-10") == "2026-11-10", "happenDay 带横杠不能整天丢掉"
+    assert _CO3._iso("2026/11/10 00:00:00") == "2026-11-10"
+    assert _CO3._iso(1762732800000) is None, "时间戳不能猜，时区会错"
+    _csrc3 = (ROOT / "garmin_cn/coros.py").read_text(encoding="utf-8")
+    assert '"resting_hr": _num(it.get("rhr"))' in _csrc3, \
+        "静息心率必须继续原样取 dayDetail 的 rhr，别自作主张换算"
+    assert '"coros.rhr"' in _csrc3 and "HR 字段" in _csrc3, \
+        "高驰心率字段的诊断日志没了，口径争议没法在不导出数据的情况下定位"
+
+    from garmin_cn.store import Store as _Store3
+    from garmin_cn import metrics as _M3
+    _sdb = Path(tempfile.mkdtemp()) / "rhr-stale.db"
+    _s3 = _Store3(_sdb)
+    _y3 = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    _t3 = dt.date.today().isoformat()
+    _s3.upsert_daily({"date": _y3, "resting_hr": 45})
+    _r3 = _M3.derive(_s3, _t3)
+    assert _r3["data_date"] == _y3 and _r3["data_stale_days"] == 1
+    assert _r3["today"]["resting_hr"] == 45, "回退时拿到的确实是昨天的原值"
+    _s3.upsert_daily({"date": _t3, "resting_hr": 52})
+    _r4 = _M3.derive(_s3, _t3)
+    assert _r4["data_date"] == _t3 and _r4["data_stale_days"] == 0
+    assert _r4["today"]["resting_hr"] == 52, "下拉刷新后应变成今天的值"
+    try:
+        _s3.conn.close()
+        _sdb.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    _uisrc3 = (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8")
+    _cardsrc3 = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
+    assert 'f"静息心率 · {_dd}"' in _uisrc3, "卡片标签没写数据日期"
+    assert "数据停在 {_dd} · 下拉刷新" in _uisrc3, "旧数据没有可执行提示"
+    assert "心率区间的设定值口径可能不同" in _uisrc3, "没解释口径差异"
+    assert "（未同步今日）" in _cardsrc3, "一图流没标数据日期"
+    _tp3 = _UI.home_page()
+    assert "静息心率 · 昨夜" not in _tp3 and "静息心率 · " in _tp3
+    assert "心率区间的设定值口径可能不同" in _tp3
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):
