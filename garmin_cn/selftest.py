@@ -2903,6 +2903,18 @@ def run() -> int:
         assert "1030" in str(_ce) and "高驰 App" in str(_ce), \
             "1030 没给可操作的排查步骤，用户只能看到一句英文"
     assert _tried == [1, 2], f"手机号账号没换 accountType 重试（试过 {_tried}）"
+    # 邮箱也一样：绑定邮箱常不是登录名，两种类型都试一遍才能确认到底是哪种
+    _tried.clear()
+    assert _CO._login_types("a@b.com") == [2, 1], "邮箱账号没有回退到另一种 accountType"
+    _cloud2 = _CO.CorosCloud.__new__(_CO.CorosCloud)
+    _cloud2.region, _cloud2.email = "asia", "a@b.com"
+    _cloud2._login_once = _boom
+    try:
+        _cloud2.login("a@b.com", "whatever")
+        raise AssertionError("邮箱 1030 也要抛认证失败")
+    except _CO.CorosAuthError as _ce2:
+        assert "绑定的邮箱" in str(_ce2), "邮箱失败时没提示「绑定邮箱不能当登录名」"
+    assert _tried == [2, 1], f"邮箱账号的重试顺序不对（试过 {_tried}）"
     _kt3 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert "高驰账号（邮箱或手机号）" in _kt3, "登录框还写着只能填邮箱"
     assert "setMessage(msg)" in _kt3, "长错误提示没走对话框，toast 会被截断"
