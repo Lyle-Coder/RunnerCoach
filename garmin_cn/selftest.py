@@ -2728,7 +2728,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 81' in (
+    assert 'versionCode = 85' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -2878,6 +2878,93 @@ def run() -> int:
     assert "border-radius:12px" in _land_load and \
         "background:rgba(9,14,22,.42)" in _land_load, \
         "横屏负荷带没有做成和其余四块一致的卡片"
+
+    # ---- 1.0.2：高驰睡眠走官方 MCP（OAuth），并有 App 内授权入口 ---------
+    from garmin_cn import coros_mcp as _MC
+
+    assert _MC.SLEEP_TOOL == "querySleepOverview", "睡眠工具名不对"
+    assert _MC.CALLBACK.startswith("http://127.0.0.1:"), "回调必须是本机地址"
+    _st = _MC.CorosMcp(tmp_db.parent, "asia").status()
+    assert set(_st) >= {"authorized", "region", "can_refresh"}, "状态字段不全"
+    assert _MC.parse_sleep({"content": [{"type": "text", "text": "无数据"}]}) == [], \
+        "空数据没有被安静跳过"
+    assert _MC._minutes("7h 57min") == 477, "时长解析错了"
+    assert _MC._pct(0.27) == 27, "比例没统一成百分数"
+    _cn = _MC.parse_sleep({"content": [{"type": "text", "text":
+            "2026年10月15日\n睡眠评分：88\n主睡眠：7小时 20分\n深睡比例：24%"}]})
+    assert _cn and _cn[0]["sleep_score"] == 88 and _cn[0]["sleep_total_min"] == 440, \
+        "中文返回解析不出来（真实账号多半就是中文）"
+    _api_src = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    for _fn in ("coros_mcp_status", "coros_mcp_login_url", "coros_mcp_finish",
+                "coros_mcp_sleep", "coros_mcp_logout"):
+        assert f'"{_fn}"' in _api_src, f"接口白名单漏了 {_fn}"
+    _mcp_kt = (KT / "CorosLoginActivity.kt").read_text(encoding="utf-8")
+    assert 'host.endsWith(".coros.com")' in _mcp_kt, \
+        "授权页没限制在高驰域内，等于把 WebView 交给任意页面"
+    assert 'uri.port == 53682' in _mcp_kt, "回调地址判断和 Python 侧不一致"
+    assert "CorosLoginActivity" in (
+        ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8"), \
+        "AndroidManifest 没声明授权页"
+    _kt_mcp = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert '"corosSleep" -> askCorosSleep()' in _kt_mcp, "「我的」里的高驰睡眠入口没接上"
+    assert "corosSleep" in U.me_page(), "「我的」里没有高驰睡眠这一行"
+
+    # ---- 1.0.2：高驰跑步动态（触地 / 垂直振幅）的字段与量纲收敛 --------
+    from garmin_cn import coros_activity as _CA
+
+    def _near(pair, want, tol=0.05) -> bool:
+        return all(w is None and g is None or (g is not None and w is not None
+                                               and abs(g - w) <= tol)
+                   for g, w in zip(pair, want))
+
+    assert _near(_CA.dynamics({"avgGroundContactTime": 0.245,
+                              "avgVerticalOscillation": 0.085}), (245, 8.5)), \
+        "秒/米量纲没有换算成毫秒/厘米"
+    assert _near(_CA.dynamics({"runningDynamics": {"gct": 268, "vosc": 9.1}}),
+                 (268, 9.1)), "嵌在 runningDynamics 里的字段没找到"
+    assert _CA.dynamics({"avgGct": 9999, "avgVerticalOscillation": 120}) == (None, None), \
+        "离谱量纲没被丢掉，卡片会印出错误数量级"
+    assert _CA.dynamics(None) == (None, None), "空 summary 没兜住"
+
+    # ---- 1.0.1：高驰 1030 不再只丢一句英文，手机号账号会换类型的重试 ------
+    from garmin_cn import coros as _CO
+
+    assert _CO._looks_like_phone("138 0013 8000") and \
+        _CO._looks_like_phone("+8613800138000"), "手机号识别漏了带空格/带区号的写法"
+    assert not _CO._looks_like_phone("a@b.com") and \
+        not _CO._looks_like_phone("runner2026"), "把邮箱/昵称误判成了手机号"
+    _cloud = _CO.CorosCloud.__new__(_CO.CorosCloud)
+    _cloud.region, _cloud.email = "asia", "13800138000"
+    _tried: list[int] = []
+
+    def _boom(account: str, password: str, atype: int):
+        _tried.append(atype)
+        raise _CO.CorosError(
+            "高驰接口报错（result=1030 The login credentials you entered ...）")
+
+    _cloud._login_once = _boom          # 打桩，离线复现服务端的笼统拒绝
+    try:
+        _cloud.login("13800138000", "whatever")
+        raise AssertionError("1030 应该以认证失败抛出")
+    except _CO.CorosAuthError as _ce:
+        assert "1030" in str(_ce) and "高驰 App" in str(_ce), \
+            "1030 没给可操作的排查步骤，用户只能看到一句英文"
+    assert _tried == [1, 2], f"手机号账号没换 accountType 重试（试过 {_tried}）"
+    # 邮箱也一样：绑定邮箱常不是登录名，两种类型都试一遍才能确认到底是哪种
+    _tried.clear()
+    assert _CO._login_types("a@b.com") == [2, 1], "邮箱账号没有回退到另一种 accountType"
+    _cloud2 = _CO.CorosCloud.__new__(_CO.CorosCloud)
+    _cloud2.region, _cloud2.email = "asia", "a@b.com"
+    _cloud2._login_once = _boom
+    try:
+        _cloud2.login("a@b.com", "whatever")
+        raise AssertionError("邮箱 1030 也要抛认证失败")
+    except _CO.CorosAuthError as _ce2:
+        assert "绑定的邮箱" in str(_ce2), "邮箱失败时没提示「绑定邮箱不能当登录名」"
+    assert _tried == [2, 1], f"邮箱账号的重试顺序不对（试过 {_tried}）"
+    _kt3 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert "高驰账号（邮箱或手机号）" in _kt3, "登录框还写着只能填邮箱"
+    assert "setMessage(msg)" in _kt3, "长错误提示没走对话框，toast 会被截断"
 
     # ---- 1.0.0：内核版本与 APK 版本必须对齐（发版最容易漏的一端）-------
     from garmin_cn import __version__ as _kv
