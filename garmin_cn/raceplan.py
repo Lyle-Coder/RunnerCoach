@@ -19,8 +19,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / "tools"
+OVERRIDES = ROOT / "data" / "week_overrides.json"
 
 _CACHE: dict = {}
+
+
+def overrides() -> dict:
+    """每周校准写下的周级覆盖：{"5": {"scale": 0.85, "quality_off": true, ...}}。
+
+    只影响推送与「今日课次」，不改 WEEKS 源数据——计划本身保持原样，
+    手表上按当周状态打折。重新生成前想清空就把文件删掉。
+    """
+    try:
+        import json
+
+        return json.loads(OVERRIDES.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 # kind -> 中文课次名
 KIND_CN = {
@@ -98,6 +113,17 @@ def day_info(d: dt.date) -> dict | None:
     if hit is None:  # pragma: no cover
         return None
     kind, title, minutes, km, vert, hr, note, _ = hit
+
+    # 周级覆盖：每周日校准觉得该周该降量时，只改推送出去的量与强度，不动 WEEKS
+    ov = overrides().get(str(w["no"]))
+    if ov and kind != "race":
+        scale = float(ov.get("scale") or 1.0)
+        if ov.get("quality_off") and kind == "quality":
+            kind, title = "easy", "轻松跑"
+        km = round(km * scale, 1)
+        vert = int(round(vert * scale))
+        minutes = int(round(minutes * scale))
+
     main, sub = mc.abbr(w, i, kind, km, vert, minutes)
     tip = (mc.note_of(w, i, kind, minutes, vert) or "").replace("\\n", " ")
     tot_km, tot_vert = mp.totals(w)

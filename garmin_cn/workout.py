@@ -33,23 +33,30 @@ END_COND = {"lap": 1, "time": 2, "distance": 3, "heart_rate": 6,
             "iterations": 7, "fixed_rest": 8, "fixed_repetition": 9, "reps": 10}
 TARGET = {"none": 1, "hr": 4, "pace": 6}   # pace.zone 单位 = 米/秒，快端在前
 
-# 五区心率（与 make_plan.ZONES 一致；E 区上限 145 是硬指标）
-ZONE_HR = {"E": (100, 145), "M": (146, 155), "T": (156, 165),
-           "I": (166, 178), "R": (179, 190)}
-# 五区平路配速（秒/公里，快端在前）。E 区慢端放宽到 7:00——手表只会在跑太快时报警，
-# 正好治「轻松跑心率长期偏高」的老毛病；心率红线写进步骤描述。
-# 数值来自 tools/pacefit.py：432 段平路整公里的心率-配速回归（配速 = 566 - 1.57×心率），
-# 每区窗口取实测 P20–P80（状态好 ↔ 状态差），不再套 VDOT 理论表。
-PACE_SEC = {"E": (320, 380), "M": (295, 325), "T": (285, 300),
-            "I": (265, 295), "R": (245, 275)}
-# 恢复 / 回落 / 减量 / 赛前 / 比赛周：E 区窗口整体后移（5:35–6:40）
-PACE_E_TIRED = (335, 400)
+# 分区锚点重算（v8）：2026-11-08 安康半马 1:28:59 / 4:11/km / 均心率 190，
+# 全程稳在 190–192、最后 3 km 加速到 3:25 → 阈值心率 LTHR ≈ 190、最大心率 ≈ 207。
+# 旧版把 T 区写在 156–165（那实际是他的马拉松区），结果是「轻松跑不轻松、质量课不够狠」。
+WARM_HR = (110, 150)      # 热身 / 冷身 / 组间恢复
+EASY_HR = (140, 166)      # 轻松跑兜底上限（配速主导，心率只兜底）
+LONG_HR = (135, 160)      # 山地长课 / 背靠背（105K 的比赛心率带）
+RACE_HR = (130, 150)      # 越野赛（60 km 模拟赛 / 105K）
+ZONE_HR = {"E": EASY_HR, "M": (167, 180), "T": (181, 190),
+           "I": (191, 197), "R": (198, 207)}
+# 五区平路配速（秒/公里，快端在前）。锚点全部来自实测：
+# 145→5:38、152→5:23、164→4:56、182→4:35（杭州全马）、190→4:11（安康半马）。
+PACE_SEC = {"E": (300, 340),   # 5:00–5:40  Z2 有氧，占 85% 的量
+            "M": (275, 295),   # 4:35–4:55  Z3 马拉松
+            "T": (250, 265),   # 4:10–4:25  Z4 阈值
+            "I": (235, 250),   # 3:55–4:10  Z5 间歇
+            "R": (225, 240)}   # 3:45–4:00  重复
+# 恢复 / 回落 / 减量 / 赛前 / 比赛周：E 区窗口整体后移（5:20–6:00）
+PACE_E_TIRED = (320, 360)
 # 比赛周目标配速（秒/km）：key 是课表周序号，按自己报名的赛事调整
 RACE_PACE_SEC = {1: (272, 288), 8: (270, 291)}
 TIRED_PHASES = {"恢复", "回落", "减量", "赛前", "比赛"}
 
 # 爬楼梯课的目标区间（上坡到 160 左右）
-STAIR_HR = (150, 170)
+STAIR_HR = (160, 178)
 
 # 力量课动作库：(名称, 组数, 次数 or None, 时长秒 or None, 要点)
 # 周三 = 力量 A（臀腿 + 离心），周五 = 力量 B（核心 + 稳定），与 make_card 说明行同源
@@ -215,12 +222,12 @@ def build_all(info: dict) -> list[dict]:
             p = _e_pace(phase)
             run = _workout(
                 f"{name0} {info['abbr']}",
-                ("力量后轻松跑 · 配速 %s · 心率 ≤145 优先，超 145 就再慢%s"
+                ("力量后轻松跑 · 配速 %s · 心率 ≤166，超了就再慢%s"
                  % (pace_span(p), "｜" + tail if tail else "")),
                 SPORT_RUN,
                 [_seg(SPORT_RUN, [_step(1, "other", "distance", km * 1000,
                                         ("pace", pace_target(p)),
-                                        "配速 %s · 心率 ≤145 优先" % pace_span(p))])])
+                                        "配速 %s · 心率 ≤166 优先" % pace_span(p))])])
         return [x for x in (strength, run) if x]
 
     # ---------- 单课日 ----------
@@ -235,17 +242,17 @@ def build_all(info: dict) -> list[dict]:
             # 热身/冷身按余量平摊，但设上限：间歇课的热身不该比主组还长
             warm = min(15, max(5, (minutes - (n * (dur + rec))) // 2))
             cool = min(10, max(5, (minutes - (n * (dur + rec)) - warm) // 2))
-            steps.append(_step(1, "warmup", "time", warm * 60, ("hr", ZONE_HR["E"]),
-                               "热身 E 区 · 心率不超 145"))
+            steps.append(_step(1, "warmup", "time", warm * 60, ("hr", WARM_HR),
+                               "热身 · 心率不超 150"))
             steps.append(_repeat(
                 2, n,
                 [_step(0, "interval", "time", dur * 60, ("pace", pace_target(p)),
                        "%d 分钟 @ %s 区 · 配速 %s · 心率超 %d 立刻降"
                        % (dur, zk, pace_span(p), z[1])),
-                 _step(0, "recovery", "time", rec * 60, ("hr", ZONE_HR["E"]),
-                       "恢复慢跑 · 心率回到 145 以下再开下一组")]))
-            steps.append(_step(3, "cooldown", "time", cool * 60, ("hr", ZONE_HR["E"]),
-                               "冷身 E 区"))
+                 _step(0, "recovery", "time", rec * 60, ("hr", WARM_HR),
+                       "恢复慢跑 · 心率回到 150 以下再开下一组")]))
+            steps.append(_step(3, "cooldown", "time", cool * 60, ("hr", WARM_HR),
+                               "冷身 · 心率不超 150"))
         else:
             steps.append(_step(1, "other", "distance", km * 1000,
                                ("pace", pace_target(_e_pace(phase))),
@@ -257,20 +264,20 @@ def build_all(info: dict) -> list[dict]:
         road = max(2.0, min(5.0, km if km > 0 else 3.0))
         warm = round(road / 2.0, 1)
         cool = round(road - warm, 1)
-        steps.append(_step(1, "warmup", "distance", warm * 1000, ("hr", ZONE_HR["E"]),
-                           f"慢跑 {warm} km 到楼下 · E 区"))
+        steps.append(_step(1, "warmup", "distance", warm * 1000, ("hr", WARM_HR),
+                           f"慢跑 {warm} km 到楼下 · 心率不超 150"))
         steps.append(_repeat(
             2, n,
             [_step(0, "interval", "time", 240, ("hr", STAIR_HR), "上楼跑 / 快走"),
-             _step(0, "recovery", "time", 120, ("hr", ZONE_HR["E"]),
+             _step(0, "recovery", "time", 120, ("hr", WARM_HR),
                    "下楼走 + 楼下走动")]))
-        steps.append(_step(3, "cooldown", "distance", cool * 1000, ("hr", ZONE_HR["E"]),
+        steps.append(_step(3, "cooldown", "distance", cool * 1000, ("hr", WARM_HR),
                            f"冷身慢跑 {cool} km 回程"))
 
     elif kind == "long":
-        steps.append(_step(1, "other", "time", minutes * 60, ("hr", ZONE_HR["E"]),
+        steps.append(_step(1, "other", "time", minutes * 60, ("hr", LONG_HR),
                            (f"累计爬升 {vert} m · " if vert else "")
-                           + "进山按时间跑 · 山里配速无效 · 心率 ≤145 · 不追配速"))
+                           + "进山按时间跑 · 山里配速无效 · 心率 135–160 · 不追配速"))
 
     elif kind == "race":
         # 路跑比赛用配速目标监督；越野赛山里配速无意义，仍用心率。
@@ -282,7 +289,7 @@ def build_all(info: dict) -> list[dict]:
                                % (pace_span(rp), info.get("tip") or "比赛日")))
         else:
             steps.append(_step(1, "other", "distance", km * 1000,
-                               ("hr", ZONE_HR["E"]),
+                               ("hr", RACE_HR),
                                info.get("tip") or "比赛日"))
 
     else:  # easy / b2b
@@ -290,12 +297,12 @@ def build_all(info: dict) -> list[dict]:
             return []
         if kind == "b2b" or vert > 0:
             # 带爬升的周日背靠背也在山里：心率监督
-            steps.append(_step(1, "other", "distance", km * 1000, ("hr", ZONE_HR["E"]),
-                               info.get("note") or "心率 ≤145 · 山里配速无效"))
+            steps.append(_step(1, "other", "distance", km * 1000, ("hr", LONG_HR),
+                               info.get("note") or "心率 135–160 · 山里配速无效"))
         else:
             p = _e_pace(phase)
             steps.append(_step(1, "other", "distance", km * 1000, ("pace", pace_target(p)),
-                               "配速 %s · 心率 ≤145 优先 · 超 145 就再慢"
+                               "配速 %s · 心率 ≤166 优先 · 超了就再慢"
                                % pace_span(p)))
 
     if not steps:
