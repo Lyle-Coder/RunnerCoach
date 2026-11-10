@@ -590,7 +590,13 @@ def sync(store, home: Path, days: int = 30,
 def sync_range(store, home: Path, start: str, end: str,
                email: str | None = None, password: str | None = None,
                activity_limit: int = 400) -> dict:
-    """拉指定区间（补历史用）。与 sync 同一套落库口径，只是区间由调用方给。"""
+    """拉指定区间（补历史用）。与 sync 同一套落库口径，只是区间由调用方给。
+
+    这里**不调用 MCP 睡眠**：高驰的日汇总（dayDetail）本身就带着睡眠字段，
+    一次区间请求里顺带解析，没有额外开销；MCP 睡眠只在「下拉刷新」那一步
+    对最近一段补（`coros_sync`）。所以高驰侧不存在「老数据白拉睡眠」的问题，
+    每段固定 1~2 个区间请求（日汇总 + 活动列表）。
+    """
     s = dt.date.fromisoformat(str(start)[:10])
     e = dt.date.fromisoformat(str(end)[:10])
     if e < s:

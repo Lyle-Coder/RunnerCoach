@@ -119,6 +119,18 @@ def parse_bb(payload: Any, tz_hours: int = 8) -> dict:
     return out
 
 
+# 「分析窗口」之外的老数据不拉睡眠/HRV。
+#
+# 为什么可以砍：日汇总（daily_summary）本身就带步数、距离、静息心率、压力、
+# 身体电量、血氧、呼吸与强度分钟，趋势图要的都在里面；睡眠和 HRV 是**两次
+# 额外请求**，而它们只参与「恢复度」这类近 90 天的判断。补历史时一天 2 个
+# 请求变 1 个，整段直接快一倍。
+#
+# 窗口取 120 天：恢复度用近 7 天、ACWR 用 28 天、CTL/TSB 衰减到 90 天左右，
+# 留 30 天余量。
+LIGHT_AFTER_DAYS = 120
+
+
 def parse_daily(payload: dict | None, date: str) -> dict:
     p = payload or {}
     return {
@@ -184,8 +196,12 @@ class SyncService:
         self.activities_exhausted = False
 
     def sync_day(self, date: str, extras: bool = False,
-                 hrv: dict | None = None) -> dict:
-        """拉一天。`hrv` 可传入区间接口预取的当日 HRV，省掉每段一次请求。"""
+                 hrv: dict | None = None, light: bool = False) -> dict:
+        """拉一天。`hrv` 可传入区间接口预取的当日 HRV，省掉每段一次请求。
+
+        `light=True` 只拉日汇总（1 次请求），跳过睡眠与 HRV——补历史时对
+        分析窗口之外的老日期用这个，请求数减半。
+        """
         row = {"date": date, "synced_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M")}
         bb_row: dict | None = None
 
@@ -197,6 +213,10 @@ class SyncService:
             row.update(parse_daily(daily, date))
 
         try:
+            if light:
+                # 老日期只补日汇总：睡眠/HRV 不参与那段时间的任何判断
+                self.store.upsert_daily(row)
+                return row
             sleep = self.client.sleep(date)
             if sleep:
                 row.update(parse_sleep(sleep))
@@ -271,7 +291,8 @@ class SyncService:
         return total
 
     def sync(self, days: int = 30, end: str | None = None, extras: bool = False,
-             progress=None, force: bool = False, activity_pages: int = 1) -> dict:
+             progress=None, force: bool = False, activity_pages: int = 1,
+             bulk: bool = False) -> dict:
         """同步最近 N 天（或截止到 `end` 往前 N 天）。
 
         增量是默认行为：**已经稳定的一天不会再拉一遍**。判定标准是
@@ -291,10 +312,15 @@ class SyncService:
 
         # HRV 有区间接口：30 段逐日拉 = 30 次请求，一次区间 = 1 次。
         # 先把整段拿下来，逐日回填时直接用；接口口径不符就回落到逐日。
+        # 补历史时：分析窗口之外的日期只拉日汇总（1 次请求/天）
+        cutoff = (dt.date.today() - dt.timedelta(days=LIGHT_AFTER_DAYS)).isoformat()
+        light_from = cutoff if bulk else None
+
         hrv_map: dict[str, dict] = {}
-        if len(todo) >= 4:
+        hrv_days = [d for d in todo if not light_from or d >= light_from]
+        if len(hrv_days) >= 4:
             try:
-                hrv_map = self._hrv_range(todo[0], todo[-1])
+                hrv_map = self._hrv_range(hrv_days[0], hrv_days[-1])
             except Exception as e:
                 self.errors.append(f"hrv range: {type(e).__name__} {e}")
 
@@ -304,7 +330,8 @@ class SyncService:
             # 不必再逐日补一次（只会拿到空结果，白花一次请求）。
             # 区间整体失败（空 dict）才回落到逐日。
             self.sync_day(d, extras=extras,
-                          hrv=hrv_map.get(d, {}) if hrv_map else None)
+                          hrv=hrv_map.get(d, {}) if hrv_map else None,
+                          light=bool(light_from and d < light_from))
             ok += 1
             if progress:
                 progress(i, len(todo), d)

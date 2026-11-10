@@ -81,11 +81,12 @@ def _remember_email(email: str) -> None:
 
 
 def _client(email: str | None = None, password: str | None = None,
-            revalidate: bool = False) -> GarminCNClient:
+            revalidate: bool = False,
+            min_interval: float = 0.5) -> GarminCNClient:
     from .net import Net
 
     auth = GarminCNAuth(HOME)
-    net = Net(auth.session_path, min_interval=0.5)
+    net = Net(auth.session_path, min_interval=min_interval)
     ok = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
 
     # 有票据不等于票据还有效：Garmin 的 JWT 几小时就会失效，服务端直接 401。
@@ -97,11 +98,11 @@ def _client(email: str | None = None, password: str | None = None,
             ok = False
         else:
             # 校验过程中服务端可能轮换过 Cookie，重新从磁盘读一次最新值
-            net = Net(auth.session_path, min_interval=0.5)
+            net = Net(auth.session_path, min_interval=min_interval)
 
     if not ok and email and password:
         auth.login(email, password)      # 可能要验证码，交给上层处理
-        net = Net(auth.session_path, min_interval=0.5)
+        net = Net(auth.session_path, min_interval=min_interval)
         ok = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
 
     if not ok:
@@ -148,6 +149,7 @@ _API = {
     "hw_status", "hw_import", "hw_login", "hw_probe", "hw_sync", "hw_logout",
     "hw_login_start", "hw_login_finish", "hw_login_cancel",
     "body_sources", "body_set_source", "check_update",
+    "account_info", "garmin_logout",
     "coros_status", "coros_login", "coros_logout", "coros_sync",
     "coros_mcp_status", "coros_mcp_login_url", "coros_mcp_finish",
     "coros_mcp_sleep", "coros_mcp_logout",
@@ -629,6 +631,127 @@ def hw_logout() -> dict:
 
 
 # ---------------------------------------------------------------- 高驰
+def _mask_mail(mail: str | None) -> str:
+    """邮箱只露首字母：截图/录屏时别把人家的完整邮箱带出去。"""
+    t = str(mail or "")
+    if "@" not in t:
+        return t
+    head, _, domain = t.partition("@")
+    if len(head) <= 2:
+        return head[:1] + "*@" + domain
+    return head[:2] + "***@" + domain
+
+
+def _src_stats(source: str) -> dict:
+    """某个数据源在本地库里的覆盖：活动数、首末日期、最近同步时间。"""
+    try:
+        store = Store(DB)
+        try:
+            row = store.conn.execute(
+                "SELECT COUNT(*) AS n, MIN(date) AS first, MAX(date) AS last "
+                "FROM activities WHERE source = ?", (source,)).fetchone()
+            days = store.conn.execute(
+                "SELECT COUNT(*) AS n FROM daily").fetchone()
+            return {"activities": int(row["n"] or 0) if row else 0,
+                    "first": (row["first"] if row else "") or "",
+                    "last": (row["last"] if row else "") or "",
+                    "days": int(days["n"] or 0) if days else 0,
+                    "last_sync": store.get_meta(
+                        "last_sync_coros" if source == "coros" else "last_sync") or ""}
+        finally:
+            store.conn.close()
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def _garmin_device() -> str:
+    """佳明设备名（例如 Forerunner 570）。取不到就空串，不阻断任何流程。
+
+    设备列表接口不常变，但每开一次卡片就联网没必要：缓存 7 天。
+    """
+    store = Store(DB)
+    try:
+        cached = store.get_meta("garmin_device")
+        at = store.get_meta("garmin_device_at")
+        if cached is not None and at:
+            try:
+                ts = dt.datetime.strptime(str(at), "%Y-%m-%d %H:%M:%S")
+                if (dt.datetime.now() - ts).total_seconds() < 7 * 86400:
+                    return str(cached)
+            except ValueError:
+                pass
+    finally:
+        store.conn.close()
+    name = ""
+    try:
+        client = _client(min_interval=0.5)
+        name = client.primary_device() or ""
+    except Exception:
+        return ""
+    store = Store(DB)
+    try:
+        store.set_meta("garmin_device", name)
+        store.set_meta("garmin_device_at",
+                       dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    finally:
+        store.conn.close()
+    return name
+
+
+def account_info(source: str = "garmin") -> dict:
+    """账号卡片：已登录时点账号行看这个，**不再弹登录框**。
+
+    只做只读状态汇总：账号、设备、会话能否续期、本地覆盖范围。
+    换账号/退出走卡片上的按钮，不再要求用户重输一遍密码。
+    """
+    src = "coros" if str(source or "").lower().startswith("coros") else "garmin"
+    stats = _src_stats(src)
+    if src == "coros":
+        from . import coros as C
+
+        cloud = C.CorosCloud(HOME)
+        ok = bool(cloud.load())
+        return {"ok": True, "source": "coros", "logged_in": ok,
+                "account": _mask_uid(cloud.user_id) if ok else "",
+                "label": "COROS 高驰",
+                "region": C.REGION_CN.get(cloud.region, cloud.region) if ok else "",
+                "device": "高驰手表（由 Training Hub 提供）" if ok else "",
+                "session": "token 过期后自动续期" if ok else "",
+                **stats}
+    cfg = _cfg()
+    ok = _garmin_session_ok()
+    return {"ok": True, "source": "garmin", "logged_in": ok,
+            "account": _mask_mail(cfg.get("email")) if ok else "",
+            "label": "Garmin 佳明",
+            "region": "国区",
+            "device": _garmin_device() if ok else "",
+            "session": "会话可用" if ok else "会话已失效，需要重新登录",
+            **stats}
+
+
+def garmin_logout() -> dict:
+    """退出佳明账号：删会话文件 + 清配置里的邮箱。**不动数据库**。"""
+    cfg_path = HOME / "config.json"
+    try:
+        auth = GarminCNAuth(HOME)
+        if auth.session_path.exists():
+            auth.session_path.unlink()
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    try:
+        import json as _json
+
+        if cfg_path.exists():
+            cfg = _json.loads(cfg_path.read_text(encoding="utf-8"))
+            cfg.pop("email", None)
+            cfg.pop("password", None)
+            cfg_path.write_text(_json.dumps(cfg, ensure_ascii=False, indent=2),
+                                encoding="utf-8")
+    except Exception:
+        pass
+    return {"ok": True}
+
+
 def coros_status() -> dict:
     """高驰登录态（只看凭据文件，不联网）。"""
     try:
@@ -785,7 +908,8 @@ def coros_sync(days: int = 30, email: str = "", password: str = "") -> dict:
 # ---------------------------------------------------------------- 同步
 def sync(days: int = 30, email: str | None = None, password: str | None = None,
          with_body: bool = True, progress=None, force: bool = False,
-         end: str | None = None, activity_pages: int = 1) -> dict:
+         end: str | None = None, activity_pages: int = 1,
+         bulk: bool = False) -> dict:
     """拉数据。`email/password` 只在会话过期时用来续一次，不会被写盘。
 
     增量是默认行为：已有数据且早已过完的日子不会再请求一遍，
@@ -803,8 +927,10 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
             except Exception:
                 pass
 
+    # 补历史走后台批量：间隔收紧到 BULK_MIN_INTERVAL；日常同步保持 0.5s
+    _gap = BULK_MIN_INTERVAL if bulk else 0.5
     try:
-        client = _client(email, password, revalidate=True)
+        client = _client(email, password, revalidate=True, min_interval=_gap)
     except MfaRequired:
         return {"ok": False, "need_mfa": True, "error": "续期需要邮箱验证码，请重新登录"}
     except AuthError as e:
@@ -814,16 +940,16 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
     svc = SyncService(client, store)
     try:
         res = svc.sync(days=days, end=end, extras=False, progress=cb,
-                       force=force, activity_pages=activity_pages)
+                       force=force, activity_pages=activity_pages, bulk=bulk)
     except SessionExpired:
         # 会话刚好过期：有凭据就重登一次再试，没有就让界面去登录
         if not (email and password):
             return {"ok": False, "need_login": True, "error": "会话已过期"}
         try:
-            client = _client(email, password)
+            client = _client(email, password, min_interval=_gap)
             res = SyncService(client, store).sync(
                 days=days, end=end, extras=False, progress=cb,
-                force=force, activity_pages=activity_pages)
+                force=force, activity_pages=activity_pages, bulk=bulk)
         except MfaRequired:
             return {"ok": False, "need_mfa": True, "error": "续期需要验证码"}
         except Exception as e:
@@ -856,7 +982,8 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
 def sync_range(start: str, end: str | None = None,
                email: str | None = None, password: str | None = None,
                with_body: bool = True, force: bool = False,
-               activity_pages: int | None = None) -> dict:
+               activity_pages: int | None = None,
+               bulk: bool = False) -> dict:
     """按日期区间补历史数据（App「拉取更多历史」用）。
 
     `start` / `end` 是 YYYY-MM-DD，end 默认今天。一次最多 3 年，
@@ -877,7 +1004,7 @@ def sync_range(start: str, end: str | None = None,
         20, max(1, (days + 29) // 30))
     out = sync(days=days, email=email, password=password,
                with_body=with_body, progress=None, force=force,
-               end=e.isoformat(), activity_pages=pages)
+               end=e.isoformat(), activity_pages=pages, bulk=bulk)
     if out.get("ok"):
         out["start"] = s.isoformat()
         out["end"] = e.isoformat()
@@ -1006,7 +1133,13 @@ def card_html(date: str | None = None) -> dict:
 # 弹窗、跑完也只是「跳过 90 天缓存」，用户看完只觉得没反应。现在改成**游标式**：
 # 每次刷新由近到远补一段，游标存进 meta，直到回到最早年为止，全程后台。
 BACKFILL_META = "backfill_cursor"
-BACKFILL_SPAN_DAYS = 365      # 一段一年：太长中间没反馈，太短请求次数翻倍
+# 一段半年：单段 180 天 ≈ 360 次请求，按批量节流约 1.5 分钟；
+# 以前一年一段是 700+ 次、4 分钟以上，用户在这段时间里看不到任何新数据。
+BACKFILL_SPAN_DAYS = 180
+# 批量拉历史时的最小请求间隔（秒）。日常同步仍是 0.5s——交互场景宁可慢一点
+# 也不要被限流；补历史是后台任务，密一点但保留 429 退避（net.py 里会把间隔
+# 自动放大），整体快 2 倍。
+BULK_MIN_INTERVAL = 0.25
 BACKFILL_MAX_YEARS = 8        # 硬下限：账号再老也不翻 8 年以上
 BACKFILL_PAGES = 20           # 每段最多翻 20 页活动（约 1200 条）
 
@@ -1215,7 +1348,8 @@ def _backfill_garmin(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
 
     start, end, nxt, done = _backfill_segment(cur, floor, span_days)
     out = sync_range(start.isoformat(), end.isoformat(),
-                     with_body=False, force=False, activity_pages=BACKFILL_PAGES)
+                     with_body=False, force=False, activity_pages=BACKFILL_PAGES,
+                     bulk=True)
     if not out.get("ok"):
         return {"ok": False, "done": False, "ran": True,
                 "start": start.isoformat(), "end": cur.isoformat(),

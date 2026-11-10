@@ -1251,9 +1251,15 @@ def me_page() -> str:
     chips = (chip("本机数据", "ok") + chip(f"v{VER}") + chip("零第三方依赖"))
 
     # 每个数据源一行、点了直接进对应登录，不再先弹「选哪个账号」的二级选择器
-    sources = (row("G", "佳明 Garmin", f"{g} · {esc(_mask_email(st.get('email')) or '未设置账号')}",
+    # 已登录时点这行是「看账号卡片」（账号/设备/会话 + 更换、退出），
+    # 不会再让人重输密码；没登录才进登录框。
+    sources = (row("G", "佳明 Garmin",
+                   f"{g} · {esc(_mask_email(st.get('email')) or '未设置账号')}"
+                   + (" · 查看 / 更换" if g == "已登录" else ""),
                    act="login:garmin") +
-               row("C", "高驰 COROS", f"{c_ok} · 可独立同步活动", act="login:coros", tone="b") +
+               row("C", "高驰 COROS",
+                   f"{c_ok} · 可独立同步活动" + (" · 查看 / 更换" if c_ok == "已登录" else ""),
+                   act="login:coros", tone="b") +
                row("C", "高驰睡眠", f"{cs_ok} · 官方 MCP 授权，不踢手机 App",
                    act="corosSleep", tone="b") +
                row("W", "小米体重", f"{m_ok} · 体脂秤数据", act="mi", tone="a") +
