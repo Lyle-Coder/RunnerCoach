@@ -704,6 +704,7 @@ class MainActivity : Activity() {
             val msgs = mutableListOf<String>()
             var okAny = false
             var garminDead = false
+            var garminMfa = false
             var corosDead = false
             var err = ""
 
@@ -722,7 +723,9 @@ class MainActivity : Activity() {
                         val b = r.optJSONObject("body")
                         if (b != null && b.optInt("count") > 0) msgs.add("体重 ${b.optInt("count")} 条")
                     }
-                    r.optBoolean("need_mfa") || r.optBoolean("need_login") -> garminDead = true
+                    // 续期需要邮箱验证码 ≠ 密码错：弹验证码框，别让人以为登录失效
+                    r.optBoolean("need_mfa") -> garminMfa = true
+                    r.optBoolean("need_login") -> garminDead = true
                     else -> err = "佳明：" + r.optString("error")
                 }
             }
@@ -758,6 +761,10 @@ class MainActivity : Activity() {
                 } else {
                     setStatus(apiCall("status"))
                     when {
+                        garminMfa -> {
+                            toast("佳明会话续期需要邮箱验证码")
+                            askMfa()
+                        }
                         garminDead && corosDead -> {
                             toast("两个账号的登录都失效了，请重新登录")
                             showLoginPicker()
@@ -836,6 +843,29 @@ class MainActivity : Activity() {
             .show()
     }
 
+    /**
+     * 密码框下面的「显示密码」开关。
+     *
+     * 密码输错一次就要整栏重打，而「怕被旁人看到」在这个场景基本不成立
+     * （登录时旁边通常没人，而且密码框默认仍是掩码）。默认不勾，勾上立刻
+     * 明文并保持光标在末尾——用户刚输入完就能核对是哪一个字符错了。
+     */
+    private fun addShowPassword(box: LinearLayout, field: EditText) {
+        val cb = CheckBox(this).apply {
+            text = "显示密码"
+            textSize = 13f
+            setPadding(0, dp(2), 0, dp(6))
+        }
+        cb.setOnCheckedChangeListener { _, on ->
+            field.inputType = if (on)
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            else
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            field.setSelection(field.text.length)
+        }
+        box.addView(cb)
+    }
+
     private fun askGarminLogin() {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -852,6 +882,7 @@ class MainActivity : Activity() {
         }
         box.addView(eEmail)
         box.addView(ePwd)
+        addShowPassword(box, ePwd)
 
         AlertDialog.Builder(this)
             .setTitle("登录佳明国区")
@@ -964,6 +995,7 @@ class MainActivity : Activity() {
         }
         box.addView(eEmail)
         box.addView(ePwd)
+        addShowPassword(box, ePwd)
         box.addView(vRegion)
         AlertDialog.Builder(this)
             .setTitle("登录 COROS 高驰")
@@ -2332,6 +2364,7 @@ class MainActivity : Activity() {
         }
         box.addView(eUser)
         box.addView(ePwd)
+        addShowPassword(box, ePwd)
         AlertDialog.Builder(this)
             .setTitle("登录小米健康云")
             .setMessage("秤的数据在「小米运动健康」绑定的账号下；账号密码只用于这一次登录，不会保存。")

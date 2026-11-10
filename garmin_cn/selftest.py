@@ -2842,7 +2842,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 96' in (
+    assert 'versionCode = 97' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -3174,6 +3174,47 @@ def run() -> int:
     _kt3 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert "高驰账号（邮箱或手机号）" in _kt3, "登录框还写着只能填邮箱"
     assert "setMessage(msg)" in _kt3, "长错误提示没走对话框，toast 会被截断"
+
+    # ---- 1.0.2：会话校验三态（网络抖动不许把人踢回登录框）--------------
+    # 真机反馈「登录后一下拉刷新又弹登录」：client.get 对网络异常返回 None，
+    # 旧逻辑把「拿不到 profile」当会话过期 → 一次超时就判定登录失效。
+    import types as _types
+    from garmin_cn import auth as _AUTH
+
+    _state = {"v": "unknown"}
+
+    class _FakeAuth(_AUTH.GarminCNAuth):
+        def __init__(self):        # 不走真初始化（要读配置/建 net）
+            self.session_path = _Path("x")
+            self.net = _types.SimpleNamespace(get_cookie=lambda n: "jwt")
+
+        def verify_state(self):
+            return _state["v"], None
+
+    class _P(_Path):
+        def exists(self):          # 只要有「会话文件」这一前提成立即可
+            return True
+
+    _fa = _FakeAuth.__new__(_FakeAuth)
+    _fa.session_path = _P("x")
+    _fa.net = _types.SimpleNamespace(get_cookie=lambda n: "jwt")
+    _fa.verify_state = lambda: (_state["v"], None)
+    _state["v"] = "unknown"
+    assert _fa.ensure_session() is True, "网络异常被判成会话过期（会踢回登录框）"
+    _state["v"] = "ok"
+    assert _fa.ensure_session() is True
+    _state["v"] = "expired"
+    assert _fa.ensure_session() is False, "明确 401 时必须判过期"
+    _asrc = (ROOT / "garmin_cn/auth.py").read_text(encoding="utf-8")
+    assert "def verify_state" in _asrc and 'state != "expired"' in _asrc
+    assert "return None  # 网络异常" not in _asrc
+    # 登录框要有「显示密码」；续期要验证码时弹验证码框而不是登录框
+    _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert _kt5.count("addShowPassword(box") >= 3, "佳明/高驰/小米登录框要都能显示密码"
+    assert "TYPE_TEXT_VARIATION_VISIBLE_PASSWORD" in _kt5
+    assert "garminMfa" in _kt5 and "askMfa()" in _kt5, "续期要验证码时没弹验证码框"
+    assert 'r.optBoolean("need_mfa") || r.optBoolean("need_login") -> garminDead' not in _kt5, \
+        "need_mfa 还被当成密码失效，会弹登录框"
 
     # ---- 1.0.2：应用内检查更新（Gitee Release，零后端）------------------
     from garmin_cn import update as _UP
