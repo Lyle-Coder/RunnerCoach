@@ -1,38 +1,30 @@
-"""间歇训练识别：从「逐点速度序列」或「分圈」里找出快慢交替，并汇总成两组。
+"""间歇训练展示：判定权交给佳明的训练模式，不再靠速度猜。
 
-纯标准库、零 IO。输入是 `activity.py` 产出的 `series.points` / `laps`，
-输出是给活动图底部双栏用的纯数据；识别不出来返回 `None`，版式完全不变。
+为什么改
+--------
+以前用「快慢交替」的速度模式判定间歇，问题是有快慢交替的匀速长跑（等红灯、
+爬坡、起跑热身与结束放松）会被误判成间歇，而真正的间歇课里若组间恢复是
+原地站立，速度曲线又可能判不出来。真机对比 63 条跑步明细：速度判定多认了
+10 条佳明未标记间歇的活动。
 
-为什么要两条路
---------------
-佳明有两种记圈方式：手动按圈（热身 2 km、快 400 m、慢 400 m……放松 1 km）
-时，`laps` 的配速直接呈快慢交替；但自动「每公里分圈」会把 400 m 快跑和
-400 m 慢跑平均进同一圈，`laps` 看起来几乎是匀速。所以优先看逐点速度
-（`spd`，m/s），不满足条件再回落到分圈。
+现在的口径
+----------
+佳明活动自带 `hasIntensityIntervals`——设备/训练课执行时写入的「本次训练
+包含强度间歇」标记，是官方口径，等价于「训练里设置了间歇」。规则只有一条：
 
-防误报优先于多召回
-------------------
-间歇的本质是「刻意重复的快慢循环」，不是「跑得不太均匀」。早期版本只看
-Otsu 二分 + 少量切换，于是匀速长跑里等两次红灯、爬一段坡、起跑热身和结束
-放松，都会被切成「快组 / 慢组」并套上双栏版式——慢段明明只占全程 2%，
-却被当成一组恢复。现在的门禁要求「结构」而不仅是「有速度差」：
+* 标记为间歇 → 用速度把全程切成快 / 慢两组，走底部分双栏版式；
+* 没标记 → 一律默认版式（分圈表），即使速度看起来快慢交替也不切。
 
-* 二分本身要成立：高组均值相对低组均值至少高 `MIN_SPLIT_GAP`，
-  否则匀速跑的自然抖动只是被硬切成两半；
-* 快段、慢段都至少 `MIN_SETS` 组且各自有最小长度（短慢段并回相邻快段），
-  一次偶发减速构不成循环；
-* 快慢真正交替（段切换 >= `MIN_SWITCHES` 次）；
-* 慢段总时长占全程 >= `MIN_SLOW_SHARE`：等红灯 / 上坡只占百分之一二，
-  真实间歇的恢复段通常占四五成；
-* 快组平均速度至少比慢组高 `MIN_RATIO` 倍。
+也就是说，这里仍然需要「怎么切」，但不再需要「猜是不是间歇」。切不出
+快慢两组（全程匀速）时返回 `None`，退回默认版式——空的双栏没有意义。
 
-阈值用一维 Otsu 自动二分，不写死配速，节奏跑 / 法特莱克 / 坡冲仍能覆盖。
-漏判只是保留原来的分圈表，误判却会把整张活动图换成错误的版式，所以宁可
-保守。门槛都集中在下面的常量里，要放宽只改这里。
+纯标准库、零 IO。输入是 `activity.py` 产出的明细，输出是给活动图底部
+双栏用的纯数据。
 """
 from __future__ import annotations
 
-# 一组快跑至少持续这么久、跑这么远，才不是 GPS 抖动或起跑冲刺
+# 以下门槛只用于「切得干不干净」（短段并回、快慢差不至于太小），
+# 不再用于判断「是不是间歇」——那由佳明标记决定。
 MIN_SEG_S = 20.0
 MIN_SEG_M = 80.0
 # 慢段同样要有实际长度。只按时长判、不按距离判：真实的组间恢复常常是
@@ -49,9 +41,28 @@ MIN_SWITCHES = 5
 MIN_SLOW_SHARE = 0.15
 # Otsu 两组均值的相对落差下限：(hi - lo) / hi
 MIN_SPLIT_GAP = 0.18
+# 标记模式下也要求的最低落差：已确认是间歇课，但全程匀速（GPS 抖动只有
+# 百分之几）时切出来的「快慢」是假的，宁可不显示双栏。
+MIN_FORCED_GAP = 0.05
 # 每栏最多列几行（常见的 400 m 间歇是 12~15 组，行距压紧后能全部列全），
 # 再多才折叠成「其余 N 组」。
 MAX_GROUPS = 16
+# 强度带（快/中/慢）最多分几档。真实的间歇课超过四档就只剩「配速曲线」可看，
+# 再切档对读者没有意义。
+BAND_MAX = 4
+# 相邻两档的相对速度差下限：低于它就算不上「不同的档」，不拆。
+# 8% 大致是「同一次课里两个不同配速目标」的最小可辨差异。
+MIN_BAND_GAP = 0.08
+# 拆分后每档至少几段（含 2 档时）。一段的「档」只是噪声。
+BAND_MIN_SETS = 2
+# 低于这个速度视为站立/走路型恢复；慢跑恢复仍算恢复，只是展示配速。
+REST_SPD = 1.2
+# 间歇段的「组距」离散度：低于它就认为所有组同一距离（15×400 m 这种），
+# 只出一行「间歇」，不因配速自然漂移（负分段、后程掉速）切出快/慢档。
+WORK_DIST_TOL = 0.2
+
+BAND_NAMES = {2: ("快", "慢"), 3: ("快", "中", "慢"),
+              4: ("快", "中快", "中慢", "慢")}
 
 
 def _split(values: list[float]) -> tuple[float, float, float]:
@@ -119,6 +130,7 @@ def _seg(chunk: list[dict], fast: bool, smooth: list[float] | None = None,
     cads = [p.get("cad") for p in chunk if p.get("cad")]
     return {
         "fast": fast,
+        "t0": chunk[0].get("t") or 0,     # 时序结构条按它排序
         "dist_m": round(dist, 1),
         "dur_s": round(dur, 1),
         "spd": spd,
@@ -153,15 +165,229 @@ def _agg(segs: list[dict], fast: bool) -> dict:
     }
 
 
-def _finish(segs: list[dict], source: str,
-            min_ratio: float = MIN_RATIO) -> dict | None:
-    """占比 / 组数 / 交替性 / 速度差四重门禁，全过才认定是间歇。
+def _kmeans(values: list[float], weights: list[float], k: int,
+            iters: int = 12) -> tuple[list[int], list[float]]:
+    """一维加权 k-means（分位数初始化，确定性；不用随机种子，回归可复现）。"""
+    order = sorted(range(len(values)), key=lambda i: values[i])
+    centers = [values[order[min(len(order) - 1,
+                               int((j + 0.5) * len(order) / k))]] for j in range(k)]
+    assign = [0] * len(values)
+    for _ in range(iters):
+        changed = False
+        for i, v in enumerate(values):
+            best = min(range(k), key=lambda c: abs(v - centers[c]))
+            if best != assign[i]:
+                assign[i], changed = best, True
+        for c in range(k):
+            tw = sum(weights[i] for i, a in enumerate(assign) if a == c)
+            if tw > 0:
+                centers[c] = sum(values[i] * weights[i]
+                                 for i, a in enumerate(assign) if a == c) / tw
+        if not changed:
+            break
+    return assign, centers
 
-    慢段数量也要求 `MIN_SETS`：一次等红灯、一段上坡只是「减速」，只有重复
-    出现的慢段才可能是组间恢复。光看快段组数会把长跑主体切成一堆「快组」。
+
+def _pack(label: str, picked: list[dict], rest: bool = False) -> dict:
+    """把一组分段折成一行汇总（队/恢复通用）。"""
+    dist = sum(s["dist_m"] for s in picked)
+    dur = sum(s["dur_s"] for s in picked)
+    spd = dist / dur if dur else 0.0
+    return {
+        "label": label, "sets": len(picked),
+        "dist_m": round(dist, 1), "dur_s": round(dur, 1),
+        "spd": spd,
+        "pace_s": round(dur / (dist / 1000)) if dist > 50 else None,
+        "recover_s": round(dur / len(picked)) if picked else None,
+        "rest": rest,
+        # 慢跑恢复（spd 不算静止）展示配速；站桩恢复展示时长
+        "jog": bool(rest and spd >= REST_SPD),
+        "hr_avg": _wmean([s["hr_avg"] or 0 for s in picked],
+                         [s["dur_s"] for s in picked]),
+        "cad": _wmean([s["cad"] or 0 for s in picked],
+                      [s["dur_s"] for s in picked]),
+        "segs": picked,
+    }
+
+
+def work_rest(order: list[dict] | None) -> dict | None:
+    """按时序把段拆成「间歇段 / 恢复段」，恢复**不按速度高低判定**。
+
+    为什么不能靠速度分档
+    --------------------
+    8×800 m + 400 m 慢跑恢复是全马备赛最常见的课，恢复段 5'30"/km 很容易
+    被聚成「慢组」，于是一个标准间歇被读成「快组 / 慢组」两种强度——这是
+    语义错误：恢复就是恢复，慢跑恢复也不构成一个强度档。分档只该用在
+    **间歇段之间配速不同**的课（金字塔、变速、法特莱克）。
+
+    判据是结构：段必须「快-慢-快-慢…」交替，且奇数位（恢复）确实慢于
+    偶数位。交替不成立（三/四段课）时返回 None，交回 band_split 处理。
+    """
+    segs = [o for o in (order or []) if isinstance(o, dict)]
+    if len(segs) < 4:
+        return None
+    work: list[dict] = []
+    rest: list[dict] = []
+    k = 0
+    while k + 1 < len(segs):
+        a, b = segs[k], segs[k + 1]
+        if (a.get("spd") or 0) <= (b.get("spd") or 0):
+            return None
+        work.append(a)
+        rest.append(b)
+        k += 2
+    if k < len(segs) and (segs[k].get("spd") or 0) > (rest[-1].get("spd") or 0):
+        work.append(segs[k])        # 末尾多跑了一组、没跟恢复
+    if len(work) < 3 or len(rest) < 2:
+        return None
+    return {"work": work, "rest": rest}
+
+
+def attach_work_rest(order: list[dict]) -> tuple[list[dict], list[dict]] | None:
+    """交替结构 → (bands, order_with_band)。标准间歇只给「间歇 / 恢复」两行。"""
+    wr = work_rest(order)
+    if not wr:
+        return None
+    work, rest = wr["work"], wr["rest"]
+    # **分档的判据是「组距不同」而不是「配速不同」**：同距多组（15×400 m）
+    # 就算配速从 3'45" 漂到 3'16"（负分段、后程顶不住），那也是同一节课的
+    # 体力分配，不是两种强度；只有 400/200/200、400/800/1200 这种组距本身
+    # 不同的课（金字塔、阶梯、变速）才需要在间歇段内再分档。
+    dists = [s["dist_m"] for s in work if (s.get("dist_m") or 0) > 0]
+    d_spread = ((max(dists) - min(dists)) / min(dists)
+                if dists and min(dists) > 0 else 0.0)
+    work_bands: list[dict] = []
+    band_of: dict[int, int] = {}
+    if d_spread > WORK_DIST_TOL:
+        sub = band_split(work, kmax=3)
+        if sub:
+            work_bands = sub["bands"]
+            for i, b in enumerate(work_bands):
+                for sg in b["segs"]:
+                    band_of[id(sg)] = i
+    if not work_bands:
+        work_bands = [_pack("间歇", work)]
+        band_of = {id(s): 0 for s in work}
+    rest_band = _pack("恢复", rest, True)
+    bands = work_bands + [rest_band]
+    rest_idx = len(bands) - 1
+    ordered = sorted(order, key=lambda o: o.get("t0") or 0)
+    out = []
+    for o in ordered:
+        is_rest = o in rest
+        out.append({**o, "rest": is_rest,
+                    "band": rest_idx if is_rest else band_of.get(id(o), 0)})
+    return bands, out
+
+
+def band_split(segs: list[dict] | None, kmax: int = BAND_MAX) -> dict | None:
+    """把分段按速度聚成 2~kmax 档强度带（快 / 中 / 慢…）。
+
+    为什么不是「快慢两组」
+    ----------------------
+    两组是 Otsu 二分的结果，遇到三段课（400 m 快 + 200 m 中 + 200 m 慢，
+    金字塔、变速跑、法特莱克）时中段会被硬塞进快或慢，结构就丢了。
+    这里按**分段速度**做一维加权 k-means，k 从 2 试到 kmax，只接受
+    「每档≥2 段」且「相邻档相对差 ≥8%」的最大 k——多出来的档必须真的
+    分得开，否则退回少一档，保证不会把匀速课切出一堆假档。
+
+    `segs` 里的休息段（spd < REST_SPD）单独成「恢复」档，不参与聚类：
+    原地站着没有「配速档」可言。
+    """
+    segs = [s for s in (segs or []) if (s.get("dur_s") or 0) >= 5]
+    if len(segs) < 4:
+        return None
+    # 用下标而不是 dict 本身做标识：内容相同的两段是相等的，按值查找会串位。
+    moving = [(i, s) for i, s in enumerate(segs)
+              if (s.get("spd") or 0) >= REST_SPD]
+    if len(moving) < 4:
+        return None
+    vals = [s["spd"] for _, s in moving]
+    wts = [max(s["dur_s"], 1.0) for _, s in moving]
+
+    best: tuple[int, list[int], list[float]] | None = None
+    for k in range(2, min(kmax, len(moving) // BAND_MIN_SETS) + 1):
+        assign, centers = _kmeans(vals, wts, k)
+        counts = [sum(1 for a in assign if a == c) for c in range(k)]
+        if min(counts) < BAND_MIN_SETS:
+            break
+        order_c = sorted(range(k), key=lambda c: -centers[c])   # 快 → 慢
+        gap_ok = True
+        for j in range(k - 1):
+            hi, lo = centers[order_c[j]], centers[order_c[j + 1]]
+            if hi <= 0 or (hi - lo) / hi < MIN_BAND_GAP:
+                gap_ok = False
+                break
+        if not gap_ok:
+            break
+        best = (k, assign, centers)
+
+    if not best:
+        # 速度均匀（例如「快跑 + 原地站」只有一种跑动强度）时聚不出两档，
+        # 但只要有休息段，结构仍然是「跑动 / 恢复」两段式——直接按这个分，
+        # 不要为了凑档数把匀速跑硬劈成快慢两档。
+        rest_only = [s for s in segs if (s.get("spd") or 0) < REST_SPD]
+        if not rest_only or len(moving) < 3:
+            return None
+        moving_segs = [s for _, s in moving]
+        bands = [_pack("间歇", moving_segs), _pack("恢复", rest_only, True)]
+        order = []
+        for i in sorted(range(len(segs)), key=lambda i: segs[i].get("t0") or 0):
+            s = segs[i]
+            is_rest = (s.get("spd") or 0) < REST_SPD
+            order.append({**s, "band": 1 if is_rest else 0, "rest": is_rest})
+        return {"k": 2, "bands": bands, "order": order}
+
+    k, assign, centers = best
+    names = BAND_NAMES.get(k, tuple(f"档{i + 1}" for i in range(k)))
+    order_c = sorted(range(k), key=lambda c: -centers[c])
+    rank = {c: i for i, c in enumerate(order_c)}
+
+    bands: list[dict] = []
+    for c in order_c:
+        picked = [s for j, (_, s) in enumerate(moving) if assign[j] == c]
+        if picked:
+            bands.append(_pack(names[rank[c]] if rank[c] < len(names)
+                               else f"档{rank[c] + 1}", picked))
+    # 休息段单独一档放最慢：原地站着没有「配速档」可言
+    rest = [s for s in segs if (s.get("spd") or 0) < REST_SPD]
+    if rest:
+        bands.append(_pack("恢复", rest, True))
+
+    # 时序结构条：按开始时间排，每段标出属于哪一档（供 N 档版式画柱）
+    seg_band: dict[int, int] = {}
+    for j, (i, _) in enumerate(moving):
+        seg_band[i] = rank[assign[j]]
+    rest_band = len(bands) - 1 if rest else 0
+    order = [{**segs[i], "band": seg_band.get(i, rest_band),
+              "rest": (segs[i].get("spd") or 0) < REST_SPD}
+             for i in sorted(range(len(segs)), key=lambda i: segs[i].get("t0") or 0)]
+    return {"k": k, "bands": bands, "order": order}
+
+
+def _finish(segs: list[dict], source: str, min_ratio: float = MIN_RATIO,
+            forced: bool = False) -> dict | None:
+    """汇总成快 / 慢两组。
+
+    `forced=True` 表示「佳明已经确认这是间歇课」，这里只负责切得能看：
+    必须有快有慢、至少两组快跑、快组确实比慢组快一点。原来的四重门禁
+    （组数 / 切换次数 / 慢段占比 / 速度差）是给「靠速度猜间歇」用的，
+    标记模式下不再需要——真实的间歇课哪怕恢复段很短也要如实展示。
     """
     fasts = [s for s in segs if s["fast"]]
     slows = [s for s in segs if not s["fast"]]
+    if forced:
+        if not fasts or not slows or len(fasts) < 2:
+            return None
+        total = sum(s["dur_s"] for s in segs)
+        share = sum(s["dur_s"] for s in slows) / total if total > 0 else 0.0
+        vf = _wmean([s["spd"] for s in fasts], [s["dur_s"] for s in fasts]) or 0
+        vs = _wmean([s["spd"] for s in slows], [s["dur_s"] for s in slows]) or 0
+        if vs <= 0 or vf <= vs:
+            return None
+        return {"source": source, "sets": len(fasts), "ratio": round(vf / vs, 2),
+                "slow_share": round(share, 3), "forced": True,
+                "fast": _agg(segs, True), "slow": _agg(segs, False)}
     if len(fasts) < MIN_SETS or len(slows) < MIN_SETS:
         return None
     switches = sum(1 for i in range(1, len(segs))
@@ -191,7 +417,136 @@ def _split_ok(lo: float, hi: float) -> bool:
     return hi > 0 and (hi - lo) / hi >= MIN_SPLIT_GAP
 
 
-def from_series(points: list[dict] | None) -> dict | None:
+def speed_runs(points: list[dict] | None, tol: float = 0.14,
+               min_s: float = 20.0, max_s: float = 300.0) -> list[dict]:
+    """把逐点速度按「稳定段」切开，而不是二分快慢。
+
+    为强度分档服务：三段课（快 400 + 中 200 + 慢 200）若先做快慢二分，
+    中段会被并进快组、之后再也分不出来。这里以「速度相对当前段均值偏移
+    不超过 tol」为界自适应切段，切完再把过短的段并回速度更接近的邻居。
+    """
+    pts = [p for p in (points or []) if isinstance(p.get("t"), (int, float))]
+    if len(pts) < 8:
+        return []
+    pts.sort(key=lambda p: p["t"])
+    smooth: list[float] = []
+    for i in range(len(pts)):
+        a, b = max(0, i - 2), min(len(pts), i + 3)
+        w = [pts[j].get("spd") or 0.0 for j in range(a, b)]
+        smooth.append(sum(w) / len(w))
+
+    spans: list[tuple[int, int]] = []
+    i = 0
+    while i < len(pts):
+        j, mean = i + 1, smooth[i]
+        while j < len(pts):
+            v = smooth[j]
+            n = j - i
+            if mean > 0.3 and abs(v - mean) / max(mean, 0.5) > tol:
+                break
+            if (pts[j]["t"] - pts[i]["t"]) > max_s:
+                break
+            mean = (mean * n + v) / (n + 1)
+            j += 1
+        spans.append((i, j))
+        i = j
+
+    def fold(a: int, b: int) -> dict | None:
+        return _seg(pts[a:b], False, smooth, a, b)
+
+    segs = [s for s in (fold(a, b) for a, b in spans) if s]
+    # 过短的段（加速过渡、GPS 抖动）并回速度更接近的邻居
+    changed = True
+    while changed and len(segs) > 2:
+        changed = False
+        for k, s in enumerate(segs):
+            if s["dur_s"] >= min_s:
+                continue
+            left = segs[k - 1] if k > 0 else None
+            right = segs[k + 1] if k + 1 < len(segs) else None
+            pick = None
+            if left and right:
+                pick = k - 1 if abs(left["spd"] - s["spd"]) <= abs(right["spd"] - s["spd"]) else k + 1
+            else:
+                pick = k - 1 if left else k + 1
+            if pick is None:
+                break
+            a = spans[pick][0] if pick < k else spans[k][0]
+            b = spans[k][1] if pick < k else spans[pick][1]
+            merged = fold(a, b)
+            if not merged:
+                break
+            spans[min(k, pick):max(k, pick) + 1] = [(a, b)]
+            segs[min(k, pick):max(k, pick) + 1] = [merged]
+            changed = True
+            break
+    return segs
+
+
+def lap_segs(laps: list[dict] | None) -> list[dict]:
+    """分圈 → 分段（供强度分档用）。手动计圈的圈就是一组，粒度比逐点粗但更准。"""
+    out: list[dict] = []
+    for i, l in enumerate(laps or []):
+        dist = l.get("dist_m") or 0
+        dur = l.get("dur_s") or 0
+        if dist <= 0 or dur <= 0:
+            continue
+        spd = dist / dur
+        out.append({"fast": False, "t0": float(i), "dist_m": round(dist, 1),
+                    "dur_s": round(dur, 1), "spd": spd,
+                    "pace_s": round(dur / (dist / 1000)) if dist > 50 else None,
+                    "hr_avg": l.get("hr_avg"), "cad": l.get("cad")})
+    return out
+
+
+def manual_laps(laps: list[dict] | None, lap_m: float | None = None) -> bool:
+    """这组圈是不是「手动计圈」（间歇课的组），而不是 1 km 自动圈。"""
+    laps = laps or []
+    if len(laps) < 4:
+        return False
+    if lap_m and abs(lap_m - 1000) <= 60:
+        return False
+    km_like = sum(1 for l in laps if abs((l.get("dist_m") or 0) - 1000) <= 60)
+    return km_like < len(laps) * 0.6
+
+
+def attach_bands(got: dict | None, detail: dict | None,
+                 laps: list[dict] | None = None) -> dict | None:
+    """给判定结果补 `bands`（N 档强度带）与 `order`（时序结构条）。
+
+    分档优先用手动计圈：圈就是一组，快/中/慢三段课的各段速度不会被
+    「二分阈值」抹平。没有手动计圈时退回快慢两组的段序列（此时其实只有
+    两档，双栏版式仍适用）。
+    """
+    if not got:
+        return got
+    d = detail or {}
+    src_laps = laps if laps is not None else (d.get("laps") or [])
+    segs = None
+    if manual_laps(src_laps, d.get("lap_distance_m")):
+        segs = lap_segs(src_laps)
+    if not segs:
+        # 逐点数据按「速度稳定段」重切：不能复用快慢二分的结果，
+        # 否则三段课的中段在二分时就被并进快组，永远分不出「中」。
+        segs = speed_runs(((d.get("series") or {}).get("points")))
+    if not segs:
+        segs = ([dict(s) for s in got["fast"]["segs"]]
+                + [dict(s) for s in got["slow"]["segs"]])
+    ordered = sorted(segs, key=lambda s: s.get("t0") or 0)
+    # 先看有没有「间歇-恢复」交替结构：有就只分「间歇 / 恢复」，恢复不当强度档。
+    # 只有间歇段之间配速不同（金字塔、变速）时才在间歇段内部再分 2~3 档。
+    wr = attach_work_rest(ordered)
+    if wr:
+        got["bands"], got["order"] = wr
+        return got
+    bs = band_split(segs)
+    if bs:
+        got["bands"] = bs["bands"]
+        got["order"] = bs["order"]
+    return got
+
+
+def from_series(points: list[dict] | None, forced: bool = False) -> dict | None:
     """逐点速度识别。点已由 `activity._thin()` 抽稀，量级几百个，O(n log n) 足够。
 
     **不能丢掉低速/静止点**：间歇的组间恢复常常是原地站立（spd≈0），
@@ -210,7 +565,8 @@ def from_series(points: list[dict] | None) -> dict | None:
         w = [pts[j].get("spd") or 0.0 for j in range(a, b)]
         smooth.append(sum(w) / len(w))
     thr, lo, hi = _split(smooth)
-    if not _split_ok(lo, hi):
+    if not _split_ok(lo, hi) and not (forced and hi > lo > 0
+                                     and (hi - lo) / hi >= MIN_FORCED_GAP):
         return None
     flags = [v >= thr for v in smooth]
     # 过短的段不是一组间歇：短快段并回慢段、短慢段并回快段。两轮足够让
@@ -233,10 +589,10 @@ def from_series(points: list[dict] | None) -> dict | None:
         s = _seg(pts[a:b], is_fast, smooth, a, b)
         if s and s["dur_s"] >= 5:
             segs.append(s)
-    return _finish(segs, "series")
+    return _finish(segs, "series", forced=forced)
 
 
-def from_laps(laps: list[dict] | None) -> dict | None:
+def from_laps(laps: list[dict] | None, forced: bool = False) -> dict | None:
     """分圈兜底：用「距离 / 时长」算速度，不依赖 `pace_s`。
 
     佳明对极短的休息圈（原地站立 90 秒只挪 30~60 m）经常不给 `pace_s`，
@@ -248,13 +604,15 @@ def from_laps(laps: list[dict] | None) -> dict | None:
         return None
     spds = [l["dist_m"] / l["dur_s"] for l in real]
     thr, lo, hi = _split(spds)
-    if not _split_ok(lo, hi):
+    if not _split_ok(lo, hi) and not (forced and hi > lo > 0
+                                     and (hi - lo) / hi >= MIN_FORCED_GAP):
         return None
     kinds = [v >= thr for v in spds]           # True = 快
     switches = sum(1 for i in range(1, len(kinds)) if kinds[i] != kinds[i - 1])
-    # 分圈兜底同样要防「10 公里里 2 圈爬坡就当成间歇」：慢圈也得重复出现。
-    if (switches < MIN_SWITCHES or sum(kinds) < MIN_SETS
-            or len(kinds) - sum(kinds) < MIN_SETS):
+    # 识别模式下这里要防「10 公里里 2 圈爬坡就当成间歇」；标记模式下佳明已
+    # 确认，仍需快慢都有，但不再要求重复次数达标。
+    if not forced and (switches < MIN_SWITCHES or sum(kinds) < MIN_SETS
+                       or len(kinds) - sum(kinds) < MIN_SETS):
         return None
     # 相邻同档圈合成一组（热身/放松通常连续好几圈）
     segs: list[dict] = []
@@ -273,14 +631,83 @@ def from_laps(laps: list[dict] | None) -> dict | None:
             "hr_avg": round(sum(hrs) / len(hrs)) if hrs else None,
             "cad": round(sum(cads) / len(cads), 1) if cads else None,
         })
-    return _finish(segs, "laps", MIN_RATIO_LAPS)
+    return _finish(segs, "laps", MIN_RATIO_LAPS, forced=forced)
+
+
+# 只有跑步类活动才谈得上间歇版式；力量训练、骑行等的 hasIntensityIntervals
+# 语义不同（力量训练也可能是 True），不能套同一套双栏。
+RUN_TYPES = {"running", "trail_running", "track_running", "treadmill_running",
+             "indoor_running", "virtual_run", "ultra_run"}
+
+
+def training_mode(detail: dict | None) -> dict:
+    """取 `activity.build_training()` 写进明细的训练模式。旧缓存没有这个键。"""
+    t = ((detail or {}).get("training") or {})
+    return t if isinstance(t, dict) else {}
 
 
 def detect(detail: dict | None) -> dict | None:
-    """活动明细 → 间歇结构或 None。逐点优先，识别不出再用分圈。"""
+    """活动明细 → 间歇结构或 None。
+
+    唯一判据是佳明的训练模式标记（`hasIntensityIntervals`）：
+    标记为间歇才切快慢双栏，否则一律返回 None（走默认分圈版式）。
+    标记为间歇但切不出快慢（全程匀速）时同样返回 None。
+    """
     d = detail or {}
+    t = training_mode(d)
+    if not t.get("interval"):
+        return None
+    atype = str(t.get("type") or "").lower()
+    if atype and atype not in RUN_TYPES:
+        return None
     points = ((d.get("series") or {}).get("points")) or []
-    return from_series(points) or from_laps(d.get("laps") or [])
+    got = from_series(points, forced=True) or from_laps(d.get("laps") or [], forced=True)
+    if got:
+        got["source"] = "garmin:" + str(got.get("source") or "series")
+        got["mode"] = "garmin-interval"
+    return attach_bands(got, d)
+
+
+def detect_coros(detail: dict | None) -> dict | None:
+    """高驰版：没有官方「间歇标记」，改看**手动计圈结构**。
+
+    高驰不会下发 `hasIntensityIntervals`（官方文档也没有等价字段，真机
+    明细里只有分圈、没有训练模式），所以不能用佳明那套「只认标记」。
+    但间歇课几乎必然留下结构痕迹：**表盘上按组计圈**——整组圈距不是
+    1 km 自动圈（400 m / 800 m / 200 m 恢复圈都算），且快慢交替明显。
+
+    判定取两组证据的交集，宁可不出双栏也不误报（越野、等红灯的匀速跑
+    分圈仍是整齐的公里圈，进不来）：
+
+    1. 有一组「手动计圈」（整组多数圈距明显不是 1 km）；
+    2. 该组通过严格门槛的快慢交替（`from_laps` 非 forced 模式：
+       快慢各 ≥3 组、切换 ≥5 次、慢段占比 ≥15%、速度差 ≥1.35×）。
+
+    达标后仍按佳明口径输出，只是 `source` 标成 `coros:laps`、`mode`
+    标成 `coros-laps`，方便出问题和日志里区分。
+    """
+    d = detail or {}
+    groups = d.get("lap_groups") or []
+
+    cands: list[list[dict]] = []
+    for g in groups:
+        if isinstance(g, dict) and manual_laps(g.get("laps") or [], g.get("lap_m")):
+            cands.append(g["laps"])
+    # 没带 lap_groups 的旧缓存 / 只有选中一组时，用展示用的分圈表兜底
+    laps = d.get("laps") or []
+    if manual_laps(laps, d.get("lap_distance_m")):
+        cands.append(laps)
+
+    best: dict | None = None
+    best_laps: list[dict] = []
+    for laps_ in cands:
+        got = from_laps(laps_)
+        if got and (best is None or got["sets"] > best["sets"]):
+            best, best_laps = got, laps_
+    if best:
+        best["source"] = "coros:" + str(best.get("source") or "laps")
+        best["mode"] = "coros-laps"
+    return attach_bands(best, d, best_laps)
 
 
 def check() -> None:
@@ -303,6 +730,23 @@ def check() -> None:
     assert iv["fast"]["pace_s"] < iv["slow"]["pace_s"], iv
     assert iv["ratio"] >= MIN_RATIO
     assert all("segs" in iv[k] for k in ("fast", "slow"))
+
+    # ---- 新口径：是不是间歇只看佳明训练模式，不再看速度 ----------------
+    marked = {"series": {"points": pts}, "training": {"interval": True, "type": "running"}}
+    assert detect(marked) and detect(marked)["mode"] == "garmin-interval"
+    assert detect(marked)["source"].startswith("garmin:")
+    # 佳明没标记：速度再像间歇也不切（这正是旧实现误报的 10 条活动）
+    assert detect({"series": {"points": pts},
+                   "training": {"interval": False, "type": "running"}}) is None
+    assert detect({"series": {"points": pts}}) is None, "旧缓存没有标记时必须走默认版式"
+    # 力量训练的 hasIntensityIntervals 语义不同，不能套跑步双栏
+    assert detect({"series": {"points": pts},
+                   "training": {"interval": True, "type": "strength_training"}}) is None
+    # 标记为间歇但全程匀速、切不出快慢：退回默认版式（空双栏没意义）
+    _even = [{"t": i * 5.0, "spd": 3.0 + (0.05 if i % 3 == 0 else -0.03),
+              "hr": 145, "cad": 176, "dist": i * 15.0} for i in range(120)]
+    assert detect({"series": {"points": _even},
+                   "training": {"interval": True, "type": "running"}}) is None
 
     # 匀速跑：围绕 3.0 m/s 的小抖动，不该判成间歇
     even = [{"t": i * 5.0, "spd": 3.0 + (0.06 if i % 3 == 0 else -0.04),

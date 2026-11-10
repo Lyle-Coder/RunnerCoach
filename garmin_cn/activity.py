@@ -21,6 +21,7 @@ Connect 上看到的 93–98，就是单侧值被当成总步频显示了。
 from __future__ import annotations
 
 import datetime as dt
+import json
 import statistics
 from typing import Any
 
@@ -306,6 +307,58 @@ def build_weather(w: dict | None) -> dict | None:
 
 
 # ---------------------------------------------------------------- 对外入口
+def build_training(meta: dict | None) -> dict:
+    """从活动元数据里取「训练模式」。
+
+    `hasIntensityIntervals` 是佳明对「本次训练是否包含强度间歇」的官方标记
+    （设备按训练课执行或手动计圈时写入），等价于「训练里设置了间歇」。
+    间歇版式只认这个标记，不再靠速度模式猜——真机 63 条跑步明细里，
+    速度判定多认了 10 条佳明未标记的活动。
+    """
+    m = meta if isinstance(meta, dict) else {}
+    atype = ((m.get("activityType") or {}) if isinstance(m.get("activityType"), dict)
+             else {}).get("typeKey") or ""
+    out = {"workout_id": m.get("workoutId") or None, "type": str(atype or "")}
+    # **字段缺失 ≠ 没设置间歇**。单活动接口 `/activity-service/activity/{id}`
+    # 根本不返回 hasIntensityIntervals（真机实测），若在这里写死 False，
+    # 缓存就会被一个「不知道」冒充成「没有」，间歇版式永远出不来。
+    # 只有真的看到这个键才表态；更新鲜的列表 raw 由 resolve_training 覆盖。
+    if "hasIntensityIntervals" in m:
+        out["interval"] = bool(m.get("hasIntensityIntervals"))
+    return out
+
+
+def training_from_raw(raw) -> dict | None:
+    """活动列表 raw 元数据 → 训练模式。离线用，不联网。
+
+    佳明的 `hasIntensityIntervals` 只出现在**活动列表**接口的 raw 里，
+    单活动接口没有。raw 里没有这个键就返回 None（不表态），不能返回
+    interval=False 去盖掉别处的真值。
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return None
+    if not isinstance(raw, dict) or "hasIntensityIntervals" not in raw:
+        return None
+    return build_training(raw)
+
+
+def resolve_training(detail: dict | None, raw) -> dict:
+    """训练模式的唯一口径：**活动列表 raw 优先**，明细里的 training 只是缓存。
+
+    真机教训：单活动接口不给这个字段，fetch 存进去的 training 是「未知」，
+    甚至可能是历史版本写死的 False。所以只要 raw 里有标记就用 raw，
+    raw 没有才退回明细里的缓存值。
+    """
+    t = training_from_raw(raw)
+    if t is not None:
+        return t
+    cached = ((detail or {}).get("training") or {})
+    return cached if isinstance(cached, dict) else {}
+
+
 def fetch(client, activity_id: int | str, *, with_track: bool = True) -> dict:
     """抓取并清洗一次活动的完整明细（不落库）。"""
     aid = str(activity_id)
@@ -320,6 +373,15 @@ def fetch(client, activity_id: int | str, *, with_track: bool = True) -> dict:
         weather = build_weather(client.get(f"/activity-service/activity/{aid}/weather"))
     except Exception:
         weather = None
+    # 训练模式（是否设置间歇）来自活动元数据，与明细/分圈是两个接口。
+    # 元数据取不到时**不要**把 interval=False 写死进缓存——那是永久投毒：
+    # 之后每次打开都以为「佳明没标记」，间歇版式再也回不来。留空键，
+    # 让调用方从活动行 raw 离线回填（见 training_from_raw）。
+    training: dict | None
+    try:
+        training = build_training(client.activity(aid))
+    except Exception:
+        training = None
 
     series_full = build_series(details)
     points = series_full["points"]
@@ -339,6 +401,8 @@ def fetch(client, activity_id: int | str, *, with_track: bool = True) -> dict:
         "track": build_track(details) if with_track else [],
         "route": route_mod.build(details) if with_track else {},
         "weather": weather,
+        # 间歇版式的唯一依据；元数据失败时不写这个键，调用方从 raw 回填
+        **({"training": training} if training is not None else {}),
     }
 
 

@@ -50,6 +50,7 @@ from pathlib import Path
 
 from . import brand as BR
 from .activity import project
+from .activity import resolve_training as _resolve_training
 from .card import _find_browser
 from .exportspec import probe as _export_probe
 from .metrics import num
@@ -791,70 +792,135 @@ def lap_rows(laps: list[dict], theme: dict | None = None) -> str:
     return head + ''.join(out) + f'<div class="lnote">{note}</div>'
 
 
-def interval_columns(iv: dict, theme: dict | None = None) -> str:
-    """间歇结构双栏：左快组、右慢组；识别不出间歇时不会调到这里。"""
+# 强度带的配色，按「快 → 慢」取；恢复档单独一色（比慢档更灰）。
+BAND_COLORS = ("#5CE1D0", "#5FA8E0", "#E8B44A", "#C4753F")
+REST_COLOR = "#3C4956"
+# 柱下逐组标注（配速/时间/距离）最多支持多少组：1080 宽下每组约 60px，
+# 再多三行数字就挤不下，退化为纯结构条 + 逐档汇总。
+MAX_LABEL_COLS = 16
+
+
+def _reps_of(order: list[dict]) -> list[dict]:
+    """把时序段折成「组」：一跑 + 紧随其后的恢复算一组（无恢复时一段一组）。
+
+    结构条要给每根柱标注配速/时间/距离，柱子必须是「组」而不是「段」——
+    15×400 m 是 30 段（快+休息各 15），按段标注会挤成 32px 一列、数字全被截。
+    """
+    reps: list[dict] = []
+    for o in order:
+        if o.get("rest"):
+            if reps and reps[-1].get("rest") is None:
+                reps[-1]["rest"] = o
+            elif reps:
+                r = reps[-1]["rest"]
+                r["dur_s"] = (r.get("dur_s") or 0) + (o.get("dur_s") or 0)
+                r["dist_m"] = (r.get("dist_m") or 0) + (o.get("dist_m") or 0)
+            else:
+                reps.append({"seg": None, "rest": o})
+        else:
+            reps.append({"seg": o, "rest": None})
+    return reps
+
+
+def interval_bands(iv: dict, theme: dict | None = None) -> str:
+    """间歇版式（2~4 档通用）：上结构条，下逐档汇总。
+
+    为什么统一成这一种
+    ------------------
+    「快慢双栏」只是 N=2 的特例，而真实训练里三段课（400 快 + 200 中 +
+    200 慢）、金字塔、变速跑都常见，中段塞进哪一栏都是错的。这里统一按
+    **时间顺序**画柱，柱数 = 组数：柱高表示相对速度、颜色表示强度档，
+    组间恢复是贴底的细灰条。两段课因此也走这一版式，只是只有两档颜色。
+
+    每根柱下面标三行（配速 / 时间 / 距离）——跑者复盘时看的就是这三个数。
+    组数太多（>16）时空间不够逐组标注，退化为纯结构条 + 逐档汇总。
+    """
     th = theme or theme_for(None)
     speed = th["kind"] == "speed"
+    bands = iv.get("bands") or []
+    order = iv.get("order") or []
+    reps = _reps_of(order)
 
     def main(pace: float | None) -> str:
         if not pace:
             return "—"
         return f"{kmh(pace):.1f}" if speed else pace_txt(pace)
 
-    def col(side: str, color: str, label: str) -> str:
-        a = iv[side]
-        rest = bool(a.get("rest"))
-        hr = f'{a["hr_avg"]:.0f}' if a["hr_avg"] else "—"
-        cad = f'{a["cad"]:.0f}' if a["cad"] else "—"
-        # 原地站立/走动的恢复段没有「配速」可言：主指标换成平均恢复时长，
-        # 逐组行也按时长排条、按米数标注，不再写「11'04" / 0.13 km」这种假配速。
-        first = dur_txt(a.get("recover_s")) if rest else main(a["pace_s"])
-        first_lab = "平均恢复" if rest else f'平均{"速度" if speed else "配速"}'
-        stats = (
-            '<div class="ivstat">'
-            f'<div><b>{first}</b>'
-            f'<span>{first_lab}</span></div>'
-            f'<div><b>{hr}</b><span>平均心率</span></div>'
-            f'<div><b>{cad}</b><span>平均步频</span></div>'
-            '</div>')
-        rows: list[str] = []
-        if rest:
-            durs = [s["dur_s"] for s in a["segs"]]
-            lo, hi = (min(durs), max(durs)) if durs else (0.0, 1.0)
-            for i, s in enumerate(a["segs"], 1):
-                k = 0.5 if hi - lo < 1e-6 else (s["dur_s"] - lo) / (hi - lo)
-                w = 30 + k * 70            # 恢复越久条越长
-                rows.append(
-                    f'<div class="ivrow"><span>{i}</span>'
-                    f'<span class="ivbar"><i style="width:{w:.0f}%;'
-                    f'background:{color}"></i></span>'
-                    f'<b>{dur_txt(s["dur_s"])}</b>'
-                    f'<em>{s["dist_m"]:.0f} m</em></div>')
-            sub = f'{a["sets"]} 组 · {dur_txt(a["dur_s"])} 恢复'
-        else:
-            paces = [s["pace_s"] for s in a["segs"] if s["pace_s"]]
-            lo, hi = (min(paces), max(paces)) if paces else (0.0, 1.0)
-            for i, s in enumerate(a["segs"], 1):
-                p = s["pace_s"] or lo
-                k = 0.5 if hi - lo < 1e-6 else (p - lo) / (hi - lo)
-                w = 30 + (1 - k) * 70      # 配速越快（数值越小）条越长
-                rows.append(
-                    f'<div class="ivrow"><span>{i}</span>'
-                    f'<span class="ivbar"><i style="width:{w:.0f}%;'
-                    f'background:{color}"></i></span>'
-                    f'<b>{main(s["pace_s"])}</b>'
-                    f'<em>{s["dist_m"] / 1000:.2f} km</em></div>')
-            sub = f'{a["sets"]} 组 · {a["dist_m"] / 1000:.2f} km'
-        if a["omitted"]:
-            rows.append(f'<div class="ivmore">其余 {a["omitted"]} 组未列出</div>')
-        return (f'<div class="ivcol {side}">'
-                f'<div class="ivhead"><b>{label}</b><span>{sub}</span></div>'
-                f'{stats}<div class="ivlist">{"".join(rows)}</div></div>')
+    def dist_txt(m: float | None) -> str:
+        m = m or 0
+        return f"{m / 1000:.2f} km" if m >= 1000 else f"{m:.0f} m"
 
-    return ('<div class="iv">'
-            + col("fast", "#5CE1D0", "快组")
-            + col("slow", "#E8843A", "慢组 / 恢复")
-            + '</div>')
+    spds = [r["seg"]["spd"] for r in reps
+            if r.get("seg") and not r["seg"].get("rest")]
+    lo, hi = (min(spds), max(spds)) if spds else (0.0, 1.0)
+    span = hi - lo
+
+    def bar_h(spd: float) -> float:
+        k = 0.55 if span < 1e-6 else (spd - lo) / span
+        return 26 + k * 74           # 26%~100%，快的柱更高
+
+    labeled = 1 < len(reps) <= MAX_LABEL_COLS
+    if labeled:
+        cols: list[str] = []
+        for r in reps:
+            seg, rest = r.get("seg"), r.get("rest")
+            if seg:
+                color = BAND_COLORS[min(seg.get("band") or 0,
+                                         len(BAND_COLORS) - 1)]
+                h = bar_h(seg["spd"])
+                body = (f'<i class="ivbar" style="height:{h:.0f}%;'
+                        f'background:{color}"></i>')
+                lab = (f'<b>{main(seg.get("pace_s"))}</b>'
+                       f'<span>{dur_txt(seg.get("dur_s"))}</span>'
+                       f'<em>{dist_txt(seg.get("dist_m"))}</em>')
+            else:
+                body, lab = "", ('<b>—</b><span>—</span><em>—</em>')
+            if rest:
+                body += '<i class="ivrest"></i>'
+            cols.append(f'<div class="ivc"><div class="ivcb">{body}</div>'
+                        f'<div class="ivcl">{lab}</div></div>')
+        strip_html = f'<div class="ivcols">{"".join(cols)}</div>'
+    else:
+        # 组数太多：按段的时长控制柱宽，只给结构形状，不逐组标注
+        bars: list[str] = []
+        for o in order:
+            width = max(6.0, min(60.0, (o.get("dur_s") or 0) / 3.0))
+            if o.get("rest"):
+                bars.append(f'<i class="ivsb rest" style="flex:{width:.0f} 0 0;'
+                            f'height:12%"></i>')
+                continue
+            color = BAND_COLORS[min(o.get("band") or 0, len(BAND_COLORS) - 1)]
+            bars.append(f'<i class="ivsb" style="flex:{width:.0f} 0 0;'
+                        f'height:{bar_h(o["spd"]):.0f}%;background:{color}"></i>')
+        strip_html = f'<div class="ivstrip">{"".join(bars)}</div>'
+
+    rows: list[str] = []
+    for i, b in enumerate(bands):
+        color = (REST_COLOR if b.get("rest")
+                 else BAND_COLORS[min(i, len(BAND_COLORS) - 1)])
+        if b.get("rest"):
+            # 站桩恢复没有「配速」可言，给平均恢复时长；慢跑恢复给配速
+            if b.get("jog"):
+                val, val_lab = main(b.get("pace_s")), "恢复配速"
+            else:
+                val, val_lab = dur_txt(b.get("recover_s")), "平均恢复"
+        else:
+            val = main(b.get("pace_s"))
+            val_lab = "平均速度" if speed else "平均配速"
+        hr = f'{b["hr_avg"]:.0f}' if b.get("hr_avg") else "—"
+        per = (b["dist_m"] / max(1, b["sets"])) if b.get("dist_m") else 0
+        rows.append(
+            '<div class="ivbr">'
+            f'<i style="background:{color}"></i>'
+            f'<b>{b["label"]}</b>'
+            f'<span>{b["sets"]} 组 · {per:.0f} m</span>'
+            f'<em>{val}<u>{val_lab}</u></em>'
+            f'<em>{hr}<u>心率</u></em>'
+            '</div>')
+    return ('<div class="ivband">'
+            f'{strip_html}'
+            f'<div class="ivbrows">{"".join(rows)}</div>'
+            '</div>')
 
 
 def _mix(c1: str, c2: str, k: float) -> str:
@@ -932,20 +998,34 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     gct = num(raw.get("avgGroundContactTime")) or num(s.get("gct_ms"))
     vo = num(raw.get("avgVerticalOscillation")) or num(s.get("vo_cm"))
     n_real = len([l for l in laps if (l.get("pace_s") or 0) > 0])
-    # 间歇训练（快慢交替）自动切到「底部分双栏」：左快组、右慢组。
-    # 识别不出就完全走原来的分圈表，非间歇活动的版式零影响。
-    iv = None if is_coros else IV.detect(detail)
+    # 间歇版式的唯一依据是佳明的训练模式标记（hasIntensityIntervals）：
+    # 训练里设置了间歇才切「底部双栏」，其余一律走原来的分圈表。
+    # **活动列表 raw 优先**：单活动接口不返回这个标记，明细里缓存的 training
+    # 可能是「未知」甚至历史版本写死的 False（真机删数据重拉后正好是这种），
+    # 只在「缺键」时回填会漏掉后一种，导致 10-21 的 15×400 m 永远默认版式。
+    # 高驰没有这个标记 —— 走「手动计圈结构」判定（interval.detect_coros）。
+    if is_coros:
+        iv = IV.detect_coros(detail)
+    else:
+        detail = {**detail, "training": _resolve_training(detail, raw)}
+        iv = IV.detect(detail)
     if iv:
+        # 2~4 档统一走「结构条 + 逐档汇总」：双栏只是两档的特例，
+        # 而两段课同样需要逐组看配速/时间/距离，所以不再单独保留双栏。
         lap_title = "间歇结构"
-        if iv["slow"].get("rest"):
-            # 原地恢复型间歇：速度差会算到 10× 以上却毫无意义，
-            # 改成「几组 × 每组多少米 / 组间恢复多久」这种能读懂的说法。
-            per = iv["fast"]["dist_m"] / max(1, iv["sets"])
-            lap_sub = (f'{iv["sets"]} 组 × {per:.0f} m · 组间恢复 '
-                       f'{dur_txt(iv["slow"].get("recover_s"))}')
+        bands = iv.get("bands") or []
+        lap_html = interval_bands(iv, th)
+        sets_total = sum(b["sets"] for b in bands if not b.get("rest"))
+        if len(bands) > 2:
+            lap_sub = f'{len(bands)} 档强度 · {sets_total} 组'
+        elif any(b.get("rest") for b in bands):
+            per = next((b["dist_m"] / max(1, b["sets"]) for b in bands
+                        if not b.get("rest")), 0)
+            rest_b = next((b for b in bands if b.get("rest")), {})
+            lap_sub = (f'{sets_total} 组 × {per:.0f} m · 组间恢复 '
+                       f'{dur_txt(rest_b.get("recover_s"))}')
         else:
-            lap_sub = f'{iv["sets"]} 组快慢交替 · 速度差 {iv["ratio"]:.2f}×'
-        lap_html = interval_columns(iv, th)
+            lap_sub = f'{sets_total} 组快慢交替 · 速度差 {iv["ratio"]:.2f}×'
     else:
         if n_real > 10:
             lap_title, lap_sub = "分段", f"每 {math.ceil(n_real / 10)} 圈合并"
@@ -1301,30 +1381,43 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
   vertical-align:middle}
 .lg.pace{background:var(--acc)}
 .lg.hr{background:#E8843A}
-/* 间歇结构：底部整块切成左右双栏，左快组右慢组。
-   两栏等高；15 组以内的常见间歇逐组列全，行距压紧，不让长图撑爆。 */
-.iv{display:flex;gap:16px;align-items:stretch}
-.ivcol{flex:1;min-width:0;background:#10161C;border:1px solid #23364A;
-  border-radius:14px;padding:14px 18px}
-.ivcol.fast{border-color:#2A5149}
-.ivcol.slow{border-color:#4A3827}
-.ivhead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
-.ivhead b{font-size:27px;font-weight:700}
-.ivhead span{font-size:17px;color:#76838F}
-.ivcol.fast .ivhead b{color:#5CE1D0}
-.ivcol.slow .ivhead b{color:#E8843A}
-.ivstat{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;
-  padding-bottom:12px;border-bottom:1px solid #23364A}
-.ivstat b{display:block;font-size:31px;font-weight:700;line-height:1.15;letter-spacing:-.5px}
-.ivstat span{font-size:15px;color:#939FAD}
-.ivlist{margin-top:6px}
-.ivrow{display:flex;align-items:center;gap:10px;padding:2px 0;font-size:17px}
-.ivrow>span:first-child{width:26px;text-align:right;color:#76838F;flex:none}
-.ivbar{flex:1;height:10px;background:#1B2530;border-radius:5px;overflow:hidden}
-.ivbar i{display:block;height:100%;border-radius:5px}
-.ivrow b{width:74px;text-align:right;font-size:21px;flex:none}
-.ivrow em{width:80px;text-align:right;font-style:normal;color:#939FAD;flex:none}
-.ivmore{font-size:16px;color:#64707E;text-align:center;padding-top:8px}
+/* 间歇结构：柱 = 一组（间歇 + 组间恢复），柱下三行标注配速/时间/距离。
+   组数是「间歇组数」：15×400 m 是 15 根柱，恢复画成柱底细灰条。 */
+.ivband{background:#10161C;border:1px solid #23364A;border-radius:14px;padding:14px 16px}
+.ivcols{display:flex;gap:5px;align-items:stretch;padding-bottom:10px;
+  border-bottom:1px solid #1C2A38;margin-bottom:12px}
+.ivc{flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:flex-end}
+.ivcb{height:120px;display:flex;flex-direction:column-reverse;align-items:center;
+  gap:3px;justify-content:flex-start}
+.ivcb i{display:block;width:62%;border-radius:4px 4px 2px 2px}
+.ivcb .ivrest{height:7px;background:#3C4956;border-radius:2px}
+.ivcl{margin-top:7px;text-align:center;line-height:1.3;white-space:nowrap;
+  overflow:hidden}
+.ivcl b{display:block;font-size:16px;font-weight:700;color:#D3DBE4;
+  font-variant-numeric:tabular-nums}
+.ivcl span{display:block;font-size:13px;color:#939FAD;
+  font-variant-numeric:tabular-nums}
+.ivcl em{display:block;font-style:normal;font-size:13px;color:#76838F;
+  font-variant-numeric:tabular-nums}
+/* 组数超过 16 时退化为纯结构条（柱宽按时长） */
+.ivstrip{display:flex;align-items:flex-end;gap:4px;height:132px;padding-bottom:10px;
+  border-bottom:1px solid #1C2A38;margin-bottom:12px}
+.ivsb{display:block;border-radius:4px 4px 2px 2px;min-width:5px}
+.ivsb.rest{background:#3C4956;border-radius:2px}
+.ivband{background:#10161C;border:1px solid #23364A;border-radius:14px;padding:14px 16px}
+.ivstrip{display:flex;align-items:flex-end;gap:4px;height:132px;padding-bottom:10px;
+  border-bottom:1px solid #1C2A38;margin-bottom:12px}
+.ivsb{display:block;border-radius:4px 4px 2px 2px;min-width:5px}
+.ivsb.rest{background:#3C4956;border-radius:2px}
+.ivbrows{display:flex;flex-direction:column;gap:9px}
+.ivbr{display:flex;align-items:center;gap:10px;font-size:18px}
+.ivbr>i{width:14px;height:14px;border-radius:4px;flex:none}
+.ivbr>b{width:44px;font-size:20px;font-weight:700;color:#D3DBE4;flex:none}
+.ivbr>span{flex:1;color:#939FAD;min-width:0;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.ivbr>em{width:104px;text-align:right;font-style:normal;font-size:21px;flex:none;
+  font-variant-numeric:tabular-nums}
+.ivbr>em u{display:block;font-size:14px;color:#76838F;text-decoration:none}
 """ + BR.BRAND_CSS + BR.card_css(".card", top="#18202A", bottom="#141A22") + """
 /* 品牌化：卡片顶沿高光、抬头角标、右下角水印、页脚字标。
    背景渐进与辉光由 build_html 按运动主色注入，见 surface_css。 */
