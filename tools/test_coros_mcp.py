@@ -349,5 +349,47 @@ class ChineseTextTest(unittest.TestCase):
         self.assertEqual(M._minutes("8 小时"), 480)
 
 
+# 真机拿到的原文（2026-11-10 用户朋友的高驰账号）：换行是字面量 \n，
+# 且有「Main Sleep Period (incl. awake)」「Awake Ratio」「Awake Count」这类干扰行。
+REAL_SLEEP_TEXT = (
+    "Sleep Overview\n=============\n\nNote: each record below is dated by its "
+    "wake-up day.\n\n2026-10-12\nSleep Score: 89\nDaily Sleep: 8h 47min "
+    "(incl. naps)\nMain Sleep (asleep): 7h 19min\nMain Sleep Period (incl. "
+    "awake): 7h 32min\nSleep metrics scope: daily\nDeep Sleep Ratio: 14%\n"
+    "Light Sleep Ratio: 56%\nREM Ratio: 27%\nAwake Ratio: 3%\nAwake Time: "
+    "13 min\nAwake Count (>5 min): 0\nMain Sleep Window: 2026-10-11 23:52 - "
+    "2026-10-12 07:24\nNaps Total (asleep): 1h 28min\nNaps Period (incl. "
+    "awake): 1h 30min\nNap Window: 2026-10-12 14:31 - 2026-10-12 16:01"
+)
+
+
+class RealReturnTest(unittest.TestCase):
+    """真实接口返回必须能解析——「授权成功但 0 条」就是栽在这段文本上。"""
+
+    def test_real_english_return(self):
+        rows = M.parse_sleep({"content": [{"type": "text", "text": REAL_SLEEP_TEXT}]})
+        self.assertEqual(len(rows), 1, "真实返回没解析出记录（字面量 \\n 未还原？）")
+        r = rows[0]
+        self.assertEqual(r["date"], "2026-10-12")
+        self.assertEqual(r["sleep_score"], 89)
+        # 用主睡眠 7h19min=439，而不是含小睡的 Daily Sleep 8h47min=527
+        self.assertEqual(r["sleep_total_min"], 439)
+        self.assertEqual(r["deep_min"], 61)       # 14% × 439
+        self.assertEqual(r["light_min"], 246)     # 56% × 439
+        self.assertEqual(r["rem_min"], 119)       # 27% × 439
+        self.assertEqual(r["awake_min"], 13)      # Awake Time，不是 Ratio 的 3
+        self.assertEqual(r["nap_min"], 88)        # Naps Total (asleep) 1h28min
+        self.assertEqual(r["sleep_start"], "2026-10-11T23:52:00")
+        self.assertEqual(r["sleep_end"], "2026-10-12T07:24:00")
+
+    def test_period_and_count_lines_ignored(self):
+        rows = M.parse_sleep({"content": [{"type": "text", "text": REAL_SLEEP_TEXT}]})
+        r = rows[0]
+        self.assertNotIn("sleep_total_min" if False else "_main_min", r)
+        self.assertNotIn("_period" , r)
+        # Period (incl. awake) 的 7h32min 不该顶掉真值
+        self.assertNotEqual(r["sleep_total_min"], 452)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
