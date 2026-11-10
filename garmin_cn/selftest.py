@@ -2842,7 +2842,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 97' in (
+    assert 'versionCode = 98' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -3173,7 +3173,7 @@ def run() -> int:
     assert _tried == [2, 1], f"邮箱账号的重试顺序不对（试过 {_tried}）"
     _kt3 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert "高驰账号（邮箱或手机号）" in _kt3, "登录框还写着只能填邮箱"
-    assert "setMessage(msg)" in _kt3, "长错误提示没走对话框，toast 会被截断"
+    assert "上次登录失败：" in _kt3, "失败原因没写回登录框，用户不知道错在哪"
 
     # ---- 1.0.2：会话校验三态（网络抖动不许把人踢回登录框）--------------
     # 真机反馈「登录后一下拉刷新又弹登录」：client.get 对网络异常返回 None，
@@ -3215,6 +3215,15 @@ def run() -> int:
     assert "garminMfa" in _kt5 and "askMfa()" in _kt5, "续期要验证码时没弹验证码框"
     assert 'r.optBoolean("need_mfa") || r.optBoolean("need_login") -> garminDead' not in _kt5, \
         "need_mfa 还被当成密码失效，会弹登录框"
+    # 登录中的小卡片：提交后给明确反馈，成功关卡片，失败带错误重开（不丢输入）
+    assert "private fun showLoginCard(" in _kt5, "没有登录中卡片，用户会以为没点中"
+    assert 'showLoginCard("正在登录佳明"' in _kt5 and 'showLoginCard("正在登录高驰"' in _kt5
+    assert _kt5.count("card.dismiss()") >= 2, "成功/失败都要先把卡片关掉"
+    assert "askGarminLogin(email, pwd," in _kt5, "佳明登录失败没有回填重开"
+    assert "askCorosLogin(email, pwd, region," in _kt5, "高驰登录失败没有回填重开"
+    assert "重新登录佳明国区" in _kt5 and "重新登录 COROS 高驰" in _kt5
+    assert "setText(pwd ?: \"\")" in _kt5, "重开时密码没带回去，用户要整栏重打"
+
 
     # ---- 1.0.2：应用内检查更新（Gitee Release，零后端）------------------
     from garmin_cn import update as _UP
