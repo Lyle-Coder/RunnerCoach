@@ -137,6 +137,71 @@ class DetailUnitsTest(unittest.TestCase):
         self.assertEqual(a["adapter_version"], b["adapter_version"])
 
 
+class NativeCorosTest(unittest.TestCase):
+    def test_native_summary_and_walking_samples_are_preserved(self):
+        d = detail()
+        d["summary"].update(avgCadence=130, avgStepLen=81, avgHr=145)
+        d["frequencyList"] = [dict(sample(i, i * 300, 600, cad=90), cadenceLength=42)
+                              for i in range(30)]
+        p = CA.normalize(d, "trail")
+        self.assertEqual(p["summary"]["cad_avg"], 130)
+        self.assertEqual(p["summary"]["stride_avg"], 81)
+        self.assertEqual(p["summary"]["hr_run_avg"], 145)
+        self.assertTrue(all(x["cad"] == 90 and x["stride"] == 42
+                            and not x.get("fixed") for x in p["series"]["points"]))
+        self.assertIsNone(p["summary"]["drift"])
+
+    def test_missing_stride_not_invented(self):
+        p = CA.normalize(detail(), "a")
+        self.assertIsNone(p["summary"]["stride_avg"])
+        self.assertIsNone(p["series"]["points"][0]["stride"])
+
+    def test_kilometre_group_wins_over_first_group(self):
+        d = detail()
+        d["lapList"].insert(0, {"type": 10, "lapDistance": 500000,
+                               "lapItemList": [lap(500000, 200000)]})
+        p = CA.normalize(d, "a")
+        self.assertEqual(p["lap_distance_m"], 1000)
+        self.assertEqual(len(p["laps"]), 3)
+
+    def test_six_native_zones_and_no_inferred_training_claims(self):
+        d = detail()
+        d["zoneList"] = [{"type": 126, "zoneItemList": [
+            {"zoneIndex": i, "second": 60 * (i + 1)} for i in range(6)]},
+            {"type": 130, "zoneItemList": [{"zoneIndex": 0, "second": 99999}]}]
+        p = CA.normalize(d, "a")
+        self.assertEqual(sum(z["seconds"] for z in p["hr_zones"]), 1260)
+        from unittest.mock import patch
+        with patch.object(actcard.IV, "detect", side_effect=AssertionError("inference called")):
+            html = actcard.build_html(CardRenderTest()._row(), p)
+        self.assertIn("Z6", html)
+        self.assertNotIn("本次未记录分区时长", html)
+        self.assertNotIn("热身", html)
+        self.assertNotIn(">间歇结构<", html)
+
+    def test_grouped_averages_are_duration_weighted(self):
+        laps = [{"idx": 1, "dist_m": 1000, "dur_s": 300, "pace_s": 300,
+                 "hr_avg": 160, "cad": 180},
+                {"idx": 2, "dist_m": 100, "dur_s": 100, "pace_s": 1000,
+                 "hr_avg": 120, "cad": 100}]
+        grouped = actcard.group_laps(laps, max_rows=1)[0]
+        self.assertEqual(grouped["hr_avg"], 150)
+        self.assertEqual(grouped["cad"], 160)
+        self.assertAlmostEqual(grouped["pace_s"], 400 / 1.1)
+
+    def test_authoritative_summary_units_and_zero(self):
+        d = detail()
+        d["summary"].update(avgStepLen=81, aerobicEffect=0, elevGain=0)
+        p = CA.normalize(d, "a")
+        m = p["row_metrics"]
+        self.assertEqual(m["distance_m"], 2810)
+        self.assertEqual(m["duration_s"], 2250)
+        self.assertEqual(m["calories"], 249)
+        self.assertEqual(m["pace_s_km"], 200)
+        self.assertEqual(m["ascent"], 0)
+        self.assertEqual(m["aerobic_te"], 0)
+
+
 class ActivityListTest(unittest.TestCase):
     """活动列表口径：distance 米、totalTime 秒、calorie 卡。"""
 
