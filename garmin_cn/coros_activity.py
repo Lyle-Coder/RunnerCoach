@@ -6,7 +6,7 @@ speed 是「秒/公里」（→ 1000/pace 得 m/s）。summary 里以毫秒为�
 totalTime 实际是厘秒，distance 同样是厘米，maxSpeed 是秒/公里。
 分圈 lapItemList 的 distance/time 也是厘米/厘秒。
 协议参考 https://github.com/benniblau/coros-mcp/blob/main/coros_downloader.py
-只转换入口，统计、步频修正、轨迹合并、抽稀和出图仍复用佳明实现。
+高驰汇总和步态保留原始口径；轨迹、抽稀和出图复用公共实现。
 
 历史坑（2026-11-09 修）：coros.py 里另有一份 `detail_to_payload` 把 lap
 distance 直接当米用，导致 1 km 圈显示成 100.00 km、配速 0'06"，同时时序
@@ -24,8 +24,8 @@ from . import activity as act
 from . import route
 from .coros import CorosAuthError, CorosCloud, CorosError
 
-# 2 = 修正 lap/时序距离单位（厘米→米）与海拔单位；加 row_metrics.max_speed_mps
-ADAPTER_VERSION = 2
+# 3 = 原生汇总/步态/六区心率，优先公里分圈；废弃佳明修正后的旧缓存
+ADAPTER_VERSION = 3
 
 
 def raw_activity(row: dict) -> dict:
@@ -85,18 +85,33 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
         "activityDetailMetrics": metrics,
         "geoPolylineDTO": {"polyline": poly},
     }
-    series = act.build_series(canonical)
-    points = series["points"]
-    summary = act.aggregate(points)
-    summary.update(repaired=series.get("repaired", 0), rescaled=series.get("rescaled", 0))
-    # lapList 包含不同分组（自动分圈 / 手动圈 / 全程汇总），取第一组有数据的圈。
-    # 汇总组（只有 1 条、覆盖全程）若混进来会让总距离翻倍，因此只认第一组。
+    # COROS already reports total cadence and measured stride. Never apply
+    # Garmin's unilateral-cadence heuristics or exclude walking on trail runs.
+    points = []
+    for p, m in zip([p for p in samples if number(p.get("timestamp")) is not None], metrics):
+        t, speed, hr, cad, ele, dist, power = m["metrics"]
+        points.append({"t": t / 1000, "spd": speed, "hr": hr,
+                       "cad": cad, "stride": number(p.get("cadenceLength")),
+                       "ele": ele, "dist": dist, "pwr": power,
+                       "bb": None, "gap": None, "source": "coros"})
+    native = data.get("summary") or {}
+    summary = {"cad_avg": number(native.get("avgCadence")),
+               "cad_max": number(native.get("maxCadence")),
+               "stride_avg": number(native.get("avgStepLen")),
+               "hr_run_avg": number(native.get("avgHr")),
+               "all_samples": len(points), "repaired": 0, "rescaled": 0,
+               "drift": None}
+    # lapList 包含公里、5 公里、10 公里和全程汇总，只选一组。
     groups = data.get("lapList") or []
     if not isinstance(groups, list) or any(not isinstance(g, dict) for g in groups):
         raise CorosError("高驰分圈数据格式已变化")
     native_summary = data.get("summary") or {}
     laps = []
-    items = next((g["lapItemList"] for g in groups if g.get("lapItemList")), [])
+    # Prefer the native kilometre splits, not whichever 5/10 km group comes first.
+    candidates = [g for g in groups if g.get("lapItemList") and g.get("type") != -1]
+    selected = next((g for g in candidates if number(g.get("lapDistance")) == 100000),
+                    candidates[0] if candidates else {})
+    items = selected.get("lapItemList") or []
     for i, lap in enumerate(items):
         if not isinstance(lap, dict):
             raise CorosError("高驰分圈数据格式已变化")
@@ -129,13 +144,27 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
     row_metrics = {"aerobic_te": number(native_summary.get("aerobicEffect")),
                    "anaerobic_te": number(native_summary.get("anaerobicEffect")),
                    "max_speed_mps": round(1000 / max_pace, 3) if max_pace and max_pace > 0 else None}
+    for target, key, divisor in (
+            ("distance_m", "distance", 100), ("duration_s", "totalTime", 100),
+            ("pace_s_km", "avgSpeed", 1), ("avg_hr", "avgHr", 1),
+            ("max_hr", "maxHr", 1), ("ascent", "elevGain", 1),
+            ("load", "trainingLoad", 1), ("calories", "calories", 1000)):
+        value = number(native_summary.get(key), divisor)
+        if value is not None:
+            row_metrics[target] = value
+    zones = next((g.get("zoneItemList") or [] for g in data.get("zoneList") or []
+                  if g.get("type") == 126), [])
+    hr_zones = [{"index": int(number(z.get("zoneIndex")) or 0),
+                 "seconds": number(z.get("second")) or 0}
+                for z in sorted(zones, key=lambda z: number(z.get("zoneIndex")) or 0)]
     track_points = track if track else act.build_track(canonical)
     return {"activity_id": str(activity_id), "source": "coros",
             "adapter_version": ADAPTER_VERSION,
             "fetched_at": dt.datetime.now().isoformat(timespec="seconds"),
-            "summary": summary, "laps": laps,
+            "summary": summary, "laps": laps, "hr_zones": hr_zones,
+            "lap_distance_m": number(selected.get("lapDistance"), 100),
             "series": {"points": act._thin(points, act.SERIES_POINTS)},
-            "track": track_points[:420] if len(track_points) > 420 else track_points,
+            "track": act._thin(track_points, act.TRACK_POINTS),
             "route": route.build(canonical),
             "weather": None, "row_metrics": {k: v for k, v in row_metrics.items() if v is not None}}
 
