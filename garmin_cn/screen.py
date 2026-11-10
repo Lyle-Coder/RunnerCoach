@@ -232,7 +232,6 @@ _LAND = """
 .rc-page .page-head.rc-compact .brandline{display:none}
 .rc-page .page-head.rc-compact h1{font-size:15px;margin:0}
 .rc-page .page-head.rc-compact .meta{margin-top:2px}
-.rc-page .head-act{top:0;min-height:36px;padding:0 10px;font-size:11px}
 .rc-page .foot{margin-top:3px;padding-top:2px;line-height:1.4}
 .rc-screen{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));
   grid-template-areas:
@@ -294,9 +293,6 @@ _LAND = """
 .rc-page .page-head.rc-compact{padding:0;margin-bottom:0}
 .rc-page .page-head.rc-compact h1{font-size:12px}
 .rc-page .page-head.rc-compact .meta{display:none}
-/* 页头压到 ~18px 后，绝对定位的动作按钮会溢出到结论条上，极矮屏直接收掉：
-   横屏是纯看板态，出图等动作转回竖屏再做。 */
-.rc-page .head-act{display:none}
 .rc-page .foot{display:none}
 .rc-screen{grid-template-rows:24px minmax(0,1fr) minmax(0,1fr);gap:5px;
   height:calc(100vh - 30px);height:calc(100dvh - 30px)}

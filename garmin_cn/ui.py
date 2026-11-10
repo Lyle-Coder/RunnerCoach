@@ -66,14 +66,8 @@ a{color:var(--brand-ink);text-decoration:none}
   background:linear-gradient(90deg,rgba(59,130,246,.60),rgba(34,211,238,.12) 46%,transparent)
     bottom / 100% 1px no-repeat}
 .page-head.after-back{padding-top:14px}
-/* 页头右上角的单动作按钮（今日页就是「分享」出图）。
-   以前它是页面里的一整张快捷卡，占掉半屏却只做一件事。 */
-.head-act{position:absolute;top:12px;right:0;display:inline-flex;align-items:center;
-  justify-content:center;gap:5px;font-size:12.5px;font-weight:600;padding:0 12px;
-  min-height:44px;border-radius:999px;
-  color:var(--brand-ink);background:var(--brand-soft);cursor:pointer;
-  border:1px solid rgba(59,130,246,.36);box-shadow:0 0 18px -6px rgba(59,130,246,.9)}
-.head-act:active{background:rgba(59,130,246,.28)}
+/* 页头不再挂右上角动作按钮：0.6.13 起一图流归到「我的」页的低频动作里。
+   page() 的 action 参数仍留给二级页，首页不再传它。 */
 /* 有右上角动作时给标题和副标题留出位置，长标题不会钻到按钮底下 */
 .page-head.with-act h1,.page-head.with-act .lede{padding-right:92px}
 .kicker{font-size:11px;font-weight:700;letter-spacing:2px;color:var(--cyan);
@@ -867,12 +861,12 @@ def home_page() -> str:
     body_html_all = ('<div class="rc-screen">' + verdict + hero + load_html
                      + body_html + plan_html + week_html + '</div>')
     # 只留两个数据胶囊：宽屏自动铺成大屏，不再需要第三个按钮。
+    # 一图流也不再挂页头：那枚胶囊在横屏大屏里孤零零地压着结论条，
+    # 0.6.13 起统一收进「我的」页的低频动作列表。
     chips = (chip(f"{st.get('days') or 0} 天数据") +
              chip(f"上次同步 {esc(str(st.get('last_sync') or '—')[5:16])}"))
-    action = ('<div class="head-act" data-act="export" role="button" tabindex="0" '
-              'aria-label="导出一图流"><span aria-hidden="true">⇪</span>一图流</div>')
     return page("TODAY · 今日", "今天该怎么练", "", body_html_all, chips,
-                action=action, screen=True,
+                screen=True,
                 foot="本机计算 · 不上传轨迹 · 离线可用。")
 
 
@@ -1256,6 +1250,10 @@ def me_page() -> str:
     # 自动往前挪，进度写在标题栏小字。这里只做只读展示，不提供点击 ——
     # 以前那个入口点开只有一个弹窗、跑完也只说「跳过 N 天」，用户只会觉得没反应。
     more = (row("◫", "产物文件", "看板 / 图片 / 视频清单", href="/files") +
+            # 首页页头那枚「一图流」胶囊挪到这儿：低频动作统一归「我的」，
+            # 横屏大屏的页头也不用再为它留 92px 让位。
+            row("⇪", "今日一图流", "生成 1080×1920 看板，存相册或直接分享",
+                act="export", tone="a") +
             row("◍", "AI 模型服务", f"{ai_txt} · 在「教练」页右上角设置", tone="b", go=False) +
             row("⌖", "地图底图",
                 ("已配置 · 活动图带高德底图" if _map_on()

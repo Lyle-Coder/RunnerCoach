@@ -225,14 +225,16 @@ def run() -> int:
     home = U.home_page()
     assert "page-head" in home and 'data-aid=' in home
     assert 'href="/history"' not in home, "首页不该再给历史入口，底部 tab 已经有了"
-    # 一图流从「一整张快捷卡」退成页头右上角的小按钮
-    assert 'class="head-act"' in home and 'data-act="export"' in home, \
-        "首页页头没有一图流按钮"
+    # 0.6.13：页头那枚胶囊在横屏大屏里孤零零地压着结论条，撤掉；
+    # 一图流作为低频动作统一收进「我的」页，功能不能因此失联。
+    assert 'class="head-act"' not in home and 'data-act="export"' not in home, \
+        "首页页头还挂着那枚一图流胶囊"
     assert "导出今日一图流" not in home, "一图流不该再占一整张卡片"
     # 首页不再重复「数据覆盖」：「我的 → 本地数据」已经有同样三个数
     assert "数据覆盖" not in home, "首页的覆盖区块和「我的」页重复了"
     me = U.me_page()
     assert "page-head" in me and 'data-act="login:garmin"' in me
+    assert 'data-act="export"' in me, "一图流入口没迁到「我的」页，功能会失联"
     assert 'data-act="login:coros"' in me, "数据源行要直达对应登录"
     # settings 是 AI 设置，只许在教练页齿轮里
     assert 'data-act="historySync"' not in me, \
@@ -2710,7 +2712,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 78' in (
+    assert 'versionCode = 79' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -2831,11 +2833,11 @@ def run() -> int:
     assert _kt3.count("applyChromeForOrientation()") >= 3, \
         "onCreate 初始化与方向回调里都要应用栏状态"
     # 栏收掉后 WebView 变高，但 720p 小屏横过来只剩 264px，极矮档还得
-    # 自己吃满高度、收掉会溢出的绝对定位动作按钮。
+    # 自己吃满高度；页头动作按钮 0.6.13 已整体撤掉，样式也不该留。
     assert "calc(100dvh - 30px)" in _css, \
         "极矮横屏栅格没有吃满可用高度"
-    assert ".rc-page .head-act{display:none}" in _css, \
-        "极矮横屏的动作按钮会压到结论条上"
+    assert "head-act" not in _css, \
+        "页头动作按钮已经撤掉，横屏不该还留着它的覆写样式"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
