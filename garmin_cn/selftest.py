@@ -2705,7 +2705,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 75' in (
+    assert 'versionCode = 76' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -2772,6 +2772,23 @@ def run() -> int:
         "icon 起点绿没进两张出图"
     assert "#5FA8E0" in _act_src and "#3B82F6" in _act_src, \
         "活动图兜底配色没往品牌蓝靠"
+
+    # ---- 0.6.10：两张一图流只留页脚左下角那枚角标 ---------------------
+    # 抬头原来各挂一枚 44/48px 角标，用户觉得压着标题；页脚那枚保留。
+    # 查的是源码里的调用而不是整页字符串，因为页脚仍然要用它。
+    assert 'BR.badge_html(44)' not in _card_src and \
+        'BR.badge_html(18)' in _card_src, \
+        "看板一图流：抬头角标没删干净，或页脚角标被一起删了"
+    assert 'BR.badge_html(48' not in _act_src and \
+        'BR.badge_html(18' in _act_src, \
+        "活动图：抬头角标没删干净，或页脚角标被一起删了"
+    assert 'class="hbrand"' not in _act_src and \
+        '.rc-date .rc-badge' not in _card_src, \
+        "抬头角标的容器 / 专用 CSS 还留着"
+    assert 'class="rc-foot"' in _card_src and 'class="rc-foot"' in _act_src, \
+        "页脚左下角的品牌字标必须保留"
+    assert 'BR.BRAND_CSS' in _card_src and 'BR.BRAND_CSS' in _act_src, \
+        "角标删掉后不要把整套品牌样式也一起摘了"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")

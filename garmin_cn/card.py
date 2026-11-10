@@ -678,8 +678,9 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
   pointer-events:none}}
 .date{{font-size:38px;font-weight:700;letter-spacing:1px;white-space:nowrap}}
 .date small{{font-size:21px;font-weight:400;color:#8FA4BF;margin-left:10px}}
-/* 右侧限宽：加了品牌 icon 之后左侧变宽，来源/同步时间一长就会把右侧顶到
-   画幅外。两行拆开、各自可换行，右侧永远留在 52px 安全区内。 */
+/* 右侧限宽：来源/同步时间一长就会把右侧顶到画幅外。两行拆开、各自可
+   换行，右侧永远留在 52px 安全区内。抬头只留日期，页脚左下角那枚品牌
+   角标保留（0.6.10）。 */
 .meta{{flex:0 1 46%;max-width:46%;text-align:right;font-size:19px;
   color:#8FA4BF;line-height:1.5;word-break:break-word}}
 .meta .m1{{font-size:22px;font-weight:650;color:#8CC2FF;
@@ -861,14 +862,13 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .kpi,.bkpi,.aact,.wkd{{background:linear-gradient(180deg,#1B2A3D,#111C2B)}}
 .wrap{{position:relative;z-index:1}}
 .rc-wm{{right:36px;bottom:70px;opacity:.06}}
-.rc-date{{display:flex;align-items:center;gap:12px;flex:0 0 auto}}
-.rc-date .rc-badge{{box-shadow:0 0 26px -6px rgba(59,130,246,.9)}}
+.rc-date{{display:flex;align-items:center;flex:0 0 auto}}
 .foot .rc-foot{{color:#8FA4BF;font-weight:600;letter-spacing:.5px}}
 .foot .rc-foot .rc-badge{{width:20px;height:20px}}
 
 </style></head><body><div class="rc-glow"></div>{BR.watermark_html(420)}<div class="wrap" data-gc-canvas>
 <div class="top">
-  <div class="rc-date">{BR.badge_html(44)}<div class="date">{d.strftime("%m月%d日")}<small>{DOW[d.weekday()]}</small></div></div>
+  <div class="rc-date"><div class="date">{d.strftime("%m月%d日")}<small>{DOW[d.weekday()]}</small></div></div>
   <div class="meta">
     <div class="m1">恢复度 <b>{_f(r.get("score"))}</b> / 100</div>
     <div class="m2">{esc(src)} · 已同步 {esc((sync_at or "")[:16]) or esc(res["date"])}</div>

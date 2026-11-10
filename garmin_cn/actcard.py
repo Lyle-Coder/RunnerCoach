@@ -1044,7 +1044,6 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
 <div class="page" data-gc-canvas data-gc-privacy="{mode}">
 
   <div class="head">
-    <div class="hbrand">{BR.badge_html(48, glow_color=th['acc'])}</div>
     <div class="hleft">
       <div class="hname">{esc(title or row.get("name"))}</div>
       <div class="hsub">{esc(date_txt)} {esc(wd)}{time_txt}{(' · ' + esc(weather_txt)) if weather_txt else ''}</div>
@@ -1175,8 +1174,8 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
    min-width:0，flex 子项按 max-content 撑开，右侧标签被直接挤出卡片。
    这里不用 -webkit-line-clamp（个别 WebView 版本上 display:-webkit-box 会让
    行高/换行表现不一致），改成 max-height + overflow:hidden，行为稳定。
-   0.6.9：加了品牌 icon 后左侧更宽，改为 nowrap + min-width:0 让标题自己
-   收缩/换行，右侧标签固定在原位，不再掉到下一行或越出画幅。 */
+   0.6.10：抬头的角标去掉（页脚左下角保留），左侧只剩标题与副标题；
+   nowrap + min-width:0 仍让长标题自己收缩/换行，标签固定在原位。 */
 .head{display:flex;align-items:flex-end;justify-content:space-between;
   gap:16px;flex-wrap:nowrap}
 .hleft{flex:1 1 460px;min-width:0}
@@ -1319,7 +1318,6 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
   background:linear-gradient(90deg,transparent,rgba(96,165,250,.40),transparent)}
 .page{position:relative;z-index:1}
 .rc-wm{right:36px;bottom:70px;opacity:.055}
-.hbrand{flex:none;align-self:center;display:flex;align-items:center}
 .foot .rc-foot{margin-right:6px;color:#93A3B5}
 .foot .rc-foot .rc-badge{width:18px;height:18px}
 """
