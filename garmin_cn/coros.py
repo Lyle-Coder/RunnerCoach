@@ -529,36 +529,109 @@ def fetch_detail(store, home: Path, row: dict,
 
 
 # ---------------------------------------------------------------- 便捷入口
-def sync(store, home: Path, days: int = 30,
-         email: str | None = None, password: str | None = None) -> dict:
-    """拉每日指标 + 活动入库。token 过期且带了凭据就静默重登一次。
+# 补历史时一次请求的天数。高驰的 dayDetail 给的是区间明细，一次要一年
+# 在手机上又慢又容易被限流；90 天一段，八年的账号也就 30 来段。
+RANGE_CHUNK_DAYS = 90
 
-    返回 {"daily": n, "activities": n, "range": "..." , "relogged": bool}
-    """
+
+def _window(store, cloud, start: dt.date, end: dt.date,
+            activity_limit: int = 400) -> dict:
+    """拉一个区间的日汇总 + 活动。日汇总按 90 天切块，活动一次按区间翻页。"""
+    daily_rows: list[dict] = []
+    cur = start
+    while cur <= end:
+        stop = min(end, cur + dt.timedelta(days=RANGE_CHUNK_DAYS - 1))
+        daily_rows.extend(cloud.daily_records(cur.isoformat(), stop.isoformat()))
+        cur = stop + dt.timedelta(days=1)
+    # 先数一下「库里原本没有的天」，这段真正新增了多少天才说得准
+    new_days = 0
+    for r in daily_rows:
+        d = str(r.get("date") or "")[:10]
+        if d and not store.day(d):
+            new_days += 1
+    for r in daily_rows:
+        store.upsert_daily(r, merge=True)
+    acts = cloud.activities(start.isoformat(), end.isoformat(), limit=activity_limit)
+    for a in acts:
+        store.upsert_activity(a)
+    store.set_meta("last_sync_coros",
+                   dt.datetime.now().strftime("%Y-%m-%d %H:%M"))
+    return {"daily": len(daily_rows), "new_days": new_days,
+            "activities": len(acts), "range": f"{start}~{end}"}
+
+
+def _with_relogin(home: Path, email: str | None, password: str | None,
+                  run) -> dict:
+    """跑一次；token 过期且带了凭据就静默重登后重跑一次。"""
     cloud = CorosCloud(home)
     if not cloud.load():
         raise CorosAuthError("还没登录高驰账号 → App 里「账号登录」选高驰")
-
-    def _run() -> dict:
-        end = dt.date.today()
-        start = end - dt.timedelta(days=max(7, min(int(days), 180)))
-        daily = cloud.daily_records(start.isoformat(), end.isoformat())
-        for r in daily:
-            store.upsert_daily(r, merge=True)
-        acts = cloud.activities(start.isoformat(), end.isoformat())
-        for a in acts:
-            store.upsert_activity(a)
-        store.set_meta("last_sync_coros",
-                       dt.datetime.now().strftime("%Y-%m-%d %H:%M"))
-        return {"daily": len(daily), "activities": len(acts),
-                "range": f"{start}~{end}"}
-
-    relogged = False
     try:
-        return {**_run(), "relogged": False}
+        return {**run(cloud), "relogged": False}
     except CorosAuthError:
         if not (email and password):
             raise
         cloud.login(email, password, cloud.region)   # 24h token 过期：静默重登
-        relogged = True
-        return {**_run(), "relogged": relogged}
+        return {**run(cloud), "relogged": True}
+
+
+def sync(store, home: Path, days: int = 30,
+         email: str | None = None, password: str | None = None) -> dict:
+    """拉最近 N 天的每日指标 + 活动（下拉刷新的增量路径）。
+
+    返回 {"daily": n, "new_days": n, "activities": n, "range": "..."}
+    """
+    end = dt.date.today()
+    start = end - dt.timedelta(days=max(7, min(int(days), 180)))
+    return _with_relogin(home, email, password,
+                         lambda c: _window(store, c, start, end))
+
+
+def sync_range(store, home: Path, start: str, end: str,
+               email: str | None = None, password: str | None = None,
+               activity_limit: int = 400) -> dict:
+    """拉指定区间（补历史用）。与 sync 同一套落库口径，只是区间由调用方给。"""
+    s = dt.date.fromisoformat(str(start)[:10])
+    e = dt.date.fromisoformat(str(end)[:10])
+    if e < s:
+        s, e = e, s
+    return _with_relogin(home, email, password,
+                         lambda c: _window(store, c, s, e, activity_limit))
+
+
+def earliest_activity(home: Path, years: int = 8) -> str:
+    """账号里最早一条活动的日期（补历史的停止线）；拿不到返回空串。
+
+    活动列表按时间倒序。先拿第一页读 totalCount，再直接请求最后一页——
+    八年数据可能几十页，逐页翻在手机上要十几秒，请求两次就够。
+    """
+    cloud = CorosCloud(home)
+    if not cloud.load():
+        return ""
+    end = dt.date.today()
+    try:
+        start = end.replace(year=end.year - max(1, int(years)))
+    except ValueError:
+        start = end - dt.timedelta(days=365 * max(1, int(years)))
+    params = {"startDay": _day_key(start.isoformat()),
+              "endDay": _day_key(end.isoformat()), "pageNumber": 1, "size": 30}
+
+    def _batch(page: int) -> tuple[list, int]:
+        out = cloud._req("GET", "/activity/query",
+                         params={**params, "pageNumber": page})
+        data = out.get("data") or {}
+        rows = data.get("dataList") or data.get("list") or []
+        total = int(_num(data.get("totalCount") or data.get("count")) or 0)
+        return rows, total or len(rows)
+
+    rows, total = _batch(1)
+    if not rows:
+        return ""
+    size = 30
+    last = max(1, -(-total // size))
+    if last > 1:
+        rows, _ = _batch(last)
+    dates = [(r.get("startTime") or "")[:10] for r in (rows or [])
+             if isinstance(r, dict)]
+    dates = [d for d in dates if len(d) == 10]
+    return min(dates) if dates else ""

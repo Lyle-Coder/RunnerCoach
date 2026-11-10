@@ -841,9 +841,12 @@ def home_page() -> str:
     for a in acts[:3]:
         aid = str(a.get("activity_id") or "")
         name = str(a.get("name") or "活动")
+        # 手表会把课名写进活动名（「西安市 - W2 周二 10km@E」）：这里也要洗一遍，
+        # 否则首页最近活动会露出「W2」这种内部周标签。
+        shown = _plan_name(name)
         samples += (f'<div class="rc-sample" data-aid="{esc(aid)}" role="button" '
-                    f'tabindex="0" aria-label="{esc(name)}">'
-                    f'<span class="t">{esc(name)}</span>'
+                    f'tabindex="0" aria-label="{esc(shown)}">'
+                    f'<span class="t">{esc(shown)}</span>'
                     f'<span class="d">{esc(_act_metric(a))}</span></div>')
     if not samples:
         samples = ('<div class="rc-sample"><span class="t">还没有活动数据，'
@@ -974,11 +977,18 @@ def _act_metric(a: dict) -> str:
 
 
 def _plan_name(name) -> str:
-    """课名去掉「W2 周二」前缀。左侧已经有星期，标题里再写一遍是重复。"""
+    """课名去掉「W2 周二」这种内部周标签。
+
+    它可能出现在开头（课表标题），也可能夹在活动名中间——手表会把课名写进
+    活动名，于是变成「西安市 - W2 周二 10km@E」。左侧已经有星期，标题里
+    再写一遍是重复，用户也不该看到「W2」这种开发口径。
+    """
     t = str(name or "").strip()
     if not t:
         return "训练"
-    return re.sub(r"^W\d+\s*周[一二三四五六日]\s*", "", t) or t
+    t = re.sub(r"W\d+\s*周[一二三四五六日]\s*", "", t)
+    t = t.strip(" -·—")
+    return t or "训练"
 
 
 def _plan_meta(item: dict) -> str:
@@ -1041,7 +1051,7 @@ def _today_plan_card(pl: dict) -> str:
         # 计划里的课 + 实际做完了：把完成的记录也列出来，别只放一个小角标
         if acts:
             more += "".join(
-                f'<div class="n">另练了：{esc(a.get("name"))} · {esc(_plan_meta(a))}</div>'
+                f'<div class="n">另练了：{esc(_plan_name(a.get("name")))} · {esc(_plan_meta(a))}</div>'
                 for a in acts[:2])
         return (f'<div class="plan-hero"><div class="t">{esc(_plan_name(it.get("name")))}</div>'
                 + (f'<div class="d">{esc(it.get("detail"))}</div>' if it.get("detail") else "")

@@ -24,8 +24,9 @@ from . import activity as act
 from . import route
 from .coros import CorosAuthError, CorosCloud, CorosError
 
-# 8 = 分圈组元数据 lap_groups（间歇版式据此判定）+ 训练模式诊断；废弃 7 的旧缓存
-ADAPTER_VERSION = 8
+# 9 = 分圈兜底（lapList 缺失时按 1 km 从逐点切）+ 垂直振幅候选键扩充
+#     + 残缺明细不再当成新缓存；废弃 8 的旧缓存
+ADAPTER_VERSION = 9
 
 
 def raw_activity(row: dict) -> dict:
@@ -62,9 +63,61 @@ GCT_KEYS = ("avgGroundContactTime", "groundContactTime", "avgContactTime",
 # avgVertRatio 是「垂直步幅比 %」，值域 6~12 会撞进 2~25cm 的合理区间，
 # 绝不能混进来，否则卡片会印一个假振幅。
 VO_KEYS = ("avgVertVibration", "vertVibration", "verticalVibration",
+           "avgVertVibrationCm", "avgVertVib", "vertVib",
            "avgVerticalOscillation", "verticalOscillation", "avgVertOscillation",
-           "vertOscillation", "avgVosc", "vosc", "verticalOscillationCm",
+           "vertOscillation", "avgVosc", "vosc", "voCm", "avgVoCm",
+           "verticalOscillationCm", "avgVerticalOscillationCenti",
            "avgVerticalOscillationCm", "vertOsc")
+
+
+def laps_from_points(points: list[dict], step_m: float = 1000.0) -> list[dict]:
+    """分圈兜底：lapList 缺失/解析不出时，用逐点累计距离按 1 km 切。
+
+    真机上见过「活动有完整时序、但 lapList 只给了 type=-1 的全程汇总」，
+    于是底部一整块是「无分圈数据」——图看着像坏了。这时用 sumDistance
+    自己切，虽然不如手表计圈精确，但至少每公里配速/心率/步频都在。
+    """
+    pts = [p for p in (points or [])
+           if p.get("t") is not None and p.get("dist") is not None]
+    if len(pts) < 30:
+        return []
+    pts.sort(key=lambda p: p["t"])
+    laps: list[dict] = []
+    t0 = pts[0]["t"]
+    d0 = pts[0]["dist"] or 0.0
+    nxt = d0 + step_m
+    acc: dict[str, list[float]] = {"hr": [], "cad": [], "stride": []}
+
+    def close(p_end: dict, idx: int) -> None:
+        d = (p_end["dist"] or 0.0) - d0
+        dur = (p_end["t"] or 0) - t0
+        if d <= 20 or dur <= 1:
+            return
+        laps.append({
+            "idx": idx, "dist_m": round(d, 1), "dur_s": round(dur, 1),
+            "pace_s": round(dur / (d / 1000)) if d > 50 else None,
+            "hr_avg": round(sum(acc["hr"]) / len(acc["hr"])) if acc["hr"] else None,
+            "hr_max": None,
+            "cad": round(sum(acc["cad"]) / len(acc["cad"]), 1) if acc["cad"] else None,
+            "stride": (round(sum(acc["stride"]) / len(acc["stride"]), 1)
+                       if acc["stride"] else None),
+            "ele_gain": None, "cad_server": None, "stride_server": None,
+            "is_partial": d < 900,
+        })
+
+    for p in pts[1:]:
+        for k in ("hr", "cad", "stride"):
+            v = p.get(k)
+            if v:
+                acc[k].append(v)
+        if (p["dist"] or 0.0) >= nxt:
+            close(p, len(laps) + 1)
+            t0, d0 = p["t"], p["dist"] or 0.0
+            nxt = d0 + step_m
+            acc = {"hr": [], "cad": [], "stride": []}
+    if pts[-1]["dist"] is not None and (pts[-1]["dist"] or 0) - d0 > 100:
+        close(pts[-1], len(laps) + 1)
+    return laps
 
 
 def dynamics(data: dict) -> tuple[float | None, float | None]:
@@ -263,7 +316,28 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
         # 就能看到真实字段在哪一层、叫什么——这是唯一的定位手段。
         try:
             from . import diag as _dg
-            _dg.log_exc("coros.dynamics", "未找到跑步动态，键树：" + key_tree(data))
+
+            # 除了键树，再单独列出「名字里带 vert/osc/vib」的键和值——
+            # 真机上键树很长，700 字上限经常在命中之前就被截断。
+            hits = []
+
+            def _scan(obj, path="", depth=0):
+                if depth > 4 or len(hits) > 12:
+                    return
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        kk = str(k)
+                        low = kk.lower()
+                        if any(t in low for t in ("vert", "osc", "vib")):
+                            hits.append(f"{path}{kk}={str(v)[:12]}")
+                        _scan(v, f"{path}{kk}.", depth + 1)
+                elif isinstance(obj, list) and obj:
+                    _scan(obj[0], path + "[0].", depth + 1)
+
+            _scan(data)
+            _dg.log_exc("coros.dynamics",
+                        "未找到跑步动态｜疑似键：" + ("；".join(hits) or "无")
+                        + "｜键树：" + key_tree(data))
         except Exception:
             pass
     summary = {"cad_avg": number(native.get("avgCadence")),
@@ -322,6 +396,21 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
         # 组在但一条都解析不出（字段名不匹配）时同样要留证据，
         # 否则用户只能看到「无分圈数据」而我们无从下手。
         _diag_laps(groups, selected, 0)
+    # 兜底：lapList 给不出分圈时，用逐点累计距离自己按 1 km 切，
+    # 别让底部一整块变成「无分圈数据」。
+    # 注意「只有 1 圈且那圈就是全程汇总」也是同一种残缺——上一版只在
+    # laps 完全为空时才兜底，于是这种情况仍然显示「1 圈 · 全程 5.80 km」。
+    _only_summary = len(laps) <= 1 and str(selected.get("type")) == "-1"
+    if (not laps or _only_summary) and len(points) >= 30:
+        laps = laps_from_points(points)
+        if laps:
+            try:
+                from . import diag as _dg
+
+                _dg.log_exc("coros.laps_auto",
+                            f"lapList 无有效分圈，已按逐点切出 {len(laps)} 圈")
+            except Exception:
+                pass
     # summary 的最大速度是「秒/公里」，换算成 m/s 给卡片用（列表接口的 maxSpeed 常为 0）
     max_pace = number(native_summary.get("maxSpeed"))
     row_metrics = {"aerobic_te": number(native_summary.get("aerobicEffect")),
@@ -348,6 +437,9 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
             "fetched_at": dt.datetime.now().isoformat(timespec="seconds"),
             "summary": summary, "laps": laps, "hr_zones": hr_zones,
             "lap_distance_m": number(selected.get("lapDistance"), 100),
+            # 抓取时已确认「这条活动本来就没有分圈」（短距离、无轨迹采样），
+            # 缓存健康检查据此放行，避免每次看图都重新联网
+            "laps_absent_ok": not laps,
             # 间歇判定用：各组圈距/圈数（含手动计圈组），展示层不用
             "lap_groups": lap_groups,
             "series": {"points": act._thin(points, act.SERIES_POINTS)},
@@ -357,9 +449,20 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
 
 
 def is_current(detail: dict) -> bool:
-    """缓存是否是新口径（旧缓存没有版本号，必须重抓）。"""
-    return bool(detail) and detail.get("source") == "coros" and \
-        detail.get("adapter_version") == ADAPTER_VERSION
+    """缓存是否**既新口径、又没残缺**。
+
+    只比版本号不够：真机上见过一次残缺响应（时序有、lapList 只有全程汇总），
+    按版本号会一直认它，于是「分圈空 + 没有跑步动态」永远好不了。
+    所以再加一条健康检查：有足够轨迹点却没有分圈 → 视为残缺，下次重抓。
+    确实本来就没有分圈的（短距离、无采样）由 `laps_absent_ok` 放行，
+    不会每次看图都联网。
+    """
+    if not detail or detail.get("source") != "coros" or \
+            detail.get("adapter_version") != ADAPTER_VERSION:
+        return False
+    if detail.get("laps"):
+        return True
+    return bool(detail.get("laps_absent_ok"))
 
 
 def ensure(store, home, row: dict, email=None, password=None, force: bool = False) -> dict:
