@@ -452,6 +452,7 @@ class MainActivity : Activity() {
                     "planRefresh" -> refreshPlan()
                     "amap" -> showAmapDialog()
                     "clips" -> showClips()
+                    "update" -> checkUpdate(silent = false)
                     "dbExport" -> doExportData()
                     "dbImport" -> doImportData()
                     "diag" -> showDiag()
@@ -652,6 +653,8 @@ class MainActivity : Activity() {
         if (!s.optBoolean("logged_in") && !c.optBoolean("logged_in")) {
             ui { showLoginPicker() }
         }
+        // 静默查一次新版本：延迟 6 秒，避开首屏渲染与登录框；24 小时节流
+        ui { web.postDelayed({ checkUpdate(silent = true) }, 6000) }
     }
 
     private fun setStatus(s: JSONObject) {
@@ -2522,6 +2525,69 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------ 诊断
+    // ------------------------------------------------------------ 检查更新
+    /**
+     * 查 Gitee 上的最新 Release。
+     *
+     * 分发只有 Gitee Release 一个渠道（没有应用商店），所以「有没有新版本」
+     * 直接问 Gitee 的公开接口，不需要自建后端、不需要推送。
+     * 静默检查每天最多一次（gc_prefs 里记时间戳），用户点「稍后」会把该版本
+     * 记成已跳过，下次换版本才再提；手动检查不受节流。
+     * 下载走浏览器：APK 是正式签名，Android 覆盖安装会校验签名一致，
+     * 不会出现「装上一个同包名的野包」。
+     */
+    private fun checkUpdate(silent: Boolean) {
+        if (port == 0) return
+        val prefs = getSharedPreferences("gc_prefs", MODE_PRIVATE)
+        if (silent) {
+            val last = prefs.getLong("update_checked_at", 0L)
+            if (last > 0 && System.currentTimeMillis() - last < 24L * 3600 * 1000) return
+        }
+        prefs.edit().putLong("update_checked_at", System.currentTimeMillis()).apply()
+        thread {
+            val r = apiCall("check_update")
+            ui {
+                if (!r.optBoolean("ok")) {
+                    if (!silent) toast("检查更新失败，稍后再试（不影响使用）")
+                    return@ui
+                }
+                val tag = r.optString("latest", "")
+                if (!r.optBoolean("newer")) {
+                    if (!silent) toast("已是最新版本 " + (r.optString("current") ?: ""))
+                    return@ui
+                }
+                // 用户点过「稍后」的版本不再打扰，等下一个版本
+                if (silent && prefs.getString("update_skipped", "") == tag) return@ui
+                val notes = r.optString("notes", "")
+                val tv = TextView(this).apply {
+                    text = notes.ifBlank { "本次更新没有写说明，点「去下载」看发布页。" }
+                    textSize = 13f
+                    setPadding(dp(20), dp(8), dp(20), dp(8))
+                }
+                val sv = ScrollView(this).apply { addView(tv) }
+                AlertDialog.Builder(this)
+                    .setTitle("发现新版本 " + tag)
+                    .setView(sv)
+                    .setPositiveButton("去下载") { _, _ ->
+                        val url = r.optString("url", "")
+                        if (url.isBlank()) {
+                            toast("没有拿到下载地址，请到 Gitee 发布页手动下载")
+                        } else {
+                            try {
+                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                            } catch (e: Exception) {
+                                toast("打不开浏览器：$url")
+                            }
+                        }
+                    }
+                    .setNegativeButton("稍后") { _, _ ->
+                        prefs.edit().putString("update_skipped", tag).apply()
+                    }
+                    .show()
+            }
+        }
+    }
+
     /**
      * 最近几条异常。用可选中复制的 TextView 而不是 WebView 页面：
      * 用户要的是「把这段发给你」，多一次跳转就多一次放弃。

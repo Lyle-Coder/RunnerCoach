@@ -2842,7 +2842,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 94' in (
+    assert 'versionCode = 95' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -3174,6 +3174,32 @@ def run() -> int:
     _kt3 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert "高驰账号（邮箱或手机号）" in _kt3, "登录框还写着只能填邮箱"
     assert "setMessage(msg)" in _kt3, "长错误提示没走对话框，toast 会被截断"
+
+    # ---- 1.0.2：应用内检查更新（Gitee Release，零后端）------------------
+    from garmin_cn import update as _UP
+
+    assert _UP.is_newer("v1.0.2", "1.0.1") and not _UP.is_newer("v1.0.1", "1.0.1")
+    assert _UP.is_newer("v1.0.10", "1.0.9"), "版本号要按数字段比，不能按字典序"
+    assert not _UP.is_newer("", "1.0.1") and not _UP.is_newer("v1.1", None)
+    _apk = _UP.pick_apk([
+        {"name": "RunnerCoach-v1.0.2-debug.apk", "browser_download_url": "u1"},
+        {"name": "RunnerCoach-v1.0.2-release.apk", "browser_download_url": "u2"},
+        {"name": "src.zip", "browser_download_url": "u3"}])
+    assert _apk and _apk["name"].endswith("release.apk"), "没优先挑 release 包"
+    assert _UP.pick_apk([{"name": "x-debug.apk",
+                          "browser_download_url": "u"}]) is None, \
+        "debug 包签名不同，绝不能推给用户"
+    _pr = _UP.parse({"tag_name": "v1.0.2", "assets": [], "body": "改了什么"}, "1.0.1")
+    assert _pr["newer"] and _pr["url"].endswith("/releases/tag/v1.0.2")
+    assert _UP.parse(None, "1.0.1")["ok"] is False
+    # 桥接与入口必须真的接上，否则自检通过但用户点不到
+    from garmin_cn import appapi as _AA
+    assert "check_update" in _AA._API, "check_update 没进桥接白名单"
+    assert "检查更新" in _UI.me_page() and 'data-act="update"' in _UI.me_page()
+    _kt4 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert '"update" -> checkUpdate(silent = false)' in _kt4, "手动入口没接上"
+    assert "checkUpdate(silent = true)" in _kt4, "启动时没做静默检查"
+    assert "update_skipped" in _kt4, "点「稍后」没有记住，会天天弹同一个版本"
 
     # ---- 1.0.0：内核版本与 APK 版本必须对齐（发版最容易漏的一端）-------
     from garmin_cn import __version__ as _kv

@@ -147,7 +147,7 @@ _API = {
     "mi_logout", "mi_sync",
     "hw_status", "hw_import", "hw_login", "hw_probe", "hw_sync", "hw_logout",
     "hw_login_start", "hw_login_finish", "hw_login_cancel",
-    "body_sources", "body_set_source",
+    "body_sources", "body_set_source", "check_update",
     "coros_status", "coros_login", "coros_logout", "coros_sync",
     "coros_mcp_status", "coros_mcp_login_url", "coros_mcp_finish",
     "coros_mcp_sleep", "coros_mcp_logout",
@@ -2528,6 +2528,20 @@ def db_import(zip_path: str = "") -> dict:
 
     return {"ok": True, "counts": _db_stats(DB), "restored": restored,
             "backup": backup, "exported_at": str(man.get("exported_at") or "")}
+
+
+def check_update() -> dict:
+    """查 Gitee 上是否有新版本（App 侧 24 小时节流，手动检查不节流）。
+
+    只读公开 Release 接口，不上报任何用户数据；失败按「没有新版本」处理，
+    不打断任何流程。
+    """
+    try:
+        from . import update as UP
+
+        return UP.check()
+    except Exception as e:
+        return {"ok": False, "newer": False, "error": f"{type(e).__name__}: {e}"[:160]}
 
 
 def diag_text(lines: int = 200) -> dict:
