@@ -723,7 +723,7 @@ def home_page() -> str:
                   if plan_html else "") +
                  sec("身体", f'<div class="grid">'
                              f'{sleep_card}{weight_card}</div>') +
-                 sec("最近活动", rows))
+                 sec("最近活动 · 最多显示 4 条", rows, ("全部活动", "/history?mode=list")))
     action = ('<div class="head-act" data-act="export" role="button" tabindex="0" '
               'aria-label="导出一图流"><span aria-hidden="true">⇪</span>一图流</div>')
     return page("TODAY · 今日", "今天该怎么练",
