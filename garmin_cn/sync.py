@@ -178,6 +178,10 @@ class SyncService:
         self.client = client
         self.store = store
         self.errors: list[str] = []
+        # 活动列表这一趟顺手记下的两件事：见过的最早活动、以及列表是否
+        # 已经翻到底。补历史靠它判断「账号从哪天开始有记录」，不用额外请求。
+        self.earliest_activity: str | None = None
+        self.activities_exhausted = False
 
     def sync_day(self, date: str, extras: bool = False,
                  hrv: dict | None = None) -> dict:
@@ -242,6 +246,7 @@ class SyncService:
                 self.errors.append(f"activities: {type(e).__name__} {e}")
                 return total
             if not items:
+                self.activities_exhausted = True
                 return total
             reached = False
             n = 0
@@ -249,12 +254,19 @@ class SyncService:
                 if not isinstance(a, dict) or not a.get("activityId"):
                     continue
                 day = (a.get("startTimeLocal") or "")[:10]
+                if day and (self.earliest_activity is None
+                            or day < self.earliest_activity):
+                    self.earliest_activity = day
                 if oldest and day and day < oldest:
                     reached = True
                 self.store.upsert_activity(parse_activity(a))
                 n += 1
                 total += 1
-            if n == 0 or len(items) < limit or reached:
+            # 不满一页 = 列表到底了，这时 earliest_activity 才是真的第一条
+            if n == 0 or len(items) < limit:
+                self.activities_exhausted = True
+                return total
+            if reached:
                 return total
         return total
 
@@ -306,6 +318,8 @@ class SyncService:
             "fetched": ok,               # 本次真正拉取的天数
             "skipped": skipped,          # 命中的已有缓存
             "activities": acts,
+            "earliest_activity": self.earliest_activity,
+            "list_exhausted": self.activities_exhausted,
             "plan": plan,
             "requests": getattr(self.client.net, "count", 0),
             "errors": self.errors[:10],

@@ -1,6 +1,6 @@
 """佳明国区 · 每日看板 / 电子教练 命令行入口。
 
-    run.bat login          首次登录（支持邮箱验证码）
+    run.bat login          首次登录（开浏览器，验证码/Cloudflare 交给浏览器）
     run.bat sync --days 30 同步数据
     run.bat report         生成看板
     run.bat demo           用仿真数据预览看板
@@ -80,10 +80,19 @@ def save_config(cfg: dict) -> None:
         pass
 
 
+_AUTO_LOGIN_FAILED = False
+
+
 def _auto_login(cfg: dict) -> bool:
-    """用已保存的账号密码续期会话（国区 JWT_WEB 只有 2 小时）。"""
+    """用已保存的账号密码续期会话（国区 JWT_WEB 只有 2 小时）。
+
+    注意：佳明 2026-11 换门户之后，移动 SSO 发出的票据网页端已经不收，
+    这条自动续期基本一定会失败。所以只在进程内试一次，失败就给一句明确指引，
+    避免每个命令都白跑五个请求、刷一屏报错。
+    """
+    global _AUTO_LOGIN_FAILED
     email, pwd = cfg.get("email"), cfg.get("password")
-    if not (email and pwd):
+    if not (email and pwd) or _AUTO_LOGIN_FAILED:
         return False
     auth = GarminCNAuth(HOME)
     try:
@@ -91,10 +100,11 @@ def _auto_login(cfg: dict) -> bool:
         return True
     except MfaRequired:
         print("× 这次登录需要邮箱验证码，无法自动续期 → 请运行：run.bat login")
-        return False
     except Exception as e:
         print(f"× 自动续期失败：{e}")
-        return False
+        print("  → 跑一次 run.bat login（浏览器登录）再回来")
+    _AUTO_LOGIN_FAILED = True
+    return False
 
 
 def get_client(require: bool = True) -> GarminCNClient:
@@ -117,22 +127,82 @@ def get_client(require: bool = True) -> GarminCNClient:
 
 # ---------------- 命令 ----------------
 def cmd_login(args) -> int:
+    """默认走浏览器托管登录；--password 保留旧的移动 SSO 通道（目前已被网页端作废）。"""
     print("佳明国区登录 · connect.garmin.cn")
     print("=" * 46)
     cfg = load_config()
+    auth = GarminCNAuth(HOME)
 
+    if not args.force and not args.password and auth.ensure_session():
+        print("√ 已经有可用会话，不用重新登录（想强制重登加 --force）")
+        return 0
+
+    if args.password:  # 老通道：只在佳明把移动 SSO 修回来之后才有用
+        return _login_with_password(args, cfg, auth)
+
+    from garmin_cn import browser_login
+
+    if not browser_login.available():
+        print(browser_login.INSTALL_HINT)
+        return 3
+
+    email = args.email or cfg.get("email")
+    try:
+        cookies = browser_login.login(
+            HOME,
+            email=email,
+            password=None if args.no_fill else cfg.get("password"),
+            timeout=args.timeout,
+        )
+    except browser_login.BrowserLoginError as e:
+        print(f"× {e}")
+        return 2
+    except KeyboardInterrupt:
+        print("\n已取消")
+        return 130
+
+    print(f"→ ③ 收下会话（{len(cookies)} 条 Cookie），写进 data/session.json 并验证…", flush=True)
+    try:
+        result = auth.adopt_cookies(cookies)
+    except AuthError as e:
+        print(f"× {e}")
+        print("  浏览器那边能登进去、接口这边不认，多半是 Cookie 没抓全，重跑一次 login 看看。")
+        return 2
+
+    if email:
+        cfg["email"] = email
+        save_config(cfg)
+    p = result.get("profile") or {}
+    name = " ".join(x for x in (p.get("displayName"), p.get("fullName")) if x) or (email or "")
+    print(f"√ 登录成功：{name}")
+    print("  会话已保存到 data/session.json（等同密码，不要提交到 git）")
+    print("  下一步：run.bat sync --days 30  然后  run.bat report --open")
+    return 0
+
+
+def _login_with_password(args, cfg: dict, auth) -> int:
+    """旧的账号密码通道。移动 SSO 现在仍返回 ticket，但网页端已经不收（见 browser_login）。"""
     email = args.email or cfg.get("email") or _prompt("Garmin 国区账号邮箱: ")
     if not email:
         print("× 邮箱不能为空")
         return 2
-    password = args.password or cfg.get("password")
-    if not password:
-        password = _prompt("密码（输入时不显示）: ", secret=True)
+    password = args.password if isinstance(args.password, str) else ""
+    password = password or cfg.get("password") or _prompt("密码（输入时不显示）: ", secret=True)
     if not password:
         print("× 密码不能为空")
         return 2
 
-    auth = GarminCNAuth(HOME)
+    # 这条通道每次尝试都会把服务端下发的清 Cookie 指令写进 session.json，
+    # 好好的会话会被它弄脏。失败就把文件还原，别为了一个已经作废的通道赔上现成会话。
+    before = auth.session_path.read_bytes() if auth.session_path.exists() else None
+
+    def bail(*lines: str, code: int = 2) -> int:
+        if before is not None:
+            auth.session_path.write_bytes(before)
+        for line in lines:
+            print(line)
+        return code
+
     print(f"→ ① 向 sso.garmin.cn 提交登录（{email}）…", flush=True)
     try:
         result = auth.login(email, password)
@@ -140,32 +210,36 @@ def cmd_login(args) -> int:
         print("→ ② 需要邮箱验证码：Garmin 已发到注册邮箱（也翻一下垃圾箱）", flush=True)
         code = _prompt("邮箱验证码: ")
         if not code:
-            print("× 验证码不能为空")
-            return 2
+            return bail("× 验证码不能为空")
         print("→ ③ 校验验证码…", flush=True)
         try:
             result = auth.submit_mfa(code)
         except AuthError as e:
-            print(f"× {e}")
-            return 2
+            return bail(f"× {e}")
     except AuthError as e:
-        print(f"× {e}")
-        names = ", ".join(auth.net.cookie_names()) or "无"
-        print(f"  Cookie：{names}")
-        print("  想定位原因可以跑：run.bat debug-login（输出里不含密码）")
         if args.verbose:
             traceback.print_exc()
-        return 2
+        return bail(
+            f"× {e}",
+            f"  Cookie：{', '.join(auth.net.cookie_names()) or '无'}",
+            "  这一通道（mobile SSO）现在换不出网页会话，改用浏览器登录：run.bat login",
+            "  想定位原因可以跑：run.bat debug-login（输出里不含密码）",
+        )
     except KeyboardInterrupt:
         print("\n已取消")
-        return 130
+        return bail("", code=130)
     except Exception as e:  # 网络 / 解析等意外
-        print(f"× 登录异常：{type(e).__name__}: {e}")
         if args.verbose:
             traceback.print_exc()
-        else:
-            print("  加 --verbose 看完整堆栈")
-        return 4
+        return bail(f"× 登录异常：{type(e).__name__}: {e}",
+                    *([] if args.verbose else ["  加 --verbose 看完整堆栈"]), code=4)
+
+    if result.get("fresh") is False:
+        # 票据没换出新会话，此刻"能通"只是磁盘里那份旧会话还没过期——不能报成功
+        return bail(
+            "× 这次没换出新会话：数据接口能通只是磁盘里那份旧会话还没过期。",
+            "  移动 SSO 的票据网页端已经不收，改用浏览器登录：run.bat login",
+        )
 
     cfg.update({"email": email, "password": password})
     save_config(cfg)
@@ -2205,9 +2279,13 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Garmin 国区 → 每日看板 / 电子教练")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    q = sub.add_parser("login", help="登录（支持邮箱验证码）")
+    q = sub.add_parser("login", help="登录（浏览器托管，含验证码）")
     q.add_argument("--email")
-    q.add_argument("--password")
+    q.add_argument("--password", nargs="?", const=True,
+                   help="备用老通道：给密码就走移动 SSO（网页端当前已不收它的票据）")
+    q.add_argument("--force", action="store_true", help="忽略已有会话，强制重登")
+    q.add_argument("--timeout", type=int, default=300, help="浏览器登录最多等多少秒（默认 300）")
+    q.add_argument("--no-fill", dest="no_fill", action="store_true", help="不自动填账号密码")
     q.add_argument("--verbose", action="store_true", help="出错时打印完整堆栈")
     q.set_defaults(func=cmd_login)
 

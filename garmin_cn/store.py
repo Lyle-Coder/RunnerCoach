@@ -311,6 +311,18 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
+    def note_for(self, date: str) -> dict | None:
+        """指定日期最新的一条点评。
+
+        以前看板取的是「库里最后一条」，翻历史日期时会看到别的日子的点评——
+        看 11-03 的看板却显示今天的结论，比没有点评更容易误导。
+        """
+        row = self.conn.execute(
+            "SELECT * FROM coach_notes WHERE date = ? ORDER BY id DESC LIMIT 1",
+            (date,),
+        ).fetchone()
+        return dict(row) if row else None
+
     def notes(self, limit: int = 5) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM coach_notes ORDER BY id DESC LIMIT ?", (limit,)

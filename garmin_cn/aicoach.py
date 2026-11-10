@@ -25,6 +25,8 @@ import datetime as dt
 import hashlib
 import json
 import re
+import threading
+import time
 from pathlib import Path
 
 from . import llm
@@ -202,6 +204,184 @@ def daily_advice(date: str | None = None, force: bool = False) -> dict:
     _cache_write("daily", d, fp, out)
     out["cached"] = False
     return out
+
+
+# ---------------------------------------------------------------- 教练点评
+NOTE_SYSTEM = """你是 RunnerCoach 的跑步教练。现在要写「教练点评」——
+看板上一段话，用户扫一眼就知道今天该盯什么。只写正文，不写标题、不加序号。"""
+
+# 同一日期只允许一个后台任务在跑：看板会被反复打开，不挡住就会
+# 同时发好几个请求，白花钱还互相覆盖缓存。
+_inflight: dict[str, float] = {}
+_inflight_lock = threading.Lock()
+
+
+def _clean_note(text: str, limit: int = 240) -> str:
+    """把模型输出洗成一段能直接放进卡片的话。
+
+    模型常带 ``` 围栏、「教练点评：」前缀、加粗星号、软换行。这些在
+    `white-space:pre-wrap` 的卡片里会变成突兀的空行和星号。
+    """
+    t = (text or "").strip()
+    t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
+    t = re.sub(r"\s*```$", "", t)
+    # 先去记号再去前缀：模型常写「**教练点评：** 正文」，顺序反了就切不掉前缀
+    t = t.replace("**", "").replace("__", "").replace("`", "")
+    t = re.sub(r"^\s*(教练点评|点评|Coach)\s*[:：]\s*", "", t)
+    t = re.sub(r"\s*\n+\s*", " ", t)
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    if len(t) > limit:
+        cut = max(t.rfind("。", 0, limit), t.rfind("！", 0, limit),
+                  t.rfind("？", 0, limit))
+        t = t[:cut + 1] if cut >= 60 else t[:limit].rstrip() + "…"
+    return t
+
+
+def _note_ctx(date: str) -> str:
+    """点评用的上下文。
+
+    这里**总是自己 derive**，不接受调用方传进来的 res：看板里的 res 已经
+    `attach()` 过计划，上下文会长出两百字。缓存指纹按上下文算，两处口径
+    不一致就会「看板写了、轮询又查不到」，永远在重写、永远看不到结果。
+    derive 只要几毫秒，统一口径比省这点时间重要。
+    """
+    return context_markdown(derive(_store(), date))
+
+
+def _gen_note(date: str, ctx: str, fp: str, timeout: int = 40) -> dict:
+    """真正调模型写点评。失败返回 ready=False + 原因，不抛。"""
+    instr = f"""以下是跑者今天的数据与规则引擎给出的处方。
+
+{ctx}
+
+请写一段「教练点评」，输出纯文本（不要 JSON、不要 markdown、不要标题）：
+- 90 到 140 字，一到两句话说完，不分段
+- 至少引用两个上下文里的具体数字，别用「状态不错」这种没有依据的话
+- 说清「以今天这个状态，最该注意什么」
+- 不要复述处方里的时长与配速，那块在看板上已经单独写了"""
+    try:
+        r = llm.chat([{"role": "system", "content": NOTE_SYSTEM},
+                      {"role": "user", "content": instr}],
+                     max_tokens=320, temperature=0.6, timeout=timeout)
+    except llm.LLMError as e:
+        bad = e.as_dict()
+        return {"ready": False, "error": bad.get("error") or "模型调用失败"}
+    text = _clean_note(r["text"])
+    if not text:
+        return {"ready": False, "error": "模型没有返回内容"}
+    _cache_write("note", date, fp,
+                 {"text": text, "model": r["model"],
+                  "at": dt.datetime.now().strftime("%m-%d %H:%M")})
+    return {"ready": True, "text": text, "model": r["model"],
+            "at": dt.datetime.now().strftime("%m-%d %H:%M")}
+
+
+def _warm_note(date: str, ctx: str, fp: str, force: bool = False) -> None:
+    """起一个后台线程去写，页面不等它。"""
+    now = time.time()
+    with _inflight_lock:
+        started = _inflight.get(date)
+        if started and now - started < 90:      # 90 秒还没回来说明卡死了，允许重来
+            return
+        _inflight[date] = now
+
+    def _run():
+        try:
+            if not force:
+                hit = _cache_read("note", date, fp)
+                if hit and hit.get("text"):
+                    return
+            _gen_note(date, ctx, fp)
+        except Exception:
+            pass
+        finally:
+            with _inflight_lock:
+                _inflight.pop(date, None)
+
+    threading.Thread(target=_run, name=f"note-{date}", daemon=True).start()
+
+
+def _await_cache(date: str, fp: str, secs: int) -> dict | None:
+    """等后台任务把缓存写出来，最多等 secs 秒。"""
+    end = time.time() + max(1, secs)
+    while time.time() < end:
+        hit = _cache_read("note", date, fp)
+        if hit and hit.get("text"):
+            return hit
+        time.sleep(0.25)
+    return None
+
+
+def cached_note(date: str | None = None) -> dict | None:
+    """只读缓存，不触发任何生成。
+
+    翻历史日期时用它：宁可空着，也不该为了看一眼 11-03 的看板
+    就去调一次模型（那是按日期计的，翻十几天就是十几次）。
+    """
+    d = date or dt.date.today().isoformat()
+    try:
+        fp = _ctx_fingerprint(_note_ctx(d))
+    except Exception:
+        return None
+    hit = _cache_read("note", d, fp)
+    if hit and hit.get("text"):
+        return {"ok": True, "date": d, "configured": llm.is_configured(),
+                "ready": True, "text": hit["text"], "at": hit.get("at") or "",
+                "model": hit.get("model") or "", "cached": True}
+    return None
+
+
+def coach_note(date: str | None = None, *, wait: int = 0,
+               force: bool = False) -> dict:
+    """教练点评。**默认不阻塞**：命中缓存就返回，没命中就丢后台去写。
+
+    `wait > 0` 时最多阻塞这么多秒（一图流出图时用：那本来就要等几秒，
+    顺手把点评补上，用户下次打开看板就不用等）。
+
+    返回固定字段：ok / date / configured / ready / text / at / model / error。
+    """
+    d = date or dt.date.today().isoformat()
+    base: dict = {"ok": True, "date": d, "configured": False,
+                  "ready": False, "text": ""}
+    try:
+        ctx = _note_ctx(d)
+    except Exception as e:
+        base.update(ok=False, error=f"读不到这天的数据：{e}")
+        return base
+    fp = _ctx_fingerprint(ctx)
+    base["configured"] = llm.is_configured()
+
+    if not force:
+        hit = _cache_read("note", d, fp)
+        if hit and hit.get("text"):
+            base.update(ready=True, text=hit["text"],
+                        at=hit.get("at") or "", model=hit.get("model") or "",
+                        cached=True)
+            return base
+
+    if not base["configured"]:
+        return base
+
+    if wait and wait > 0:
+        # 已经有一个后台任务在写（多半是看板刚触发过）就别再发一次请求，
+        # 等它的结果就行——同一段点评付两遍钱没有意义。
+        with _inflight_lock:
+            busy = bool(_inflight.get(d))
+        if busy:
+            hit = _await_cache(d, fp, wait)
+            if hit:
+                base.update(ready=True, text=hit["text"],
+                            at=hit.get("at") or "", model=hit.get("model") or "",
+                            cached=True)
+            return base
+        out = _gen_note(d, ctx, fp, timeout=max(6, int(wait)))
+        if out.get("ready"):
+            base.update(out, cached=False)
+            return base
+        base["error"] = out.get("error")
+        # 阻塞失败也让后台再试一次：多半是这一次网络抖
+    _warm_note(d, ctx, fp, force=force)
+    return base
 
 
 # ---------------------------------------------------------------- 体重复盘

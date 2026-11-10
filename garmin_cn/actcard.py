@@ -48,6 +48,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from . import brand as BR
 from .activity import project
 from .card import _find_browser
 from .exportspec import probe as _export_probe
@@ -86,13 +87,13 @@ TECH_H = 322                   # 两卡同高
 SPK_H = 140                    # 步频 / 步幅走势高度（原 96，去掉区间条后加高）
 
 BG = "#0F1319"
-CARD = "#161C24"
-LINE = "#242D38"
+CARD = "#121E2C"
+LINE = "#23364A"
 TEXT = "#EDF1F5"
-MUTED = "#8B97A5"
+MUTED = "#8FA4BF"
 
 # 五区配色：由冷到热，与表盘/常见运动 App 的语义一致
-ZONE_COLORS = ["#4E8FD6", "#2FBF8F", "#E8C547", "#E8843A", "#E05555"]
+ZONE_COLORS = ["#5FA8E0", "#4FD6A6", "#E8C547", "#E8843A", "#E06A5F"]
 # 曲线与坐标轴同色：主指标线跟随运动主题色（跑步青/骑行橙…），心率恒为橙，
 # 不用读图例也知道哪条对应哪根轴
 AXIS_HR = "#EE9A55"
@@ -106,6 +107,8 @@ ZONE_DESC = ["恢复", "有氧", "节奏", "阈值", "无氧"]
 #   acc2 辅色（渐变末端，让轨迹带一点方向感）
 #   kind 主指标口径 pace=配速/km、speed=时速、pace100=配速/100m、duration=时长
 # 配色按项目直觉分家：跑步青、骑行星橙、游泳蔚蓝、徒步草绿、力量紫。
+# 0.6.9 把兜底色、分区首尾色、卡片/边框的灰黑换成品牌蓝青系，运动主色
+# 仍按项目保留语义，只让「底」和 icon 的深空蓝 + 科技蓝协调。
 SPORTS: dict[str, tuple[str, str, str, str]] = {
     "running": ("跑步", "#5CE1D0", "#3FA9F5", "pace"),
     "trail_running": ("越野跑", "#A8E063", "#4E9F3D", "pace"),
@@ -130,7 +133,7 @@ SPORTS: dict[str, tuple[str, str, str, str]] = {
     "skiing": ("滑雪", "#AFD7FF", "#4E7FBF", "speed"),
     "other": ("运动", "#9FB3C8", "#5B7A99", "pace"),
 }
-SPORT_FALLBACK = ("运动", "#9FB3C8", "#5B7A99", "pace")
+SPORT_FALLBACK = ("运动", "#5FA8E0", "#3B82F6", "pace")
 
 
 def theme_for(activity_type: str | None) -> dict:
@@ -326,9 +329,9 @@ def _pins(pts: list, r: float = PIN_R) -> str:
         hf = box / 2
         return (f'<rect x="{mx - hf:.1f}" y="{my - hf:.1f}" width="{box}" height="{box}" '
                 f'rx="1.5" fill="#E05555" stroke="#0F1319" stroke-width="1.8"/>'
-                f'<circle cx="{mx:.1f}" cy="{my:.1f}" r="{r * 0.62:.2f}" fill="#2FBF8F" '
+                f'<circle cx="{mx:.1f}" cy="{my:.1f}" r="{r * 0.62:.2f}" fill="#4FD6A6" '
                 f'stroke="#0F1319" stroke-width="1"/>')
-    return disc(sx, sy, "#2FBF8F") + block(ex, ey, "#E05555", side)
+    return disc(sx, sy, "#4FD6A6") + block(ex, ey, "#E05555", side)
 
 
 def _track_on_map(track: list, w: int, h: int, bm: dict, theme: dict | None = None) -> str:
@@ -760,7 +763,7 @@ def lap_rows(laps: list[dict], theme: dict | None = None) -> str:
         k = (l["pace_s"] - fast) / span           # 0=最快 1=最慢
         # 快 = 短条 + 冷色；慢 = 长条 + 暖色
         width = 22 + k * 78
-        color = _mix("#2FBF8F", "#E8843A", k)
+        color = _mix("#4FD6A6", "#E8843A", k)
         dist = f"{l['dist_m'] / 1000:.2f}"
         cad = f"{l['cad']:.0f}" if l.get("cad") else "—"
         hr = f"{l['hr_avg']:.0f}" if l.get("hr_avg") else "—"
@@ -1031,6 +1034,12 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
                   f"--tagfg:{th['acc']};--tagbg:{th['tag_bg']};--tagbd:{th['tag_bd']};"
                   # 版心几何从常量注入，CSS 里不再写死——加宽画幅时只改一处
                   f"--page-w:{W}px;--pad:{PAD}px;--trk-w:{TRK_W}px;--tw-w:{TW_W}px}}")
+    # 内容盒里的渐进与辉光跟随当前运动主色：跑步青、骑行橙、游泳蓝，
+    # 品牌图形本身不变，一张图里不会出现两套互不相干的光源。
+    # 注意不能改 body 背景（裁边契约见 brand.glow_overlay_css 的说明）。
+    css += BR.glow_overlay_css("30px 36px 40px",
+                               g1=BR.rgba(th["acc"], 0.16),
+                               g2=BR.rgba(th["acc2"], 0.10))
 
     # 距离升成和配速同级的第二个大数字，放最左——跑者第一眼要「跑了多远 + 多快」，
     # 距离缩在右侧小格里等于没强调。室内/力量课没有距离，就只留主指标一块。
@@ -1044,7 +1053,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width={W},initial-scale=1,viewport-fit=cover">
 <style>{css}</style></head>
-<body>
+<body><div class="rc-glow"></div>{BR.watermark_html(400)}
 <div class="page" data-gc-canvas data-gc-privacy="{mode}">
 
   <div class="head">
@@ -1110,7 +1119,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     {lap_html}
   </div>
 
-  <div class="foot">数据 {source_label}</div>
+  <div class="foot"><span class="rc-foot">{BR.badge_html(18, glow_color=th['acc'])}RunnerCoach</span> · 数据 {source_label}</div>
 </div>
 <script>
 /* hero 自适应：长距离 + 带小时的用时（42.54 / 3:14:53）会把右上六格挤到换行，
@@ -1165,7 +1174,7 @@ _CSS = """
    中间几块卡（.mid / .tech）会撑出 body 被裁掉，右侧看着就像「数据溢出边框」。
    --page-w / --pad / --trk-w / --tw-w 由 build_html 从 W/PAD/TRK_W/TW_W 注入。 */
 :root{--acc:#5CE1D0;--acc2:#3FA9F5;--grad2:#9FD8FF;--tagfg:#5CE1D0;
-  --tagbg:#12222A;--tagbd:#2A3A44;--page-w:1080px;--pad:36px;
+  --tagbg:#142234;--tagbd:#2A4056;--page-w:1080px;--pad:36px;
   --trk-w:468px;--tw-w:537px}
 body{width:var(--page-w);overflow:hidden;background:#0F1319;
   font-family:"Microsoft YaHei","PingFang SC",sans-serif;color:#EDF1F5}
@@ -1177,11 +1186,12 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 /* 标题与参数都可能很长（比赛名 + 日期 + 时段 + 天气）。旧版 .hleft 没有
    min-width:0，flex 子项按 max-content 撑开，右侧标签被直接挤出卡片。
    这里不用 -webkit-line-clamp（个别 WebView 版本上 display:-webkit-box 会让
-   行高/换行表现不一致），改成 max-height + overflow:hidden，行为稳定；
-   flex-wrap 兜底：标签实在放不下就自己换到下一行，绝不越界。 */
+   行高/换行表现不一致），改成 max-height + overflow:hidden，行为稳定。
+   0.6.10：抬头的角标去掉（页脚左下角保留），左侧只剩标题与副标题；
+   nowrap + min-width:0 仍让长标题自己收缩/换行，标签固定在原位。 */
 .head{display:flex;align-items:flex-end;justify-content:space-between;
-  gap:20px;flex-wrap:wrap}
-.hleft{flex:1 1 520px;min-width:0}
+  gap:16px;flex-wrap:nowrap}
+.hleft{flex:1 1 460px;min-width:0}
 .hname{font-size:36px;font-weight:700;letter-spacing:.5px;line-height:1.3;
   overflow-wrap:anywhere;word-break:break-word;
   max-height:calc(36px * 1.3 * 2);overflow:hidden}
@@ -1195,7 +1205,7 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
    42.54 + 3:14:53 这种长值会把右上六格挤到换行（「步幅 cm」折成两行）。
    截图前用一小段脚本量一次 scrollWidth，撑了就调小 --hs，见页尾 autofit。 */
 .hero{display:flex;align-items:center;justify-content:space-between;gap:calc(32px * var(--hs,1));
-  background:#161C24;border:1px solid #242D38;border-radius:18px;padding:22px 30px}
+  background:#121E2C;border:1px solid #23364A;border-radius:18px;padding:22px 30px}
 /* 距离与配速并排两个大数字，左侧一组 */
 .hduo{display:flex;align-items:flex-start;gap:calc(96px * var(--hs,1));flex:none}
 .hval{font-size:calc(88px * var(--hs,1));font-weight:800;line-height:1;letter-spacing:-2px;
@@ -1218,7 +1228,7 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .st.wd b{font-size:calc(28px * var(--hs,1));letter-spacing:0;line-height:1.454;
   white-space:nowrap}
 .mid{display:flex;gap:16px;height:310px}
-.card{background:#161C24;border:1px solid #242D38;border-radius:18px;padding:20px 24px}
+.card{background:#121E2C;border:1px solid #23364A;border-radius:18px;padding:20px 24px}
 .trk{width:var(--trk-w);display:flex;flex-direction:column;padding:18px 22px}
 .zc{flex:1;display:flex;flex-direction:column;justify-content:center}
 .ctitle{font-size:24px;color:#D3DBE4;font-weight:600;margin-bottom:14px;
@@ -1244,14 +1254,14 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .t b{display:block;font-size:38px;font-weight:700;line-height:1.15;letter-spacing:-.5px}
 .t span{font-size:16px;color:#939FAD}
 /* 走势图沉到卡片底部：少几行内容时多出来的空白落在分隔线上方，不会吊在半空 */
-.spkdiv{height:1px;background:#242D38;margin-top:auto}
+.spkdiv{height:1px;background:#23364A;margin-top:auto}
 .spark{padding-top:12px}
 .spklab{font-size:17px;fill:#939FAD}
 .spkval{font-size:16px;fill:#76838F;font-variant-numeric:tabular-nums}
 /* 与左侧技术卡对齐：底部一段「文字说明」用同一条分隔线起头，
    两卡并排时结构一致，也不会让负荷卡中间空出一大块 */
 .drift{font-size:19px;color:#939FAD;line-height:1.6;margin-top:auto;
-  padding-top:14px;border-top:1px solid #242D38}
+  padding-top:14px;border-top:1px solid #23364A}
 .foot{font-size:16px;color:#5A6675;text-align:center;letter-spacing:.4px}
 .zhead{font-size:22px;color:#D3DBE4;font-weight:600;display:flex;justify-content:space-between;
   margin-bottom:10px}
@@ -1269,7 +1279,7 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .zpct{width:58px;text-align:right;font-size:20px;font-weight:700}
 .zempty{font-size:19px;color:#64707E;padding:12px 0 4px}
 .lhead,.lrow{display:flex;align-items:center;gap:10px}
-.lhead{font-size:16px;color:#76838F;padding-bottom:8px;border-bottom:1px solid #242D38}
+.lhead{font-size:16px;color:#76838F;padding-bottom:8px;border-bottom:1px solid #23364A}
 /* 表头里的条形格子只是占位，用来和下面的数据行对齐，不能画成一条空数据条 */
 .lhead .lbar{background:none}
 .lrow{padding:5px 0}
@@ -1292,7 +1302,7 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 /* 间歇结构：底部整块切成左右双栏，左快组右慢组。
    两栏等高；15 组以内的常见间歇逐组列全，行距压紧，不让长图撑爆。 */
 .iv{display:flex;gap:16px;align-items:stretch}
-.ivcol{flex:1;min-width:0;background:#10161C;border:1px solid #242D38;
+.ivcol{flex:1;min-width:0;background:#10161C;border:1px solid #23364A;
   border-radius:14px;padding:14px 18px}
 .ivcol.fast{border-color:#2A5149}
 .ivcol.slow{border-color:#4A3827}
@@ -1302,7 +1312,7 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .ivcol.fast .ivhead b{color:#5CE1D0}
 .ivcol.slow .ivhead b{color:#E8843A}
 .ivstat{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;
-  padding-bottom:12px;border-bottom:1px solid #242D38}
+  padding-bottom:12px;border-bottom:1px solid #23364A}
 .ivstat b{display:block;font-size:31px;font-weight:700;line-height:1.15;letter-spacing:-.5px}
 .ivstat span{font-size:15px;color:#939FAD}
 .ivlist{margin-top:6px}
@@ -1313,6 +1323,16 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .ivrow b{width:74px;text-align:right;font-size:21px;flex:none}
 .ivrow em{width:80px;text-align:right;font-style:normal;color:#939FAD;flex:none}
 .ivmore{font-size:16px;color:#64707E;text-align:center;padding-top:8px}
+""" + BR.BRAND_CSS + BR.card_css(".card", top="#18202A", bottom="#141A22") + """
+/* 品牌化：卡片顶沿高光、抬头角标、右下角水印、页脚字标。
+   背景渐进与辉光由 build_html 按运动主色注入，见 surface_css。 */
+.card{position:relative}
+.card::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(96,165,250,.40),transparent)}
+.page{position:relative;z-index:1}
+.rc-wm{right:36px;bottom:70px;opacity:.055}
+.foot .rc-foot{margin-right:6px;color:#93A3B5}
+.foot .rc-foot .rc-badge{width:18px;height:18px}
 """
 
 

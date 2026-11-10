@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- RunnerCoach 品牌图形：与 garmin_cn/brand.py 的 TRACK_OUT / TRACK_IN /
+     PULSE_PATH 完全同一串 pathData。改图形必须两边一起改，否则启动器、
+     开屏、网页角标会长成三个样子。
+
+     vector drawable 没有 feGaussianBlur，这里用「半透明粗描边」近似 SVG 的
+     辉光层：先画一遍宽而淡的，再画一遍细而亮的。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="130dp"
+    android:height="130dp"
+    android:viewportWidth="130"
+    android:viewportHeight="130">
+
+    <!-- 辉光层 -->
+    <path
+        android:pathData="M55 34 H75 C92.12 34 106 47.88 106 65 C106 82.12 92.12 96 75 96 H55 C37.88 96 24 82.12 24 65 C24 47.88 37.88 34 55 34 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#552E7BBF"
+        android:strokeWidth="11"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+    <path
+        android:pathData="M55 48 H75 C84.39 48 92 55.61 92 65 C92 74.39 84.39 82 75 82 H55 C45.61 82 38 74.39 38 65 C38 55.61 45.61 48 55 48 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#4D2E5A80"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+    <path
+        android:pathData="M22 65 H48 L57 47 L68 85 L78 56 L85 65 H108"
+        android:fillColor="#00000000"
+        android:strokeColor="#665FA8E0"
+        android:strokeWidth="10"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+    <path
+        android:pathData="M22 55 C27.52 55 32 59.48 32 65 C32 70.52 27.52 75 22 75 C16.48 75 12 70.52 12 65 C12 59.48 16.48 55 22 55 Z"
+        android:fillColor="#4D4FD6A6"/>
+    <path
+        android:pathData="M102 55 H114 C116.21 55 118 56.79 118 59 V71 C118 73.21 116.21 75 114 75 H102 C99.79 75 98 73.21 98 71 V59 C98 56.79 99.79 55 102 55 Z"
+        android:fillColor="#4DE06A5F"/>
+
+    <!-- 清晰层 -->
+    <path
+        android:pathData="M55 34 H75 C92.12 34 106 47.88 106 65 C106 82.12 92.12 96 75 96 H55 C37.88 96 24 82.12 24 65 C24 47.88 37.88 34 55 34 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#5FA8E0"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+    <path
+        android:pathData="M55 48 H75 C84.39 48 92 55.61 92 65 C92 74.39 84.39 82 75 82 H55 C45.61 82 38 74.39 38 65 C38 55.61 45.61 48 55 48 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#2E5A80"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+    <path
+        android:pathData="M22 65 H48 L57 47 L68 85 L78 56 L85 65 H108"
+        android:fillColor="#00000000"
+        android:strokeColor="#CFE6FF"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+    <path
+        android:pathData="M22 57 C26.42 57 30 60.58 30 65 C30 69.42 26.42 73 22 73 C17.58 73 14 69.42 14 65 C14 60.58 17.58 57 22 57 Z"
+        android:fillColor="#4FD6A6"/>
+    <path
+        android:pathData="M103.5 57 H112.5 C114.43 57 116 58.57 116 60.5 V69.5 C116 71.43 114.43 73 112.5 73 H103.5 C101.57 73 100 71.43 100 69.5 V60.5 C100 58.57 101.57 57 103.5 57 Z"
+        android:fillColor="#E06A5F"/>
+</vector>

@@ -29,6 +29,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from . import brand as BR
 from .card import _find_browser
 from .exportspec import probe as _export_probe
 from .metrics import num
@@ -359,10 +360,11 @@ def build_html(race: dict, detail: dict, week_rows: list[dict],
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width={W},initial-scale=1,viewport-fit=cover">
 <style>{_CSS}</style></head>
-<body>
+<body><div class="rc-glow"></div>{BR.watermark_html(400)}
 <div class="page" data-gc-canvas>
 
   <div class="head">
+    <div class="hbrand">{BR.badge_html(44)}</div>
     <div>
       <div class="hname">{esc(race.get("event") or "比赛")}</div>
       <div class="hsub">{esc(date_txt)} {esc(wd)}{(' · 号码 ' + esc(race['bib'])) if race.get('bib') else ''}</div>
@@ -407,7 +409,7 @@ def build_html(race: dict, detail: dict, week_rows: list[dict],
   </div>
 
   {coach_html}
-  <div class="foot">成绩以组委会公布为准 · 数据 Garmin</div>
+  <div class="foot"><span class="rc-foot">{BR.badge_html(18)}RunnerCoach</span> · 成绩以组委会公布为准 · 数据 Garmin</div>
 </div>
 {_EXPORT_PROBE}
 </body></html>"""
@@ -496,6 +498,16 @@ body{width:var(--page-w);overflow:hidden;background:#12161B;
   font-size:20px;line-height:1.75;color:#D3DBE4}
 .foot{font-size:15px;color:#5A6675;text-align:center;letter-spacing:.3px}
 .empty{font-size:18px;color:#64707E;padding:12px 0}
+""" + BR.BRAND_CSS + BR.glow_overlay_css("28px 32px 34px") + BR.card_css(".card") + """
+/* 赛后卡与看板 / 活动图共用同一套品牌角标、渐进与辉光 */
+.page{position:relative;z-index:1}
+.card{position:relative}
+.card::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(96,165,250,.40),transparent)}
+.rc-wm{right:36px;bottom:70px;opacity:.055}
+.hbrand{flex:none;align-self:center;display:flex;align-items:center;margin-right:4px}
+.foot .rc-foot{margin-right:6px;color:#8FA4BF}
+.foot .rc-foot .rc-badge{width:18px;height:18px}
 """
 
 

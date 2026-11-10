@@ -669,7 +669,9 @@ def prune_dist(keep_versions: int = 1, keep_snaps: int = 0,
                 p.unlink()
         except OSError:
             pass
-    if apply and removed:
+    # 覆盖同名产物时 removed 为空，但 APK 内容已经变了：不清旧文件也要重算，
+    # 否则 SHA256SUMS 会指向上一版，sha256sum -c 直接 FAILED。
+    if apply:
         _rewrite_sums()
     return {"removed": removed, "freed": freed}
 

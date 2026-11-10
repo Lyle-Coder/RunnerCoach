@@ -1,17 +1,22 @@
 package mm.runnercoach.app
 
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.Dialog
 import android.content.ContentValues
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.DocumentsContract
 import android.system.Os
@@ -19,8 +24,10 @@ import android.util.Base64
 import android.text.InputType
 import android.util.Log
 import android.view.Gravity
+import android.view.ViewGroup
 import android.view.Window
 import android.view.View
+import android.view.animation.OvershootInterpolator
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.webkit.JavascriptInterface
@@ -95,6 +102,22 @@ class MainActivity : Activity() {
     private val tabIcons = mutableListOf<ImageView>()
     private val tabLabels = mutableListOf<TextView>()
 
+    // 横屏全屏时要收起来的「外壳」：顶栏 + 上下两条 1px 分割线 + 底部 tab 栏。
+    // manifest 声明了 configChanges="orientation|screenSize"，转屏时 Activity
+    // 不重建，只能靠 onConfigurationChanged 手动切；否则横屏下 WebView 仍被
+    // 夹在 52dp + 62dp 两栏中间，实际高度只剩 ~250dp，紧凑大屏会被压扁。
+    // 2dp 进度条不收：同步时还得看得见进度，占高可以忽略。
+    private val chromeBars = mutableListOf<View>()
+
+    // 开屏：windowBackground 先给静态品牌底，这一层负责渐进辉光的呼吸动画。
+    // 首屏 onPageFinished 后淡出；9 秒兜底，服务起不来也不会把界面糊住。
+    private var splash: FrameLayout? = null
+    private var splashStack: View? = null
+    private var splashGlow: View? = null
+    private var splashAnim: ObjectAnimator? = null
+    private var splashAt = 0L
+    private var splashGone = false
+
     private val api: PyObject by lazy { Python.getInstance().getModule("garmin_cn.appapi") }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -117,7 +140,12 @@ class MainActivity : Activity() {
             fatal("Python 启动失败", t)
         }
 
-        val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        // 内容根必须不透明：windowBackground 是带图标的开屏底，Activity 画出来
+        // 之后若不盖住，1px 分割线和留白处会漏出那枚图标。
+        val shell = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF070B12.toInt())
+        }
         val toolH = dp(52)
 
         val toolbar = LinearLayout(this).apply {
@@ -126,6 +154,13 @@ class MainActivity : Activity() {
             setBackgroundColor(0xFF070B12.toInt())
             setPadding(dp(18), 0, dp(6), 0)
         }
+        // 顶栏左侧的品牌角标：与启动器 / 开屏 / 一图流同一个图形。
+        toolbar.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_brand_mark)
+            background = resources.getDrawable(R.drawable.brand_badge_bg, theme)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(2), dp(2), dp(2), dp(2))
+        }, LinearLayout.LayoutParams(dp(30), dp(30)).apply { rightMargin = dp(10) })
         val titles = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
@@ -144,11 +179,13 @@ class MainActivity : Activity() {
         toolbar.addView(titles, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         // 顶栏只留标题与副标题：同步走今日页下拉，动作都在页面卡片里。
         // 以前右上角挂过「⟳」和「⋮」，和底部 tab、页内入口重复了三遍。
+        chromeBars.add(toolbar)
         shell.addView(toolbar, LinearLayout.LayoutParams(MATCH_PARENT, toolH))
 
         // 一条极细的分割线，比阴影轻，看板滚到底时也不会糊成一片
-        shell.addView(View(this).apply { setBackgroundColor(0xFF16202F.toInt()) },
-            LinearLayout.LayoutParams(MATCH_PARENT, 1))
+        val topDivider = View(this).apply { setBackgroundColor(0xFF16202F.toInt()) }
+        chromeBars.add(topDivider)
+        shell.addView(topDivider, LinearLayout.LayoutParams(MATCH_PARENT, 1))
 
         pull = PullRefreshLayout(this)
         web = WebView(this).apply {
@@ -171,6 +208,7 @@ class MainActivity : Activity() {
                         // 一级 tab 根页面落地后清空历史栈：否则「今日→历史→今日」
                         // 会在栈里堆三层，返回键就在 tab 之间来回跳。
                         if (isTabRoot(u)) v.clearHistory()
+                        hideSplash()          // 首屏出来了，开屏可以退场
                     }
                 }
 
@@ -206,12 +244,136 @@ class MainActivity : Activity() {
         bar.visibility = View.GONE
 
         shell.addView(pull, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
-        shell.addView(View(this).apply { setBackgroundColor(0xFF16202F.toInt()) },
-            LinearLayout.LayoutParams(MATCH_PARENT, 1))
-        shell.addView(buildTabBar(), LinearLayout.LayoutParams(MATCH_PARENT, dp(62)))
-        setContentView(shell)
+        val bottomDivider = View(this).apply { setBackgroundColor(0xFF16202F.toInt()) }
+        val tabBar = buildTabBar()
+        chromeBars.add(bottomDivider)
+        chromeBars.add(tabBar)
+        shell.addView(bottomDivider, LinearLayout.LayoutParams(MATCH_PARENT, 1))
+        shell.addView(tabBar, LinearLayout.LayoutParams(MATCH_PARENT, dp(62)))
+
+        // 根改成 FrameLayout：开屏是盖在整个界面之上的一层，不能占 LinearLayout
+        // 的一行，也不能让底下的 Python 启动/首屏加载露出空白。
+        val root = FrameLayout(this)
+        root.addView(shell, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        val sp = buildSplash()
+        splash = sp
+        root.addView(sp, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        setContentView(root)
+        // 冷启动就可能已经是横屏（平板、折叠屏、上锁定的设备），先按当前方向收一次。
+        applyChromeForOrientation()
+        splashAt = SystemClock.elapsedRealtime()
+        startSplashAnim()
+        sp.postDelayed({ hideSplash() }, 9000L)
 
         thread { bootServer() }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyChromeForOrientation()
+    }
+
+    /**
+     * 横屏把上下两栏收起来，WebView 吃满整屏；竖屏原样恢复。
+     * Activity 不重建，这里只改 visibility：WebView 会跟着 LinearLayout 的 weight
+     * 重新测量，CSS 的 100dvh / orientation 断点自动重新求值，不必 reload。
+     * 横屏是纯看板态：要切分区把手机转回竖屏，系统旋转按钮本身就是入口。
+     */
+    private fun applyChromeForOrientation() {
+        val land = resources.configuration.orientation ==
+            Configuration.ORIENTATION_LANDSCAPE
+        for (v in chromeBars) v.visibility = if (land) View.GONE else View.VISIBLE
+    }
+
+    /** 开屏动画层：渐进底 + 呼吸辉光 + 品牌图块放大浮现 + 跑动进度线。 */
+    private fun buildSplash(): FrameLayout {
+        val f = FrameLayout(this).apply {
+            // 只用渐变+辉光底：splash_bg 自带一枚居中图标，再叠 stack 里
+            // 那枚放大的 tile 会在文字上方露出半截圆环（两个标志重叠）。
+            background = resources.getDrawable(R.drawable.splash_surface, theme)
+            isClickable = true              // 淡出前别把点击漏给下面的 WebView
+        }
+        val glow = View(this).apply {
+            background = resources.getDrawable(R.drawable.splash_glow, theme)
+            alpha = 0.32f
+        }
+        splashGlow = glow
+        f.addView(glow, FrameLayout.LayoutParams(dp(360), dp(360), Gravity.CENTER))
+
+        val stack = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            alpha = 0f
+            scaleX = 0.9f
+            scaleY = 0.9f
+        }
+        splashStack = stack
+        val tile = FrameLayout(this).apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(0xFF1B3352.toInt(), 0xFF091320.toInt())).apply {
+                cornerRadius = dp(32).toFloat()
+                setStroke(1, 0x6660A5FA.toInt())
+            }
+        }
+        tile.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_brand_mark)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+        }, FrameLayout.LayoutParams(dp(116), dp(116), Gravity.CENTER))
+        stack.addView(tile, LinearLayout.LayoutParams(dp(132), dp(132)))
+        stack.addView(TextView(this).apply {
+            text = "RunnerCoach"
+            textSize = 25f
+            setTextColor(0xFFE8F0FB.toInt())
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            letterSpacing = 0.09f
+            gravity = Gravity.CENTER
+            setShadowLayer(20f, 0f, 0f, 0x993B82F6.toInt())
+        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(24) })
+        stack.addView(TextView(this).apply {
+            text = "正在准备今日数据…"
+            textSize = 12.5f
+            setTextColor(0xFF8FA4BF.toInt())
+            letterSpacing = 0.06f
+        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
+        stack.addView(ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            progressTintList = android.content.res.ColorStateList.valueOf(0xFF3B82F6.toInt())
+            backgroundTintList = android.content.res.ColorStateList.valueOf(0x1A60A5FA)
+        }, LinearLayout.LayoutParams(dp(186), dp(3)).apply { topMargin = dp(28) })
+        f.addView(stack, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER))
+        return f
+    }
+
+    private fun startSplashAnim() {
+        splashStack?.animate()?.alpha(1f)?.scaleX(1f)?.scaleY(1f)
+            ?.setDuration(640)?.setInterpolator(OvershootInterpolator(0.7f))?.start()
+        val g = splashGlow ?: return
+        splashAnim = ObjectAnimator.ofFloat(g, "alpha", 0.28f, 0.82f).apply {
+            duration = 1900
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+            start()
+        }
+    }
+
+    /** 最短展示 0.95 秒，避免首屏秒开时一闪而过；淡出后把整层摘掉。 */
+    private fun hideSplash() {
+        if (splashGone) return
+        splashGone = true
+        val s = splash ?: return
+        val wait = (950L - (SystemClock.elapsedRealtime() - splashAt)).coerceAtLeast(0L)
+        s.postDelayed({
+            splashAnim?.cancel()
+            s.animate().alpha(0f).setDuration(260).withEndAction {
+                (s.parent as? ViewGroup)?.removeView(s)
+                splash = null
+                splashStack = null
+                splashGlow = null
+                splashAnim = null
+            }.start()
+        }, wait)
     }
 
     override fun onDestroy() {
@@ -396,9 +558,11 @@ class MainActivity : Activity() {
      * 必须跑完才有意义的事，就干脆不让人点：**每次刷新顺手往前挪一段**。
      *
      * Python 侧用游标 `backfill_cursor` 记住「下次从哪天往前补」，默认今天，
-     * 一段一年，退到下限（8 年前）返回 `done=true`。所以：
-     * - 已经补完的库，第一次调用就返回，不发任何请求；
-     * - 没补完的库，刷新几次慢慢补齐，每次只花一段的时间。
+     * 一段一年；终点是**数据源里最早的那条活动**（平台会告诉我们），而不是
+     * 硬退 8 年——账号才注册两年时，退到 2018 只会白拉两年的空数据。
+     *
+     * 每次刷新最多推 3 段：这本来就该是后台慢慢补的事，一次把八年全拉完，
+     * 用户看到的就是「一直在拉」。没补完的，下次刷新接着补。
      */
     private fun runBackfill() {
         if (backfilling) return
@@ -409,7 +573,8 @@ class MainActivity : Activity() {
             var lastErr = ""
             var needLogin = false
             var done = false
-            while (!done && seg < 12) {            // 12 段兜底，防止死循环
+            var earliest = ""
+            while (!done && seg < 3) {             // 每次刷新最多 3 段，剩下的下次接着补
                 val r = apiCall("backfill_next")
                 if (!r.optBoolean("ok")) {
                     lastErr = r.optString("error")
@@ -418,6 +583,7 @@ class MainActivity : Activity() {
                 }
                 done = r.optBoolean("done")
                 fetched += r.optInt("fetched")
+                if (r.optString("earliest").isNotEmpty()) earliest = r.optString("earliest")
                 if (!done) {
                     seg++
                     val a = r.optString("start")
@@ -435,7 +601,11 @@ class MainActivity : Activity() {
                 // 后台任务遇到会话失效不弹登录：用户可能正在看别的页面，
                 // 下一次主动刷新时自然会提示。
                 if (needLogin) return@ui
-                if (seg > 0 && fetched > 0) toast("已补齐 $seg 段历史：新拉 $fetched 天")
+                if (seg > 0 && fetched > 0) {
+                    val tail = if (done && earliest.isNotEmpty())
+                        "，已到最早记录 $earliest" else "，下次刷新继续补齐"
+                    toast("已补 $seg 段历史：新拉 $fetched 天$tail")
+                }
                 thread {
                     setStatus(apiCall("status"))
                     ui { reload() }
@@ -3310,6 +3480,10 @@ class MainActivity : Activity() {
     private fun fatal(scope: String, detail: String) {
         Log.e(TAG, "$scope: $detail")
         ui {
+            // 启动失败时立刻撤掉开屏，否则错误对话框被这层盖住，用户只看到图标。
+            splash?.let { (it.parent as? ViewGroup)?.removeView(it) }
+            splash = null
+            splashGone = true
             AlertDialog.Builder(this)
                 .setTitle(scope)
                 .setMessage(detail)

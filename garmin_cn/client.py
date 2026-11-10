@@ -226,6 +226,38 @@ class GarminCNClient:
         )
         return data if isinstance(data, list) else []
 
+    def activities_earliest(self, max_pages: int = 60, page_size: int = 60) -> dict:
+        """翻到活动列表末尾，返回账号里**最早一条活动**的日期。
+
+        活动列表按时间倒序，「本页不满一页」就等于「到底了」——这是数据源
+        自己给出的「从哪天开始有记录」，比按年数硬猜准得多。补历史时用它
+        当停止线，就不会为了一段根本没数据的年份白拉 365 天的日汇总。
+
+        返回 `{date, exhausted, pages}`：
+        - `exhausted=True` 才说明 date 是真正的第一条；
+        - 页面翻到上限还没到底时 `exhausted=False`，调用方只能当参考。
+        """
+        oldest = None
+        pages = 0
+        exhausted = False
+        cap = max(1, int(max_pages))
+        for page in range(cap):
+            items = self.activities(limit=page_size, start=page * page_size)
+            pages += 1
+            if not items:
+                exhausted = True
+                break
+            for a in items:
+                if not isinstance(a, dict):
+                    continue
+                d = (a.get("startTimeLocal") or "")[:10]
+                if d and (oldest is None or d < oldest):
+                    oldest = d
+            if len(items) < page_size:
+                exhausted = True
+                break
+        return {"date": oldest, "exhausted": exhausted, "pages": pages}
+
     def activity(self, activity_id: int | str) -> dict | None:
         data = self.get(f"/activity-service/activity/{activity_id}")
         return data if isinstance(data, dict) else None

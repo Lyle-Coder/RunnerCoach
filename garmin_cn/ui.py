@@ -21,6 +21,9 @@ import re
 import html
 from pathlib import Path
 
+from . import brand as BR
+from . import screen as SC
+
 # 与 android values/colors.xml、aiui.CSS、report.CSS 保持同一组色值。
 # 这套 token 是双向的唯一来源：改这里要同步 aiui.py 的 :root 与 MainActivity 的
 # 颜色常量（docs/交互树.md 第五节有对照表）。
@@ -55,7 +58,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
 a{color:var(--brand-ink);text-decoration:none}
 .app{max-width:820px;margin:0 auto;padding:0 14px calc(30px + env(safe-area-inset-bottom))}
 .back{display:inline-flex;align-items:center;gap:5px;margin:8px 0 -4px;
-  min-height:40px;padding:0 2px;
+  min-height:44px;padding:0 2px;
   font-size:12.5px;color:var(--brand-ink);text-decoration:none}
 .back:active{opacity:.6}
 /* 页头只用一道渐隐的蓝线收尾，比整条实线更像仪表面板 */
@@ -63,25 +66,19 @@ a{color:var(--brand-ink);text-decoration:none}
   background:linear-gradient(90deg,rgba(59,130,246,.60),rgba(34,211,238,.12) 46%,transparent)
     bottom / 100% 1px no-repeat}
 .page-head.after-back{padding-top:14px}
-/* 页头右上角的单动作按钮（今日页就是「分享」出图）。
-   以前它是页面里的一整张快捷卡，占掉半屏却只做一件事。 */
-.head-act{position:absolute;top:12px;right:0;display:inline-flex;align-items:center;
-  justify-content:center;gap:5px;font-size:12.5px;font-weight:600;padding:0 14px;
-  min-height:40px;border-radius:999px;
-  color:var(--brand-ink);background:var(--brand-soft);cursor:pointer;
-  border:1px solid rgba(59,130,246,.36);box-shadow:0 0 18px -6px rgba(59,130,246,.9)}
-.head-act:active{background:rgba(59,130,246,.28)}
+/* 页头不再挂右上角动作按钮：0.6.13 起一图流归到「我的」页的低频动作里。
+   page() 的 action 参数仍留给二级页，首页不再传它。 */
 /* 有右上角动作时给标题和副标题留出位置，长标题不会钻到按钮底下 */
 .page-head.with-act h1,.page-head.with-act .lede{padding-right:92px}
 .kicker{font-size:11px;font-weight:700;letter-spacing:2px;color:var(--cyan);
   text-shadow:0 0 12px rgba(34,211,238,.45)}
 .page-head h1{margin:6px 0 4px;font-size:24px;font-weight:650;letter-spacing:-.5px;line-height:1.3}
 .lede{margin:0;font-size:13px;color:var(--muted)}
-.meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
-.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:4px 10px;
+.meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:3px 9px;
   border-radius:999px;background:rgba(15,22,34,.72);border:1px solid var(--line);color:var(--ink2)}
 .chip.ok{background:var(--brand-soft);border-color:rgba(59,130,246,.34);color:var(--brand-ink)}
-a.chip{min-height:40px;padding:0 14px;justify-content:center}
+a.chip{min-height:44px;padding:0 14px;justify-content:center}
 .chip.warn{background:var(--amber-soft);border-color:rgba(245,165,36,.32);color:#F5C26B}
 .sec{margin-top:24px}
 .sec-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px}
@@ -92,7 +89,7 @@ a.chip{min-height:40px;padding:0 14px;justify-content:center}
   background:linear-gradient(180deg,var(--cyan),var(--brand));
   box-shadow:0 0 10px rgba(34,211,238,.7)}
 .sec-head .more{font-size:12.5px;color:var(--brand-ink);display:inline-flex;
-  align-items:center;min-height:40px;padding:0 2px}
+  align-items:center;min-height:44px;padding:0 2px}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}
 .grid.one{grid-template-columns:1fr}
@@ -214,7 +211,7 @@ a.chip{min-height:40px;padding:0 14px;justify-content:center}
   color:#04121F;font-weight:650;box-shadow:0 8px 22px -10px rgba(59,130,246,.85)}
 .btn:active{opacity:.85}
 .empty{padding:20px 4px;font-size:13px;color:var(--muted);line-height:1.8}
-.link-act{display:inline-flex;align-items:center;min-height:40px;
+.link-act{display:inline-flex;align-items:center;min-height:44px;
   color:var(--brand-ink);text-decoration:none}
 .foot{margin-top:30px;padding-top:14px;border-top:1px solid var(--line2);
   font-size:11px;color:var(--faint);line-height:1.8}
@@ -270,7 +267,7 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
   .acts,.grid{grid-template-columns:1fr}
   .big{font-size:40px}
 }
-"""
+""" + BR.BRAND_CSS + SC.SCREEN_CSS
 
 # 看板是独立的宽版 HTML：在 App 里强制单列/收紧留白，别让三栏挤成一小坨。
 DASH_FIX = """
@@ -280,7 +277,10 @@ DASH_FIX = """
 .hero,.two{grid-template-columns:1fr}
 .metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
 table{display:block;overflow-x:auto;white-space:nowrap}
-#gc-nav{margin:0 -14px 16px;padding:9px 14px;position:sticky;top:0;z-index:99;
+/* nav 挂在 <body> 下（不是 .wrap 里），本身已经是整屏宽；
+   以前用 -14px 抵消 .wrap 的内边距，结果在 body 上反而多出 14px，
+   整页能横向拖动一小截。 */
+#gc-nav{margin:0 0 16px;padding:9px 14px;position:sticky;top:0;z-index:99;
   background:rgba(7,11,18,.96);border-bottom:1px solid rgba(96,165,250,.18);
   display:flex;gap:7px;align-items:center;flex-wrap:wrap;
   font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
@@ -307,7 +307,16 @@ AI_FIX = """
     0 14px 34px -22px rgba(0,0,0,.9)}
 /* tabs 槽底比页面再深一点，选中项才浮得起来 */
 .tabs{background:rgba(9,14,22,.9);border:1px solid rgba(96,165,250,.12)}
-"""
+""" + BR.BRAND_CSS + """
+/* AI 页自带 CSS，用 h1 的角标伪元素补上同一枚品牌图标，不改它的 DOM。 */
+.top>div:first-child h1{display:flex;align-items:center;gap:9px}
+.top>div:first-child h1::before{content:"";flex:none;width:26px;height:26px;
+  border-radius:8px;
+  background:url("__RC_MARK_URI__") center/80% no-repeat,
+    linear-gradient(155deg,#16273D,#091320);
+  border:1px solid rgba(96,165,250,.36);
+  box-shadow:0 0 16px -5px rgba(59,130,246,.9)}
+""".replace("__RC_MARK_URI__", BR.mark_uri(26))
 
 BRIDGE_JS = """<script>
 (function(){
@@ -325,6 +334,9 @@ BRIDGE_JS = """<script>
       n = n.parentNode;
     }
   }, false);
+  /* 宽屏 / 横屏由 CSS 媒体查询自动铺成五面板，不再放按钮：倾斜手机时
+     系统已经给了旋转入口，App 再放一个横屏按钮只会重复，而且强制
+     requestedOrientation 还会额外弹出一次系统旋转提示。 */
   /* 同页参数变化（日期 / 筛选 / 分页）一律 replace：不往历史栈堆条目，
      返回键才能保持「二级页 → 所属 tab → 今日 → 退出」这条单一链路。 */
   document.addEventListener('click', function(e){
@@ -374,13 +386,16 @@ def coverage() -> dict:
 
 def page(kicker: str, title: str, lede: str, body: str,
          chips: str = "", foot: str = "数据只保存在本机，不上传任何第三方。",
-         back: tuple[str, str] | None = None, action: str = "") -> str:
+         back: tuple[str, str] | None = None, action: str = "",
+         screen: bool = False) -> str:
     """所有 tab 页与二级页的统一外壳。
 
     `back` 只给二级页（/view、/files）用：一级 tab 之间靠底部导航切换，
     页内不再放返回链接，避免和底部 tab 形成两条并行导航。
     `action` 是页头右上角那个单动作按钮的 HTML（今日页放「分享/出图」）——
     低频但常用的动作放这儿，比在正文里占一整张卡片划算得多。
+    `screen=True` 是 0.6.7 起「首屏即一页大屏」用的紧凑页头：去掉副标题、
+    压低标题与留白，把视觉重心让给 main 里的 `.rc-hero`。
     """
     back_html, head_cls = "", ""
     if back:
@@ -388,20 +403,29 @@ def page(kicker: str, title: str, lede: str, body: str,
         head_cls += " after-back"
     if action:
         head_cls += " with-act"
+    if screen:
+        head_cls += " rc-compact"
+    # 首屏要脱离 .app 的 820px 上限：宽屏时铺满 12 栅格，其它 tab 不受影响。
+    app_cls = "app rc-page" if screen else "app"
+    # 页头不再放品牌角标：原生顶栏已经有一枚同样的图形（0.6.11），
+    # 两枚叠在左上角显得重复。页脚左下角的字标保留，仍是同一个图形。
+    foot_html = ('<div class="rc-foot">' + BR.badge_html(18) +
+                 '<span>RunnerCoach</span></div>' + esc(foot))
+    lede_html = "" if screen else f'<p class="lede">{esc(lede)}</p>'
     return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070B12">
 <title>{esc(title)} · RunnerCoach</title>
-<style>{CSS}</style></head><body><div class="app">
+<style>{CSS}</style></head><body><div class="{app_cls}">
 {back_html}
 <header class="page-head{head_cls}">
   {action}
-  <div class="kicker">{esc(kicker)}</div>
-  <h1>{esc(title)}</h1><p class="lede">{esc(lede)}</p>
+  <div class="brandline"><div class="kicker">{esc(kicker)}</div></div>
+  <h1>{esc(title)}</h1>{lede_html}
   <div class="meta">{chips}</div>
 </header>
 <main>{body}</main>
-<div class="foot">{esc(foot)}</div>
+<div class="foot">{foot_html}</div>
 </div>{BRIDGE_JS}</body></html>"""
 
 
@@ -593,23 +617,27 @@ def _vital(label: str, value, unit: str, sub: str, spark: str,
 
 
 def home_page() -> str:
-    """「今日」tab：一屏看完恢复、课表、身体和最近训练。
+    """「今日」tab：首屏即一页式大屏（0.6.7）。
 
-    密度优先。这一版挪走了三类「低频又占地方」的块：
-    - **数据覆盖**：「我的」页的「本地数据」已经有同样三个数，首页重复一遍只是噪音；
-    - **两张快捷卡**：完整看板退成页头链接，一图流退成右上角小按钮；
-    - **纯权重文字**：恢复度的四个分项换成带分数条的格子，权重和得分一起读。
-    空出来的一屏放了睡眠与体重的实际数值和近两周趋势 —— 这两个是每天都会变、
-    但以前只藏在「完整看板」里的东西。
+    依据《主页面设计说明》：主页不是展示全部数据的地方，是回答
+    「今天怎么样、今天怎么练」的地方。竖屏 6 段（结论条 / 恢复环 /
+    负荷带 / 身体 2×2 / 计划一条 / 最近 7 天），宽屏 ≥900px 由同一份
+    DOM 重排成 12 栅格 5 面板；宽屏/横屏由 CSS 自动切换，不再放
+    「大屏模式」按钮（系统旋转入口已覆盖这件事）；report.py 只保留
+    按日期回看与导出，首页不再长出第二个产品。
+
+    冗余入口一并收掉：四个 sec-head 的「完整 XX →」、两张快捷卡、
+    卡底那条总进度条、和结论条重复的「今天休息」。数据层仍只用
+    metrics.derive() 的返回值，不动 appapi / 请求数。
     """
     from . import appapi as A
+    from . import metrics as M
 
     today = dt.date.today().isoformat()
     st = A.status()
     day = st.get("last") or today
     res: dict = {}
     try:
-        from . import metrics as M
         from .appapi import DB
         from .store import Store
 
@@ -626,119 +654,280 @@ def home_page() -> str:
     sleep = res.get("sleep") or {}
     body = res.get("body") or {}
     series = res.get("series") or {}
-    score = rd.get("score")
-    level = rd.get("level") or "暂无数据"
+    today_row = res.get("today") or {}
+    hist = res.get("history") or []
     acts = res.get("activities") or []
-    week = "一二三四五六日"[dt.date.fromisoformat(day).weekday()] if day else ""
+    flags = res.get("flags") or []
+    score = rd.get("score")
+    try:
+        d0 = dt.date.fromisoformat(day)
+        week_cn = "一二三四五六日"[d0.weekday()]
+    except (TypeError, ValueError):
+        d0 = dt.date.today()
+        week_cn = ""
 
-    chips = (chip(f"{day} 周{week}", "ok") +
-             chip(f"{st.get('days') or 0} 天数据") +
-             chip(f"上次同步 {esc(str(st.get('last_sync') or '—')[5:16])}"))
+    # ---- L1 结论条 44：一句话判断 + 窗口标签（28 天基线） ------------------
+    delta = _baseline_delta(hist, score)
+    if delta is None:
+        meta = "28 天基线样本不足"
+    else:
+        meta = f"较 28 天基线 {'+' if delta >= 0 else '−'}{abs(delta)}"
+    verdict = (f'<section class="rc-verdict"><span class="v">'
+               f'{esc(_verdict(score))}</span><span class="m">{esc(meta)}</span>'
+               f'</section>')
 
-    # 恢复度的四个分项：名字、得分、一行依据，外加一条分数条
-    mm = ""
-    for p in (rd.get("parts") or [])[:4]:
-        _v = p.get("score")
-        _pct = max(0, min(100, int(_v or 0)))
-        mm += (f'<div class="i"><div class="n">{esc(p.get("name") or "")}</div>'
-               f'<div class="v">{esc(_v if _v is not None else "—")}</div>'
-               f'<div class="d">{esc(p.get("detail") or "")}</div>'
-               f'<div class="b"><i style="width:{_pct}%"></i></div></div>')
+    # ---- 恢复 hero ≈176：环 108 + 3 条分解 + 1 句可执行建议 ---------------
+    # 常态不发光；只有 <50 / >90 的异常日才点亮，辉光才有意义。
+    alert = score is not None and (float(score) < 50 or float(score) > 90)
+    flag_txt = str((flags[0].get("text") if flags else "") or "")
+    # 只留逗号后面的动作短语：「近 7 天睡眠缺口 11.0 小时，优先补觉」
+    # 整句塞进 hero 会折两行、还把焦点从环上抢走。
+    if "，" in flag_txt:
+        flag_txt = flag_txt.split("，", 1)[1]
+    if len(flag_txt) > 12:
+        flag_txt = flag_txt[:12] + "…"
+    advice = (f'<div class="rc-advice"><b>今日建议</b> {esc(_session(res))}'
+              + (f' · {esc(flag_txt)}' if flag_txt else "") + "</div>")
+    hero = (f'<section class="rc-panel rc-hero-panel">'
+            f'<div class="rc-panel-hd"><span class="rc-eyebrow">恢复度 · 今日</span>'
+            f'<span class="rc-win">28 天基线分项</span></div>'
+            f'<div class="rc-hero">{SC.ring_svg(score, alert=alert)}'
+            f'<div class="rc-hero-side"><div class="rc-parts">'
+            f'{SC.part_rows(rd.get("parts") or [], 3)}</div>{advice}</div>'
+            f'</div></section>')
 
-    hero = f"""<div class="card brand"><div class="hero">
-      <div><div class="lab">恢复度</div>
-        <div class="big">{esc(score if score is not None else '—')}<small>/ 100</small></div>
-        <div class="note" style="margin-top:6px;font-size:13px;color:var(--brand-ink)">
-          {esc(level)}</div>
-      </div>
-      <div class="hero-side">今日建议<b>{esc(_session(res))}</b>
-        <span>{esc(day)} 的本地分析</span></div>
-    </div><div class="mm">{mm}</div>
-    <div class="bar"><i style="width:{max(0, min(100, int(score or 0)))}%"></i></div></div>"""
+    # ---- 负荷带 60：三个数并列，不是三张卡；每个数都带窗口 ----------------
+    acute, ctl, tsb = load.get("acute_7d"), load.get("ctl"), load.get("tsb")
+    items = (
+        ("7 天负荷", f"{acute:.0f}" if isinstance(acute, (int, float)) else "—",
+         "TRIMP · 近 7 天累计"),
+        ("CTL 体能", f"{ctl:.1f}" if isinstance(ctl, (int, float)) else "—",
+         "42 天指数均线"),
+        ("TSB 状态", f"{tsb:+.1f}" if isinstance(tsb, (int, float)) else "—",
+         "体能 − 疲劳 · 7 天"),
+    )
+    load_html = ('<section class="rc-load rc-load-panel">' + "".join(
+        f'<div class="item"><div class="k">{esc(k)}</div>'
+        f'<div class="v rc-num">{esc(v)}</div><div class="w">{esc(w)}</div></div>'
+        for k, v, w in items)
+        + '<div class="rc-load-chart">'
+        + SC.load_chart(load.get("ctl_series"), load.get("atl_series"))
+        + '</div></section>')
 
-    # 睡眠：总分 + 深睡/REM，趋势取近两周；欠债单独提一句（它才是「今天困不困」）
-    sh = sleep.get("total_h")
-    _sub, _sub2 = [], []
+    # ---- 身体面板 ≈172：2×2，每格 数值 17 + 变化 + 22px sparkline --------
+    wk = res.get("week") or {}
+
+    def _wk(key: str) -> str:
+        d = (wk.get(key) or {}).get("delta")
+        return "—" if d is None else f"较上周 {d:+.1f}"
+
+    hrv_base = M.baseline(hist, "hrv_night") if hist else None
+    rhr_base = M.baseline(hist, "resting_hr") if hist else None
+    _sleep_sub = []
     if sleep.get("score") is not None:
-        _sub.append(f"评分 {sleep['score']:.0f}")
-    if sleep.get("deep_min"):
-        _sub.append(f"深睡 {_hm(sleep['deep_min'])}")
-    if sleep.get("rem_min"):
-        _sub2.append(f"REM {_hm(sleep['rem_min'])}")
+        _sleep_sub.append(f"评分 {sleep['score']:.0f}")
     _debt = (sleep.get("debt") or {}).get("deficit_h")
     if _debt:
-        _sub2.append(f"欠债 {_debt:.1f}h")
-    sleep_card = _vital("睡眠", f"{sh:.1f}" if sh else None, "h",
-                        " · ".join(_sub), _spark((series.get("sleep_h") or [])[-14:]),
-                        "昨夜没同步到睡眠", " · ".join(_sub2))
-
-    # 体重：最新值 + 7 日均 + 体脂；太久没称就把「多久」写在最前面
-    w = body.get("latest")
+        _sleep_sub.append(f"7 日欠债 {_debt:.1f}h")
+    _hrv = today_row.get("hrv_night")
+    _rhr = today_row.get("resting_hr")
+    _w = body.get("latest")
     _wsub = []
     if body.get("stale_days") and body["stale_days"] >= 3:
         _wsub.append(f"{body['stale_days']} 天未称重")
     if body.get("avg7"):
         _wsub.append(f"7 日均 {body['avg7']:.1f}")
-    if body.get("body_fat"):
-        _wsub.append(f"体脂 {body['body_fat']:.1f}%")
-    # 变化量四舍五入到 0.1 kg 后是 0.0 就不要写了 ——「较前 7 天 -0.0 kg」是噪音
     _dw = body.get("delta_w")
     if _dw is not None and abs(_dw) >= 0.05:
         _wsub.append(f"较前 7 天 {_dw:+.1f} kg")
-    weight_card = _vital("体重", f"{w:.2f}" if w else None, "kg",
-                         " · ".join(_wsub), _spark((body.get("series") or [])[-14:]),
-                         "还没有体重记录（小米秤或体成分 CSV）")
+    cells = (
+        SC.body_cell("睡眠 · 昨夜", f"{sleep['total_h']:.1f}" if sleep.get("total_h") else None,
+                     "h", " · ".join(_sleep_sub) or "7 日均 —",
+                     _spark((series.get("sleep_h") or [])[-14:], h=22)),
+        SC.body_cell("HRV · 昨夜", f"{_hrv:.0f}" if _hrv else None, "ms",
+                     f"28 天基线 {hrv_base:.0f} · {_wk('hrv')}" if hrv_base else _wk("hrv"),
+                     _spark((series.get("hrv") or [])[-14:], h=22)),
+        SC.body_cell("静息心率 · 昨夜", f"{_rhr:.0f}" if _rhr else None, "bpm",
+                     f"28 天基线 {rhr_base:.0f} · {_wk('rhr')}" if rhr_base else _wk("rhr"),
+                     _spark((series.get("rhr") or [])[-14:], h=22)),
+        # 体重刻意给完整一行：不再 nowrap + ellipsis 把「较…」切掉。
+        SC.body_cell("体重 · 7 日变化", f"{_w:.2f}" if _w else None, "kg",
+                     " · ".join(_wsub) or "还没有体重记录",
+                     _spark((body.get("series") or [])[-14:], h=22)),
+    )
+    body_html = (f'<section class="rc-panel rc-body-panel">'
+                 f'<div class="rc-panel-hd"><span class="rc-eyebrow">身体数据</span>'
+                 f'<span class="rc-win">近 14 天趋势</span></div>'
+                 f'<div class="rc-body">{"".join(cells)}</div></section>')
 
-    stats = ('<div class="grid three">' +
-             stat("今日负荷", _today_load_txt(load, day),
-                  "近 7 天累计 " + _week_load_txt(load)) +
-             stat("CTL 体能", load.get("ctl") or "—", "42 天指数均线") +
-             stat("TSB 状态", load.get("tsb") or "—", "体能 − 疲劳") +
-             '</div>')
-
-    rows = ""
-    for a in acts[:4]:
-        aid = str(a.get("activity_id") or "")
-        rows += row("▶", a.get("name") or "活动",
-                    f"{a.get('date') or ''} · {_act_metric(a)}",
-                    aid=aid, tone="b")
-    if not rows:
-        rows = ('<div class="empty">还没有活动数据。下拉同步一次，'
-                '或到「我的 → 历史数据」补全更早的区间。</div>')
-
-    # 今日课表：读同步落下的 plan.json，零请求；没有计划就不占版面。
-    plan_html = ""
+    # ---- 计划一条：以「真实今天」为准，不再拿最后同步日当今天 -------------
+    # 旧版把 st["last"]（最后同步日）当 d0，而课表快照的 next_date 是相对
+    # 真实今天算的：没同步的日子里两者错开一天，今天的课就被写成「明天」。
+    # 恢复度/身体指标仍看最新有数据的那天，只有训练计划看日历今天。
     try:
-        _pl = A.plan(False)
-        if _pl.get("ok"):
-            plan_html = _today_plan_card(_pl)
+        pl = A.plan(False) or {}
     except Exception:
-        plan_html = ""
+        pl = {}
+    tday = dt.date.today()
+    real_today = tday.isoformat()
+    week_rows = pl.get("week") or []
+    today_plan = pl.get("today") or {}
 
-    body_html = (sec("今日状态", hero + '<div style="height:10px"></div>' + stats,
-                     ("完整看板", f"/view?date={day}&from=today")) +
-                 # 课表卡本身不可点，这里必须留一个入口进二级页看整周与计划信息。
-                 # v63 重排首页时把快捷卡删了，连带把这个链接一起弄丢了。
-                 (sec("今日课表", plan_html, ("完整课表", "/plan?from=today"))
-                  if plan_html else "") +
-                 sec("身体", f'<div class="grid">'
-                             f'{sleep_card}{weight_card}</div>') +
-                 sec("最近活动 · 最多显示 4 条", rows, ("全部活动", "/history?mode=list")))
-    action = ('<div class="head-act" data-act="export" role="button" tabindex="0" '
-              'aria-label="导出一图流"><span aria-hidden="true">⇪</span>一图流</div>')
-    return page("TODAY · 今日", "今天该怎么练",
-                "恢复、负荷、睡眠与体重，一屏看完", body_html, chips,
-                action=action)
+    def _items_on(d: str) -> list[dict]:
+        for w in week_rows:
+            if str(w.get("date") or "") == d:
+                return [x for x in (w.get("items") or []) if not x.get("rest")]
+        return []
+
+    today_items = _items_on(real_today)
+    if not today_items and str(today_plan.get("date") or "") == real_today:
+        today_items = [x for x in (today_plan.get("items") or [])
+                       if not x.get("rest")]
+    nxt = pl.get("next_date")
+    nxt_items = pl.get("next_items") or []
+    when, subwhen, title, desc = "—", "", "按恢复度安排", "本周暂无排课"
+    eyebrow, pick = "训练计划 · 今天", None
+    if today_items or (nxt and str(nxt) == real_today and nxt_items):
+        # next_date 偶尔就是今天（日历/教练两种数据源口径不同），一并归今天。
+        pick = (today_items or nxt_items)[0]
+        when = "今天"
+        subwhen = "周" + "一二三四五六日"[tday.weekday()]
+    elif nxt_items:
+        pick = nxt_items[0]
+        eyebrow = "训练计划 · 下一次"
+        try:
+            nd = dt.date.fromisoformat(str(nxt))
+            when = "明天" if nd == tday + dt.timedelta(days=1) else str(nxt)[5:]
+            subwhen = "周" + "一二三四五六日"[nd.weekday()]
+        except (TypeError, ValueError):
+            when = str(nxt)[5:]
+    elif nxt:
+        eyebrow = "训练计划 · 下一次"
+        when = str(nxt)[5:]
+    if pick:
+        title = _plan_name(pick.get("name"))
+        desc = _plan_meta(pick)
+        hr_cap = pick.get("hr_max") or pick.get("hr_cap") or pick.get("target_hr")
+        if hr_cap:
+            desc += f" · 心率 ≤ {hr_cap}"
+    # 没有元信息就不渲染副标题，别留一行空白把计划条撑厚。
+    desc_html = f'<div class="d">{esc(desc)}</div>' if desc else ""
+    plan_html = (f'<section class="rc-panel rc-plan-panel">'
+                 f'<div class="rc-panel-hd"><span class="rc-eyebrow">{esc(eyebrow)}</span>'
+                 f'<span class="rc-win">按日课表</span></div>'
+                 f'<div class="rc-plan"><div class="when"><b>{esc(when)}</b>'
+                 f'{esc(subwhen)}</div><div class="what"><div class="t">'
+                 f'{esc(title)}</div>{desc_html}</div>'
+                 f'<a class="go" href="/plan?from=today">课表 →</a>'
+                 f'</div></section>')
+
+    # ---- 最近 7 天 ≈300：一个大数 + 7 根柱 + 3 条样本 --------------------
+    dates = [(d0 - dt.timedelta(days=6 - i)).isoformat() for i in range(7)]
+    week_acts = [a for a in acts
+                 if dates[0] <= str(a.get("date") or "") <= day]
+    by_day: dict[str, float] = {}
+    for a in week_acts:
+        k = str(a.get("date") or "")
+        by_day[k] = by_day.get(k, 0.0) + float(a.get("distance_m") or 0) / 1000.0
+    pairs = [(d, round(by_day.get(d, 0.0), 2)) for d in dates]
+    km7 = sum(v for _d, v in pairs)
+    _secs = sum(float(a.get("duration_s") or 0) for a in week_acts)
+    _asc = sum(float(a.get("ascent") or 0) for a in week_acts)
+    dur_txt = f"{int(_secs // 3600)}h{int((_secs % 3600) // 60):02d}" if _secs else "0h00"
+    side = f"{len(week_acts)} 次 · {dur_txt}"
+    if _asc:
+        side += f" · 爬升 {_asc:.0f} m"
+    samples = ""
+    for a in acts[:3]:
+        aid = str(a.get("activity_id") or "")
+        name = str(a.get("name") or "活动")
+        samples += (f'<div class="rc-sample" data-aid="{esc(aid)}" role="button" '
+                    f'tabindex="0" aria-label="{esc(name)}">'
+                    f'<span class="t">{esc(name)}</span>'
+                    f'<span class="d">{esc(_act_metric(a))}</span></div>')
+    if not samples:
+        samples = ('<div class="rc-sample"><span class="t">还没有活动数据，'
+                   '同步一次就能看到近 7 天</span></div>')
+    week_html = (f'<section class="rc-panel rc-week-panel">'
+                 f'<div class="rc-panel-hd"><span class="rc-eyebrow">活动概述</span>'
+                 f'<span class="rc-win">最近 7 天</span></div>'
+                 f'<div class="rc-week"><div class="rc-week-hd">'
+                 f'<div class="big-num rc-num">{km7:.1f}'
+                 f'<small>km · 最近 7 天</small></div>'
+                 f'<div class="side">{esc(side)}</div></div>'
+                 f'<div class="rc-days">{SC.week_bars(pairs, day)}</div>'
+                 f'<div class="rc-samples">{samples}</div></div></section>')
+
+    body_html_all = ('<div class="rc-screen">' + verdict + hero + load_html
+                     + body_html + plan_html + week_html + '</div>')
+    # 只留两个数据胶囊：宽屏自动铺成大屏，不再需要第三个按钮。
+    # 一图流也不再挂页头：那枚胶囊在横屏大屏里孤零零地压着结论条，
+    # 0.6.13 起统一收进「我的」页的低频动作列表。
+    chips = (chip(f"{st.get('days') or 0} 天数据") +
+             chip(f"上次同步 {esc(str(st.get('last_sync') or '—')[5:16])}"))
+    return page("TODAY · 今日", "今天该怎么练", "", body_html_all, chips,
+                screen=True,
+                foot="本机计算 · 不上传轨迹 · 离线可用。")
+
+
+def _verdict(score) -> str:
+    """结论条的一句话判断：先给答案，再给数字。"""
+    if score is None:
+        return "先同步数据，再谈今天怎么练"
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return "先同步数据，再谈今天怎么练"
+    if s >= 85:
+        return "状态在线，按计划练"
+    if s >= 70:
+        return "可以练，别加量"
+    if s >= 55:
+        return "轻松活动，留点余量"
+    return "休息，补恢复"
+
+
+def _baseline_delta(hist: list, score) -> int | None:
+    """近 28 天恢复度中位数作基线，返回今天相对它的差。
+
+    每天都用「当天之前的历史」重算一次 readiness，口径和 derive() 一致；
+    样本不足就直接不给这个数，绝不编一个「+9」出来。
+    """
+    if score is None or len(hist) < 8:
+        return None
+    try:
+        from . import metrics as M
+
+        vals = []
+        for i in range(max(0, len(hist) - 28), len(hist)):
+            got = M.readiness(hist[i], hist[:i + 1]).get("score")
+            if got is not None:
+                vals.append(got)
+        if len(vals) < 5:
+            return None
+        base = sorted(vals)[len(vals) // 2]
+        return int(round(float(score) - base))
+    except Exception:
+        return None
 
 
 def _session(res: dict) -> str:
-    try:
-        from . import brief as B
+    """今日处方：一句能直接执行的动作。
 
-        s = (B.brief(res) or {}).get("session") or {}
-        return str(s.get("type") or s.get("title") or "按恢复度安排")
-    except Exception:
-        return "按恢复度安排"
+    以前这里调 `brief.brief(res)`，但 brief 模块是「把一次活动压成推送
+    短消息」，既没有 `brief()` 也没有 `session` 字段；异常被吞掉后首页
+    永远显示「按恢复度安排」，结论条要的「今天怎么练」其实一直没接上。
+    """
+    s = (res.get("readiness") or {}).get("score")
+    if s is None:
+        return "先同步数据"
+    if s >= 85:
+        return "可安排强度课"
+    if s >= 70:
+        return "按计划训练"
+    if s >= 55:
+        return "轻松跑或恢复活动"
+    return "休息 / 低强度活动"
 
 
 def _mask_email(v) -> str:
@@ -1072,6 +1261,10 @@ def me_page() -> str:
     # 自动往前挪，进度写在标题栏小字。这里只做只读展示，不提供点击 ——
     # 以前那个入口点开只有一个弹窗、跑完也只说「跳过 N 天」，用户只会觉得没反应。
     more = (row("◫", "产物文件", "看板 / 图片 / 视频清单", href="/files") +
+            # 首页页头那枚「一图流」胶囊挪到这儿：低频动作统一归「我的」，
+            # 横屏大屏的页头也不用再为它留 92px 让位。
+            row("⇪", "今日一图流", "生成 1080×1920 看板，存相册或直接分享",
+                act="export", tone="a") +
             row("◍", "AI 模型服务", f"{ai_txt} · 在「教练」页右上角设置", tone="b", go=False) +
             row("⌖", "地图底图",
                 ("已配置 · 活动图带高德底图" if _map_on()
@@ -1088,8 +1281,12 @@ def me_page() -> str:
             row("!", "诊断日志", "出问题时把这段发出来，能定位到具体一步",
                 act="diag", tone="a"))
 
-    about = (f'<div class="card"><div class="lab">RunnerCoach · v{esc(VER)}</div>'
-             '<div class="note" style="margin-top:8px;font-size:12.5px;line-height:1.8">'
+    about = ('<div class="card rc-about"><div class="rc-about-h">' +
+             BR.badge_html(38) +
+             f'<div><div class="lab">RunnerCoach · v{esc(VER)}</div>' +
+             '<div class="note" style="margin-top:2px">本地优先的跑步教练</div>'
+             '</div></div>'
+             '<div class="note" style="margin-top:10px;font-size:12.5px;line-height:1.8">'
              '凭据与健康数据只存在这台设备的 App 私有目录；看板、图片、回放全部本地生成，'
              '页面不加载任何 CDN、远程字体或统计脚本。卸载 App 即清空本地数据。'
              '<br><a class="link-act" href="/privacy">完整隐私说明 →</a>'

@@ -382,7 +382,7 @@ def context_markdown(res: dict) -> str:
         if pace:
             pace_s = f"，配速 {int(pace)//60}'{int(pace)%60:02d}\"/km"
         lines.append(f"- {a.get('date')} {a.get('type')} {a.get('name') or ''}：{dur:.0f} 分钟，"
-                     f"{dist:.2f} km，均心率 {_fmt(a.get('avg_hr'))}{pace_s}")
+                     f"{dist:.2f} km，平均心率 {_fmt(a.get('avg_hr'))}{pace_s}")
     if not res["activities"]:
         lines.append("- 近 5 周无记录")
 

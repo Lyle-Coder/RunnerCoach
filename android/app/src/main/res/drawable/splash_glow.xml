@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 开屏动画的那团「呼吸」辉光：MainActivity 里对它的 alpha 做无限往返动画。
+     单独一个 drawable 才能只动这一层，不必每帧重绘整面背景。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <gradient
+        android:type="radial"
+        android:centerX="0.5"
+        android:centerY="0.5"
+        android:gradientRadius="50%p"
+        android:startColor="#6B3B82F6"
+        android:centerColor="#2A22D3EE"
+        android:endColor="#003B82F6"/>
+</shape>

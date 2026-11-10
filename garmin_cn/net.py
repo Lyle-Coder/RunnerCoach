@@ -125,6 +125,20 @@ class Net:
                 return c.value
         return None
 
+    def drop_garmin_cookies(self) -> None:
+        """清掉 garmin.cn 的旧 Cookie。
+
+        重新登录 / 接管浏览器会话前先打扫：磁盘里那份可能带着过期的
+        `JWT_WEB`、`login_attempt` 和一堆同名的旧作用域 Cookie，
+        不清就会攒出两三条 `SESSION`、`__cf_bm`，请求头越带越长。
+        非 garmin 的 Cookie 原样留着（同一个 jar 里可能有别的服务）。
+        """
+        kept = [c for c in self.jar if not (c.domain or "").endswith("garmin.cn")]
+        self.jar.clear()
+        for c in kept:
+            self.jar.set_cookie(c)
+        self._sig = self._cookie_sig()
+
     def set_cookie(self, name: str, value: str, domain: str = ".garmin.cn", path: str = "/"):
         self.jar.set_cookie(
             Cookie(
