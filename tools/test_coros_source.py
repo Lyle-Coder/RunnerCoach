@@ -259,5 +259,62 @@ class CardRenderTest(unittest.TestCase):
         self.assertIn("2.3", html)
 
 
+class LapFallbackTest(unittest.TestCase):
+    """真机：明细只有「全程汇总组」时，底部整块是「无分圈数据」。
+
+    现在用逐点累计距离按 1 km 兜底；同时缓存健康检查要能识别「残缺响应」，
+    否则一次坏响应会被当成新缓存，永远不再重抓（分圈空 + 无动态就一直空）。
+    """
+
+    @staticmethod
+    def _freq(n=120, step_m=40.0):
+        """40 m 一采样、12 秒一步 = 5:00/km，时间轴与距离自洽。
+
+        sample() 里时间每 1 秒走一条，用它会算出 25 s/km 的假配速，
+        所以这里单独造：timestamp 是厘秒，12 秒 = 1200。
+        """
+        return [{**sample(0, 0, 300), "timestamp": BASE + i * 1200,
+                 "distance": int(i * step_m * 100),
+                 "heart": 150 + (i % 5), "cadence": 176} for i in range(n)]
+
+    def test_laps_synthesised_from_points(self):
+        data = {"sportType": 100, "frequencyList": self._freq(),
+                "lapList": [{"type": -1, "lapDistance": 480000,
+                             "lapItemList": [lap(480000, 144000)]}],
+                "summary": {"distance": 480000, "totalTime": 144000,
+                            "sportType": 100}}
+        p = CA.normalize(data, "fb1")
+        self.assertGreaterEqual(len(p["laps"]), 4, "4.8 km 至少要切出 4 圈")
+        self.assertFalse(p["laps_absent_ok"], "有分圈时不该标记「本来就没有」")
+        # 每圈约 1 km，配速是秒/公里量级（不是 100 km 那种错量级）
+        first = p["laps"][0]
+        self.assertTrue(900 <= first["dist_m"] <= 1100, first["dist_m"])
+        self.assertTrue(200 <= first["pace_s"] <= 400, first["pace_s"])
+
+    def test_short_activity_marked_absent(self):
+        data = {"sportType": 100, "frequencyList": self._freq(n=8),
+                "lapList": [], "summary": {"distance": 32000, "sportType": 100}}
+        p = CA.normalize(data, "fb2")
+        self.assertEqual(p["laps"], [])
+        self.assertTrue(p["laps_absent_ok"], "短活动要标记「确实没有分圈」，别反复重抓")
+
+    def test_vertical_oscillation_key_variants(self):
+        for key in ("avgVertVibration", "avgVertVib", "voCm",
+                    "avgVerticalOscillationCm", "vertOscillation"):
+            data = detail()
+            data["summary"][key] = 8.4
+            p = CA.normalize(data, "vo-" + key)
+            self.assertEqual(p["summary"]["vo_cm"], 8.4, key)
+
+    def test_cache_health_rejects_incomplete(self):
+        base = {"source": "coros", "adapter_version": CA.ADAPTER_VERSION}
+        self.assertFalse(CA.is_current({**base, "laps": [],
+                                        "series": {"points": [{"t": i} for i in range(80)]}}),
+                         "有轨迹却没分圈 = 残缺响应，必须重抓")
+        self.assertTrue(CA.is_current({**base, "laps": [],
+                                       "laps_absent_ok": True}))
+        self.assertTrue(CA.is_current({**base, "laps": [{"dist_m": 1000}]}))
+
+
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)
