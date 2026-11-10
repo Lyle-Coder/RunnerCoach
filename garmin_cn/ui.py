@@ -1286,7 +1286,9 @@ def me_page() -> str:
                 act="dbImport", tone="b") +
             # 崩溃时只有一句 toast，用户复述不清；这里能直接把最近几条异常复制出来
             row("!", "诊断日志", "出问题时把这段发出来，能定位到具体一步",
-                act="diag", tone="a"))
+                act="diag", tone="a") +
+            row("⭡", "检查更新", f"当前 {VER} · 有新版本直接给下载地址",
+                act="update", tone="b"))
 
     about = ('<div class="card rc-about"><div class="rc-about-h">' +
              BR.badge_html(38) +
