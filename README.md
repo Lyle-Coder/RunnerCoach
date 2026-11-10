@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  ▶ <b>30 秒宣传片</b>（真实使用画面）：<a href="docs/media/promo-web.mp4">网页播放版</a>（已剪掉黑场开场）
+  ▶ <b>30 秒宣传片</b>（真实使用画面，GIF 即完整全片）：<a href="docs/media/promo-web.mp4">网页播放版</a>
   ｜ <a href="docs/media/promo-30s.mp4">原版 1080×1920</a>
 </p>
 
