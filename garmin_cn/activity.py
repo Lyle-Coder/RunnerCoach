@@ -318,30 +318,45 @@ def build_training(meta: dict | None) -> dict:
     m = meta if isinstance(meta, dict) else {}
     atype = ((m.get("activityType") or {}) if isinstance(m.get("activityType"), dict)
              else {}).get("typeKey") or ""
-    return {
-        "interval": bool(m.get("hasIntensityIntervals")),
-        "workout_id": m.get("workoutId") or None,
-        "type": str(atype or ""),
-    }
+    out = {"workout_id": m.get("workoutId") or None, "type": str(atype or "")}
+    # **字段缺失 ≠ 没设置间歇**。单活动接口 `/activity-service/activity/{id}`
+    # 根本不返回 hasIntensityIntervals（真机实测），若在这里写死 False，
+    # 缓存就会被一个「不知道」冒充成「没有」，间歇版式永远出不来。
+    # 只有真的看到这个键才表态；更新鲜的列表 raw 由 resolve_training 覆盖。
+    if "hasIntensityIntervals" in m:
+        out["interval"] = bool(m.get("hasIntensityIntervals"))
+    return out
 
 
 def training_from_raw(raw) -> dict | None:
-    """活动列表 raw 元数据 → 训练模式。离线回填用，不联网。
+    """活动列表 raw 元数据 → 训练模式。离线用，不联网。
 
-    同步时活动列表接口就带 `hasIntensityIntervals`（佳明把间歇标记放在
-    列表 raw 里），所以旧明细缓存缺 `training` 时，优先从活动行回填，
-    实在拿不到 raw 才考虑联网补抓。
+    佳明的 `hasIntensityIntervals` 只出现在**活动列表**接口的 raw 里，
+    单活动接口没有。raw 里没有这个键就返回 None（不表态），不能返回
+    interval=False 去盖掉别处的真值。
     """
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
         except Exception:
             return None
-    if not isinstance(raw, dict) or not raw:
-        return None
-    if "hasIntensityIntervals" not in raw and "activityType" not in raw:
+    if not isinstance(raw, dict) or "hasIntensityIntervals" not in raw:
         return None
     return build_training(raw)
+
+
+def resolve_training(detail: dict | None, raw) -> dict:
+    """训练模式的唯一口径：**活动列表 raw 优先**，明细里的 training 只是缓存。
+
+    真机教训：单活动接口不给这个字段，fetch 存进去的 training 是「未知」，
+    甚至可能是历史版本写死的 False。所以只要 raw 里有标记就用 raw，
+    raw 没有才退回明细里的缓存值。
+    """
+    t = training_from_raw(raw)
+    if t is not None:
+        return t
+    cached = ((detail or {}).get("training") or {})
+    return cached if isinstance(cached, dict) else {}
 
 
 def fetch(client, activity_id: int | str, *, with_track: bool = True) -> dict:
