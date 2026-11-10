@@ -2865,6 +2865,28 @@ def run() -> int:
     _ktme = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert "登录体重秤账号" in _ktme, "体重来源选择器里没有登录账号入口"
 
+    # ---- 1.0.5+：网格卡严格等高（68px），与账号行 67px 同一节奏 ---------
+    # 真事故：副标题有的 1 行有的 2 行，grid 拉伸后同排 136px、下一排
+    # 119px，两组网格之间还差一截，整页 1779px。CSS 与文案长度双保险。
+    _ucss = U.CSS
+    assert re.search(r"\.act\{[^}]*height:68px", _ucss, re.S), \
+        "网格卡没固定 68px，又会被内容撑高"
+    assert re.search(r"\.act \.at,\.act \.ad\{[^}]*white-space:nowrap", _ucss, re.S), \
+        "网格卡标题/说明没锁单行，会重新出现 1 行/2 行混排"
+    assert re.search(r"\.act \.ad\{[^}]*display:block", _ucss, re.S), \
+        ".ad 还在用两行 clamp，卡片高度又要跟着文案变"
+    assert ".acts,.grid{grid-template-columns:1fr}" not in _ucss, \
+        "360 宽下网格又退回单列，整页会凭空多 4 行"
+    assert "@media(max-width:340px){.acts{grid-template-columns:1fr}}" in _ucss, \
+        "极窄屏没留单列兜底"
+    assert ".me .sec{margin-top:16px}" in _ucss and '<div class="me">' in _me, \
+        "「我的」页专属紧凑留白没生效（别去改全局 .sec）"
+    assert re.search(r"\.me \.grid\.three \.card\{[^}]*height:88px", _ucss, re.S), \
+        "三张数值卡没固定高度"
+    _ads = re.findall(r'<span class="ad">([^<]*)</span>', _me)
+    assert len(_ads) == 8 and all(len(a) <= 14 for a in _ads), \
+        f"网格卡说明太长会换行/省略：{_ads}"
+
     # ---- 0.6.6：品牌图标统一到开屏 / 角标 / 三张出图 / 完整看板 ------------
     from garmin_cn import brand as _BR
     assert _BR.mark_svg(32) == _BR.mark_svg(32), \
