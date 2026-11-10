@@ -2710,7 +2710,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 77' in (
+    assert 'versionCode = 78' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -2812,6 +2812,30 @@ def run() -> int:
     _u_src = (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8")
     assert 'BR.badge_html(26' not in _u_src and 'BR.badge_html(18' in _u_src, \
         "页头角标没删干净，或页脚字标被一起删了"
+
+    # ---- 0.6.12：横屏收掉原生上下两栏，WebView 吃满高度 -----------------
+    # manifest 声明了 configChanges，转屏不重建 Activity，必须显式监听方向变化；
+    # 否则 52dp 顶栏 + 62dp 底栏仍把 WebView 压到 ~250dp，紧凑大屏被挤扁。
+    _kt3 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    _mf = (ROOT / "android/app/src/main/AndroidManifest.xml").read_text(
+        encoding="utf-8")
+    assert 'android:configChanges="orientation|screenSize' in _mf, \
+        "转屏改成重建 Activity 了，方向切换的实现要跟着改"
+    assert "override fun onConfigurationChanged(newConfig: Configuration)" in _kt3, \
+        "不重建的 Activity 缺方向变化回调"
+    assert "Configuration.ORIENTATION_LANDSCAPE" in _kt3 and \
+        "if (land) View.GONE else View.VISIBLE" in _kt3, \
+        "横屏没有把上下两栏收起来 / 竖屏没有恢复"
+    for _v in ("toolbar", "topDivider", "bottomDivider", "tabBar"):
+        assert f"chromeBars.add({_v})" in _kt3, f"{_v} 没进横屏收纳列表"
+    assert _kt3.count("applyChromeForOrientation()") >= 3, \
+        "onCreate 初始化与方向回调里都要应用栏状态"
+    # 栏收掉后 WebView 变高，但 720p 小屏横过来只剩 264px，极矮档还得
+    # 自己吃满高度、收掉会溢出的绝对定位动作按钮。
+    assert "calc(100dvh - 30px)" in _css, \
+        "极矮横屏栅格没有吃满可用高度"
+    assert ".rc-page .head-act{display:none}" in _css, \
+        "极矮横屏的动作按钮会压到结论条上"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")

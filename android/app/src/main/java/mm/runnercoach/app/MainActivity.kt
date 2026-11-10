@@ -7,6 +7,7 @@ import android.app.AlertDialog
 import android.app.Dialog
 import android.content.ContentValues
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -101,6 +102,13 @@ class MainActivity : Activity() {
     private val tabIcons = mutableListOf<ImageView>()
     private val tabLabels = mutableListOf<TextView>()
 
+    // 横屏全屏时要收起来的「外壳」：顶栏 + 上下两条 1px 分割线 + 底部 tab 栏。
+    // manifest 声明了 configChanges="orientation|screenSize"，转屏时 Activity
+    // 不重建，只能靠 onConfigurationChanged 手动切；否则横屏下 WebView 仍被
+    // 夹在 52dp + 62dp 两栏中间，实际高度只剩 ~250dp，紧凑大屏会被压扁。
+    // 2dp 进度条不收：同步时还得看得见进度，占高可以忽略。
+    private val chromeBars = mutableListOf<View>()
+
     // 开屏：windowBackground 先给静态品牌底，这一层负责渐进辉光的呼吸动画。
     // 首屏 onPageFinished 后淡出；9 秒兜底，服务起不来也不会把界面糊住。
     private var splash: FrameLayout? = null
@@ -171,11 +179,13 @@ class MainActivity : Activity() {
         toolbar.addView(titles, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         // 顶栏只留标题与副标题：同步走今日页下拉，动作都在页面卡片里。
         // 以前右上角挂过「⟳」和「⋮」，和底部 tab、页内入口重复了三遍。
+        chromeBars.add(toolbar)
         shell.addView(toolbar, LinearLayout.LayoutParams(MATCH_PARENT, toolH))
 
         // 一条极细的分割线，比阴影轻，看板滚到底时也不会糊成一片
-        shell.addView(View(this).apply { setBackgroundColor(0xFF16202F.toInt()) },
-            LinearLayout.LayoutParams(MATCH_PARENT, 1))
+        val topDivider = View(this).apply { setBackgroundColor(0xFF16202F.toInt()) }
+        chromeBars.add(topDivider)
+        shell.addView(topDivider, LinearLayout.LayoutParams(MATCH_PARENT, 1))
 
         pull = PullRefreshLayout(this)
         web = WebView(this).apply {
@@ -234,9 +244,12 @@ class MainActivity : Activity() {
         bar.visibility = View.GONE
 
         shell.addView(pull, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
-        shell.addView(View(this).apply { setBackgroundColor(0xFF16202F.toInt()) },
-            LinearLayout.LayoutParams(MATCH_PARENT, 1))
-        shell.addView(buildTabBar(), LinearLayout.LayoutParams(MATCH_PARENT, dp(62)))
+        val bottomDivider = View(this).apply { setBackgroundColor(0xFF16202F.toInt()) }
+        val tabBar = buildTabBar()
+        chromeBars.add(bottomDivider)
+        chromeBars.add(tabBar)
+        shell.addView(bottomDivider, LinearLayout.LayoutParams(MATCH_PARENT, 1))
+        shell.addView(tabBar, LinearLayout.LayoutParams(MATCH_PARENT, dp(62)))
 
         // 根改成 FrameLayout：开屏是盖在整个界面之上的一层，不能占 LinearLayout
         // 的一行，也不能让底下的 Python 启动/首屏加载露出空白。
@@ -246,11 +259,30 @@ class MainActivity : Activity() {
         splash = sp
         root.addView(sp, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         setContentView(root)
+        // 冷启动就可能已经是横屏（平板、折叠屏、上锁定的设备），先按当前方向收一次。
+        applyChromeForOrientation()
         splashAt = SystemClock.elapsedRealtime()
         startSplashAnim()
         sp.postDelayed({ hideSplash() }, 9000L)
 
         thread { bootServer() }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyChromeForOrientation()
+    }
+
+    /**
+     * 横屏把上下两栏收起来，WebView 吃满整屏；竖屏原样恢复。
+     * Activity 不重建，这里只改 visibility：WebView 会跟着 LinearLayout 的 weight
+     * 重新测量，CSS 的 100dvh / orientation 断点自动重新求值，不必 reload。
+     * 横屏是纯看板态：要切分区把手机转回竖屏，系统旋转按钮本身就是入口。
+     */
+    private fun applyChromeForOrientation() {
+        val land = resources.configuration.orientation ==
+            Configuration.ORIENTATION_LANDSCAPE
+        for (v in chromeBars) v.visibility = if (land) View.GONE else View.VISIBLE
     }
 
     /** 开屏动画层：渐进底 + 呼吸辉光 + 品牌图块放大浮现 + 跑动进度线。 */

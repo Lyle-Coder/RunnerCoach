@@ -286,14 +286,36 @@ _LAND = """
 .rc-plan .go{min-height:40px}
 .rc-foot-line{display:none}
 }
-/* 老小屏横过来只有 320px 高：再收掉面板标题、把环缩到 52px，
-   保证五块数据仍在同一屏而不是被 overflow 悄悄裁掉。 */
+/* 老小屏横过来只有 264~320px 高：连网页页头页脚一起压掉，栅格改吃
+   calc(100dvh - 52px)（正常横屏扣 92px 是按有完整页头页脚估的，这里太奢侈），
+   再收掉面板标题、把环缩到 46px。五块数据仍在同一屏，不靠 overflow 裁。 */
 @media (orientation:landscape) and (min-width:640px) and (max-height:340px){
+.rc-page{padding:0 8px 2px}
+.rc-page .page-head.rc-compact{padding:0;margin-bottom:0}
+.rc-page .page-head.rc-compact h1{font-size:12px}
+.rc-page .page-head.rc-compact .meta{display:none}
+/* 页头压到 ~18px 后，绝对定位的动作按钮会溢出到结论条上，极矮屏直接收掉：
+   横屏是纯看板态，出图等动作转回竖屏再做。 */
+.rc-page .head-act{display:none}
+.rc-page .foot{display:none}
+.rc-screen{grid-template-rows:24px minmax(0,1fr) minmax(0,1fr);gap:5px;
+  height:calc(100vh - 30px);height:calc(100dvh - 30px)}
+.rc-verdict{padding:1px 8px}
+.rc-verdict .v{font-size:12px}
+.rc-panel{padding:3px 6px}
 .rc-panel-hd{display:none}
-.rc-ring{flex:0 0 52px;width:52px;height:52px}
-.rc-week .rc-days{height:38px}
-.rc-day .lbl{line-height:1}
-.rc-cell{padding:2px 5px}
+.rc-ring{flex:0 0 46px;width:46px;height:46px}
+.rc-load{gap:0;padding:0 6px}
+.rc-load .item{padding:0;border-bottom:0}
+.rc-load .v{font-size:13px}
+.rc-load .k,.rc-load .w{font-size:11px}
+.rc-cell{padding:1px 4px}
+.rc-cell .k{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rc-cell .v{font-size:13px}
+.rc-week .rc-days{height:30px;gap:3px;margin-top:2px}
+.rc-week-hd .big-num{font-size:15px}
+.rc-day .lbl{display:none}
+.rc-plan .go{min-height:32px}
 }
 """
 
