@@ -2925,9 +2925,13 @@ def run() -> int:
     assert _CA.dynamics({"avgGct": 9999, "avgVerticalOscillation": 120}) == (None, None), \
         "离谱量纲没被丢掉，卡片会印出错误数量级"
     assert _CA.dynamics(None) == (None, None), "空 summary 没兜住"
+    _deep = {"summary": {"sportType": 100}, "runAbility": {"core": {"avgGct": 268, "vosc": 9.1}}}
+    assert _CA.dynamics(_deep) == (268.0, 9.1), \
+        "跑步动态藏在明细深层时找不到（只扫 summary 是不够的）"
+    assert "runAbility{core}" in _CA.key_tree(_deep), "键树诊断没把子键列出来"
 
     # ---- 1.0.2：分圈组缺失时的 type=-1 回退（运动场跑等特殊类型）--------
-    assert _CA.ADAPTER_VERSION == 5, "适配器版本没升，旧缓存不会重抓"
+    assert _CA.ADAPTER_VERSION == 6, "适配器版本没升，旧缓存不会重抓"
     _r = _CA.normalize({"summary": {"sportType": 100}, "lapList": [
         {"type": -1, "lapDistance": 1195000, "lapItemList": [
             {"distance": 1195000, "time": 481000, "avgHr": 141}]}]}, "st")
