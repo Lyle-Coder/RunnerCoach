@@ -199,6 +199,56 @@ def run() -> int:
     assert 'class="ivmore"' not in rest_html, "15 组应逐组列全"
     assert rest_html.count('class="ivrow"') == 30, "左右各 15 行"
 
+    # ---- 三段及以上：双栏表达不了，改 N 档强度带 -------------------------
+    # 400 快 / 200 中 / 200 慢跑：旧实现会把「中」并进快组，结构丢一半。
+    def _blocks(seq):
+        out, tt = [], 0.0
+        for spd, secs in seq:
+            for _ in range(max(1, int(secs / 5))):
+                out.append({"t": tt, "spd": spd, "hr": 168, "cad": 188, "dist": 0})
+                tt += 5.0
+        return out
+
+    _tri = _blocks(sum(([(4.8, 83.0), (3.9, 51.0), (2.4, 83.0)]
+                        for _ in range(8)), []))
+    _tiv = IV.detect({"series": {"points": _tri},
+                      "training": {"interval": True, "type": "running"}})
+    assert _tiv and len(_tiv["bands"]) == 3, _tiv and [b["label"] for b in _tiv["bands"]]
+    assert [b["label"] for b in _tiv["bands"]] == ["快", "中", "慢"]
+    assert all(b["sets"] >= 2 for b in _tiv["bands"]), "每档至少要有两组才算一档"
+    assert _tiv["bands"][0]["spd"] > _tiv["bands"][1]["spd"] > _tiv["bands"][2]["spd"]
+    assert len(_tiv["order"]) >= 12, "时序结构条要有足够的段"
+    _tri_html = ACTCARD.build_html(
+        {}, {"series": {"points": _tri}, "laps": [],
+             "training": {"interval": True, "type": "running"}},
+        None, None, "三段自检")
+    assert 'class="ivband"' in _tri_html and 'class="ivcol' not in _tri_html
+    assert _tri_html.count('class="ivbr"') == 3 and "ivsb" in _tri_html
+    # 两段课（15×400 + 原地恢复）仍走双栏，不能被强行切成三档
+    _two = _blocks(sum(([(4.6, 86.0), (0.45, 90.0)] for _ in range(15)), []))
+    _two_iv = IV.detect({"series": {"points": _two},
+                         "training": {"interval": True, "type": "running"}})
+    assert _two_iv and len(_two_iv["bands"]) == 2, _two_iv and [b["label"] for b in _two_iv["bands"]]
+    _two_html = ACTCARD.build_html(
+        {}, {"series": {"points": _two}, "laps": [],
+             "training": {"interval": True, "type": "running"}},
+        None, None, "两段自检")
+    assert 'class="ivcol' in _two_html and 'class="ivband"' not in _two_html
+    # 四档：金字塔式递进速度，最多切到 4 档，不能无限细分
+    _four = _blocks(sum(([(4.9, 60.0), (4.2, 60.0), (3.5, 60.0), (2.6, 60.0)]
+                         for _ in range(6)), []))
+    _fiv = IV.detect({"series": {"points": _four},
+                      "training": {"interval": True, "type": "running"}})
+    assert _fiv and 2 <= len(_fiv["bands"]) <= IV.BAND_MAX
+    # 匀速标记课：切不出档，回默认版式（空的结构条没有意义）
+    _flat = [{"t": i * 5.0, "spd": 3.0 + (0.05 if i % 3 == 0 else -0.03),
+              "hr": 150, "cad": 176, "dist": 0} for i in range(120)]
+    assert IV.detect({"series": {"points": _flat},
+                      "training": {"interval": True, "type": "running"}}) is None
+    # 分档的最小样本量：少于 4 段不表态（防止 2 组的短课被画成一堆档）
+    assert IV.band_split([{"dur_s": 60, "spd": 4.0, "dist_m": 240, "t0": 0}]) is None
+
+
     # 手机端 WebView 的缩放自校正：density=3 时布局视口 1080 CSS px 只露出
     # 360 CSS px，必须把画布缩到 1/3；归一后内容高度与 density 无关。
     # 少了这一步，draw(Canvas) 只截到左上角，分享预览会「只剩一个角」。
@@ -2736,7 +2786,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 91' in (
+    assert 'versionCode = 92' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----

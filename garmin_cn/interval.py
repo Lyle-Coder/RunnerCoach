@@ -47,6 +47,19 @@ MIN_FORCED_GAP = 0.05
 # 每栏最多列几行（常见的 400 m 间歇是 12~15 组，行距压紧后能全部列全），
 # 再多才折叠成「其余 N 组」。
 MAX_GROUPS = 16
+# 强度带（快/中/慢）最多分几档。真实的间歇课超过四档就只剩「配速曲线」可看，
+# 再切档对读者没有意义。
+BAND_MAX = 4
+# 相邻两档的相对速度差下限：低于它就算不上「不同的档」，不拆。
+# 8% 大致是「同一次课里两个不同配速目标」的最小可辨差异。
+MIN_BAND_GAP = 0.08
+# 拆分后每档至少几段（含 2 档时）。一段的「档」只是噪声。
+BAND_MIN_SETS = 2
+# 低于这个速度视为休息/走动，不参与强度分档（恢复段没有「档」可言）。
+REST_SPD = 1.2
+
+BAND_NAMES = {2: ("快", "慢"), 3: ("快", "中", "慢"),
+              4: ("快", "中快", "中慢", "慢")}
 
 
 def _split(values: list[float]) -> tuple[float, float, float]:
@@ -114,6 +127,7 @@ def _seg(chunk: list[dict], fast: bool, smooth: list[float] | None = None,
     cads = [p.get("cad") for p in chunk if p.get("cad")]
     return {
         "fast": fast,
+        "t0": chunk[0].get("t") or 0,     # 时序结构条按它排序
         "dist_m": round(dist, 1),
         "dur_s": round(dur, 1),
         "spd": spd,
@@ -146,6 +160,131 @@ def _agg(segs: list[dict], fast: bool) -> dict:
         "segs": picked[:MAX_GROUPS],
         "omitted": max(0, len(picked) - MAX_GROUPS),
     }
+
+
+def _kmeans(values: list[float], weights: list[float], k: int,
+            iters: int = 12) -> tuple[list[int], list[float]]:
+    """一维加权 k-means（分位数初始化，确定性；不用随机种子，回归可复现）。"""
+    order = sorted(range(len(values)), key=lambda i: values[i])
+    centers = [values[order[min(len(order) - 1,
+                               int((j + 0.5) * len(order) / k))]] for j in range(k)]
+    assign = [0] * len(values)
+    for _ in range(iters):
+        changed = False
+        for i, v in enumerate(values):
+            best = min(range(k), key=lambda c: abs(v - centers[c]))
+            if best != assign[i]:
+                assign[i], changed = best, True
+        for c in range(k):
+            tw = sum(weights[i] for i, a in enumerate(assign) if a == c)
+            if tw > 0:
+                centers[c] = sum(values[i] * weights[i]
+                                 for i, a in enumerate(assign) if a == c) / tw
+        if not changed:
+            break
+    return assign, centers
+
+
+def band_split(segs: list[dict] | None, kmax: int = BAND_MAX) -> dict | None:
+    """把分段按速度聚成 2~kmax 档强度带（快 / 中 / 慢…）。
+
+    为什么不是「快慢两组」
+    ----------------------
+    两组是 Otsu 二分的结果，遇到三段课（400 m 快 + 200 m 中 + 200 m 慢，
+    金字塔、变速跑、法特莱克）时中段会被硬塞进快或慢，结构就丢了。
+    这里按**分段速度**做一维加权 k-means，k 从 2 试到 kmax，只接受
+    「每档≥2 段」且「相邻档相对差 ≥8%」的最大 k——多出来的档必须真的
+    分得开，否则退回少一档，保证不会把匀速课切出一堆假档。
+
+    `segs` 里的休息段（spd < REST_SPD）单独成「恢复」档，不参与聚类：
+    原地站着没有「配速档」可言。
+    """
+    segs = [s for s in (segs or []) if (s.get("dur_s") or 0) >= 5]
+    if len(segs) < 4:
+        return None
+    # 用下标而不是 dict 本身做标识：内容相同的两段是相等的，按值查找会串位。
+    moving = [(i, s) for i, s in enumerate(segs)
+              if (s.get("spd") or 0) >= REST_SPD]
+    if len(moving) < 4:
+        return None
+    vals = [s["spd"] for _, s in moving]
+    wts = [max(s["dur_s"], 1.0) for _, s in moving]
+
+    def pack(label: str, picked: list[dict], rest: bool) -> dict:
+        dist = sum(s["dist_m"] for s in picked)
+        dur = sum(s["dur_s"] for s in picked)
+        return {
+            "label": label, "sets": len(picked),
+            "dist_m": round(dist, 1), "dur_s": round(dur, 1),
+            "spd": dist / dur if dur else 0.0,
+            "pace_s": round(dur / (dist / 1000)) if dist > 50 else None,
+            "recover_s": round(dur / len(picked)) if picked else None,
+            "rest": rest,
+            "hr_avg": _wmean([s["hr_avg"] or 0 for s in picked],
+                             [s["dur_s"] for s in picked]),
+            "cad": _wmean([s["cad"] or 0 for s in picked],
+                          [s["dur_s"] for s in picked]),
+            "segs": picked,
+        }
+
+    best: tuple[int, list[int], list[float]] | None = None
+    for k in range(2, min(kmax, len(moving) // BAND_MIN_SETS) + 1):
+        assign, centers = _kmeans(vals, wts, k)
+        counts = [sum(1 for a in assign if a == c) for c in range(k)]
+        if min(counts) < BAND_MIN_SETS:
+            break
+        order_c = sorted(range(k), key=lambda c: -centers[c])   # 快 → 慢
+        gap_ok = True
+        for j in range(k - 1):
+            hi, lo = centers[order_c[j]], centers[order_c[j + 1]]
+            if hi <= 0 or (hi - lo) / hi < MIN_BAND_GAP:
+                gap_ok = False
+                break
+        if not gap_ok:
+            break
+        best = (k, assign, centers)
+
+    if not best:
+        # 速度均匀（例如「快跑 + 原地站」只有一种跑动强度）时聚不出两档，
+        # 但只要有休息段，结构仍然是「跑动 / 恢复」两段式——直接按这个分，
+        # 不要为了凑档数把匀速跑硬劈成快慢两档。
+        rest_only = [s for s in segs if (s.get("spd") or 0) < REST_SPD]
+        if not rest_only or len(moving) < 3:
+            return None
+        moving_segs = [s for _, s in moving]
+        bands = [pack("跑动", moving_segs, False), pack("恢复", rest_only, True)]
+        order = []
+        for i in sorted(range(len(segs)), key=lambda i: segs[i].get("t0") or 0):
+            s = segs[i]
+            is_rest = (s.get("spd") or 0) < REST_SPD
+            order.append({**s, "band": 1 if is_rest else 0, "rest": is_rest})
+        return {"k": 2, "bands": bands, "order": order}
+
+    k, assign, centers = best
+    names = BAND_NAMES.get(k, tuple(f"档{i + 1}" for i in range(k)))
+    order_c = sorted(range(k), key=lambda c: -centers[c])
+    rank = {c: i for i, c in enumerate(order_c)}
+
+    bands: list[dict] = []
+    for c in order_c:
+        picked = [s for j, (_, s) in enumerate(moving) if assign[j] == c]
+        if picked:
+            bands.append(pack(names[rank[c]] if rank[c] < len(names)
+                              else f"档{rank[c] + 1}", picked, False))
+    # 休息段单独一档放最慢：原地站着没有「配速档」可言
+    rest = [s for s in segs if (s.get("spd") or 0) < REST_SPD]
+    if rest:
+        bands.append(pack("恢复", rest, True))
+
+    # 时序结构条：按开始时间排，每段标出属于哪一档（供 N 档版式画柱）
+    seg_band: dict[int, int] = {}
+    for j, (i, _) in enumerate(moving):
+        seg_band[i] = rank[assign[j]]
+    rest_band = len(bands) - 1 if rest else 0
+    order = [{**segs[i], "band": seg_band.get(i, rest_band),
+              "rest": (segs[i].get("spd") or 0) < REST_SPD}
+             for i in sorted(range(len(segs)), key=lambda i: segs[i].get("t0") or 0)]
+    return {"k": k, "bands": bands, "order": order}
 
 
 def _finish(segs: list[dict], source: str, min_ratio: float = MIN_RATIO,
@@ -198,6 +337,128 @@ def _finish(segs: list[dict], source: str, min_ratio: float = MIN_RATIO,
 def _split_ok(lo: float, hi: float) -> bool:
     """Otsu 切出来的两组必须真的分开，而不是把匀速抖动硬切成两半。"""
     return hi > 0 and (hi - lo) / hi >= MIN_SPLIT_GAP
+
+
+def speed_runs(points: list[dict] | None, tol: float = 0.14,
+               min_s: float = 20.0, max_s: float = 300.0) -> list[dict]:
+    """把逐点速度按「稳定段」切开，而不是二分快慢。
+
+    为强度分档服务：三段课（快 400 + 中 200 + 慢 200）若先做快慢二分，
+    中段会被并进快组、之后再也分不出来。这里以「速度相对当前段均值偏移
+    不超过 tol」为界自适应切段，切完再把过短的段并回速度更接近的邻居。
+    """
+    pts = [p for p in (points or []) if isinstance(p.get("t"), (int, float))]
+    if len(pts) < 8:
+        return []
+    pts.sort(key=lambda p: p["t"])
+    smooth: list[float] = []
+    for i in range(len(pts)):
+        a, b = max(0, i - 2), min(len(pts), i + 3)
+        w = [pts[j].get("spd") or 0.0 for j in range(a, b)]
+        smooth.append(sum(w) / len(w))
+
+    spans: list[tuple[int, int]] = []
+    i = 0
+    while i < len(pts):
+        j, mean = i + 1, smooth[i]
+        while j < len(pts):
+            v = smooth[j]
+            n = j - i
+            if mean > 0.3 and abs(v - mean) / max(mean, 0.5) > tol:
+                break
+            if (pts[j]["t"] - pts[i]["t"]) > max_s:
+                break
+            mean = (mean * n + v) / (n + 1)
+            j += 1
+        spans.append((i, j))
+        i = j
+
+    def fold(a: int, b: int) -> dict | None:
+        return _seg(pts[a:b], False, smooth, a, b)
+
+    segs = [s for s in (fold(a, b) for a, b in spans) if s]
+    # 过短的段（加速过渡、GPS 抖动）并回速度更接近的邻居
+    changed = True
+    while changed and len(segs) > 2:
+        changed = False
+        for k, s in enumerate(segs):
+            if s["dur_s"] >= min_s:
+                continue
+            left = segs[k - 1] if k > 0 else None
+            right = segs[k + 1] if k + 1 < len(segs) else None
+            pick = None
+            if left and right:
+                pick = k - 1 if abs(left["spd"] - s["spd"]) <= abs(right["spd"] - s["spd"]) else k + 1
+            else:
+                pick = k - 1 if left else k + 1
+            if pick is None:
+                break
+            a = spans[pick][0] if pick < k else spans[k][0]
+            b = spans[k][1] if pick < k else spans[pick][1]
+            merged = fold(a, b)
+            if not merged:
+                break
+            spans[min(k, pick):max(k, pick) + 1] = [(a, b)]
+            segs[min(k, pick):max(k, pick) + 1] = [merged]
+            changed = True
+            break
+    return segs
+
+
+def lap_segs(laps: list[dict] | None) -> list[dict]:
+    """分圈 → 分段（供强度分档用）。手动计圈的圈就是一组，粒度比逐点粗但更准。"""
+    out: list[dict] = []
+    for i, l in enumerate(laps or []):
+        dist = l.get("dist_m") or 0
+        dur = l.get("dur_s") or 0
+        if dist <= 0 or dur <= 0:
+            continue
+        spd = dist / dur
+        out.append({"fast": False, "t0": float(i), "dist_m": round(dist, 1),
+                    "dur_s": round(dur, 1), "spd": spd,
+                    "pace_s": round(dur / (dist / 1000)) if dist > 50 else None,
+                    "hr_avg": l.get("hr_avg"), "cad": l.get("cad")})
+    return out
+
+
+def manual_laps(laps: list[dict] | None, lap_m: float | None = None) -> bool:
+    """这组圈是不是「手动计圈」（间歇课的组），而不是 1 km 自动圈。"""
+    laps = laps or []
+    if len(laps) < 4:
+        return False
+    if lap_m and abs(lap_m - 1000) <= 60:
+        return False
+    km_like = sum(1 for l in laps if abs((l.get("dist_m") or 0) - 1000) <= 60)
+    return km_like < len(laps) * 0.6
+
+
+def attach_bands(got: dict | None, detail: dict | None,
+                 laps: list[dict] | None = None) -> dict | None:
+    """给判定结果补 `bands`（N 档强度带）与 `order`（时序结构条）。
+
+    分档优先用手动计圈：圈就是一组，快/中/慢三段课的各段速度不会被
+    「二分阈值」抹平。没有手动计圈时退回快慢两组的段序列（此时其实只有
+    两档，双栏版式仍适用）。
+    """
+    if not got:
+        return got
+    d = detail or {}
+    src_laps = laps if laps is not None else (d.get("laps") or [])
+    segs = None
+    if manual_laps(src_laps, d.get("lap_distance_m")):
+        segs = lap_segs(src_laps)
+    if not segs:
+        # 逐点数据按「速度稳定段」重切：不能复用快慢二分的结果，
+        # 否则三段课的中段在二分时就被并进快组，永远分不出「中」。
+        segs = speed_runs(((d.get("series") or {}).get("points")))
+    if not segs:
+        segs = ([dict(s) for s in got["fast"]["segs"]]
+                + [dict(s) for s in got["slow"]["segs"]])
+    bs = band_split(segs)
+    if bs:
+        got["bands"] = bs["bands"]
+        got["order"] = bs["order"]
+    return got
 
 
 def from_series(points: list[dict] | None, forced: bool = False) -> dict | None:
@@ -319,7 +580,7 @@ def detect(detail: dict | None) -> dict | None:
     if got:
         got["source"] = "garmin:" + str(got.get("source") or "series")
         got["mode"] = "garmin-interval"
-    return got
+    return attach_bands(got, d)
 
 
 def detect_coros(detail: dict | None) -> dict | None:
@@ -343,34 +604,25 @@ def detect_coros(detail: dict | None) -> dict | None:
     d = detail or {}
     groups = d.get("lap_groups") or []
 
-    def manual(laps: list[dict], lap_m: float | None) -> bool:
-        """整组是不是手动计圈：不是 1 km 自动圈。"""
-        if len(laps) < 4:
-            return False
-        if lap_m and abs(lap_m - 1000) <= 60:
-            return False
-        km_like = sum(1 for l in laps
-                      if abs((l.get("dist_m") or 0) - 1000) <= 60)
-        return km_like < len(laps) * 0.6
-
     cands: list[list[dict]] = []
     for g in groups:
-        if isinstance(g, dict) and manual(g.get("laps") or [], g.get("lap_m")):
+        if isinstance(g, dict) and manual_laps(g.get("laps") or [], g.get("lap_m")):
             cands.append(g["laps"])
     # 没带 lap_groups 的旧缓存 / 只有选中一组时，用展示用的分圈表兜底
     laps = d.get("laps") or []
-    if manual(laps, d.get("lap_distance_m")):
+    if manual_laps(laps, d.get("lap_distance_m")):
         cands.append(laps)
 
     best: dict | None = None
+    best_laps: list[dict] = []
     for laps_ in cands:
         got = from_laps(laps_)
         if got and (best is None or got["sets"] > best["sets"]):
-            best = got
+            best, best_laps = got, laps_
     if best:
         best["source"] = "coros:" + str(best.get("source") or "laps")
         best["mode"] = "coros-laps"
-    return best
+    return attach_bands(best, d, best_laps)
 
 
 def check() -> None:
