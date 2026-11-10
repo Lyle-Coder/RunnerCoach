@@ -248,7 +248,8 @@ _LAND = """
 .rc-plan-panel{grid-area:p}
 .rc-week-panel{grid-area:w}
 .rc-body-panel{grid-area:b}
-.rc-panel{padding:6px 9px;border-radius:12px;overflow:hidden}
+.rc-panel{padding:6px 9px;border-radius:12px;overflow:hidden;
+  display:flex;flex-direction:column}
 .rc-panel-hd{margin:0 0 4px}
 .rc-hero{gap:8px}
 .rc-ring{flex:0 0 68px;width:68px;height:68px}
@@ -259,7 +260,9 @@ _LAND = """
 /* 负荷带在窄横屏里改竖排三行、每行的窗口标签跟在数值后面，避免
    三列各 ~55px 时标签换行把面板撑破。 */
 .rc-load{min-height:0;padding:2px 8px;align-content:center;overflow:hidden;
-  grid-template-columns:1fr;grid-template-rows:repeat(3,auto);gap:2px}
+  grid-template-columns:1fr;grid-template-rows:repeat(3,auto);gap:2px;
+  border:1px solid var(--line,rgba(96,165,250,.16));border-radius:12px;
+  background:rgba(9,14,22,.42)}
 .rc-load .item{display:flex;align-items:baseline;gap:8px;padding:2px 0;
   border-right:0;border-bottom:1px solid var(--line2,rgba(96,165,250,.09))}
 .rc-load .item:last-child{border-bottom:0}
@@ -269,48 +272,74 @@ _LAND = """
 .rc-load-chart{display:none}
 /* 身体 2×2 在矮横屏里会纵向溢出，改成一行四格；变化说明在 ~90px 宽的
    格子里必然折行，横屏先收起，数值与单位保持完整。 */
-.rc-body{gap:5px;grid-template-columns:repeat(4,minmax(0,1fr))}
+.rc-body{flex:1;min-height:0;align-content:center;gap:5px;
+  grid-template-columns:repeat(4,minmax(0,1fr))}
 .rc-cell{padding:3px 6px;border-radius:9px}
 .rc-cell .v{font-size:14px;margin-top:0}
 .rc-cell .sub,.rc-cell .spark{display:none}
 .rc-week-hd .side{display:none}
-.rc-week .rc-days{height:46px;gap:5px;margin-top:4px}
+.rc-week{flex:1;min-height:0;display:flex;flex-direction:column}
+.rc-week .rc-days{flex:1;min-height:0;height:auto;gap:5px;margin-top:4px}
 .rc-day{min-width:24px}
+/* 0 值日给一根浅底短柱，别再留一个没有任何说明的孤立小点。 */
+.rc-day.zero .dot{display:none}
+.rc-day.zero .bar{min-height:4px;background:rgba(96,165,250,.22)}
 .rc-week-hd .big-num{font-size:19px}
 .rc-samples{display:none}
-.rc-plan{min-height:0;gap:8px}
+.rc-plan{flex:1;min-height:0;gap:8px}
 .rc-plan .when{flex:0 0 46px}
 .rc-plan .when b{font-size:14px}
 .rc-plan .t{font-size:14px}
 .rc-plan .go{min-height:40px}
 .rc-foot-line{display:none}
 }
-/* 老小屏横过来只有 264~320px 高：连网页页头页脚一起压掉，栅格改吃
-   calc(100dvh - 52px)（正常横屏扣 92px 是按有完整页头页脚估的，这里太奢侈），
-   再收掉面板标题、把环缩到 46px。五块数据仍在同一屏，不靠 overflow 裁。 */
+/* 老小屏横过来只有 264~320px 高：页头页脚收掉，栅格吃 calc(100dvh - 30px)。
+   0.6.12 曾为了「五块全塞一屏」把面板标题、日期、指标名全砍掉，结果真机
+   640×264 复核发现 100px 的面板里只填了 36~61px，下半截大片空白、语义也丢了。
+   这一版反过来：标题/日期/指标名按 11px 底线全部恢复，面板改 flex column
+   让内容自己撑满，柱子和身体格跟着面板长高，0 值日不再留一个孤点。 */
 @media (orientation:landscape) and (min-width:640px) and (max-height:340px){
 .rc-page{padding:0 8px 2px}
 .rc-page .page-head.rc-compact{padding:0;margin-bottom:0}
 .rc-page .page-head.rc-compact h1{font-size:12px}
 .rc-page .page-head.rc-compact .meta{display:none}
 .rc-page .foot{display:none}
-.rc-screen{grid-template-rows:24px minmax(0,1fr) minmax(0,1fr);gap:5px;
+.rc-screen{grid-template-rows:22px minmax(0,1fr) minmax(0,1fr);gap:5px;
   height:calc(100vh - 30px);height:calc(100dvh - 30px)}
 .rc-verdict{padding:1px 8px}
 .rc-verdict .v{font-size:12px}
-.rc-panel{padding:3px 6px}
-.rc-panel-hd{display:none}
-.rc-ring{flex:0 0 46px;width:46px;height:46px}
-.rc-load{gap:0;padding:0 6px}
+/* 内容 flex:1 后自动吃满面板高度，不再上半截满、下半截空。 */
+.rc-panel{padding:3px 7px;display:flex;flex-direction:column}
+.rc-panel-hd{display:flex;margin:0 0 3px;line-height:1.1;flex:none}
+.rc-panel-hd .rc-win{display:none}
+.rc-ring{flex:0 0 52px;width:52px;height:52px}
+.rc-hero{flex:1;min-height:0;gap:10px;align-items:center}
+.rc-parts{flex:1;justify-content:space-around}
+.rc-load{gap:0;padding:2px 6px;align-content:center}
 .rc-load .item{padding:0;border-bottom:0}
 .rc-load .v{font-size:13px}
 .rc-load .k,.rc-load .w{font-size:11px}
-.rc-cell{padding:1px 4px}
-.rc-cell .k{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.rc-cell .v{font-size:13px}
-.rc-week .rc-days{height:30px;gap:3px;margin-top:2px}
+/* 身体回到 2×2：每格约 150px 宽，指标名完整不截断，两行正好填满面板。 */
+.rc-body{flex:1;min-height:0;gap:4px;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  grid-template-rows:repeat(2,minmax(0,1fr))}
+.rc-cell{padding:2px 6px;display:flex;flex-direction:column;justify-content:center}
+.rc-cell .k{font-size:11px;white-space:normal;overflow:visible;
+  text-overflow:clip;line-height:1.15}
+.rc-cell .v{font-size:14px;margin-top:1px}
+/* 周柱撑满面板：days flex:1 让柱子跟着长高；日期标签回来；0 值日给浅底柱，
+   不再留下一个没有任何说明的孤立小点。 */
+.rc-week{flex:1;min-height:0;display:flex;flex-direction:column}
+.rc-week .rc-days{flex:1;min-height:0;height:auto;gap:4px;margin-top:2px}
+.rc-day{min-width:24px;gap:2px}
+.rc-day .lbl{display:block;font-size:11px;line-height:1.1}
+.rc-day.zero .dot{display:none}
+.rc-day.zero .bar{min-height:4px;background:rgba(96,165,250,.22)}
 .rc-week-hd .big-num{font-size:15px}
-.rc-day .lbl{display:none}
+.rc-week-hd .side{display:none}
+/* 计划只有一行内容，垂直居中比贴着顶部更自然。 */
+.rc-plan-panel{justify-content:center}
+.rc-plan{flex:1;min-height:0;gap:8px}
 .rc-plan .go{min-height:32px}
 }
 """

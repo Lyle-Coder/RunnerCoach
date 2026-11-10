@@ -91,6 +91,22 @@ def run() -> int:
     except MI.MiAuthError:
         pass
 
+    # 浏览器托管登录：Cookie 过滤 / 会话判定是纯函数，改坏了登录会静默失败。
+    # 网页端换门户 SSO 后密码通道作废，这条是唯一的登录入口，不能哑掉。
+    from garmin_cn import browser_login as BL
+
+    assert "/portal/sso/" in BL.SIGNIN_URL and "clientId=GarminConnect" in BL.SIGNIN_URL, BL.SIGNIN_URL
+    kept = BL.garmin_cookies([
+        {"name": "JWT_WEB", "value": "old", "domain": ".garmin.cn", "path": "/"},
+        {"name": "JWT_WEB", "value": "new", "domain": ".garmin.cn", "path": "/"},
+        {"name": "SESSION", "value": "s", "domain": ".sso.garmin.cn", "path": "/"},
+        {"name": "CONSENT", "value": "1", "domain": ".youtube.com", "path": "/"},
+        {"name": "blank", "value": "", "domain": ".garmin.cn", "path": "/"},
+    ])
+    assert {c["name"] for c in kept} == {"JWT_WEB", "SESSION"}, kept
+    assert [c["value"] for c in kept if c["name"] == "JWT_WEB"] == ["new"], "同名同域只留最后一条"
+    assert BL.has_session(kept) and not BL.has_session([{"name": "foo", "value": "1"}]), "会话判定错了"
+
     import tempfile
 
     tmp_db = Path(tempfile.gettempdir()) / "garmin_selftest.db"
@@ -2712,7 +2728,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 79' in (
+    assert 'versionCode = 80' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -2838,6 +2854,30 @@ def run() -> int:
         "极矮横屏栅格没有吃满可用高度"
     assert "head-act" not in _css, \
         "页头动作按钮已经撤掉，横屏不该还留着它的覆写样式"
+
+    # ---- 0.6.14：极矮横屏不再「砍语义」，恢复标签并让内容撑满 -----------
+    # 真机 640×264 复核发现：0.6.12 那版把面板标题/日期/指标名全砍了，
+    # 100px 的面板里只填 36~61px，下半截空、五块数据也失去语义。
+    # 注意 340 档的 media 也带同一个前缀，split 后是第 3 段，不能复用 _land_css。
+    _tiny_css = _css.split("max-height:340px")[-1]
+    assert ".rc-panel-hd{display:flex" in _tiny_css, \
+        "极矮横屏又把面板标题藏了，五块数据会变成没有名字的数字"
+    assert ".rc-day .lbl{display:block" in _tiny_css, \
+        "极矮横屏的日期标签被藏了，柱子看不出是哪天"
+    assert "text-overflow:ellipsis" not in _tiny_css and \
+        "text-overflow:clip" in _tiny_css, \
+        "极矮横屏的指标名又被省略号截断了"
+    assert ".rc-day.zero .dot{display:none}" in _tiny_css and \
+        "min-height:4px" in _tiny_css, \
+        "0 值日还在留孤立小点，没有给浅底柱"
+    assert ".rc-panel{padding:3px 7px;display:flex;flex-direction:column}" in _tiny_css, \
+        "极矮横屏面板没改成 flex 撑满，内容会贴顶留白"
+    assert ".rc-week .rc-days{flex:1" in _tiny_css, \
+        "极矮横屏的柱子没有跟着面板长高"
+    _land_load = _land_css.split(".rc-load{")[-1].split("}")[0]
+    assert "border-radius:12px" in _land_load and \
+        "background:rgba(9,14,22,.42)" in _land_load, \
+        "横屏负荷带没有做成和其余四块一致的卡片"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
