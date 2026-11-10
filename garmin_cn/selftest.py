@@ -2842,7 +2842,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 99' in (
+    assert 'versionCode = 100' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -3049,7 +3049,27 @@ def run() -> int:
         "垂直步幅比（%）被当成垂直振幅了，会印出假数字"
 
     # ---- 1.0.2：分圈组缺失时的 type=-1 回退（运动场跑等特殊类型）--------
-    assert _CA.ADAPTER_VERSION == 8, "适配器版本没升，旧缓存不会重抓"
+    assert _CA.ADAPTER_VERSION >= 9, "适配器版本没升，旧缓存不会重抓"
+    # 分圈兜底：只有「全程汇总组」时按逐点切，别显示「无分圈数据」
+    assert hasattr(_CA, "laps_from_points")
+    _fb = {"sportType": 100, "frequencyList": [
+        {"timestamp": i * 1200, "distance": i * 4000, "speed": 300,
+         "heart": 150, "cadence": 176, "altitude": 10,
+         "gpsLat": 0, "gpsLon": 0} for i in range(120)],
+        "lapList": [{"type": -1, "lapDistance": 480000,
+                     "lapItemList": [{"distance": 480000, "time": 144000}]}],
+        "summary": {"distance": 480000, "totalTime": 144000, "sportType": 100}}
+    _fbp = _CA.normalize(_fb, "fb-selftest")
+    assert len(_fbp["laps"]) >= 4, "lapList 只有全程汇总时没兜底切分圈"
+    assert not _fbp["laps_absent_ok"]
+    # 缓存健康检查：有轨迹却没分圈 = 残缺响应，必须重抓（否则永远空）
+    assert _CA.is_current({"source": "coros",
+                           "adapter_version": _CA.ADAPTER_VERSION,
+                           "laps": [],
+                           "series": {"points": [{"t": i} for i in range(90)]}}) is False
+    assert _CA.is_current({"source": "coros",
+                           "adapter_version": _CA.ADAPTER_VERSION,
+                           "laps": [], "laps_absent_ok": True}) is True
     _r = _CA.normalize({"summary": {"sportType": 100}, "lapList": [
         {"type": -1, "lapDistance": 1195000, "lapItemList": [
             {"distance": 1195000, "time": 481000, "avgHr": 141}]}]}, "st")
