@@ -24,8 +24,8 @@ from . import activity as act
 from . import route
 from .coros import CorosAuthError, CorosCloud, CorosError
 
-# 3 = 原生汇总/步态/六区心率，优先公里分圈；废弃佳明修正后的旧缓存
-ADAPTER_VERSION = 4
+# 8 = 分圈组元数据 lap_groups（间歇版式据此判定）+ 训练模式诊断；废弃 7 的旧缓存
+ADAPTER_VERSION = 8
 
 
 def raw_activity(row: dict) -> dict:
@@ -56,24 +56,43 @@ def number(value, divisor: float = 1) -> float | None:
 # 官方文档也没公开，所以按候选名找。找到后必须按量纲归一，否则卡上会印出
 # 「触地 0 ms」这类看着像 bug 的数字。
 GCT_KEYS = ("avgGroundContactTime", "groundContactTime", "avgContactTime",
-            "contactTime", "avgGct", "gct", "avgStanceTime", "stanceTime")
-VO_KEYS = ("avgVerticalOscillation", "verticalOscillation", "avgVertOscillation",
-           "vertOscillation", "avgVosc", "vosc")
+            "contactTime", "contactTimeMs", "avgGct", "gct", "groundTime",
+            "avgGroundTime", "avgStanceTime", "stanceTime", "stanceTimeMs")
+# 高驰真机 summary 里垂直振幅叫 avgVertVibration（垂直振动，cm）；
+# avgVertRatio 是「垂直步幅比 %」，值域 6~12 会撞进 2~25cm 的合理区间，
+# 绝不能混进来，否则卡片会印一个假振幅。
+VO_KEYS = ("avgVertVibration", "vertVibration", "verticalVibration",
+           "avgVerticalOscillation", "verticalOscillation", "avgVertOscillation",
+           "vertOscillation", "avgVosc", "vosc", "verticalOscillationCm",
+           "avgVerticalOscillationCm", "vertOsc")
 
 
-def dynamics(native: dict) -> tuple[float | None, float | None]:
-    """从高驰 summary 里取（触地时间 ms，垂直振幅 cm）。
+def dynamics(data: dict) -> tuple[float | None, float | None]:
+    """在整个明细里取（触地时间 ms，垂直振幅 cm）。
 
-    找不到或量纲不在合理区间就返回 None —— 出图侧会显示「—」，这比印一个
-    错数量级的数字安全。合理区间：触地 60~600 ms，垂直振幅 2~25 cm。
+    高驰官方没公开跑步动态在明细里的位置，summary 只是猜测之一——
+    真实字段可能在任意子对象里，所以做限深递归：值命中候选键后仍要过
+    量纲校验（触地 60~600 ms，垂直振幅 2~25 cm），宁可显示「—」也不印
+    错数量级的数字。
     """
-    if not isinstance(native, dict):
+    if not isinstance(data, dict):
         return None, None
-    pools = [native]
-    for key in ("runningDynamics", "runDynamics", "dynamics", "metrics"):
-        sub = native.get(key)
-        if isinstance(sub, dict):
-            pools.append(sub)
+    pools: list[dict] = []
+    budget = [300]                      # 明细里的 points 是海量秒级采样，别全扫
+
+    def collect(obj, depth: int = 0) -> None:
+        if depth > 4 or budget[0] <= 0:
+            return
+        if isinstance(obj, dict):
+            budget[0] -= 1
+            pools.append(obj)
+            for v in obj.values():
+                collect(v, depth + 1)
+        elif isinstance(obj, list) and obj:
+            for v in obj[:3]:           # list 只探前几个元素，防 points 拖垮
+                collect(v, depth + 1)
+
+    collect(data)
 
     def pick(keys: tuple[str, ...]) -> float | None:
         for pool in pools:
@@ -94,6 +113,103 @@ def dynamics(native: dict) -> tuple[float | None, float | None]:
             vo *= 100
         vo = vo if 2 <= vo <= 25 else None
     return gct, vo
+
+
+def key_tree(data: dict, limit: int = 700) -> str:
+    """明细的键树摘要（顶层键与二级键），诊断日志用——字段名谜底的钥匙。"""
+    parts = []
+    for k, v in (data or {}).items():
+        if isinstance(v, dict):
+            parts.append(k + "{" + ",".join(sorted(str(x) for x in v))[:120] + "}")
+        elif isinstance(v, list):
+            inner = v[0] if v and isinstance(v[0], dict) else None
+            more = "{" + ",".join(sorted(str(x) for x in inner))[:80] + "}" if inner else ""
+            parts.append(f"{k}[{len(v)}]{more}")
+        else:
+            parts.append(str(k))
+    return " | ".join(parts)[:limit]
+
+
+def _diag_laps(groups: list, selected: dict, parsed: int) -> None:
+    """分圈解析为空时记录 lapList 与首条 item 的真实字段，用户发诊断日志即可定位。
+
+    只在解析出 0 圈时写：既覆盖「组缺失」，也覆盖「组在但 item 字段名不
+    匹配被全跳过」——后者正是真机反馈里没有 coros.laps 条目的原因。
+    """
+    try:
+        from . import diag as _dg
+        parts = [f"type={g.get('type')} lapDistance={g.get('lapDistance')} "
+                 f"items={len(g.get('lapItemList') or [])}" for g in groups or []]
+        sample = ""
+        items = (selected or {}).get("lapItemList") or []
+        if items and isinstance(items[0], dict):
+            first = items[0]
+            sample = (" | 首条 keys=" + ",".join(sorted(str(k) for k in first))[:220]
+                      + " 值=" + ",".join(f"{k}:{str(v)[:10]}"
+                                         for k, v in list(first.items())[:14]))
+        _dg.log_exc("coros.laps", f"laps={parsed} 组：" + (" | ".join(parts) or "缺失") + sample)
+    except Exception:
+        pass
+
+
+def _lite_laps(group: dict, cap: int = 40) -> list[dict]:
+    """分圈组 → 判定用的最小圈信息（距离 / 时长 / 心率），不带展示字段。
+
+    高驰的 lapList 往往同时有「自动公里圈」「手动计圈」「全程汇总」几组，
+    哪一组才是间歇课的分段无法预设，所以每组都留一份轻量副本给判定层。
+    """
+    out: list[dict] = []
+    for lap in (group.get("lapItemList") or [])[:cap]:
+        if not isinstance(lap, dict):
+            continue
+        d = number(lap.get("distance"), 100) or 0     # 厘米 → 米
+        t = number(lap.get("time", lap.get("totalTime")), 100) or 0   # 厘秒 → 秒
+        if d > 0 and t > 0:
+            out.append({"dist_m": d, "dur_s": t,
+                        "hr_avg": number(lap.get("avgHr"))})
+    return out
+
+
+def lap_groups_of(groups: list) -> list[dict]:
+    """lapList 各组 → [{type, lap_m, laps}]（最多 6 组）。出图不需要，判定需要。"""
+    out: list[dict] = []
+    for g in groups or []:
+        if not isinstance(g, dict):
+            continue
+        laps = _lite_laps(g)
+        if not laps:
+            continue
+        out.append({"type": g.get("type"),
+                    "lap_m": number(g.get("lapDistance"), 100),
+                    "laps": laps})
+        if len(out) >= 6:
+            break
+    return out
+
+
+def _diag_training(data: dict, lap_groups: list) -> None:
+    """记录高驰是否暴露了「训练/间歇」类字段，以及各组圈距。
+
+    高驰没有佳明 `hasIntensityIntervals` 那样的官方标记（官方文档也未公开），
+    现阶段靠「手动计圈结构」判定。这条日志是为了在朋友下次同步后确认：
+    接口里到底有没有可直接用的 interval/workout 字段——有就换成权威判定。
+    """
+    try:
+        from . import diag as _dg
+
+        native = data.get("summary") or {}
+        keys = []
+        for src, tag in ((native, "summary"), (data, "top")):
+            if isinstance(src, dict):
+                keys += [f"{tag}.{k}" for k in src
+                         if any(s in str(k).lower() for s in
+                                ("interval", "lap", "workout", "train", "plan", "session"))]
+        groups = " | ".join(f"type={g['type']} lap_m={g['lap_m']} n={len(g['laps'])}"
+                            for g in lap_groups) or "无分圈组"
+        _dg.log_exc("coros.training",
+                    "训练相关字段：" + (",".join(keys) or "无") + " ｜ " + groups)
+    except Exception:
+        pass
 
 
 def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
@@ -139,20 +255,17 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
                        "ele": ele, "dist": dist, "pwr": power,
                        "bb": None, "gap": None, "source": "coros"})
     native = data.get("summary") or {}
-    _gct, _vo = dynamics(native)
+    _gct, _vo = dynamics(data)
     _sport = number(data.get("sportType") or native.get("sportType"))
     _is_run = _sport is not None and int(_sport) in (100, 101, 102, 103)
     if _gct is None and _vo is None and _is_run:
-        # 高驰官方没公开跑步动态的字段名，只能按候选名试。真没有就留一条
-        # 带字段名的诊断记录 —— 用户把「诊断日志」发过来就能确认到底叫什么。
+        # 整个明细都没找到触地/垂直振幅：把键树记下来，用户发「诊断日志」
+        # 就能看到真实字段在哪一层、叫什么——这是唯一的定位手段。
         try:
             from . import diag as _dg
-            _dg.log_exc("coros.dynamics",
-                        "未找到触地/垂直振幅，summary 字段："
-                        + ", ".join(sorted(str(k) for k in native)[:40]))
+            _dg.log_exc("coros.dynamics", "未找到跑步动态，键树：" + key_tree(data))
         except Exception:
             pass
-    _gct, _vo = dynamics(native)
     summary = {"cad_avg": number(native.get("avgCadence")),
                "cad_max": number(native.get("maxCadence")),
                "stride_avg": number(native.get("avgStepLen")),
@@ -170,6 +283,13 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
     candidates = [g for g in groups if g.get("lapItemList") and g.get("type") != -1]
     selected = next((g for g in candidates if number(g.get("lapDistance")) == 100000),
                     candidates[0] if candidates else {})
+    if not candidates:
+        # 有的活动（如运动场跑）lapList 里可能只有 type=-1 的组或干脆没有分圈，
+        # 宁可用最后一组也不静默丢掉。
+        fallback = [g for g in groups if g.get("lapItemList")]
+        if fallback:
+            # 选分圈条数最多的一组（type=-1 组可能只是全程汇总，只有 1 条）
+            selected = max(fallback, key=lambda g: len(g["lapItemList"]))
     items = selected.get("lapItemList") or []
     for i, lap in enumerate(items):
         if not isinstance(lap, dict):
@@ -198,6 +318,10 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
     if len(laps) > 1 and laps[-1]["dist_m"] < 900 and \
             laps[-1]["dist_m"] < max(l["dist_m"] for l in laps[:-1]) * 0.9:
         laps[-1]["is_partial"] = True
+    if not laps:
+        # 组在但一条都解析不出（字段名不匹配）时同样要留证据，
+        # 否则用户只能看到「无分圈数据」而我们无从下手。
+        _diag_laps(groups, selected, 0)
     # summary 的最大速度是「秒/公里」，换算成 m/s 给卡片用（列表接口的 maxSpeed 常为 0）
     max_pace = number(native_summary.get("maxSpeed"))
     row_metrics = {"aerobic_te": number(native_summary.get("aerobicEffect")),
@@ -217,11 +341,15 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
                  "seconds": number(z.get("second")) or 0}
                 for z in sorted(zones, key=lambda z: number(z.get("zoneIndex")) or 0)]
     track_points = track if track else act.build_track(canonical)
+    lap_groups = lap_groups_of(groups)
+    _diag_training(data, lap_groups)
     return {"activity_id": str(activity_id), "source": "coros",
             "adapter_version": ADAPTER_VERSION,
             "fetched_at": dt.datetime.now().isoformat(timespec="seconds"),
             "summary": summary, "laps": laps, "hr_zones": hr_zones,
             "lap_distance_m": number(selected.get("lapDistance"), 100),
+            # 间歇判定用：各组圈距/圈数（含手动计圈组），展示层不用
+            "lap_groups": lap_groups,
             "series": {"points": act._thin(points, act.SERIES_POINTS)},
             "track": act._thin(track_points, act.TRACK_POINTS),
             "route": route.build(canonical),

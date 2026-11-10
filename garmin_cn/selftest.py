@@ -153,8 +153,8 @@ def run() -> int:
         assert h.count("__gcExportInfo") == 1, "探针重复注入"
         assert "__gcFit" in h and "visualViewport" in h, "HTML 缺缩放校正探针"
 
-    # 间歇训练（快慢交替）自动切底部双栏：左快组、右慢组；
-    # 匀速跑 / 单调加速不能误报，非间歇活动的分圈表必须原样保留。
+    # 间歇版式只看佳明的训练模式标记（hasIntensityIntervals），不再靠速度猜：
+    # 标记为间歇才切底部双栏，未标记一律原样保留分圈表。
     from garmin_cn import interval as IV
 
     IV.check()
@@ -167,12 +167,17 @@ def run() -> int:
                                "dist": dist})
                 t += 5.0
                 dist += spd * 5.0
-    iv_html = ACTCARD.build_html({}, {"series": {"points": iv_pts}},
-                                 None, None, "间歇自检")
-    assert 'class="iv"' in iv_html and "快组" in iv_html
-    assert "慢组 / 恢复" in iv_html and "间歇结构" in iv_html
+    # 未标记：同样的速度曲线也必须是默认分圈版式（旧实现会在这里误报）
+    assert 'class="ivband"' not in ACTCARD.build_html(
+        {}, {"series": {"points": iv_pts}, "training": {"interval": False,
+                                                        "type": "running"}},
+        None, None, "间歇自检-未标记")
+    _iv_detail = {"series": {"points": iv_pts},
+                  "training": {"interval": True, "type": "running"}}
+    iv_html = ACTCARD.build_html({}, _iv_detail, None, None, "间歇自检")
+    assert 'class="ivband"' in iv_html and "间歇结构" in iv_html
     assert '<div class="lhead">' not in iv_html, "间歇版不该再渲染原分圈表"
-    assert 'class="iv"' not in ACTCARD.build_html({}, {}, None, None, "自检")
+    assert 'class="ivband"' not in ACTCARD.build_html({}, {}, None, None, "自检")
 
     # 原地休息型间歇（真实 15×400 m 样本形态）：静止点不能被过滤掉，
     # 右栏要写「平均恢复 1:xx」而不是几十分钟每公里的假配速，15 组逐组列全。
@@ -184,12 +189,121 @@ def run() -> int:
                 rest_pts.append({"t": t, "spd": spd, "hr": 160, "cad": 200,
                                  "dist": 0.0})
                 t += 4.0
-    rest_html = ACTCARD.build_html({}, {"series": {"points": rest_pts}},
-                                   None, None, "间歇自检（原地恢复）")
-    assert 'class="iv"' in rest_html and "平均恢复" in rest_html
+    rest_html = ACTCARD.build_html(
+        {}, {"series": {"points": rest_pts},
+             "training": {"interval": True, "type": "running"}},
+        None, None, "间歇自检（原地恢复）")
+    assert 'class="ivband"' in rest_html and "平均恢复" in rest_html
     assert "组间恢复" in rest_html and "速度差" not in rest_html
-    assert 'class="ivmore"' not in rest_html, "15 组应逐组列全"
-    assert rest_html.count('class="ivrow"') == 30, "左右各 15 行"
+    # 15 组 → 15 根柱（跑动 + 组间恢复折成一组），每根柱下三行标注
+    assert rest_html.count('class="ivc"') == 15, "15 组应逐组一根柱"
+    assert rest_html.count('class="ivcl"') == 15, "每组要有配速/时间/距离三行"
+    assert rest_html.count('class="ivrest"') == 15, "组间恢复要画成贴底细条"
+    # 柱下三行：配速 / 时间 / 距离，三行都要有内容（不是「—」）
+    assert rest_html.count(" m</em>") == 15, "每组都要标距离"
+    assert rest_html.count("<span>1:") == 15, "每组都要标时间"
+
+    # ---- 三段及以上：双栏表达不了，改 N 档强度带 -------------------------
+    # 400 快 / 200 中 / 200 慢跑：旧实现会把「中」并进快组，结构丢一半。
+    def _blocks(seq):
+        out, tt = [], 0.0
+        for spd, secs in seq:
+            for _ in range(max(1, int(secs / 5))):
+                out.append({"t": tt, "spd": spd, "hr": 168, "cad": 188, "dist": 0})
+                tt += 5.0
+        return out
+
+    _tri = _blocks(sum(([(4.8, 83.0), (3.9, 51.0), (2.4, 83.0)]
+                        for _ in range(8)), []))
+    _tiv = IV.detect({"series": {"points": _tri},
+                      "training": {"interval": True, "type": "running"}})
+    assert _tiv and len(_tiv["bands"]) == 3, _tiv and [b["label"] for b in _tiv["bands"]]
+    assert [b["label"] for b in _tiv["bands"]] == ["快", "中", "慢"]
+    assert all(b["sets"] >= 2 for b in _tiv["bands"]), "每档至少要有两组才算一档"
+    assert _tiv["bands"][0]["spd"] > _tiv["bands"][1]["spd"] > _tiv["bands"][2]["spd"]
+    assert len(_tiv["order"]) >= 12, "时序结构条要有足够的段"
+    _tri_html = ACTCARD.build_html(
+        {}, {"series": {"points": _tri}, "laps": [],
+             "training": {"interval": True, "type": "running"}},
+        None, None, "三段自检")
+    assert 'class="ivband"' in _tri_html
+    assert _tri_html.count('class="ivbr"') == 3, "三档要三行汇总"
+    # 24 段超过逐组标注上限（16），退化为纯结构条：形状仍要看得出，只是不标数字
+    assert 'class="ivsb' in _tri_html and 'class="ivc"' not in _tri_html
+    assert _tri_html.count("ivsb") > 20
+    # ---- 标准间歇不许被读成「两种强度」 -------------------------------
+    # 8×800 m + 400 m 慢跑恢复：恢复段配速 5'xx" 会被 k-means 聚成「慢组」，
+    # 但恢复就是恢复，不是第二个强度档。交替结构必须只出「间歇 / 恢复」两行。
+    _jog = _blocks(sum(([(3.9, 123.0), (2.6, 130.0)] for _ in range(8)), []))
+    _jiv = IV.detect({"series": {"points": _jog},
+                      "training": {"interval": True, "type": "running"}})
+    assert _jiv and [b["label"] for b in _jiv["bands"]] == ["间歇", "恢复"], \
+        _jiv and [b["label"] for b in _jiv["bands"]]
+    assert _jiv["bands"][1].get("jog") is True, "慢跑恢复要标成 jog（展示配速）"
+    _jhtml = ACTCARD.build_html(
+        {}, {"series": {"points": _jog}, "laps": [],
+             "training": {"interval": True, "type": "running"}},
+        None, None, "慢跑恢复自检")
+    assert "快组" not in _jhtml and "慢组" not in _jhtml, "标准间歇不许出现快/慢组"
+    assert "恢复配速" in _jhtml, "慢跑恢复应展示恢复配速"
+    # 两段课（15×400 + 原地恢复）仍走结构条，不能被强行切成三档
+    _two = _blocks(sum(([(4.6, 86.0), (0.45, 90.0)] for _ in range(15)), []))
+    _two_iv = IV.detect({"series": {"points": _two},
+                         "training": {"interval": True, "type": "running"}})
+    assert _two_iv and len(_two_iv["bands"]) == 2, _two_iv and [b["label"] for b in _two_iv["bands"]]
+    _two_html = ACTCARD.build_html(
+        {}, {"series": {"points": _two}, "laps": [],
+             "training": {"interval": True, "type": "running"}},
+        None, None, "两段自检")
+    # 两段课也走同一版式（双栏已废弃），只有两档颜色
+    assert 'class="ivband"' in _two_html and 'class="ivcols"' in _two_html
+    # 同配速 + 站桩恢复：同样只有「间歇 / 恢复」，恢复行给时长而不是配速
+    assert [b["label"] for b in _two_iv["bands"]] == ["间歇", "恢复"], \
+        [b["label"] for b in _two_iv["bands"]]
+    assert "平均恢复" in _two_html and "恢复配速" not in _two_html
+    assert "快组" not in _two_html and "慢组" not in _two_html
+    # 同距多组 + 配速自然漂移（真实 10-21：3'45" → 3'16"）不许切成快/中档：
+    # 组距一致说明这是一节课，配速变化是体力分配，不是两种强度。
+    _drift_laps = []
+    for i in range(15):
+        _pace = 225 - i * 4
+        _drift_laps.append({"dist_m": 400.0, "dur_s": 400 * _pace / 1000,
+                            "pace_s": _pace, "hr_avg": 170, "cad": 188})
+        _drift_laps.append({"dist_m": 40.0, "dur_s": 90.0, "pace_s": None,
+                            "hr_avg": 150, "cad": 0})
+    _div = IV.detect({"series": {"points": []}, "laps": _drift_laps,
+                      "lap_distance_m": 0,
+                      "training": {"interval": True, "type": "running"}})
+    assert _div and [b["label"] for b in _div["bands"]] == ["间歇", "恢复"], \
+        _div and [b["label"] for b in _div["bands"]]
+    # 组距不同但配速相同（400/800 m 同速）：也不该造档，只出一行「间歇」
+    _ladder = []
+    for _ in range(4):
+        for _d in (400.0, 800.0):
+            _ladder.append({"dist_m": _d, "dur_s": _d / 4.2, "pace_s": 238,
+                            "hr_avg": 170, "cad": 188})
+            _ladder.append({"dist_m": 200.0, "dur_s": 90.0, "pace_s": None,
+                            "hr_avg": 150, "cad": 0})
+    _lad = IV.detect({"series": {"points": []}, "laps": _ladder,
+                      "lap_distance_m": 0,
+                      "training": {"interval": True, "type": "running"}})
+    assert _lad and [b["label"] for b in _lad["bands"]] == ["间歇", "恢复"], \
+        _lad and [b["label"] for b in _lad["bands"]]
+    assert _two_html.count('class="ivc"') == 15 and _two_html.count('class="ivbr"') == 2
+    # 四档：金字塔式递进速度，最多切到 4 档，不能无限细分
+    _four = _blocks(sum(([(4.9, 60.0), (4.2, 60.0), (3.5, 60.0), (2.6, 60.0)]
+                         for _ in range(6)), []))
+    _fiv = IV.detect({"series": {"points": _four},
+                      "training": {"interval": True, "type": "running"}})
+    assert _fiv and 2 <= len(_fiv["bands"]) <= IV.BAND_MAX
+    # 匀速标记课：切不出档，回默认版式（空的结构条没有意义）
+    _flat = [{"t": i * 5.0, "spd": 3.0 + (0.05 if i % 3 == 0 else -0.03),
+              "hr": 150, "cad": 176, "dist": 0} for i in range(120)]
+    assert IV.detect({"series": {"points": _flat},
+                      "training": {"interval": True, "type": "running"}}) is None
+    # 分档的最小样本量：少于 4 段不表态（防止 2 组的短课被画成一堆档）
+    assert IV.band_split([{"dur_s": 60, "spd": 4.0, "dist_m": 240, "t0": 0}]) is None
+
 
     # 手机端 WebView 的缩放自校正：density=3 时布局视口 1080 CSS px 只露出
     # 360 CSS px，必须把画布缩到 1/3；归一后内容高度与 density 无关。
@@ -2728,7 +2842,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 85' in (
+    assert 'versionCode = 96' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -2925,6 +3039,101 @@ def run() -> int:
     assert _CA.dynamics({"avgGct": 9999, "avgVerticalOscillation": 120}) == (None, None), \
         "离谱量纲没被丢掉，卡片会印出错误数量级"
     assert _CA.dynamics(None) == (None, None), "空 summary 没兜住"
+    _deep = {"summary": {"sportType": 100}, "runAbility": {"core": {"avgGct": 268, "vosc": 9.1}}}
+    assert _CA.dynamics(_deep) == (268.0, 9.1), \
+        "跑步动态藏在明细深层时找不到（只扫 summary 是不够的）"
+    assert "runAbility{core}" in _CA.key_tree(_deep), "键树诊断没把子键列出来"
+    _real = {"summary": {"avgGroundTime": 245, "avgVertVibration": 8.6, "avgVertRatio": 7.4}}
+    assert _CA.dynamics(_real) == (245.0, 8.6), "高驰真机字段（avgGroundTime/avgVertVibration）没命中"
+    assert _CA.dynamics({"summary": {"avgVertRatio": 7.4}}) == (None, None), \
+        "垂直步幅比（%）被当成垂直振幅了，会印出假数字"
+
+    # ---- 1.0.2：分圈组缺失时的 type=-1 回退（运动场跑等特殊类型）--------
+    assert _CA.ADAPTER_VERSION == 8, "适配器版本没升，旧缓存不会重抓"
+    _r = _CA.normalize({"summary": {"sportType": 100}, "lapList": [
+        {"type": -1, "lapDistance": 1195000, "lapItemList": [
+            {"distance": 1195000, "time": 481000, "avgHr": 141}]}]}, "st")
+    assert len(_r["laps"]) == 1 and _r["laps"][0]["pace_s"] == 403, \
+        "只有 type=-1 分圈组时没有回退，会显示「无分圈数据」"
+    _r2 = _CA.normalize({"summary": {"sportType": 100}}, "st2")
+    assert _r2["laps"] == [], "完全无 lapList 时应保持空（诊断日志负责定位）"
+
+    # ---- 1.0.2：高驰没有间歇标记，改用手动计圈结构判定 ---------------------
+    # 高驰不下发 hasIntensityIntervals（官方文档也没有等价字段），所以
+    # 「是不是间歇课」看分圈：整组不是 1 km 自动圈 + 严格门槛的快慢交替。
+    def _cg(lap_m, laps):
+        return {"type": 0, "lap_m": lap_m,
+                "laps": [{"dist_m": d, "dur_s": s, "hr_avg": 160} for d, s in laps]}
+
+    _manual = _cg(0, [(400, 86)] * 15 + [(40, 90)] * 15)
+    # 交替顺序要真的交替，这里重建：400 m 快 + 90 s 走
+    _manual["laps"] = []
+    for _ in range(15):
+        _manual["laps"].append({"dist_m": 400.0, "dur_s": 86.0, "hr_avg": 168})
+        _manual["laps"].append({"dist_m": 40.0, "dur_s": 90.0, "hr_avg": 145})
+    _iv = IV.detect_coros({"lap_groups": [_manual], "laps": _manual["laps"]})
+    assert _iv and _iv["sets"] == 15 and _iv["mode"] == "coros-laps", _iv
+    assert _iv["source"].startswith("coros:") and _iv["slow"]["rest"], _iv
+    # 自动公里圈：哪怕有 2 圈慢（等红灯/爬坡）也不许出双栏
+    _km = _cg(1000, [(1000.0, 430.0 if i in (3, 7) else 333.0) for i in range(10)])
+    assert IV.detect_coros({"lap_groups": [_km], "laps": _km["laps"]}) is None, \
+        "整齐公里圈被误判成间歇（越野/等红灯正是这种）"
+    # 手动计圈但全程匀速（例如按公里手按的匀速跑）：切不出快慢，回默认
+    _even_manual = _cg(500, [(500.0, 180.0) for _ in range(8)])
+    assert IV.detect_coros({"lap_groups": [_even_manual]}) is None
+    # 没有 lap_groups 的旧缓存：退回展示用分圈表，同样要求手动计圈
+    assert IV.detect_coros({"laps": _manual["laps"], "lap_distance_m": 0}) is not None
+    assert IV.detect_coros({"laps": _km["laps"], "lap_distance_m": 1000}) is None
+    # 空明细 / 只有 1 圈：不许抛异常
+    assert IV.detect_coros({}) is None and IV.detect_coros(None) is None
+    assert IV.detect_coros({"laps": [{"dist_m": 400.0, "dur_s": 80.0}]}) is None
+    # 高驰适配层要把各组圈距带进明细（判定层才有数据可用）
+    _rr = _CA.normalize({"summary": {"sportType": 100}, "lapList": [
+        {"type": 1, "lapDistance": 100000, "lapItemList": [
+            {"distance": 100000, "time": 33300, "avgHr": 150} for _ in range(6)]},
+        {"type": 0, "lapDistance": 40000, "lapItemList": [
+            {"distance": 40000, "time": 8600, "avgHr": 168} for _ in range(6)]}]}, "st3")
+    assert [g["lap_m"] for g in _rr["lap_groups"]] == [1000.0, 400.0], _rr["lap_groups"]
+
+    # ---- 1.0.2：间歇标记只认活动列表 raw，且 raw 永远优先 -----------------
+    # 真机教训（两轮）：① 设备端明细是老版本抓的、没有 training 键，联网补抓
+    # 一失败就被 except 静默吞掉；② 就算重抓，单活动接口
+    # `/activity-service/activity/{id}` **根本不返回 hasIntensityIntervals**，
+    # 存进去的是「未知」，删数据重拉也一样。列表 raw 才是唯一权威来源。
+    from garmin_cn import activity as _ACT
+
+    assert _ACT.training_from_raw({"hasIntensityIntervals": True,
+                                   "activityType": {"typeKey": "running"}}
+                                  ) == {"interval": True, "workout_id": None,
+                                        "type": "running"}, "raw 没命中间歇标记"
+    assert _ACT.training_from_raw(None) is None, "没有 raw 时必须返回 None"
+    assert _ACT.training_from_raw("not-json") is None, "坏 raw 不能抛异常"
+    assert _ACT.training_from_raw("{}") is None, "空 raw 不能给出假标记"
+    # 没有这个键就是「不知道」，绝不能冒充 interval=False
+    assert _ACT.training_from_raw({"activityType": {"typeKey": "running"}}) is None, \
+        "raw 缺 hasIntensityIntervals 时不该表态（会把真间歇盖成默认版式）"
+    assert _ACT.build_training({"activityType": {"typeKey": "running"}}).get(
+        "interval") is None, "单活动接口缺字段时不许写死 interval=False"
+    # 真机现场：明细里是重抓后写死的 interval=False，raw 说 True → 以 raw 为准
+    _poisoned = {"training": {"interval": False, "type": "running"}}
+    _raw_true = {"hasIntensityIntervals": True, "activityType": {"typeKey": "running"}}
+    assert _ACT.resolve_training(_poisoned, _raw_true)["interval"] is True, \
+        "raw 没盖过缓存里的假 False（就是删数据重拉仍不出双栏的原因）"
+    assert _ACT.resolve_training(_poisoned, None)["interval"] is False, \
+        "raw 缺失时应退回明细缓存"
+    _p: list[dict] = []
+    _t = 0.0
+    for _ in range(15):
+        for _spd, _secs in ((4.6, 86.0), (0.0, 90.0)):
+            for _ in range(int(_secs / 4)):
+                _p.append({"t": _t, "spd": _spd, "hr": 160, "cad": 200})
+                _t += 4.0
+    _d = {"series": {"points": _p},
+          "training": _ACT.resolve_training(
+              _poisoned, {"hasIntensityIntervals": True,
+                          "activityType": {"typeKey": "running"}})}
+    assert IV.detect(_d) and IV.detect(_d)["sets"] == 15, \
+        "假 False 被 raw 纠正后 15×400 m 必须走间歇双栏"
 
     # ---- 1.0.1：高驰 1030 不再只丢一句英文，手机号账号会换类型的重试 ------
     from garmin_cn import coros as _CO
@@ -2965,6 +3174,32 @@ def run() -> int:
     _kt3 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert "高驰账号（邮箱或手机号）" in _kt3, "登录框还写着只能填邮箱"
     assert "setMessage(msg)" in _kt3, "长错误提示没走对话框，toast 会被截断"
+
+    # ---- 1.0.2：应用内检查更新（Gitee Release，零后端）------------------
+    from garmin_cn import update as _UP
+
+    assert _UP.is_newer("v1.0.2", "1.0.1") and not _UP.is_newer("v1.0.1", "1.0.1")
+    assert _UP.is_newer("v1.0.10", "1.0.9"), "版本号要按数字段比，不能按字典序"
+    assert not _UP.is_newer("", "1.0.1") and not _UP.is_newer("v1.1", None)
+    _apk = _UP.pick_apk([
+        {"name": "RunnerCoach-v1.0.2-debug.apk", "browser_download_url": "u1"},
+        {"name": "RunnerCoach-v1.0.2-release.apk", "browser_download_url": "u2"},
+        {"name": "src.zip", "browser_download_url": "u3"}])
+    assert _apk and _apk["name"].endswith("release.apk"), "没优先挑 release 包"
+    assert _UP.pick_apk([{"name": "x-debug.apk",
+                          "browser_download_url": "u"}]) is None, \
+        "debug 包签名不同，绝不能推给用户"
+    _pr = _UP.parse({"tag_name": "v1.0.2", "assets": [], "body": "改了什么"}, "1.0.1")
+    assert _pr["newer"] and _pr["url"].endswith("/releases/tag/v1.0.2")
+    assert _UP.parse(None, "1.0.1")["ok"] is False
+    # 桥接与入口必须真的接上，否则自检通过但用户点不到
+    from garmin_cn import appapi as _AA
+    assert "check_update" in _AA._API, "check_update 没进桥接白名单"
+    assert "检查更新" in _UI.me_page() and 'data-act="update"' in _UI.me_page()
+    _kt4 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert '"update" -> checkUpdate(silent = false)' in _kt4, "手动入口没接上"
+    assert "checkUpdate(silent = true)" in _kt4, "启动时没做静默检查"
+    assert "update_skipped" in _kt4, "点「稍后」没有记住，会天天弹同一个版本"
 
     # ---- 1.0.0：内核版本与 APK 版本必须对齐（发版最容易漏的一端）-------
     from garmin_cn import __version__ as _kv
