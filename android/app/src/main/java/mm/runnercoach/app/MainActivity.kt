@@ -442,8 +442,8 @@ class MainActivity : Activity() {
                     // 不再弹那个「选区间」的框（选了也没有任何可见效果）。
                     "historySync", "historySyncAll" -> runBackfill()
                     // 数据源行直接进对应登录，不再先弹「佳明还是高驰」的二层选择器
-                    "login:garmin" -> askGarminLogin()
-                    "login:coros" -> askCorosLogin()
+                    "login:garmin" -> openAccount("garmin")
+                    "login:coros" -> openAccount("coros")
                     "corosSleep" -> askCorosSleep()
                     "login" -> showLoginPicker()
                     "mi" -> showMiPanel()
@@ -832,19 +832,93 @@ class MainActivity : Activity() {
         val g = secrets.email()
         val c = secrets.corosEmail()
         row(R.drawable.ic_logo_garmin, "Garmin 佳明国区",
-            if (g.isNullOrBlank()) "邮箱密码 + 邮箱验证码" else "已登录 $g · 点击可重新登录"
-        ) { askGarminLogin() }
+            if (g.isNullOrBlank()) "邮箱密码 + 邮箱验证码" else "已登录 $g · 查看账号 / 更换"
+        ) { openAccount("garmin") }
         box.addView(View(this).apply { setBackgroundColor(0xFF16202F.toInt()) },
             LinearLayout.LayoutParams(MATCH_PARENT, 1))
         row(R.drawable.ic_logo_coros, "COROS 高驰",
-            if (c.isNullOrBlank()) "邮箱密码（Training Hub）· token 自动续期" else "已登录 $c · 点击可重新登录"
-        ) { askCorosLogin() }
+            if (c.isNullOrBlank()) "邮箱密码（Training Hub）· token 自动续期" else "已登录 $c · 查看账号 / 更换"
+        ) { openAccount("coros") }
 
         AlertDialog.Builder(this)
             .setTitle("账号登录")
             .setMessage("选择手表数据来源；两个账号可以都登，数据写进同一套看板。凭据只加密存在本机。")
             .setView(box)
             .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    // ------------------------------------------------------------ 账号卡片
+    /**
+     * 已登录时点账号行：先看账号卡片，**不再弹登录框**。
+     *
+     * 以前这里一律弹「输入邮箱密码」，已经登录的人被要求再输一遍，纯属添堵。
+     * 现在卡片只读展示账号、设备、会话状态与本地覆盖，换账号/退出各给一个按钮；
+     * 只有确实没登录（或会话失效）才回到登录框。
+     */
+    private fun openAccount(source: String) {
+        busy(true)
+        thread {
+            val r = apiCall("account_info", source)
+            ui {
+                busy(false)
+                if (!r.optBoolean("ok") || !r.optBoolean("logged_in")) {
+                    if (source == "coros") askCorosLogin() else askGarminLogin()
+                    return@ui
+                }
+                showAccountCard(source, r)
+            }
+        }
+    }
+
+    private fun showAccountCard(source: String, r: JSONObject) {
+        val lines = mutableListOf<String>()
+        r.optString("account").takeIf { it.isNotBlank() }?.let { lines.add("账号    $it") }
+        r.optString("device").takeIf { it.isNotBlank() }?.let { lines.add("设备    $it") }
+        r.optString("region").takeIf { it.isNotBlank() }?.let { lines.add("区域    $it") }
+        r.optString("session").takeIf { it.isNotBlank() }?.let { lines.add("会话    $it") }
+        val acts = r.optInt("activities")
+        val first = r.optString("first")
+        val last = r.optString("last")
+        if (acts > 0) lines.add("数据    $acts 条活动 · $first ~ $last")
+        if (r.optInt("days") > 0) lines.add("日汇总  ${r.optInt("days")} 天")
+        r.optString("last_sync").takeIf { it.isNotBlank() }?.let { lines.add("同步    $it") }
+        AlertDialog.Builder(this)
+            .setTitle(r.optString("label", "账号"))
+            .setMessage(lines.joinToString("\n"))
+            .setPositiveButton("更换其他账号") { _, _ ->
+                if (source == "coros") askCorosLogin() else askGarminLogin()
+            }
+            .setNeutralButton("退出登录") { _, _ -> confirmLogout(source) }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    private fun confirmLogout(source: String) {
+        val who = if (source == "coros") "高驰" else "佳明"
+        AlertDialog.Builder(this)
+            .setTitle("退出$who 账号")
+            .setMessage("只清除登录状态，本机历史数据不会被删除。退出后可以换一个${who}账号登录。")
+            .setPositiveButton("退出") { _, _ ->
+                busy(true)
+                thread {
+                    val r = apiCall(if (source == "coros") "coros_logout" else "garmin_logout")
+                    ui {
+                        busy(false)
+                        if (!r.optBoolean("ok")) {
+                            toast("退出失败：${r.optString("error")}")
+                            return@ui
+                        }
+                        if (source == "coros") secrets.clearCoros() else secrets.clear()
+                        toast("已退出${who}账号")
+                        thread {
+                            setStatus(apiCall("status"))
+                            ui { reload() }
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("取消", null)
             .show()
     }
 

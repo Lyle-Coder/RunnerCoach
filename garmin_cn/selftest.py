@@ -1258,6 +1258,25 @@ def run() -> int:
     assert "bulk=True" in _aa_src, "补历史没走批量节流"
     # 历史页要及时更新：停在历史 tab 时，每补完一段就 reload
     _kt6 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    # ---- 账号卡片：已登录不再要求重输密码 -------------------------------
+    from garmin_cn import appapi as _AAI
+
+    assert "account_info" in _AAI._API and "garmin_logout" in _AAI._API, \
+        "账号卡片/退出登录没进桥接白名单"
+    assert _AAI._mask_mail("abcdef@qq.com") == "ab***@qq.com"
+    assert _AAI._mask_mail("a@qq.com") == "a*@qq.com"
+    assert _AAI._mask_mail(None) == ""
+    _kt7 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert '"login:garmin" -> openAccount("garmin")' in _kt7, "已登录仍直接弹登录框"
+    assert '"login:coros" -> openAccount("coros")' in _kt7
+    assert "点击可重新登录" not in _kt7, "文案还写着「点击可重新登录」"
+    assert "更换其他账号" in _kt7 and "退出登录" in _kt7, "账号卡片缺换号/退出按钮"
+    assert "fun openAccount(" in _kt7 and "fun showAccountCard(" in _kt7
+    # 高驰补历史不额外拉 MCP 睡眠（日汇总里已含睡眠字段）
+    _csrc2 = (ROOT / "garmin_cn/coros.py").read_text(encoding="utf-8")
+    _range_src = _csrc2.split("def sync_range")[1].split("def earliest_activity")[0]
+    assert "coros_mcp_sleep" not in _range_src, "高驰补历史又去拉 MCP 睡眠了，白花请求"
+
     # ---- 老日期只拉日汇总（睡眠/HRV 不参与那段时间的判断）-----------
     from garmin_cn import sync as _SY
     from garmin_cn.store import Store as _Store
@@ -2893,7 +2912,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 103' in (
+    assert 'versionCode = 104' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
