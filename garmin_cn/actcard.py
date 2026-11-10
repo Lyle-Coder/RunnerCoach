@@ -938,9 +938,12 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     # **活动列表 raw 优先**：单活动接口不返回这个标记，明细里缓存的 training
     # 可能是「未知」甚至历史版本写死的 False（真机删数据重拉后正好是这种），
     # 只在「缺键」时回填会漏掉后一种，导致 10-21 的 15×400 m 永远默认版式。
-    if not is_coros:
+    # 高驰没有这个标记 —— 走「手动计圈结构」判定（interval.detect_coros）。
+    if is_coros:
+        iv = IV.detect_coros(detail)
+    else:
         detail = {**detail, "training": _resolve_training(detail, raw)}
-    iv = None if is_coros else IV.detect(detail)
+        iv = IV.detect(detail)
     if iv:
         lap_title = "间歇结构"
         if iv["slow"].get("rest"):
