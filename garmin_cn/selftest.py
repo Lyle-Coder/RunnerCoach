@@ -2736,7 +2736,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 88' in (
+    assert 'versionCode = 90' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -2952,23 +2952,32 @@ def run() -> int:
     _r2 = _CA.normalize({"summary": {"sportType": 100}}, "st2")
     assert _r2["laps"] == [], "完全无 lapList 时应保持空（诊断日志负责定位）"
 
-    # ---- 1.0.2：旧明细缓存缺 training 时，从活动行 raw 离线回填 -----------
-    # 真机教训：设备端明细是老版本抓的、没有 training 键，联网补抓一失败
-    # 就被 except 静默吞掉，间歇版式永远出不来。活动列表 raw 里本来就有
-    # hasIntensityIntervals，离线回填即可，不该依赖网络。
+    # ---- 1.0.2：间歇标记只认活动列表 raw，且 raw 永远优先 -----------------
+    # 真机教训（两轮）：① 设备端明细是老版本抓的、没有 training 键，联网补抓
+    # 一失败就被 except 静默吞掉；② 就算重抓，单活动接口
+    # `/activity-service/activity/{id}` **根本不返回 hasIntensityIntervals**，
+    # 存进去的是「未知」，删数据重拉也一样。列表 raw 才是唯一权威来源。
     from garmin_cn import activity as _ACT
 
     assert _ACT.training_from_raw({"hasIntensityIntervals": True,
                                    "activityType": {"typeKey": "running"}}
                                   ) == {"interval": True, "workout_id": None,
-                                        "type": "running"}, "raw 回填没命中间歇标记"
+                                        "type": "running"}, "raw 没命中间歇标记"
     assert _ACT.training_from_raw(None) is None, "没有 raw 时必须返回 None"
     assert _ACT.training_from_raw("not-json") is None, "坏 raw 不能抛异常"
     assert _ACT.training_from_raw("{}") is None, "空 raw 不能给出假标记"
-    # 佳明元数据接口失败时不得把 interval=False 写死进缓存（永久投毒）
-    assert _ACT.training_from_raw({"activityType": {"typeKey": "running"}}) == \
-        {"interval": False, "workout_id": None, "type": "running"}, \
-        "无标记 raw 应回填 interval=False（走默认版式）"
+    # 没有这个键就是「不知道」，绝不能冒充 interval=False
+    assert _ACT.training_from_raw({"activityType": {"typeKey": "running"}}) is None, \
+        "raw 缺 hasIntensityIntervals 时不该表态（会把真间歇盖成默认版式）"
+    assert _ACT.build_training({"activityType": {"typeKey": "running"}}).get(
+        "interval") is None, "单活动接口缺字段时不许写死 interval=False"
+    # 真机现场：明细里是重抓后写死的 interval=False，raw 说 True → 以 raw 为准
+    _poisoned = {"training": {"interval": False, "type": "running"}}
+    _raw_true = {"hasIntensityIntervals": True, "activityType": {"typeKey": "running"}}
+    assert _ACT.resolve_training(_poisoned, _raw_true)["interval"] is True, \
+        "raw 没盖过缓存里的假 False（就是删数据重拉仍不出双栏的原因）"
+    assert _ACT.resolve_training(_poisoned, None)["interval"] is False, \
+        "raw 缺失时应退回明细缓存"
     _p: list[dict] = []
     _t = 0.0
     for _ in range(15):
@@ -2977,10 +2986,11 @@ def run() -> int:
                 _p.append({"t": _t, "spd": _spd, "hr": 160, "cad": 200})
                 _t += 4.0
     _d = {"series": {"points": _p},
-          "training": _ACT.training_from_raw(
-              {"hasIntensityIntervals": True, "activityType": {"typeKey": "running"}})}
+          "training": _ACT.resolve_training(
+              _poisoned, {"hasIntensityIntervals": True,
+                          "activityType": {"typeKey": "running"}})}
     assert IV.detect(_d) and IV.detect(_d)["sets"] == 15, \
-        "旧缓存 + raw 回填后 15×400 m 必须走间歇双栏"
+        "假 False 被 raw 纠正后 15×400 m 必须走间歇双栏"
 
     # ---- 1.0.1：高驰 1030 不再只丢一句英文，手机号账号会换类型的重试 ------
     from garmin_cn import coros as _CO
