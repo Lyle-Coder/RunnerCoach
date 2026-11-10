@@ -303,5 +303,51 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(M._parse_callback("http://127.0.0.1:1/cb?error=denied")[2], "denied")
 
 
+
+CN_SLEEP = """睡眠概览
+
+2026年10月15日
+睡眠评分：88
+主睡眠：7小时 20分
+深睡比例：24%
+浅睡比例：52%
+REM 比例：24%
+清醒时长：9 分钟
+睡眠时间：23:40 - 07:00
+小睡：15 分钟
+"""
+
+
+class ChineseTextTest(unittest.TestCase):
+    """中文账号回来的是中文键名——只认英文就会误判成「没有睡眠记录」。"""
+
+    def test_chinese_text_parsed(self):
+        rows = M.parse_sleep({"content": [{"type": "text", "text": CN_SLEEP}]})
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual(r["date"], "2026-10-15")
+        self.assertEqual(r["sleep_score"], 88)
+        self.assertEqual(r["sleep_total_min"], 440)
+        self.assertEqual(r["deep_min"], 106)      # 24% × 440
+        self.assertEqual(r["light_min"], 229)     # 52% × 440
+        self.assertEqual(r["rem_min"], 106)       # 24% × 440
+        self.assertEqual(r["awake_min"], 9)
+        self.assertEqual(r["nap_min"], 15)
+        self.assertTrue(r["sleep_start"].endswith("23:40:00"))
+        self.assertTrue(r["sleep_end"].endswith("07:00:00"))
+
+    def test_date_variants(self):
+        for line, want in (("2026-10-15", "2026-10-15"), ("2026/10/15", "2026-10-15"),
+                           ("20261015", "2026-10-15")):
+            rows = M.parse_sleep({"content": [{"type": "text",
+                                               "text": f"{line}\n睡眠评分: 80\n主睡眠: 6小时"}]})
+            self.assertEqual(rows[0]["date"], want, f"{line} 没认出来")
+
+    def test_chinese_minutes(self):
+        self.assertEqual(M._minutes("7小时 20分"), 440)
+        self.assertEqual(M._minutes("45 分钟"), 45)
+        self.assertEqual(M._minutes("8 小时"), 480)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

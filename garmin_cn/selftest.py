@@ -2728,7 +2728,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 82' in (
+    assert 'versionCode = 83' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -2890,6 +2890,10 @@ def run() -> int:
         "空数据没有被安静跳过"
     assert _MC._minutes("7h 57min") == 477, "时长解析错了"
     assert _MC._pct(0.27) == 27, "比例没统一成百分数"
+    _cn = _MC.parse_sleep({"content": [{"type": "text", "text":
+            "2026年10月15日\n睡眠评分：88\n主睡眠：7小时 20分\n深睡比例：24%"}]})
+    assert _cn and _cn[0]["sleep_score"] == 88 and _cn[0]["sleep_total_min"] == 440, \
+        "中文返回解析不出来（真实账号多半就是中文）"
     _api_src = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
     for _fn in ("coros_mcp_status", "coros_mcp_login_url", "coros_mcp_finish",
                 "coros_mcp_sleep", "coros_mcp_logout"):

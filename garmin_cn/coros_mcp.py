@@ -133,6 +133,7 @@ class CorosMcp:
         self.expires_at = 0.0
         self.session_id = ""
         self.protocol = PROTOCOL_VERSION
+        self.last_text = ""          # 最近一次工具返回的纯文本（排障用）
         self._verifier = ""
         self._state = ""
         self.load()
@@ -341,7 +342,17 @@ class CorosMcp:
     def sleep(self, days: int = 30) -> list[dict]:
         """近 N 天的睡眠，按日期升序。字段已折算成 store.daily 的口径。"""
         res = self.call(SLEEP_TOOL, {"days": max(1, min(int(days or 7), 30))})
-        return parse_sleep(res)
+        self.last_text = _text_of(res)
+        rows = parse_sleep(res)
+        if not rows and self.last_text.strip():
+            # 有返回但解析不出：把原文留一条，用户发诊断日志就能定位字段格式
+            try:
+                from . import diag as _dg
+                _dg.log_exc("coros_mcp.sleep",
+                            "睡眠返回解析为空，原文：" + " ".join(self.last_text.split())[:800])
+            except Exception:
+                pass
+        return rows
 
     def hrv(self, days: int = 7) -> dict[str, float]:
         """睡眠 HRV（ms），按日期回填到 daily.hrv_night。拿不到就空着。"""
@@ -403,14 +414,14 @@ def _parse_callback(url: str) -> tuple[str, str, str]:
 
 
 def _minutes(value) -> int | None:
-    """'7h 57min' / '7:57' / '477 min' → 分钟。"""
+    """'7h 57min' / '7 小时 57 分' / '7:57' / '477 min' → 分钟。"""
     if value is None:
         return None
     if isinstance(value, (int, float)):
         return int(round(float(value)))
     s = str(value).strip().lower()
-    h = re.search(r"(\d+(?:\.\d+)?)\s*h", s)
-    m = re.search(r"(\d+(?:\.\d+)?)\s*m", s)
+    h = re.search(r"(\d+(?:\.\d+)?)\s*(?:h|小时|時|时)", s)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:min|分钟|分)", s)
     if h or m:
         total = (float(h.group(1)) * 60 if h else 0.0) + (float(m.group(1)) if m else 0.0)
         return int(round(total))
@@ -435,11 +446,103 @@ def _pct(value) -> float | None:
     return float(num.group(0)) if num else None
 
 
+# 日期可能写成 2026-10-15 / 2026/10/15 / 2026年10月15日 / 10月15日 / 20261015，
+# 而且可能和字段挤在同一行（"2026年10月15日 睡眠评分: 91"）。
+_DATE_ANY = re.compile(
+    r"^\s*(?:(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?"
+    r"|(\d{1,2})\s*月\s*(\d{1,2})\s*日"
+    r"|(\d{4})(\d{2})(\d{2}))")
+
+# 字段关键词：接口会按账号语言本地化，中文账号回来的是「睡眠评分 / 主睡眠 / 深睡比例」，
+# 只认英文等于直接判定「没有睡眠记录」——这次踩的就是这个坑。
+_F_SCORE = ("sleep score", "sleep_score", "睡眠评分", "睡眠得分", "睡眠分数")
+_F_DEEP = ("deep sleep ratio", "deep ratio", "深睡比例", "深睡眠比例", "深睡占比")
+_F_LIGHT = ("light sleep ratio", "light ratio", "浅睡比例", "浅睡眠比例", "浅睡占比")
+_F_REM = ("rem ratio", "rem比例", "rem 比例", "快速眼动比例")
+_F_AWAKE = ("awake time", "awake", "清醒时长", "清醒时间", "醒着")
+_F_NAP = ("naps total", "nap", "小睡", "午睡")
+_F_WINDOW = ("sleep window", "睡眠窗口", "睡眠时间", "睡眠时段", "入睡")
+_F_MAIN = ("main sleep", "daily sleep", "主睡眠", "总睡眠", "睡眠时长", "睡眠总时长")
+
+
+def _hit(k: str, keys: tuple[str, ...]) -> bool:
+    return any(x in k for x in keys)
+
+
+def _sleep_from_text(text: str) -> list[dict]:
+    """解析「一天一段」的可读文本，中英文都认；不认识的行直接跳过。"""
+    rows, cur = [], None
+    for line in text.splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        m = _DATE_ANY.match(raw)
+        if m:
+            if m.group(1):
+                day = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+            elif m.group(4):
+                day = f"{dt.date.today().year}-{int(m.group(4)):02d}-{int(m.group(5)):02d}"
+            else:
+                day = f"{m.group(6)}-{m.group(7)}-{m.group(8)}"
+            if not cur or cur.get("date") != day:
+                if cur:
+                    rows.append(cur)
+                cur = {"date": day}
+            raw = raw[m.end():].strip()
+            if not raw:
+                continue
+        if cur is None:
+            continue
+        # 分隔符取「最早出现的那个」：中文行常写成「睡眠时间：23:40 - 07:00」，
+        # 若先按半角切，会把时刻里的冒号当成分隔符。
+        cuts = [(raw.index(ch), ch) for ch in (":", "：") if ch in raw]
+        if not cuts:
+            continue
+        i, _sep = min(cuts)
+        key, val = raw[:i], raw[i + 1:]
+        k, v = key.strip().lower(), val.strip()
+        if _hit(k, _F_SCORE):
+            num = re.search(r"\d+(?:\.\d+)?", v)
+            cur["sleep_score"] = int(float(num.group(0))) if num else None
+        elif _hit(k, _F_WINDOW):
+            # 先按「日期 时间」整体抓，避免被日期里的连字符拆断；只有时刻也能认
+            stamps = re.findall(
+                r"\d{4}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}|\d{1,2}:\d{2}", v)
+            if len(stamps) >= 2:
+                cur["sleep_start"], cur["sleep_end"] = _iso_dt(stamps[0]), _iso_dt(stamps[-1])
+        elif _hit(k, _F_DEEP):
+            cur["_deep_r"] = _pct(v)
+        elif _hit(k, _F_LIGHT):
+            cur["_light_r"] = _pct(v)
+        elif _hit(k, _F_REM):
+            cur["_rem_r"] = _pct(v)
+        elif _hit(k, _F_AWAKE):
+            cur["awake_min"] = _minutes(v)
+        elif _hit(k, _F_NAP):
+            cur["nap_min"] = _minutes(v)
+        elif _hit(k, _F_MAIN) and "sleep_total_min" not in cur:
+            cur["sleep_total_min"] = _minutes(v)
+    if cur:
+        rows.append(cur)
+    out = []
+    for r in rows:
+        total = r.get("sleep_total_min")
+        if total:
+            for key, src in (("deep_min", "_deep_r"), ("light_min", "_light_r"),
+                             ("rem_min", "_rem_r")):
+                if r.get(src) is not None:
+                    r[key] = int(round(total * r[src] / 100))
+        clean = {k: v for k, v in r.items() if not k.startswith("_") and v is not None}
+        if len(clean) > 1:
+            out.append(clean)
+    return sorted(out, key=lambda r: r["date"])
+
+
 def parse_sleep(result: dict) -> list[dict]:
     """`querySleepOverview` 的结果 → [{date, sleep_score, sleep_total_min, ...}]。
 
-    工具既可能回结构化 JSON，也可能回文档里那种可读文本（"Sleep Score: 91" 之类），
-    两种都认；认不出的行直接跳过，不猜。
+    工具既可能回结构化 JSON，也可能回一段可读文本（中英文都可能），两种都认；
+    认不出的行直接跳过，不猜。
     """
     structured = result.get("structuredContent")
     if isinstance(structured, dict):
@@ -527,62 +630,10 @@ def _iso_dt(value) -> str | None:
     m = re.match(r"(\d{4})[-/]?(\d{2})[-/]?(\d{2})[ T]?(\d{2}):(\d{2})", s)
     if m:
         return f"{m.group(1)}-{m.group(2)}-{m.group(3)}T{m.group(4)}:{m.group(5)}:00"
+    t = re.match(r"^(\d{1,2}):(\d{2})$", s)      # 只有时刻：按今天补日期
+    if t:
+        return f"{dt.date.today().isoformat()}T{int(t.group(1)):02d}:{t.group(2)}:00"
     return None
-
-
-_DATE_LINE = re.compile(r"^\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s*$")
-
-
-def _sleep_from_text(text: str) -> list[dict]:
-    """解析文档里那种一段一天的文本。行不认识就跳过，绝不整段报错。"""
-    rows, cur = [], None
-    for line in text.splitlines():
-        raw = line.strip()
-        m = _DATE_LINE.match(raw)
-        if m:
-            if cur:
-                rows.append(cur)
-            cur = {"date": f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"}
-            continue
-        if not cur or ":" not in raw:
-            continue
-        key, val = raw.split(":", 1)
-        k, v = key.strip().lower(), val.strip()
-        if "sleep score" in k:
-            cur["sleep_score"] = int(float(v)) if re.search(r"\d", v) else None
-        elif "sleep window" in k or k.startswith("main sleep window"):
-            # 必须排在「main sleep」前面：窗口那行也以 main sleep 开头
-            bits = re.split(r"\s+-\s+|\s+to\s+", v, maxsplit=1)
-            if len(bits) == 2:
-                cur["sleep_start"], cur["sleep_end"] = _iso_dt(bits[0]), _iso_dt(bits[1])
-        elif k.startswith("main sleep"):
-            cur["sleep_total_min"] = _minutes(v)
-        elif "deep sleep ratio" in k:
-            cur["_deep_r"] = _pct(v)
-        elif "light sleep ratio" in k:
-            cur["_light_r"] = _pct(v)
-        elif "rem ratio" in k:
-            cur["_rem_r"] = _pct(v)
-        elif "awake" in k:
-            cur["awake_min"] = _minutes(v)
-        elif k.startswith("naps total") or k.startswith("nap"):
-            cur["nap_min"] = _minutes(v)
-        elif k.startswith("daily sleep") and "sleep_total_min" not in cur:
-            cur["sleep_total_min"] = _minutes(v)
-    if cur:
-        rows.append(cur)
-    out = []
-    for r in rows:
-        total = r.get("sleep_total_min")
-        if total:
-            for key, src in (("deep_min", "_deep_r"), ("light_min", "_light_r"),
-                             ("rem_min", "_rem_r")):
-                if r.get(src) is not None:
-                    r[key] = int(round(total * r[src] / 100))
-        clean = {k: v for k, v in r.items() if not k.startswith("_") and v is not None}
-        if len(clean) > 1:
-            out.append(clean)
-    return sorted(out, key=lambda r: r["date"])
 
 
 def parse_hrv(result: dict) -> dict[str, float]:

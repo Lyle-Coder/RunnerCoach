@@ -1081,7 +1081,23 @@ class MainActivity : Activity() {
                 busy(false)
                 if (r.optBoolean("ok")) {
                     val n = r.optInt("sleep_days")
-                    toast(if (n > 0) "已同步 $n 天睡眠" else "授权正常，但这段时间没有睡眠记录")
+                    if (n > 0) {
+                        toast("已同步 $n 天睡眠")
+                    } else {
+                        // 授权没问题却没数据时，把接口原样返回给用户看：
+                        // 可能账号确实没有睡眠，也可能是字段格式又变了
+                        val raw = r.optString("raw")
+                        AlertDialog.Builder(this)
+                            .setTitle("授权正常，但没有睡眠数据")
+                            .setMessage(
+                                "高驰返回的内容里没有可识别的睡眠记录。\n\n" +
+                                    "常见原因：手表没戴过夜 / 没开睡眠监测 / 账号里这段日期确实为空。\n\n" +
+                                    (if (raw.isBlank()) "（接口没有返回任何文本）"
+                                     else "接口原文（可截图发我）：\n$raw")
+                            )
+                            .setPositiveButton("知道了", null)
+                            .show()
+                    }
                     reload()
                 } else {
                     toast("同步睡眠失败：${r.optString("error")}")
