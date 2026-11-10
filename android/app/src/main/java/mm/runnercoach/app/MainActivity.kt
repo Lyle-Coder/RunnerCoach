@@ -2676,6 +2676,13 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------ 诊断
+    /** 当前 App 版本名（1.0.4）。不依赖 BuildConfig（AGP 8 默认不生成）。 */
+    private fun appVersion(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+    } catch (e: Exception) {
+        ""
+    }
+
     // ------------------------------------------------------------ 检查更新
     /**
      * 查 Gitee 上的最新 Release。
@@ -2690,18 +2697,34 @@ class MainActivity : Activity() {
     private fun checkUpdate(silent: Boolean) {
         if (port == 0) return
         val prefs = getSharedPreferences("gc_prefs", MODE_PRIVATE)
+        val ver = appVersion()
         if (silent) {
             val last = prefs.getLong("update_checked_at", 0L)
-            if (last > 0 && System.currentTimeMillis() - last < 24L * 3600 * 1000) return
+            val lastVer = prefs.getString("update_checked_ver", "") ?: ""
+            // 升到新版本必须立刻查一次：否则「刚装的新包 + 昨天查过」会一直静默，
+            // 用户就永远等不到提示（1.0.3 没弹窗正是这个原因）。
+            val sameVer = lastVer == ver
+            if (sameVer && last > 0
+                && System.currentTimeMillis() - last < 24L * 3600 * 1000) {
+                Log.i(TAG, "checkUpdate skip：24h 内已查过（$lastVer）")
+                return
+            }
         }
-        prefs.edit().putLong("update_checked_at", System.currentTimeMillis()).apply()
         thread {
             val r = apiCall("check_update")
             ui {
                 if (!r.optBoolean("ok")) {
+                    // 失败不记时间戳：网络抖一下不该把下次检查堵 24 小时
+                    Log.i(TAG, "checkUpdate 失败：" + r.optString("error"))
                     if (!silent) toast("检查更新失败，稍后再试（不影响使用）")
                     return@ui
                 }
+                prefs.edit()
+                    .putLong("update_checked_at", System.currentTimeMillis())
+                    .putString("update_checked_ver", ver)
+                    .apply()
+                Log.i(TAG, "checkUpdate 结果：latest=" + r.optString("latest")
+                    + " newer=" + r.optBoolean("newer") + " current=$ver")
                 val tag = r.optString("latest", "")
                 if (!r.optBoolean("newer")) {
                     if (!silent) toast("已是最新版本 " + (r.optString("current") ?: ""))
