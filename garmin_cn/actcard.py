@@ -56,6 +56,7 @@ from .exportspec import probe as _export_probe
 from .metrics import num
 from . import privacy as PV
 from . import interval as IV
+from . import easteregg as EG
 
 # 画幅宽 1080：内容高度约 1830（桌面/手机实测一致），裁掉页面留白后
 # 比例 ≈ 1.81，与 9:16 的 1.778 只差 2%，contain 后四边几乎只剩安全带。
@@ -749,7 +750,9 @@ def group_laps(laps: list[dict], max_rows: int = 10) -> list[dict]:
     return out
 
 
-def lap_rows(laps: list[dict], theme: dict | None = None) -> str:
+def lap_rows(laps: list[dict], theme: dict | None = None,
+             egg: dict | None = None) -> str:
+    """分圈表。`egg` 命中时把每根条换成连续彩虹（判定见 easteregg.py）。"""
     th = theme or theme_for(None)
     real = group_laps(laps)
     if not real:
@@ -760,11 +763,14 @@ def lap_rows(laps: list[dict], theme: dict | None = None) -> str:
     avg = sum(l["dur_s"] for l in real) * 1000 / total_dist if total_dist else None
     span = (slow - fast) or 1
     out = []
-    for l in real:
+    for i, l in enumerate(real):
         k = (l["pace_s"] - fast) / span           # 0=最快 1=最慢
         # 快 = 短条 + 冷色；慢 = 长条 + 暖色
         width = 22 + k * 78
-        color = _mix("#4FD6A6", "#E8843A", k)
+        # 彩蛋：不再按快慢配色，按「第几圈」沿色带走，越到后段越偏紫蓝。
+        # 判定用的是原始圈（group_laps 合并过的行不再重判），所以超过 10 圈的
+        # 活动合并成几行后，彩虹依然落在同一张表里。
+        color = EG.rainbow_bg(i, len(real)) if egg else _mix("#4FD6A6", "#E8843A", k)
         dist = f"{l['dist_m'] / 1000:.2f}"
         cad = f"{l['cad']:.0f}" if l.get("cad") else "—"
         hr = f"{l['hr_avg']:.0f}" if l.get("hr_avg") else "—"
@@ -822,7 +828,8 @@ def _reps_of(order: list[dict]) -> list[dict]:
     return reps
 
 
-def interval_bands(iv: dict, theme: dict | None = None) -> str:
+def interval_bands(iv: dict, theme: dict | None = None,
+                   egg: dict | None = None) -> str:
     """间歇版式（2~4 档通用）：上结构条，下逐档汇总。
 
     为什么统一成这一种
@@ -862,11 +869,16 @@ def interval_bands(iv: dict, theme: dict | None = None) -> str:
     labeled = 1 < len(reps) <= MAX_LABEL_COLS
     if labeled:
         cols: list[str] = []
+        # 彩蛋按「第几组强度」沿色带走，恢复柱和空格不计入序号
+        work_total = len([r for r in reps if r.get("seg")])
+        wi = 0
         for r in reps:
             seg, rest = r.get("seg"), r.get("rest")
             if seg:
-                color = BAND_COLORS[min(seg.get("band") or 0,
-                                         len(BAND_COLORS) - 1)]
+                color = (EG.rainbow_bg(wi, work_total) if egg else
+                         BAND_COLORS[min(seg.get("band") or 0,
+                                         len(BAND_COLORS) - 1)])
+                wi += 1
                 h = bar_h(seg["spd"])
                 body = (f'<i class="ivbar" style="height:{h:.0f}%;'
                         f'background:{color}"></i>')
@@ -883,21 +895,32 @@ def interval_bands(iv: dict, theme: dict | None = None) -> str:
     else:
         # 组数太多：按段的时长控制柱宽，只给结构形状，不逐组标注
         bars: list[str] = []
+        work_total = len([o for o in order if not o.get("rest")])
+        wi = 0
         for o in order:
             width = max(6.0, min(60.0, (o.get("dur_s") or 0) / 3.0))
             if o.get("rest"):
                 bars.append(f'<i class="ivsb rest" style="flex:{width:.0f} 0 0;'
                             f'height:12%"></i>')
                 continue
-            color = BAND_COLORS[min(o.get("band") or 0, len(BAND_COLORS) - 1)]
+            color = (EG.rainbow_bg(wi, work_total) if egg else
+                     BAND_COLORS[min(o.get("band") or 0, len(BAND_COLORS) - 1)])
+            wi += 1
             bars.append(f'<i class="ivsb" style="flex:{width:.0f} 0 0;'
                         f'height:{bar_h(o["spd"]):.0f}%;background:{color}"></i>')
         strip_html = f'<div class="ivstrip">{"".join(bars)}</div>'
 
     rows: list[str] = []
+    work_bands = len([b for b in bands if not b.get("rest")])
+    bi = 0
     for i, b in enumerate(bands):
-        color = (REST_COLOR if b.get("rest")
-                 else BAND_COLORS[min(i, len(BAND_COLORS) - 1)])
+        if b.get("rest"):
+            color = REST_COLOR
+        elif egg:
+            color = EG.rainbow_hex(bi, work_bands)
+            bi += 1
+        else:
+            color = BAND_COLORS[min(i, len(BAND_COLORS) - 1)]
         if b.get("rest"):
             # 站桩恢复没有「配速」可言，给平均恢复时长；慢跑恢复给配速
             if b.get("jog"):
@@ -917,7 +940,10 @@ def interval_bands(iv: dict, theme: dict | None = None) -> str:
             f'<em>{val}<u>{val_lab}</u></em>'
             f'<em>{hr}<u>心率</u></em>'
             '</div>')
-    return ('<div class="ivband">'
+    # 彩蛋只加 data 属性、不改 class：老断言里 `class="ivband"` 是版式契约，
+    # 换成 "ivband egg" 会让「间歇版式是否生效」的检查全部失效。
+    egg_attr = ' data-egg="1"' if egg else ''
+    return (f'<div class="ivband"{egg_attr}>'
             f'{strip_html}'
             f'<div class="ivbrows">{"".join(rows)}</div>'
             '</div>')
@@ -1009,12 +1035,15 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     else:
         detail = {**detail, "training": _resolve_training(detail, raw)}
         iv = IV.detect(detail)
+    # 彩蛋：只看这一张图要画的那种「圈」——间歇卡用强度组，普通卡用分圈。
+    # 判定放在渲染之前，两条路径共用同一枚徽章。
+    egg = EG.evaluate(laps, iv)
     if iv:
         # 2~4 档统一走「结构条 + 逐档汇总」：双栏只是两档的特例，
         # 而两段课同样需要逐组看配速/时间/距离，所以不再单独保留双栏。
         lap_title = "间歇结构"
         bands = iv.get("bands") or []
-        lap_html = interval_bands(iv, th)
+        lap_html = interval_bands(iv, th, egg=egg)
         sets_total = sum(b["sets"] for b in bands if not b.get("rest"))
         if len(bands) > 2:
             lap_sub = f'{len(bands)} 档强度 · {sets_total} 组'
@@ -1036,7 +1065,14 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
             lap_title, lap_sub = "每公里", f"{n_real} 圈"
         if is_coros and detail.get("lap_distance_m") != 1000 and n_real > 1:
             lap_title, lap_sub = "分圈", f"{n_real} 圈"
-        lap_html = lap_rows(laps, th)
+        lap_html = lap_rows(laps, th, egg=egg)
+    if egg:
+        unit = "组" if egg["kind"] == "interval" else "圈"
+        lap_sub = (f'{lap_sub} · <em class="egg-sub">'
+                   f'{egg["sets"]} {unit}完美渐加速</em>')
+    head_cls = "head egg" if egg else "head"
+    lp_cls = "card lp egg" if egg else "card lp"
+    egg_badge = EG.badge_html(EG.badge_uid(row, title)) if egg else ""
     # 图上只用橙点标出被校准过的采样点，不再在页脚写「修正了多少点」——
     # 那是数据处理的中间量，看板上不需要（问起来反而要解释）。
     cad_avg = s.get("cad_avg")
@@ -1137,8 +1173,8 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
 <style>{css}</style></head>
 <body><div class="rc-glow"></div>{BR.watermark_html(400)}
 <div class="page" data-gc-canvas data-gc-privacy="{mode}">
-
-  <div class="head">
+  {egg_badge}
+  <div class="{head_cls}">
     <div class="hleft">
       <div class="hname">{esc(title or row.get("name"))}</div>
       <div class="hsub">{esc(date_txt)} {esc(wd)}{time_txt}{(' · ' + esc(weather_txt)) if weather_txt else ''}</div>
@@ -1196,7 +1232,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     </div>
   </div>
 
-  <div class="card lp">
+  <div class="{lp_cls}">
     <div class="ctitle">{lap_title}<span>{lap_sub}</span></div>
     {lap_html}
   </div>
@@ -1428,7 +1464,7 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .rc-wm{right:36px;bottom:70px;opacity:.055}
 .foot .rc-foot{margin-right:6px;color:#93A3B5}
 .foot .rc-foot .rc-badge{width:18px;height:18px}
-"""
+""" + EG.EGG_CSS
 
 
 # ------------------------------------------------------------------ 出图
