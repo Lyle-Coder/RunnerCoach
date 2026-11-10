@@ -713,7 +713,9 @@ def coros_mcp_sleep(days: int = 30) -> dict:
             store.upsert_daily({"date": day, "hrv_night": ms}, merge=True)
         return {"ok": True, "sleep_days": len(rows), "hrv_days": len(hrv),
                 "first": rows[0]["date"] if rows else "",
-                "last": rows[-1]["date"] if rows else ""}
+                "last": rows[-1]["date"] if rows else "",
+                # 0 条时把原始返回带出去：日志/弹窗里能直接看到接口到底给了什么
+                "raw": "" if rows else (getattr(cloud, "last_text", "") or "")[:600]}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
