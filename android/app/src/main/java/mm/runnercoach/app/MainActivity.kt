@@ -866,7 +866,40 @@ class MainActivity : Activity() {
         box.addView(cb)
     }
 
-    private fun askGarminLogin() {
+    /**
+     * 登录中的小卡片：一张窄卡片 + 转圈 + 正在登录哪个账号。
+     *
+     * 为什么不复用顶部那条 2dp 进度线：登录要走一次 SSO 往返，手机上 3~15 秒
+     * 很常见；细线在深色页面里几乎看不见，用户以为没点中就会再点一次，于是
+     * 并发两次登录。卡片明确写着「正在登录」和账号，还允许取消（请求本身
+     * 不能中断，但至少能把卡片收掉）。
+     */
+    private fun showLoginCard(title: String, account: String): AlertDialog {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(24), dp(20), dp(24), dp(4))
+        }
+        box.addView(ProgressBar(this).apply { isIndeterminate = true })
+        box.addView(TextView(this).apply {
+            text = account
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setTextColor(0xFF939FAD.toInt())
+            setPadding(0, dp(10), 0, 0)
+        })
+        val d = AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(box)
+            .setNegativeButton("取消") { _, _ -> }
+            .setCancelable(false)
+            .create()
+        d.show()
+        return d
+    }
+
+    private fun askGarminLogin(email: String? = null, pwd: String? = null,
+                               err: String? = null) {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(56, 24, 56, 0)
@@ -874,19 +907,23 @@ class MainActivity : Activity() {
         val eEmail = EditText(this).apply {
             hint = "Garmin 国区邮箱"
             inputType = InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
-            setText(secrets.email() ?: "")
+            setText(email ?: secrets.email() ?: "")
         }
         val ePwd = EditText(this).apply {
             hint = "密码"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(pwd ?: "")
         }
         box.addView(eEmail)
         box.addView(ePwd)
         addShowPassword(box, ePwd)
 
+        // 失败重开时把上一次的错误写在最上面：用户在同一个框里改，不用回忆刚才报了什么
+        val tip = if (err.isNullOrBlank()) "账号只加密存在本机，不会上传到任何服务器。"
+        else "上次登录失败：$err\n\n账号只加密存在本机。改了再试一次即可。"
         AlertDialog.Builder(this)
-            .setTitle("登录佳明国区")
-            .setMessage("账号只加密存在本机，不会上传到任何服务器。")
+            .setTitle(if (err.isNullOrBlank()) "登录佳明国区" else "重新登录佳明国区")
+            .setMessage(tip)
             .setView(box)
             .setPositiveButton("登录") { _, _ ->
                 val e = eEmail.text.toString().trim()
@@ -902,11 +939,11 @@ class MainActivity : Activity() {
     }
 
     private fun doLogin(email: String, pwd: String) {
-        busy(true)
+        val card = showLoginCard("正在登录佳明", email)
         thread {
             val r = apiCall("login", email, pwd)
             ui {
-                busy(false)
+                card.dismiss()
                 when {
                     r.optBoolean("ok") && r.optBoolean("need_mfa") -> {
                         secrets.save(email, pwd)     // 验证码这一步可能还要重试，先存上
@@ -917,7 +954,8 @@ class MainActivity : Activity() {
                         toast("登录成功")
                         doSync()
                     }
-                    else -> toast("登录失败：${r.optString("error")}")
+                    else -> askGarminLogin(email, pwd,
+                                           r.optString("error").ifBlank { "未知错误" })
                 }
             }
         }
@@ -959,7 +997,8 @@ class MainActivity : Activity() {
      * token 约 24 小时过期，密码存 Keystore 后每次同步可静默重登；
      * 区域要和注册账号时选的一致（国内账号走 asia），选错会被拒。
      */
-    private fun askCorosLogin() {
+    private fun askCorosLogin(email: String? = null, pwd: String? = null,
+                              region: String = "asia", err: String? = null) {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(56, 24, 56, 0)
@@ -967,18 +1006,20 @@ class MainActivity : Activity() {
         val eEmail = EditText(this).apply {
             hint = "高驰账号（邮箱或手机号）"
             inputType = InputType.TYPE_CLASS_TEXT
-            setText(secrets.corosEmail() ?: "")
+            setText(email ?: secrets.corosEmail() ?: "")
         }
         val ePwd = EditText(this).apply {
             hint = "密码"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(pwd ?: "")
         }
         // 区域：默认国内；用单选对话框选，避免 Spinner 样式各机型不一致
         val regions = arrayOf("国内", "欧洲", "美国")
         val regionKeys = arrayOf("asia", "eu", "us")
-        var regionIdx = 0
+        // 失败重开时保留上次选的区域，别让人重新选一遍
+        var regionIdx = regionKeys.indexOf(region).coerceAtLeast(0)
         val vRegion = TextView(this).apply {
-            text = "账号区域：国内"
+            text = "账号区域：" + regions[regionIdx]
             textSize = 14f
             setTextColor(0xFFB7C7DD.toInt())
             setPadding(0, dp(14), 0, dp(6))
@@ -997,9 +1038,12 @@ class MainActivity : Activity() {
         box.addView(ePwd)
         addShowPassword(box, ePwd)
         box.addView(vRegion)
+        val tip = if (err.isNullOrBlank())
+            "与高驰手表 App 同一个账号，可用邮箱或手机号。凭据只加密存在本机；token 过期后自动续登。\n区域要与注册时一致，国内账号用「国内」。"
+        else "上次登录失败：$err\n\n区域要与注册时一致，国内账号用「国内」。"
         AlertDialog.Builder(this)
-            .setTitle("登录 COROS 高驰")
-            .setMessage("与高驰手表 App 同一个账号，可用邮箱或手机号。凭据只加密存在本机；token 过期后自动续登。\n区域要与注册时一致，国内账号用「国内」。")
+            .setTitle(if (err.isNullOrBlank()) "登录 COROS 高驰" else "重新登录 COROS 高驰")
+            .setMessage(tip)
             .setView(box)
             .setNegativeButton("取消", null)
             .setPositiveButton("登录") { _, _ ->
@@ -1012,24 +1056,19 @@ class MainActivity : Activity() {
     }
 
     private fun doCorosLogin(email: String, pwd: String, region: String) {
-        busy(true)
+        val card = showLoginCard("正在登录高驰", email)
         thread {
             val r = apiCall("coros_login", email, pwd, region)
             ui {
-                busy(false)
+                card.dismiss()
                 if (r.optBoolean("ok")) {
                     secrets.saveCoros(email, pwd)
                     toast("高驰登录成功（${r.optString("user_id")}）")
                     doSync()
                 } else {
-                    val msg = r.optString("error")
-                    if (msg.contains("\n"))
-                        AlertDialog.Builder(this@MainActivity)
-                            .setTitle("登录失败")
-                            .setMessage(msg)
-                            .setPositiveButton("知道了", null)
-                            .show()
-                    else toast("登录失败：$msg")
+                    // 失败直接带着错误重开登录框：区域、账号、密码都还在，改一处再试
+                    askCorosLogin(email, pwd, region,
+                                  r.optString("error").ifBlank { "未知错误" })
                 }
             }
         }
