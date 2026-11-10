@@ -398,7 +398,12 @@ def _text_of(result: dict) -> str:
                 bits.append(str(c["resource"].get("text") or ""))
     if not bits and result.get("structuredContent") is not None:
         bits.append(json.dumps(result["structuredContent"], ensure_ascii=False))
-    return "\n".join(b for b in bits if b)
+    out = "\n".join(b for b in bits if b)
+    # 实测返回里出现过「字面量 \n」（两个字符，不是真换行）：整段挤成一行，
+    # 按行解析的任何逻辑都会失效。统一还原成真实换行。
+    if "\\n" in out:
+        out = out.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+    return out
 
 
 def _parse_callback(url: str) -> tuple[str, str, str]:
@@ -462,7 +467,6 @@ _F_REM = ("rem ratio", "rem比例", "rem 比例", "快速眼动比例")
 _F_AWAKE = ("awake time", "awake", "清醒时长", "清醒时间", "醒着")
 _F_NAP = ("naps total", "nap", "小睡", "午睡")
 _F_WINDOW = ("sleep window", "睡眠窗口", "睡眠时间", "睡眠时段", "入睡")
-_F_MAIN = ("main sleep", "daily sleep", "主睡眠", "总睡眠", "睡眠时长", "睡眠总时长")
 
 
 def _hit(k: str, keys: tuple[str, ...]) -> bool:
@@ -501,6 +505,8 @@ def _sleep_from_text(text: str) -> list[dict]:
         i, _sep = min(cuts)
         key, val = raw[:i], raw[i + 1:]
         k, v = key.strip().lower(), val.strip()
+        # 「窗口/时段」行不能当时长用（Main Sleep Window / Main Sleep Period / Nap Window）
+        _spanish = any(x in k for x in ("window", "period", "窗口", "时段"))
         if _hit(k, _F_SCORE):
             num = re.search(r"\d+(?:\.\d+)?", v)
             cur["sleep_score"] = int(float(num.group(0))) if num else None
@@ -510,28 +516,38 @@ def _sleep_from_text(text: str) -> list[dict]:
                 r"\d{4}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}|\d{1,2}:\d{2}", v)
             if len(stamps) >= 2:
                 cur["sleep_start"], cur["sleep_end"] = _iso_dt(stamps[0]), _iso_dt(stamps[-1])
+        elif _hit(k, ("main sleep", "主睡眠")) and not _spanish:
+            cur["_main_min"] = _minutes(v)          # Main Sleep (asleep) —— 比例的分母
+        elif _hit(k, ("daily sleep", "总睡眠")) and not _spanish:
+            cur["_daily_min"] = _minutes(v)         # Daily Sleep (incl. naps) —— 兜底
         elif _hit(k, _F_DEEP):
             cur["_deep_r"] = _pct(v)
         elif _hit(k, _F_LIGHT):
             cur["_light_r"] = _pct(v)
         elif _hit(k, _F_REM):
             cur["_rem_r"] = _pct(v)
-        elif _hit(k, _F_AWAKE):
-            cur["awake_min"] = _minutes(v)
-        elif _hit(k, _F_NAP):
+        elif _hit(k, ("naps total", "小睡总", "小睡合计")) and not _spanish:
+            cur["_nap_t"] = _minutes(v)
+        elif _hit(k, _F_NAP) and "nap_min" not in cur and not _spanish:
             cur["nap_min"] = _minutes(v)
-        elif _hit(k, _F_MAIN) and "sleep_total_min" not in cur:
-            cur["sleep_total_min"] = _minutes(v)
+        elif (_hit(k, _F_AWAKE) and not _spanish
+              and not any(x in k for x in ("ratio", "count", "比例", "次数"))):
+            cur["awake_min"] = _minutes(v)
     if cur:
         rows.append(cur)
     out = []
     for r in rows:
-        total = r.get("sleep_total_min")
+        # 主睡眠（不含小睡）是各比例的分母，优先；没有才退回「每日总睡眠（含小睡）」
+        total = r.pop("_main_min", None) or r.pop("_daily_min", None)
         if total:
+            r["sleep_total_min"] = total
             for key, src in (("deep_min", "_deep_r"), ("light_min", "_light_r"),
                              ("rem_min", "_rem_r")):
                 if r.get(src) is not None:
                     r[key] = int(round(total * r[src] / 100))
+        nap_t = r.pop("_nap_t", None)
+        if nap_t:
+            r["nap_min"] = nap_t
         clean = {k: v for k, v in r.items() if not k.startswith("_") and v is not None}
         if len(clean) > 1:
             out.append(clean)
