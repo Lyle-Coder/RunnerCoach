@@ -50,6 +50,7 @@ from pathlib import Path
 
 from . import brand as BR
 from .activity import project
+from .activity import training_from_raw as _training_from_raw
 from .card import _find_browser
 from .exportspec import probe as _export_probe
 from .metrics import num
@@ -934,6 +935,13 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     n_real = len([l for l in laps if (l.get("pace_s") or 0) > 0])
     # 间歇版式的唯一依据是佳明的训练模式标记（hasIntensityIntervals）：
     # 训练里设置了间歇才切「底部双栏」，其余一律走原来的分圈表。
+    # 旧明细缓存没有 training 键时先从活动行 raw 离线回填——同步列表时
+    # 佳明就下发了这个标记，绝不能因为联网补抓失败而永远出不了双栏
+    # （真机教训：补抓一失败被 except 吞掉，10-21 的 15×400 m 一直默认版式）。
+    if "training" not in detail and not is_coros:
+        _t = _training_from_raw(raw)
+        if _t is not None:
+            detail = {**detail, "training": _t}
     iv = None if is_coros else IV.detect(detail)
     if iv:
         lap_title = "间歇结构"
