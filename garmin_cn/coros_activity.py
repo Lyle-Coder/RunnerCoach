@@ -24,8 +24,8 @@ from . import activity as act
 from . import route
 from .coros import CorosAuthError, CorosCloud, CorosError
 
-# 3 = 原生汇总/步态/六区心率，优先公里分圈；废弃佳明修正后的旧缓存
-ADAPTER_VERSION = 4
+# 5 = 分圈组缺失时的 type=-1 回退与诊断日志；废弃 4 的旧缓存（重抓后诊断才生效）
+ADAPTER_VERSION = 5
 
 
 def raw_activity(row: dict) -> dict:
@@ -94,6 +94,26 @@ def dynamics(native: dict) -> tuple[float | None, float | None]:
             vo *= 100
         vo = vo if 2 <= vo <= 25 else None
     return gct, vo
+
+
+def _diag_laps(groups: list, used_fallback: bool) -> None:
+    """公里分圈组缺失时记录 lapList 真实结构，用户发诊断日志即可定位。
+
+    高驰官方也没在活动明细里保证分圈（2026-06 才为 MCP 单独开分圈工具），
+    运动场跑等特殊类型很可能不下发或结构不同——写日志比猜字段名可靠。
+    """
+    try:
+        from . import diag as _dg
+        parts = []
+        for g in groups or []:
+            parts.append(f"type={g.get('type')} lapDistance={g.get('lapDistance')} "
+                         f"items={len(g.get('lapItemList') or [])} "
+                         f"keys={','.join(sorted(str(k) for k in g))[:80]}")
+        _dg.log_exc("coros.laps",
+                    ("type=-1 回退后 " if used_fallback else "lapList 无可用分圈组：")
+                    + " | ".join(parts) if parts else "lapList 缺失")
+    except Exception:
+        pass
 
 
 def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
@@ -170,6 +190,14 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
     candidates = [g for g in groups if g.get("lapItemList") and g.get("type") != -1]
     selected = next((g for g in candidates if number(g.get("lapDistance")) == 100000),
                     candidates[0] if candidates else {})
+    if not candidates:
+        # 有的活动（如运动场跑）lapList 里可能只有 type=-1 的组或干脆没有分圈，
+        # 宁可用最后一组也不静默丢掉；同时把真实结构写进诊断日志，用户发来即可定位。
+        fallback = [g for g in groups if g.get("lapItemList")]
+        if fallback:
+            # 选分圈条数最多的一组（type=-1 组可能只是全程汇总，只有 1 条）
+            selected = max(fallback, key=lambda g: len(g["lapItemList"]))
+        _diag_laps(groups, bool(fallback))
     items = selected.get("lapItemList") or []
     for i, lap in enumerate(items):
         if not isinstance(lap, dict):

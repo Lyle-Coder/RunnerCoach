@@ -2926,6 +2926,16 @@ def run() -> int:
         "离谱量纲没被丢掉，卡片会印出错误数量级"
     assert _CA.dynamics(None) == (None, None), "空 summary 没兜住"
 
+    # ---- 1.0.2：分圈组缺失时的 type=-1 回退（运动场跑等特殊类型）--------
+    assert _CA.ADAPTER_VERSION == 5, "适配器版本没升，旧缓存不会重抓"
+    _r = _CA.normalize({"summary": {"sportType": 100}, "lapList": [
+        {"type": -1, "lapDistance": 1195000, "lapItemList": [
+            {"distance": 1195000, "time": 481000, "avgHr": 141}]}]}, "st")
+    assert len(_r["laps"]) == 1 and _r["laps"][0]["pace_s"] == 403, \
+        "只有 type=-1 分圈组时没有回退，会显示「无分圈数据」"
+    _r2 = _CA.normalize({"summary": {"sportType": 100}}, "st2")
+    assert _r2["laps"] == [], "完全无 lapList 时应保持空（诊断日志负责定位）"
+
     # ---- 1.0.1：高驰 1030 不再只丢一句英文，手机号账号会换类型的重试 ------
     from garmin_cn import coros as _CO
 
