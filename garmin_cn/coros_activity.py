@@ -24,8 +24,8 @@ from . import activity as act
 from . import route
 from .coros import CorosAuthError, CorosCloud, CorosError
 
-# 5 = 分圈组缺失时的 type=-1 回退与诊断日志；废弃 4 的旧缓存（重抓后诊断才生效）
-ADAPTER_VERSION = 5
+# 6 = 跑步动态全明细递归查找 + 键树诊断；废弃 5 的旧缓存（重抓后诊断才生效）
+ADAPTER_VERSION = 6
 
 
 def raw_activity(row: dict) -> dict:
@@ -56,24 +56,39 @@ def number(value, divisor: float = 1) -> float | None:
 # 官方文档也没公开，所以按候选名找。找到后必须按量纲归一，否则卡上会印出
 # 「触地 0 ms」这类看着像 bug 的数字。
 GCT_KEYS = ("avgGroundContactTime", "groundContactTime", "avgContactTime",
-            "contactTime", "avgGct", "gct", "avgStanceTime", "stanceTime")
+            "contactTime", "contactTimeMs", "avgGct", "gct", "groundTime",
+            "avgGroundTime", "avgStanceTime", "stanceTime", "stanceTimeMs")
 VO_KEYS = ("avgVerticalOscillation", "verticalOscillation", "avgVertOscillation",
-           "vertOscillation", "avgVosc", "vosc")
+           "vertOscillation", "avgVosc", "vosc", "verticalOscillationCm",
+           "avgVerticalOscillationCm", "vertOsc")
 
 
-def dynamics(native: dict) -> tuple[float | None, float | None]:
-    """从高驰 summary 里取（触地时间 ms，垂直振幅 cm）。
+def dynamics(data: dict) -> tuple[float | None, float | None]:
+    """在整个明细里取（触地时间 ms，垂直振幅 cm）。
 
-    找不到或量纲不在合理区间就返回 None —— 出图侧会显示「—」，这比印一个
-    错数量级的数字安全。合理区间：触地 60~600 ms，垂直振幅 2~25 cm。
+    高驰官方没公开跑步动态在明细里的位置，summary 只是猜测之一——
+    真实字段可能在任意子对象里，所以做限深递归：值命中候选键后仍要过
+    量纲校验（触地 60~600 ms，垂直振幅 2~25 cm），宁可显示「—」也不印
+    错数量级的数字。
     """
-    if not isinstance(native, dict):
+    if not isinstance(data, dict):
         return None, None
-    pools = [native]
-    for key in ("runningDynamics", "runDynamics", "dynamics", "metrics"):
-        sub = native.get(key)
-        if isinstance(sub, dict):
-            pools.append(sub)
+    pools: list[dict] = []
+    budget = [300]                      # 明细里的 points 是海量秒级采样，别全扫
+
+    def collect(obj, depth: int = 0) -> None:
+        if depth > 4 or budget[0] <= 0:
+            return
+        if isinstance(obj, dict):
+            budget[0] -= 1
+            pools.append(obj)
+            for v in obj.values():
+                collect(v, depth + 1)
+        elif isinstance(obj, list) and obj:
+            for v in obj[:3]:           # list 只探前几个元素，防 points 拖垮
+                collect(v, depth + 1)
+
+    collect(data)
 
     def pick(keys: tuple[str, ...]) -> float | None:
         for pool in pools:
@@ -94,6 +109,21 @@ def dynamics(native: dict) -> tuple[float | None, float | None]:
             vo *= 100
         vo = vo if 2 <= vo <= 25 else None
     return gct, vo
+
+
+def key_tree(data: dict, limit: int = 700) -> str:
+    """明细的键树摘要（顶层键与二级键），诊断日志用——字段名谜底的钥匙。"""
+    parts = []
+    for k, v in (data or {}).items():
+        if isinstance(v, dict):
+            parts.append(k + "{" + ",".join(sorted(str(x) for x in v))[:120] + "}")
+        elif isinstance(v, list):
+            inner = v[0] if v and isinstance(v[0], dict) else None
+            more = "{" + ",".join(sorted(str(x) for x in inner))[:80] + "}" if inner else ""
+            parts.append(f"{k}[{len(v)}]{more}")
+        else:
+            parts.append(str(k))
+    return " | ".join(parts)[:limit]
 
 
 def _diag_laps(groups: list, used_fallback: bool) -> None:
@@ -159,20 +189,17 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
                        "ele": ele, "dist": dist, "pwr": power,
                        "bb": None, "gap": None, "source": "coros"})
     native = data.get("summary") or {}
-    _gct, _vo = dynamics(native)
+    _gct, _vo = dynamics(data)
     _sport = number(data.get("sportType") or native.get("sportType"))
     _is_run = _sport is not None and int(_sport) in (100, 101, 102, 103)
     if _gct is None and _vo is None and _is_run:
-        # 高驰官方没公开跑步动态的字段名，只能按候选名试。真没有就留一条
-        # 带字段名的诊断记录 —— 用户把「诊断日志」发过来就能确认到底叫什么。
+        # 整个明细都没找到触地/垂直振幅：把键树记下来，用户发「诊断日志」
+        # 就能看到真实字段在哪一层、叫什么——这是唯一的定位手段。
         try:
             from . import diag as _dg
-            _dg.log_exc("coros.dynamics",
-                        "未找到触地/垂直振幅，summary 字段："
-                        + ", ".join(sorted(str(k) for k in native)[:40]))
+            _dg.log_exc("coros.dynamics", "未找到跑步动态，键树：" + key_tree(data))
         except Exception:
             pass
-    _gct, _vo = dynamics(native)
     summary = {"cad_avg": number(native.get("avgCadence")),
                "cad_max": number(native.get("maxCadence")),
                "stride_avg": number(native.get("avgStepLen")),
