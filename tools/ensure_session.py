@@ -48,6 +48,17 @@ def main(argv: list[str]) -> int:
         print("× config.json 里没有账号密码，请先跑 run.bat login")
         return 2
 
+    # 关键：旧会话文件里的 CASTGC / JWT_WEB 会顶掉新票据——带着它换票，
+    # 结果是「Cookie 拿到了但数据接口 401」。登录前必须先把它挪走。
+    if SESSION.exists():
+        stale = SESSION.with_name("session.stale.json")
+        try:
+            if stale.exists():
+                stale.unlink()
+            SESSION.rename(stale)
+        except OSError:
+            pass
+
     auth = GarminCNAuth(HOME)
     try:
         auth.login(cfg["email"], cfg["password"])
