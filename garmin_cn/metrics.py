@@ -311,6 +311,16 @@ def derive(store, date: str, window: int = 30) -> dict:
 
     history = store.recent_days(window, end=date)
     today = store.day(date) or (history[-1] if history else {"date": date})
+    # 今天还没同步时，上面这行会拿「库里最后一天」顶上，但页面标题仍写「今日」。
+    # 高驰真机反馈的「App 52 / 这里 45」就是这么来的：45 是前一天的值，
+    # 日间波动 5~10 bpm 很正常。把真实数据日期与滞后天数一起交出去，
+    # 让展示层明示，别让用户拿昨天的数字去和 App 今天的卡片对。
+    data_date = str(today.get("date") or date)[:10]
+    try:
+        stale_days = max(0, (dt.date.fromisoformat(date)
+                             - dt.date.fromisoformat(data_date)).days)
+    except (TypeError, ValueError):
+        stale_days = 0
     acts = store.activities(daterange_end_back(date, 35)[0], date)
 
     # 手动睡眠矫正（手表整晚没戴这类）：给出即覆盖，历史行也原地改，
@@ -324,6 +334,8 @@ def derive(store, date: str, window: int = 30) -> dict:
 
     res = {
         "date": date,
+        "data_date": data_date,
+        "data_stale_days": stale_days,
         "today": today,
         "history": history,
         "readiness": readiness(today, history),

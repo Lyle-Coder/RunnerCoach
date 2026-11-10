@@ -424,6 +424,19 @@ def build_html(res: dict, sync_at: str | None = None,
                src: str = "Garmin 国区", ai_note: str = "") -> str:
     d = dt.date.fromisoformat(res["date"])
     t = res["today"]
+    # 今天没同步时 derive 会回退到库里最后一天，出图必须写清是哪天的数据，
+    # 否则分享出去的「今天的数据」其实是昨天的静息心率（真机 45 vs App 52）。
+    _data_date = str(res.get("data_date") or res["date"])[:10]
+    try:
+        _stale = max(0, (dt.date.today()
+                         - dt.date.fromisoformat(_data_date)).days)
+    except (TypeError, ValueError):
+        _stale = 0
+    _today_view = str(res["date"])[:10] == dt.date.today().isoformat()
+    _cur_day = _today_view and _data_date == dt.date.today().isoformat()
+    _data_head = ("今天的数据" if _cur_day else
+                  f"数据 · {_data_date[5:].replace('-', '/')}"
+                  + ("（未同步今日）" if (_stale and _today_view) else ""))
     r = res["readiness"]
     L = res["load"]
     sl = res["sleep"]
@@ -911,7 +924,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 
 <div class="dual">
   <div class="card lcol">
-      <h3>今天的数据</h3>
+      <h3>{esc(_data_head)}</h3>
       <div class="mini4">
         <div><b>{_f(sl.get("total_h"), "", 1)}<small>h</small></b><span>{sleep_sub}</span></div>
         <div><b>{_f(t.get("hrv_night"), "", 0)}<small>ms</small></b><span>HRV 夜间</span></div>

@@ -779,6 +779,17 @@ def home_page() -> str:
         _sleep_sub.append(f"7 日欠债 {_debt:.1f}h")
     _hrv = today_row.get("hrv_night")
     _rhr = today_row.get("resting_hr")
+    # 「今天没同步」时 derive 会用库里最后一天顶上（见 metrics.derive）。
+    # 把真实数据日期写进卡片标签，别再笼统写「昨夜」让人拿旧值去对 App。
+    _data_date = str(res.get("data_date") or day)[:10]
+    _dd = _data_date[5:].replace("-", "/")
+    # today_page 传给 derive 的是「库里最后一天」，它自己算不出滞后，
+    # 这里直接拿真实的今天比，别让「今日」页把昨天的数据当今天而不吭声。
+    try:
+        _stale = max(0, (dt.date.today()
+                         - dt.date.fromisoformat(_data_date)).days)
+    except (TypeError, ValueError):
+        _stale = 0
     _w = body.get("latest")
     _wsub = []
     if body.get("stale_days") and body["stale_days"] >= 3:
@@ -789,13 +800,13 @@ def home_page() -> str:
     if _dw is not None and abs(_dw) >= 0.05:
         _wsub.append(f"较前 7 天 {_dw:+.1f} kg")
     cells = (
-        SC.body_cell("睡眠 · 昨夜", f"{sleep['total_h']:.1f}" if sleep.get("total_h") else None,
+        SC.body_cell(f"睡眠 · {_dd}", f"{sleep['total_h']:.1f}" if sleep.get("total_h") else None,
                      "h", " · ".join(_sleep_sub) or "7 日均 —",
                      _spark((series.get("sleep_h") or [])[-14:], h=22)),
-        SC.body_cell("HRV · 昨夜", f"{_hrv:.0f}" if _hrv else None, "ms",
+        SC.body_cell(f"HRV · {_dd}", f"{_hrv:.0f}" if _hrv else None, "ms",
                      f"28 天基线 {hrv_base:.0f} · {_wk('hrv')}" if hrv_base else _wk("hrv"),
                      _spark((series.get("hrv") or [])[-14:], h=22)),
-        SC.body_cell("静息心率 · 昨夜", f"{_rhr:.0f}" if _rhr else None, "bpm",
+        SC.body_cell(f"静息心率 · {_dd}", f"{_rhr:.0f}" if _rhr else None, "bpm",
                      f"28 天基线 {rhr_base:.0f} · {_wk('rhr')}" if rhr_base else _wk("rhr"),
                      _spark((series.get("rhr") or [])[-14:], h=22)),
         # 体重刻意给完整一行：不再 nowrap + ellipsis 把「较…」切掉。
@@ -914,11 +925,15 @@ def home_page() -> str:
     # 只留两个数据胶囊：宽屏自动铺成大屏，不再需要第三个按钮。
     # 一图流也不再挂页头：那枚胶囊在横屏大屏里孤零零地压着结论条，
     # 0.6.13 起统一收进「我的」页的低频动作列表。
-    chips = (chip(f"{st.get('days') or 0} 天数据") +
-             chip(f"上次同步 {esc(str(st.get('last_sync') or '—')[5:16])}"))
+    # 数据停在旧日期时，把「上次同步」胶囊换成可执行的提示。胶囊数不变，
+    # 不会碰到横屏 .rc-screen 的命名 grid 区域。
+    _sync_chip = (f"数据停在 {_dd} · 下拉刷新" if _stale else
+                  f"上次同步 {esc(str(st.get('last_sync') or '—')[5:16])}")
+    chips = (chip(f"{st.get('days') or 0} 天数据") + chip(_sync_chip))
     return page("TODAY · 今日", "今天该怎么练", "", body_html_all, chips,
                 screen=True,
-                foot="本机计算 · 不上传轨迹 · 离线可用。")
+                foot=("本机计算 · 不上传轨迹 · 离线可用。"
+                      "静息心率取数据源每日值，与设备 App 里用于心率区间的设定值口径可能不同。"))
 
 
 def _verdict(score) -> str:

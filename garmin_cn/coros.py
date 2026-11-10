@@ -44,6 +44,7 @@ import datetime as dt
 import gzip
 import hashlib
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -132,6 +133,12 @@ def _iso(yyyymmdd) -> str | None:
     s = str(yyyymmdd or "").strip()
     if len(s) == 8 and s.isdigit():
         return f"{s[:4]}-{s[4:6]}-{s[6:]}"
+    # 不同版本的 happenDay 见过 "2026-11-10" / "2026/11/10" / 带时刻的
+    # "2026-11-10 00:00:00"。以前只认 8 位数字，形状一变就整天被丢掉，
+    # 看起来像「这几天没有静息心率」。只补日期格式，不猜时间戳（时区会错）。
+    m = re.match(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})", s)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
     return None
 
 
@@ -373,6 +380,20 @@ class CorosCloud:
                 "synced_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "raw": json.dumps(it, ensure_ascii=False)[:20000],
             })
+        # 静息心率口径排障：把服务端给的 happenDay / rhr 与同一条记录里所有
+        # 心率相关键留一行在诊断日志。用户不用导出数据库，只要贴这几行文字，
+        # 就能判断「App 52 / 这里 45」是服务端口径不同、日期错位，还是我们取错。
+        try:
+            from . import diag as _dg
+            _dg.log_exc("coros.rhr", "dayDetail 最近: " + " | ".join(
+                f"{r['date']}:rhr={r['resting_hr']}" for r in rows[-3:]))
+            if day_list:
+                hr_keys = {k: v for k, v in day_list[-1].items()
+                           if "hr" in str(k).lower() or "heart" in str(k).lower()}
+                _dg.log_exc("coros.rhr", "HR 字段: "
+                            + json.dumps(hr_keys, ensure_ascii=False)[:400])
+        except Exception:
+            pass
         return rows
 
     def activities(self, start: str, end: str, limit: int = 60) -> list[dict]:
