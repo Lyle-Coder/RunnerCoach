@@ -191,6 +191,15 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
 .row .d{font-size:11.5px;color:var(--muted);margin-top:2px;font-variant-numeric:tabular-nums}
 .row .go{margin-left:auto;color:var(--faint);font-size:17px;flex:0 0 auto}
 .acts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+/* 「我的」页 2 列网格：一行放两个入口，把十几个低频项压到两屏内。
+   副标题最多两行，超出省略——网格里换行会把同一排卡片撑得高低不齐。 */
+.act .ad{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+  overflow:hidden}
+/* 只读卡片（如「AI 模型服务」）：不暗示可点，也就不该有按下态 */
+.act.flat{cursor:default}
+.act.flat:active{background:linear-gradient(180deg,rgba(19,28,43,.88),rgba(14,21,33,.92));
+  border-color:var(--line)}
+
 .act{display:flex;flex-direction:column;gap:7px;
   background:linear-gradient(180deg,rgba(19,28,43,.88),rgba(14,21,33,.92));
   border:1px solid var(--line);border-radius:var(--r);padding:15px;color:inherit;
@@ -510,13 +519,36 @@ def row(icon: str, title: str, desc: str, *, act: str = "", href: str = "",
 
 
 def act(icon: str, title: str, desc: str, action: str = "", href: str = "") -> str:
+    """网格卡片（2 列）。`action`/`href` 都为空时是**只读卡片**：不加点击属性，
+    TalkBack 也不会把它读成按钮——「AI 模型服务」这类纯展示项就靠这个。"""
     tag = "a" if href else "div"
-    attr = f' href="{esc(href)}"' if href else f' data-act="{esc(action)}"'
-    a11y = "" if href else f' role="button" tabindex="0" aria-label="{esc(title)}"'
-    return (f'<{tag} class="act"{attr}{a11y}>'
+    if href:
+        attr = f' href="{esc(href)}"'
+        a11y = ""
+        cls = "act"
+    elif action:
+        attr = f' data-act="{esc(action)}"'
+        a11y = f' role="button" tabindex="0" aria-label="{esc(title)}"'
+        cls = "act"
+    else:
+        attr = ""
+        a11y = ""
+        cls = "act flat"
+    return (f'<{tag} class="{cls}"{attr}{a11y}>'
             f'<span class="ai" aria-hidden="true">{esc(icon)}</span>'
             f'<span class="at">{esc(title)}</span>'
             f'<span class="ad">{esc(desc)}</span></{tag}>')
+
+
+def acts_grid(items: list[str]) -> str:
+    """把若干 act() 排成 2 列网格。
+
+    为什么「我的」页要用网格：竖排行每行 64px 起，十几个低频入口就是三屏，
+    用户要一直往下拉。网格一行放两个，同样的入口只占一半高度，扫视也更快。
+    """
+    return '<div class="acts">' + "".join(items) + "</div>"
+
+
 
 
 def nav_html(day: str, cov: dict, from_: str = "history") -> str:
@@ -1250,9 +1282,9 @@ def me_page() -> str:
     pref_label = bs.get("labels", {}).get(pref, pref)
     chips = (chip("本机数据", "ok") + chip(f"v{VER}") + chip("零第三方依赖"))
 
-    # 每个数据源一行、点了直接进对应登录，不再先弹「选哪个账号」的二级选择器
-    # 已登录时点这行是「看账号卡片」（账号/设备/会话 + 更换、退出），
-    # 不会再让人重输密码；没登录才进登录框。
+    # 账号与数据源：只有这一组继续用竖排行——每行都要说清「登没登、设备是谁」，
+    # 网格卡片塞不下这些信息。已登录点进去是账号卡片（查看/更换/退出），
+    # 没登录才进登录框。
     sources = (row("G", "佳明 Garmin",
                    f"{g} · {esc(_mask_email(st.get('email')) or '未设置账号')}"
                    + (" · 查看 / 更换" if g == "已登录" else ""),
@@ -1262,9 +1294,10 @@ def me_page() -> str:
                    act="login:coros", tone="b") +
                row("C", "高驰睡眠", f"{cs_ok} · 官方 MCP 授权，不踢手机 App",
                    act="corosSleep", tone="b") +
-               row("W", "小米体重", f"{m_ok} · 体脂秤数据", act="mi", tone="a") +
-               row("H", "华为体重", f"{h_ok} · 运动健康体成分", act="hw", tone="b") +
-               row("W", "体重来源偏好", f"{esc(pref_label)} · 同日只使用一个来源",
+               # 三个体重行并成一行：小米/华为的登录放进来源选择器的「登录账号」，
+               # 少两行，语义反而更清楚（都在说「体重数据从哪来」）。
+               row("W", "体重数据",
+                   f"小米 {m_ok} · 华为 {h_ok} · 当前用 {esc(pref_label)}",
                    act="bodySource", tone="a"))
 
     # AI 设置只在教练页齿轮里改；这里只读展示，避免同一抽屉出现第二个入口
@@ -1283,28 +1316,27 @@ def me_page() -> str:
     # 「补全历史」已经完全没有按钮了：它由 App 在每次刷新后**后台**由近到远
     # 自动往前挪，进度写在标题栏小字。这里只做只读展示，不提供点击 ——
     # 以前那个入口点开只有一个弹窗、跑完也只说「跳过 N 天」，用户只会觉得没反应。
-    more = (row("◫", "产物文件", "看板 / 图片 / 视频清单", href="/files") +
-            # 首页页头那枚「一图流」胶囊挪到这儿：低频动作统一归「我的」，
-            # 横屏大屏的页头也不用再为它留 92px 让位。
-            row("⇪", "今日一图流", "生成 1080×1920 看板，存相册或直接分享",
-                act="export", tone="a") +
-            row("◍", "AI 模型服务", f"{ai_txt} · 在「教练」页右上角设置", tone="b", go=False) +
-            row("⌖", "地图底图",
-                ("已配置 · 活动图带高德底图" if _map_on()
-                 else "未配置 · 活动图为矢量轨迹"), act="amap", tone="a") +
-            row("✂", "素材",
-                f"{_clip_count()} 个 · 图片 / 视频，回放时自动插入", act="clips", tone="b") +
-            # 换手机就靠这两行：App 是 allowBackup=false，不导出等于历史清零。
-            # 导入会覆盖当前库，所以弹窗里要再说一次「覆盖前自动备份」。
-            row("⇩", "导出数据", "打包历史与设置，换手机 / 重装时用",
-                act="dbExport", tone="a") +
-            row("⇧", "导入数据", "选数据包覆盖当前数据（会先自动备份）",
-                act="dbImport", tone="b") +
-            # 崩溃时只有一句 toast，用户复述不清；这里能直接把最近几条异常复制出来
-            row("!", "诊断日志", "出问题时把这段发出来，能定位到具体一步",
-                act="diag", tone="a") +
-            row("⭡", "检查更新", f"当前 {VER} · 有新版本直接给下载地址",
-                act="update", tone="b"))
+    # 常用动作走 2 列网格：同样四个入口，高度从 4×64px 降到 2×86px。
+    tool_tiles = acts_grid([
+        act("⇪", "今日一图流", "1080×1920 看板，存相册或分享", action="export"),
+        act("✂", "素材", f"{_clip_count()} 个 · 回放时自动插入", action="clips"),
+        act("⌖", "地图底图",
+            "已配置 · 活动图带底图" if _map_on() else "未配置 · 矢量轨迹",
+            action="amap"),
+        # AI 只在这里展示：设置入口在「教练」页右上角，避免同一个开关两处出现
+        act("◍", "AI 模型服务", f"{ai_txt}"),
+    ])
+    # 数据与备份：导出/导入是「换手机保命」的两个动作，放同一排最显眼
+    data_tiles = acts_grid([
+        act("⇩", "导出数据", "打包历史与设置", action="dbExport"),
+        act("⇧", "导入数据", "覆盖当前库（先自动备份）", action="dbImport"),
+        act("◫", "产物文件", "看板 / 图片 / 视频清单", href="/files"),
+        act("⭡", "检查更新", f"当前 v{VER}", action="update"),
+    ])
+    # 诊断日志单独一行、样式压低：它只在出问题时才需要，不该抢网格的位置，
+    # 但也不能藏进二级菜单——崩溃时用户复述不清，能一键复制才有用。
+    diag_row = row("!", "诊断日志", "出问题时把这段发出来，能定位到具体一步",
+                   act="diag", tone="a")
 
     about = ('<div class="card rc-about"><div class="rc-about-h">' +
              BR.badge_html(38) +
@@ -1327,8 +1359,10 @@ def me_page() -> str:
                  '历史由 App 在后台自动补齐：每次刷新从最近往前挪一段（一年一段，'
                  '最多回溯 8 年），进度显示在标题栏；补完就不再发请求，无需手动操作。</div>')
 
-    body = (sec("数据源", sources) +
-            sec("更多", more) +
+    body = (sec("账号与数据", sources) +
+            sec("常用", tool_tiles) +
+            sec("数据与备份", data_tiles) +
+            diag_row +
             sec("本地数据", stat_line) +
             sec("关于", about))
     return page("ME · 我的", "数据与设置", "账号、同步、产物和隐私都在这里", body, chips)

@@ -304,6 +304,84 @@ def run() -> int:
     # 分档的最小样本量：少于 4 段不表态（防止 2 组的短课被画成一堆档）
     assert IV.band_split([{"dur_s": 60, "spd": 4.0, "dist_m": 240, "t0": 0}]) is None
 
+    # ---- 「完美渐加速」彩蛋：两条判定路径 + 两种版式的彩虹渲染 --------------
+    from garmin_cn import easteregg as EG
+
+    EG.check()
+    _ramp = [330.0, 325.0, 320.0, 315.0, 310.0, 305.0, 300.0, 295.0, 290.0, 285.0]
+
+    def _laps(ps):
+        return [{"idx": i + 1, "dist_m": 1000.0, "dur_s": p,
+                 "pace_s": p, "hr_avg": 150 + i, "cad": 180,
+                 "is_partial": False} for i, p in enumerate(ps)]
+
+    _egg_row = {"name": "渐加速跑", "date": "2026-11-10",
+                "start_ts": "2026-11-10 06:30", "distance_m": 10000,
+                "duration_s": sum(_ramp), "type": "running"}
+    _egg_html = ACTCARD.build_html(
+        _egg_row, {"laps": _laps(_ramp),
+                   "training": {"interval": False, "type": "running"}},
+        None, None, "渐加速跑")
+    assert '<div class="egg-badge"' in _egg_html, "命中后右上角要有炫彩徽章"
+    assert EG.BADGE_LINE1 in _egg_html and EG.BADGE_LINE2 in _egg_html, \
+        "徽章要有两行文案"
+    assert 'class="head egg"' in _egg_html, "抬头要给徽章让位"
+    assert 'class="card lp egg"' in _egg_html, "分圈卡要切彩蛋样式"
+    assert _egg_html.count("linear-gradient(90deg,hsl(") == 10, \
+        "10 根分圈条都要换成彩虹"
+    assert "10 圈完美渐加速" in _egg_html
+    # 未命中：中途掉速 / 不足 5 圈 / 匀速，都不能出徽章与彩虹
+    for _ps in ([330, 325, 340, 315, 310, 305], [330, 325, 320, 315],
+                [330] * 6):
+        _h = ACTCARD.build_html(
+            _egg_row, {"laps": _laps(_ps),
+                       "training": {"interval": False, "type": "running"}},
+            None, None, "未命中")
+        assert '<div class="egg-badge"' not in _h and \
+            'class="card lp egg"' not in _h, "非完美渐加速不能触发彩蛋"
+        assert "linear-gradient(90deg,hsl(" not in _h, \
+            "未命中时分圈条仍是原来的绿→橙配色"
+    # 残圈不参与判定：末尾挂一个乱配速的 80 m 残圈，仍按 10 圈命中
+    _tail = _laps(_ramp) + [{"idx": 11, "dist_m": 80.0, "dur_s": 90.0,
+                             "pace_s": 1125.0, "is_partial": True}]
+    assert EG.evaluate(_tail)["sets"] == 10
+    # 12 圈会被合并成 6 行：判定用原始圈，彩虹落在合并后的每一行
+    _long_html = ACTCARD.build_html(
+        _egg_row, {"laps": _laps(list(range(360, 300, -5)))},
+        None, None, "12 圈")
+    assert '<div class="egg-badge"' in _long_html
+    assert _long_html.count("linear-gradient(90deg,hsl(") == 6
+    # 间歇：强度组（非恢复段）逐组变快，6 组全彩虹 + 徽章
+    _egg_pts: list[dict] = []
+    _t = 0.0
+    for _i, _p in enumerate([330, 320, 310, 300, 290, 280]):
+        _spd = 1000.0 / _p
+        for _ in range(20):
+            _egg_pts.append({"t": _t, "spd": _spd, "hr": 160 + _i * 2,
+                             "cad": 180, "dist": 0})
+            _t += 4.0
+        for _ in range(20):
+            _egg_pts.append({"t": _t, "spd": 0.0, "hr": 140,
+                             "cad": 0, "dist": 0})
+            _t += 4.0
+    _egg_iv_detail = {"series": {"points": _egg_pts}, "laps": [],
+                      "training": {"interval": True, "type": "running"}}
+    _egg_iv = IV.detect(_egg_iv_detail)
+    assert _egg_iv and len(EG.interval_paces(_egg_iv)) == 6
+    _egg_iv_html = ACTCARD.build_html(_egg_row, _egg_iv_detail,
+                                      None, None, "间歇渐加速")
+    assert '<div class="egg-badge"' in _egg_iv_html
+    assert '<div class="ivband" data-egg="1"' in _egg_iv_html
+    assert _egg_iv_html.count("linear-gradient(90deg,hsl(") == 6, \
+        "6 根强度柱都要换成彩虹"
+    assert "6 组完美渐加速" in _egg_iv_html
+    # 有间歇结构时以强度组为准，不能拿递进的分圈去冒充
+    assert EG.evaluate(_laps(_ramp), {"order": [], "bands": []}) is None
+    # 匀速间歇（强度组不递进）不触发：既有断言里的 15×400 m 正是这种
+    assert '<div class="egg-badge"' not in rest_html
+    assert 'class="ivband"' in rest_html, "彩蛋判定不能改掉间歇版式契约"
+
+
 
     # 手机端 WebView 的缩放自校正：density=3 时布局视口 1080 CSS px 只露出
     # 360 CSS px，必须把画布缩到 1/3；归一后内容高度与 density 无关。
@@ -2776,7 +2854,16 @@ def run() -> int:
     # 无障碍：可点容器要有 role/label，图标要标 aria-hidden
     assert _pages.count('role="button"') >= 1 and 'aria-label=' in _pages, \
         "可点容器没有 role/aria-label，TalkBack 读不出来"
-    assert 'aria-hidden="true"' in _pages, "装饰性图标没标 aria-hidden"
+    # 「我的」页压缩：竖排行 ≤6 条（账号 4 + 诊断 1），其余走 2 列网格；
+    # 三个体重行合并成一行，登录入口放进来源选择器。
+    _me = U.me_page()
+    assert _me.count('class="row') <= 6, f"我的页还是长列表：{_me.count('class=\"row')} 行"
+    assert _me.count('class="acts"') == 2, "常用/数据两组没有排成网格"
+    assert "体重数据" in _me and ">小米体重<" not in _me, "体重三行没有合并"
+    assert 'class="act flat"' in _me, "只读卡片（AI 模型）没加 flat，TalkBack 会当成按钮"
+    assert 'data-act=""' not in _me, "出现了空 action 的假按钮"
+    _ktme = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert "登录体重秤账号" in _ktme, "体重来源选择器里没有登录账号入口"
 
     # ---- 0.6.6：品牌图标统一到开屏 / 角标 / 三张出图 / 完整看板 ------------
     from garmin_cn import brand as _BR
@@ -2919,7 +3006,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 108' in (
+    assert 'versionCode = 110' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----

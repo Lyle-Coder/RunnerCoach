@@ -2260,6 +2260,17 @@ class MainActivity : Activity() {
                             }
                         }
                     }
+                    // 小米/华为的登录并进来了：三个体重行合成一行后，
+                    // 「登录哪个秤」放进同一个选择器，不必再回列表找入口
+                    .setNeutralButton("登录账号") { _, _ ->
+                        AlertDialog.Builder(this)
+                            .setTitle("登录体重秤账号")
+                            .setItems(arrayOf("小米运动健康", "华为运动健康")) { _, w ->
+                                if (w == 0) showMiPanel() else showHwPanel()
+                            }
+                            .setNegativeButton("取消", null)
+                            .show()
+                    }
                     .setNegativeButton("取消", null)
                     .show()
             }
