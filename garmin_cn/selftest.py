@@ -2728,7 +2728,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 86' in (
+    assert 'versionCode = 87' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -2929,9 +2929,13 @@ def run() -> int:
     assert _CA.dynamics(_deep) == (268.0, 9.1), \
         "跑步动态藏在明细深层时找不到（只扫 summary 是不够的）"
     assert "runAbility{core}" in _CA.key_tree(_deep), "键树诊断没把子键列出来"
+    _real = {"summary": {"avgGroundTime": 245, "avgVertVibration": 8.6, "avgVertRatio": 7.4}}
+    assert _CA.dynamics(_real) == (245.0, 8.6), "高驰真机字段（avgGroundTime/avgVertVibration）没命中"
+    assert _CA.dynamics({"summary": {"avgVertRatio": 7.4}}) == (None, None), \
+        "垂直步幅比（%）被当成垂直振幅了，会印出假数字"
 
     # ---- 1.0.2：分圈组缺失时的 type=-1 回退（运动场跑等特殊类型）--------
-    assert _CA.ADAPTER_VERSION == 6, "适配器版本没升，旧缓存不会重抓"
+    assert _CA.ADAPTER_VERSION == 7, "适配器版本没升，旧缓存不会重抓"
     _r = _CA.normalize({"summary": {"sportType": 100}, "lapList": [
         {"type": -1, "lapDistance": 1195000, "lapItemList": [
             {"distance": 1195000, "time": 481000, "avgHr": 141}]}]}, "st")
