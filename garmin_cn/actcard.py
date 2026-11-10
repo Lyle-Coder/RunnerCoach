@@ -448,7 +448,8 @@ def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
     span = (t1 - t0) or 1
     # 配速用「一段距离 / 一段时间」算，而不是 1000/瞬时速度：
     # GPS 速度抖动会把瞬时配速放大成假的尖峰，滚动窗口能把它抹平。
-    paces = _median_filter(_pace_series(run, win=8), 3)
+    paces = (_median_filter([1000 / p["spd"] if p.get("spd") else None for p in run], 3)
+             if run[0].get("source") == "coros" else _median_filter(_pace_series(run, win=8), 3))
     hrs = _smooth([p.get("hr") for p in run], 11)
     valid_p = [p for p in paces if p]
     if not valid_p:
@@ -589,27 +590,30 @@ def zone_times(raw: dict, prefix: str) -> list[float]:
     return [num(raw.get(key + str(i))) or 0.0 for i in range(1, 6)]
 
 
-def zone_block(times: list[float], title: str, unit_label: str = "") -> str:
+def zone_block(times: list[float], title: str, unit_label: str = "", *, coros: bool = False) -> str:
     if not sum(times):
         return (f'<div class="zhead">{esc(title)}<span>{esc(unit_label)}</span></div>'
                 f'<div class="zempty">本次未记录分区时长</div>')
     total = sum(times)
+    colors = (["#778899"] + list(ZONE_COLORS)) if coros else ZONE_COLORS
+    names = [f"Z{i + 1}" for i in range(len(times))] if coros else ZONE_NAMES
+    descriptions = [""] * len(times) if coros else ZONE_DESC
     bar = []
     for i, t in enumerate(times):
         pct = t / total * 100
         if pct < 0.4:
             continue
-        bar.append(f'<i style="width:{pct:.2f}%;background:{ZONE_COLORS[i]}"></i>')
+        bar.append(f'<i style="width:{pct:.2f}%;background:{colors[i]}"></i>')
     rows = []
     for i, t in enumerate(times):
         pct = t / total * 100
         rows.append(
             f'<div class="zrow">'
-            f'<span class="zdot" style="background:{ZONE_COLORS[i]}"></span>'
-            f'<span class="zname">{ZONE_NAMES[i]}<em>{ZONE_DESC[i]}</em></span>'
-            f'<span class="zbar"><i style="width:{min(100, pct):.1f}%;background:{ZONE_COLORS[i]}"></i></span>'
+            f'<span class="zdot" style="background:{colors[i]}"></span>'
+            f'<span class="zname">{names[i]}<em>{descriptions[i]}</em></span>'
+            f'<span class="zbar"><i style="width:{min(100, pct):.1f}%;background:{colors[i]}"></i></span>'
             f'<span class="zval">{dur_txt(t, "0:00")}</span>'
-            f'<span class="zpct" style="color:{ZONE_COLORS[i]}">{pct:.0f}%</span>'
+            f'<span class="zpct" style="color:{colors[i]}">{pct:.0f}%</span>'
             f'</div>')
     return f"""
 <div class="zblock">
@@ -645,7 +649,7 @@ def spark_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
     """走势小图：跑步看步频/步幅，其他运动看速度/心率。修正过的点单独标出来。"""
     th = theme or theme_for(None)
     if th["is_run"]:
-        run = [p for p in points if (p.get("spd") or 0) >= 2.2 and p.get("cad")]
+        run = [p for p in points if p.get("cad") and (p.get("source") == "coros" or (p.get("spd") or 0) >= 2.2)]
         lack = "无步态时序"
     else:
         # 骑行/划船/泳池外这些没有步频，速度门槛也放低（步走/慢骑都算在动）
@@ -726,14 +730,16 @@ def group_laps(laps: list[dict], max_rows: int = 10) -> list[dict]:
         seg = real[i:i + k]
         dist = sum(l["dist_m"] for l in seg)
         dur = sum(l["dur_s"] for l in seg)
-        hrs = [l["hr_avg"] for l in seg if l.get("hr_avg")]
-        cads = [l["cad"] for l in seg if l.get("cad")]
+        def weighted(key):
+            valid = [l for l in seg if l.get(key) is not None and l["dur_s"] > 0]
+            return (sum(l[key] * l["dur_s"] for l in valid) /
+                    sum(l["dur_s"] for l in valid)) if valid else None
         out.append({
             "idx": seg[0]["idx"] if len(seg) == 1 else f"{seg[0]['idx']}-{seg[-1]['idx']}",
             "dist_m": dist, "dur_s": dur,
             "pace_s": dur / (dist / 1000) if dist > 50 else None,
-            "hr_avg": round(sum(hrs) / len(hrs)) if hrs else None,
-            "cad": round(sum(cads) / len(cads), 1) if cads else None,
+            "hr_avg": weighted("hr_avg"),
+            "cad": weighted("cad"),
             "is_partial": False,
         })
     return out
@@ -746,7 +752,8 @@ def lap_rows(laps: list[dict], theme: dict | None = None) -> str:
         return '<div class="empty">无分圈数据</div>'
     paces = [l["pace_s"] for l in real]
     fast, slow = min(paces), max(paces)
-    avg = sum(paces) / len(paces)
+    total_dist = sum(l["dist_m"] for l in real)
+    avg = sum(l["dur_s"] for l in real) * 1000 / total_dist if total_dist else None
     span = (slow - fast) or 1
     out = []
     for l in real:
@@ -777,7 +784,7 @@ def lap_rows(laps: list[dict], theme: dict | None = None) -> str:
         head = ('<div class="lhead"><span class="lid">圈</span><span class="ldist">距离</span>'
                 '<span class="lbar"></span><span class="lpace">配速</span>'
                 '<span class="lhr">心率</span><span class="lcad">步频</span></div>')
-        note = f'平均 {pace_txt(avg)}｜最快 {pace_txt(fast)}｜最慢 {pace_txt(slow)}'
+        note = f'分段平均 {pace_txt(avg)}｜最快段 {pace_txt(fast)}｜最慢段 {pace_txt(slow)}'
     return head + ''.join(out) + f'<div class="lnote">{note}</div>'
 
 
@@ -894,7 +901,9 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
         wd = "周" + "一二三四五六日"[dt.date.fromisoformat(date_txt).weekday()]
     except Exception:
         pass
-    hr_z = zone_times(raw, "hr")
+    is_coros = detail.get("source") == "coros"
+    hr_z = ([z["seconds"] for z in detail.get("hr_zones") or []]
+            if is_coros else zone_times(raw, "hr"))
     drift = s.get("drift") or {}
 
     weather_txt = ""
@@ -913,14 +922,14 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
             bits.append(f"{name} {spd:.0f} km/h" if spd else name)
         weather_txt = " · ".join(bits)
 
-    te_a = f'{num(row.get("aerobic_te")) or 0:.1f}'
-    te_n = f'{num(row.get("anaerobic_te")) or 0:.1f}'
+    te_a = f'{num(row["aerobic_te"]):.1f}' if num(row.get("aerobic_te")) is not None else "—"
+    te_n = f'{num(row["anaerobic_te"]):.1f}' if num(row.get("anaerobic_te")) is not None else "—"
     gct = num(raw.get("avgGroundContactTime"))
     vo = num(raw.get("avgVerticalOscillation"))
     n_real = len([l for l in laps if (l.get("pace_s") or 0) > 0])
     # 间歇训练（快慢交替）自动切到「底部分双栏」：左快组、右慢组。
     # 识别不出就完全走原来的分圈表，非间歇活动的版式零影响。
-    iv = IV.detect(detail)
+    iv = None if is_coros else IV.detect(detail)
     if iv:
         lap_title = "间歇结构"
         if iv["slow"].get("rest"):
@@ -940,12 +949,15 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
             lap_title, lap_sub = "全程", "未分段"
         else:
             lap_title, lap_sub = "每公里", f"{n_real} 圈"
+        if is_coros and detail.get("lap_distance_m") != 1000 and n_real > 1:
+            lap_title, lap_sub = "分圈", f"{n_real} 圈"
         lap_html = lap_rows(laps, th)
     # 图上只用橙点标出被校准过的采样点，不再在页脚写「修正了多少点」——
     # 那是数据处理的中间量，看板上不需要（问起来反而要解释）。
     cad_avg = s.get("cad_avg")
     stride_avg = s.get("stride_avg")
-    hr_avg = s.get("hr_run_avg") or num(row.get("avg_hr"))
+    hr_avg = (num(row.get("avg_hr")) if is_coros else
+              s.get("hr_run_avg") or num(row.get("avg_hr")))
     # 只有真的标了橙点才写图例，否则会出现「有图例没点」的尴尬
     fix_hint = "橙点为校准点" if any(p.get("fixed") for p in points) else ""
     css = _CSS
@@ -983,7 +995,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
         chart_title, chart_lg = "配速与心率", "配速"
 
     # 高驰活动列表的 maxSpeed 多数是 0，最快速度要从明细 summary 换算后注入 row
-    max_spd = num(row.get("max_speed_mps")) or num(raw.get("maxSpeed")) or None  # m/s
+    max_spd = num(row.get("max_speed_mps")) or (None if is_coros else num(raw.get("maxSpeed"))) or None  # m/s
     kcal = num(row.get("calories")) or 0
     asc = num(row.get("ascent")) or 0
     if th["is_run"]:
@@ -1008,7 +1020,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     # hero 右侧固定「上 3 下 3」：用时 / 爬升 / 主要益处，然后技术三项。
     # 距离已经提到左侧大数字，不再重复占格。
     head3 = [(dur_txt(dur), "用时", 0), (f"{asc:.0f}", "爬升 m", 0),
-             (benefit(raw), "主要益处", 1)]
+             ("—" if is_coros else benefit(raw), "主要益处", 1)]
     if kind == "duration":
         # 力量课这类主指标本身就是时长，右侧再来一格「用时」就是同一个数写两遍
         head3[0] = (f"{kcal:.0f}", "千卡", 0)
@@ -1063,7 +1075,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
       {trk_body}
     </div>
     <div class="card zc">
-      {zone_block(hr_z, "心率分区", "占比 / 时长")}
+      {zone_block(hr_z, "心率分区", "占比 / 时长", coros=is_coros)}
     </div>
   </div>
 
@@ -1089,7 +1101,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
         <div class="t"><b>{te_a}</b><span>有氧 TE</span></div>
         <div class="t"><b>{te_n}</b><span>无氧 TE</span></div>
       </div>
-      <div class="drift">{_drift_txt(drift, s, th)}</div>
+      <div class="drift">{"—" if is_coros else _drift_txt(drift, s, th)}</div>
     </div>
   </div>
 
