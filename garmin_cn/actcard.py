@@ -927,8 +927,10 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
 
     te_a = f'{num(row["aerobic_te"]):.1f}' if num(row.get("aerobic_te")) is not None else "—"
     te_n = f'{num(row["anaerobic_te"]):.1f}' if num(row.get("anaerobic_te")) is not None else "—"
-    gct = num(raw.get("avgGroundContactTime"))
-    vo = num(raw.get("avgVerticalOscillation"))
+    # 佳明在活动列表 raw 里带这两个字段；高驰的跑步动态在明细 summary 里，
+    # 由 coros_activity.dynamics() 归一成 ms / cm 后放在 gct_ms、vo_cm。
+    gct = num(raw.get("avgGroundContactTime")) or num(s.get("gct_ms"))
+    vo = num(raw.get("avgVerticalOscillation")) or num(s.get("vo_cm"))
     n_real = len([l for l in laps if (l.get("pace_s") or 0) > 0])
     # 间歇训练（快慢交替）自动切到「底部分双栏」：左快组、右慢组。
     # 识别不出就完全走原来的分圈表，非间歇活动的版式零影响。
