@@ -306,6 +306,24 @@ def build_weather(w: dict | None) -> dict | None:
 
 
 # ---------------------------------------------------------------- 对外入口
+def build_training(meta: dict | None) -> dict:
+    """从活动元数据里取「训练模式」。
+
+    `hasIntensityIntervals` 是佳明对「本次训练是否包含强度间歇」的官方标记
+    （设备按训练课执行或手动计圈时写入），等价于「训练里设置了间歇」。
+    间歇版式只认这个标记，不再靠速度模式猜——真机 63 条跑步明细里，
+    速度判定多认了 10 条佳明未标记的活动。
+    """
+    m = meta if isinstance(meta, dict) else {}
+    atype = ((m.get("activityType") or {}) if isinstance(m.get("activityType"), dict)
+             else {}).get("typeKey") or ""
+    return {
+        "interval": bool(m.get("hasIntensityIntervals")),
+        "workout_id": m.get("workoutId") or None,
+        "type": str(atype or ""),
+    }
+
+
 def fetch(client, activity_id: int | str, *, with_track: bool = True) -> dict:
     """抓取并清洗一次活动的完整明细（不落库）。"""
     aid = str(activity_id)
@@ -320,6 +338,12 @@ def fetch(client, activity_id: int | str, *, with_track: bool = True) -> dict:
         weather = build_weather(client.get(f"/activity-service/activity/{aid}/weather"))
     except Exception:
         weather = None
+    # 训练模式（是否设置间歇）来自活动元数据，与明细/分圈是两个接口；
+    # 取不到不算失败——缺失时按「未设置间歇」处理，走默认版式。
+    try:
+        training = build_training(client.activity(aid))
+    except Exception:
+        training = {"interval": False, "workout_id": None, "type": ""}
 
     series_full = build_series(details)
     points = series_full["points"]
@@ -339,6 +363,8 @@ def fetch(client, activity_id: int | str, *, with_track: bool = True) -> dict:
         "track": build_track(details) if with_track else [],
         "route": route_mod.build(details) if with_track else {},
         "weather": weather,
+        # 间歇版式的唯一依据；旧 payload 没有这个键，ensure() 会回填
+        "training": training,
     }
 
 

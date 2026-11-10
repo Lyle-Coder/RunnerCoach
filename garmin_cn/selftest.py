@@ -153,8 +153,8 @@ def run() -> int:
         assert h.count("__gcExportInfo") == 1, "探针重复注入"
         assert "__gcFit" in h and "visualViewport" in h, "HTML 缺缩放校正探针"
 
-    # 间歇训练（快慢交替）自动切底部双栏：左快组、右慢组；
-    # 匀速跑 / 单调加速不能误报，非间歇活动的分圈表必须原样保留。
+    # 间歇版式只看佳明的训练模式标记（hasIntensityIntervals），不再靠速度猜：
+    # 标记为间歇才切底部双栏，未标记一律原样保留分圈表。
     from garmin_cn import interval as IV
 
     IV.check()
@@ -167,8 +167,14 @@ def run() -> int:
                                "dist": dist})
                 t += 5.0
                 dist += spd * 5.0
-    iv_html = ACTCARD.build_html({}, {"series": {"points": iv_pts}},
-                                 None, None, "间歇自检")
+    # 未标记：同样的速度曲线也必须是默认分圈版式（旧实现会在这里误报）
+    assert 'class="iv"' not in ACTCARD.build_html(
+        {}, {"series": {"points": iv_pts}, "training": {"interval": False,
+                                                        "type": "running"}},
+        None, None, "间歇自检-未标记")
+    _iv_detail = {"series": {"points": iv_pts},
+                  "training": {"interval": True, "type": "running"}}
+    iv_html = ACTCARD.build_html({}, _iv_detail, None, None, "间歇自检")
     assert 'class="iv"' in iv_html and "快组" in iv_html
     assert "慢组 / 恢复" in iv_html and "间歇结构" in iv_html
     assert '<div class="lhead">' not in iv_html, "间歇版不该再渲染原分圈表"
@@ -184,8 +190,10 @@ def run() -> int:
                 rest_pts.append({"t": t, "spd": spd, "hr": 160, "cad": 200,
                                  "dist": 0.0})
                 t += 4.0
-    rest_html = ACTCARD.build_html({}, {"series": {"points": rest_pts}},
-                                   None, None, "间歇自检（原地恢复）")
+    rest_html = ACTCARD.build_html(
+        {}, {"series": {"points": rest_pts},
+             "training": {"interval": True, "type": "running"}},
+        None, None, "间歇自检（原地恢复）")
     assert 'class="iv"' in rest_html and "平均恢复" in rest_html
     assert "组间恢复" in rest_html and "速度差" not in rest_html
     assert 'class="ivmore"' not in rest_html, "15 组应逐组列全"

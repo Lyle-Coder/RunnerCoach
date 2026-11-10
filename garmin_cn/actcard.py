@@ -932,8 +932,8 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     gct = num(raw.get("avgGroundContactTime")) or num(s.get("gct_ms"))
     vo = num(raw.get("avgVerticalOscillation")) or num(s.get("vo_cm"))
     n_real = len([l for l in laps if (l.get("pace_s") or 0) > 0])
-    # 间歇训练（快慢交替）自动切到「底部分双栏」：左快组、右慢组。
-    # 识别不出就完全走原来的分圈表，非间歇活动的版式零影响。
+    # 间歇版式的唯一依据是佳明的训练模式标记（hasIntensityIntervals）：
+    # 训练里设置了间歇才切「底部双栏」，其余一律走原来的分圈表。
     iv = None if is_coros else IV.detect(detail)
     if iv:
         lap_title = "间歇结构"
