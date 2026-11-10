@@ -1256,6 +1256,10 @@ def run() -> int:
     assert "min_interval: float = 0.5)" in _aa_src, "_client 没暴露 min_interval"
     assert _AA2.BULK_MIN_INTERVAL < 0.5, "批量间隔没比日常同步更密，慢的瓶颈没解决"
     assert "bulk=True" in _aa_src, "补历史没走批量节流"
+    # 历史页要及时更新：停在历史 tab 时，每补完一段就 reload
+    _kt6 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert "if (activeTab == 1) web.reload()" in _kt6, \
+        "补历史期间历史页不会刷新，用户看到的是几分钟前的数据"
     assert "client = _client(email, password, revalidate=True" in _aa_src, \
         "同步入口没有先校验会话"
     # 3) 补拉：旧版拿「本地有没有密码」当门槛，密码为空时按钮点了只弹登录。
