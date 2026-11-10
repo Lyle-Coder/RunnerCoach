@@ -193,7 +193,19 @@ class GarminCNAuth:
                 return c.value
         return None
 
-    def _verify(self) -> dict | None:
+    def verify_state(self) -> tuple[str, dict | None]:
+        """会话状态三态：`ok` / `expired` / `unknown`。
+
+        为什么必须区分 unknown
+        ----------------------
+        `client.get()` 对网络异常是**返回 None**（不抛），只有 401/403 才抛
+        SessionExpired。旧实现把「拿不到 profile」一律当成会话过期，于是手机
+        网络抖一下、或 profile 请求超时一次，App 就会判定「登录已失效」并把
+        用户踢回登录框——真机反馈的「登录后一下拉刷新就弹登录」正是这个。
+
+        `unknown` 表示「这次没验成功，但没有证据说明过期」，调用方应当继续用
+        现有 Cookie 干活（真过期的话，下一个数据请求会以 401 明确报出来）。
+        """
         from .client import GarminCNClient, SessionExpired
 
         client = GarminCNClient(self.net)
@@ -201,13 +213,27 @@ class GarminCNAuth:
             profile = client.profile()
         except SessionExpired as e:
             self.last_verify = f"数据接口拒绝访问：{e}"
-            return None
+            return "expired", None
         except Exception as e:
             self.last_verify = f"{type(e).__name__}: {e}"
-            return None
-        if not profile:
-            self.last_verify = "profile 接口没有返回 displayName（可能路径变了）"
-        return profile
+            return "unknown", None
+        if profile and profile.get("displayName"):
+            self.last_verify = ""
+            return "ok", profile
+
+        status = getattr(client, "last_status", None)
+        if status in (401, 403):
+            self.last_verify = f"HTTP {status}"
+            return "expired", None
+        # 5xx / 超时 / 网关异常 / 路径变化：都没资格判定「会话过期」
+        self.last_verify = (f"HTTP {status}" if status else
+                            "profile 接口没有返回 displayName（可能路径变了或网络不稳）")
+        return "unknown", None
+
+    def _verify(self) -> dict | None:
+        """严格校验：只有拿到 displayName 才算成功（登录/导入 Cookie 后用）。"""
+        state, profile = self.verify_state()
+        return profile if state == "ok" else None
 
     # ---------------- 手动导入 Cookie ----------------
     def import_cookies(self, cookie_header: str) -> dict:
@@ -261,9 +287,14 @@ class GarminCNAuth:
 
     # ---------------- 复用 ----------------
     def ensure_session(self) -> bool:
-        """已有会话是否仍然可用。"""
+        """已有会话是否仍然可用。
+
+        **只有明确被服务端拒绝（401/403）才算过期**；网络异常一律放行，
+        免得一次请求抖动就把人踢回登录框。
+        """
         if not self.session_path.exists():
             return False
         if not self.net.get_cookie("JWT_WEB"):
             return False
-        return bool(self._verify())
+        state, _ = self.verify_state()
+        return state != "expired"
