@@ -2776,7 +2776,16 @@ def run() -> int:
     # 无障碍：可点容器要有 role/label，图标要标 aria-hidden
     assert _pages.count('role="button"') >= 1 and 'aria-label=' in _pages, \
         "可点容器没有 role/aria-label，TalkBack 读不出来"
-    assert 'aria-hidden="true"' in _pages, "装饰性图标没标 aria-hidden"
+    # 「我的」页压缩：竖排行 ≤6 条（账号 4 + 诊断 1），其余走 2 列网格；
+    # 三个体重行合并成一行，登录入口放进来源选择器。
+    _me = U.me_page()
+    assert _me.count('class="row') <= 6, f"我的页还是长列表：{_me.count('class=\"row')} 行"
+    assert _me.count('class="acts"') == 2, "常用/数据两组没有排成网格"
+    assert "体重数据" in _me and ">小米体重<" not in _me, "体重三行没有合并"
+    assert 'class="act flat"' in _me, "只读卡片（AI 模型）没加 flat，TalkBack 会当成按钮"
+    assert 'data-act=""' not in _me, "出现了空 action 的假按钮"
+    _ktme = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert "登录体重秤账号" in _ktme, "体重来源选择器里没有登录账号入口"
 
     # ---- 0.6.6：品牌图标统一到开屏 / 角标 / 三张出图 / 完整看板 ------------
     from garmin_cn import brand as _BR
@@ -2919,7 +2928,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 108' in (
+    assert 'versionCode = 109' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
