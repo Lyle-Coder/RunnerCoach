@@ -2842,7 +2842,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 98' in (
+    assert 'versionCode = 99' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -3174,6 +3174,26 @@ def run() -> int:
     _kt3 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert "高驰账号（邮箱或手机号）" in _kt3, "登录框还写着只能填邮箱"
     assert "上次登录失败：" in _kt3, "失败原因没写回登录框，用户不知道错在哪"
+
+    # ---- 1.0.3：高驰也要能补历史（以前只有佳明会补）--------------------
+    # 真机：高驰下拉刷新永远只有最近 30 天——因为 backfill_next 只调佳明的
+    # sync_range，高驰压根没有游标。现在两个源各推一步，都有独立停止线。
+    from garmin_cn import appapi as _AA
+    from garmin_cn import coros as _C2
+
+    assert hasattr(_C2, "sync_range") and hasattr(_C2, "earliest_activity")
+    assert _C2.RANGE_CHUNK_DAYS == 90, "高驰区间太大容易被限流、手机上也太慢"
+    for _k in ("COROS_BACKFILL_META", "COROS_EARLIEST_META", "COROS_SPAN_DAYS"):
+        assert hasattr(_AA, _k), f"缺 {_k}，高驰补历史没有独立游标"
+    assert callable(_AA._backfill_coros) and callable(_AA._backfill_garmin)
+    _bf = _AA.backfill_next
+    _src = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    assert "g = _backfill_garmin(span_days)" in _src and "c = _backfill_coros()" in _src, \
+        "backfill_next 没把两个数据源都推一步，高驰历史永远不动"
+    assert "done = bool(g.get(\"done\", True)) and bool(c.get(\"done\", True))" in _src, \
+        "只有一个源补完就报 done，另一个会停在中途"
+    # 只有高驰账号时不能被佳明的 need_login 卡住
+    assert "if not _garmin_session_ok():" in _src and "if not _coros_session_ok():" in _src
 
     # ---- 1.0.2：会话校验三态（网络抖动不许把人踢回登录框）--------------
     # 真机反馈「登录后一下拉刷新又弹登录」：client.get 对网络异常返回 None，

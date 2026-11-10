@@ -268,6 +268,17 @@ def status() -> dict:
     _earliest = _earliest_cached(store)
     need_bf = (_cur_day is None
                or _cur_day > _backfill_floor(dt.date.today(), _earliest))
+    # 高驰单独一条游标：以前只有佳明会补历史，高驰用户刷新多少次都只有 30 天
+    if _coros_session_ok():
+        _c_cur = store.get_meta(COROS_BACKFILL_META)
+        try:
+            _c_day = dt.date.fromisoformat(str(_c_cur)) if _c_cur else None
+        except ValueError:
+            _c_day = None
+        _c_ear = store.get_meta(COROS_EARLIEST_META)
+        if (_c_day is None
+                or _c_day > _backfill_floor(dt.date.today(), _c_ear)):
+            need_bf = True
     try:
         store.conn.close()
     except Exception:
@@ -1006,6 +1017,13 @@ EARLIEST_AT_META = "earliest_activity_at"
 EARLIEST_TTL = 30 * 86400
 EARLIEST_PROBE_PAGES = 60                # 最多翻 60 页（3600 条活动）
 EMPTY_STREAK_META = "backfill_empty_streak"
+# 高驰自己一套游标：口径与佳明一样，但区间更短（90 天），因为它一次要拉的
+# 是「区间日汇总」，一年请求在手机上又慢又容易被限流。
+COROS_BACKFILL_META = "backfill_cursor_coros"
+COROS_EARLIEST_META = "earliest_activity_coros"
+COROS_EARLIEST_AT_META = "earliest_activity_coros_at"
+COROS_EMPTY_META = "backfill_empty_streak_coros"
+COROS_SPAN_DAYS = 90
 # 账号里一条活动都没有时的下限：日汇总（步数/睡眠）仍有意义，但没必要翻八年
 BACKFILL_NO_ACT_DAYS = 730
 
@@ -1117,7 +1135,30 @@ def _segment_has_data(store, start: str, end: str) -> bool:
         return True          # 查不出来就当有数据，宁可多补一段也不要漏
 
 
-def backfill_next(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
+def _garmin_session_ok() -> bool:
+    """本地有没有佳明会话票据（不看是否过期，过期由 sync 自己报）。"""
+    try:
+        from .net import Net
+
+        path = GarminCNAuth(HOME).session_path
+        if not path.exists():
+            return False
+        net = Net(path)
+        return bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
+    except Exception:
+        return False
+
+
+def _coros_session_ok() -> bool:
+    try:
+        from .coros import CorosCloud
+
+        return bool(CorosCloud(HOME).load())
+    except Exception:
+        return False
+
+
+def _backfill_garmin(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
     """由近到远补**一段**历史，返回这一段的结果和「是否已经补到头」。
 
     游标 `meta.backfill_cursor` 记住「下次该从哪天往前补」，默认今天；
@@ -1160,16 +1201,23 @@ def backfill_next(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
         floor = _backfill_floor(today, earliest)
 
     if cur <= floor:
-        return {"ok": True, "done": True, "start": "", "end": "",
+        return {"ok": True, "done": True, "ran": False, "start": "", "end": "",
                 "fetched": 0, "skipped": 0, "cursor": floor.isoformat(),
                 "floor": floor.isoformat(), "earliest": earliest or "",
                 "reason": "reached_earliest" if earliest else "reached_floor"}
+
+    if not _garmin_session_ok():
+        # 没登录就只能算状态、不能拉数据：让高驰那条线继续跑，别被这里卡住
+        return {"ok": True, "done": True, "ran": False, "fetched": 0,
+                "skipped": 0, "start": "", "end": "", "earliest": earliest or "",
+                "cursor": cur.isoformat(), "floor": floor.isoformat(),
+                "reason": "no_garmin"}
 
     start, end, nxt, done = _backfill_segment(cur, floor, span_days)
     out = sync_range(start.isoformat(), end.isoformat(),
                      with_body=False, force=False, activity_pages=BACKFILL_PAGES)
     if not out.get("ok"):
-        return {"ok": False, "done": False,
+        return {"ok": False, "done": False, "ran": True,
                 "start": start.isoformat(), "end": cur.isoformat(),
                 "need_login": bool(out.get("need_login")),
                 "need_mfa": bool(out.get("need_mfa")),
@@ -1208,12 +1256,160 @@ def backfill_next(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
     finally:
         store.conn.close()
 
-    return {"ok": True, "done": done,
+    return {"ok": True, "done": done, "ran": True,
             "start": start.isoformat(), "end": end.isoformat(),
             "fetched": out.get("fetched", 0), "skipped": out.get("skipped", 0),
             "activities": out.get("activities", 0),
             "cursor": nxt.isoformat(), "floor": floor.isoformat(),
             "earliest": earliest or "", "reason": reason}
+
+
+def _fresh_at(store, key: str, ttl: int = EARLIEST_TTL) -> bool:
+    at = store.get_meta(key)
+    if not at:
+        return False
+    try:
+        ts = dt.datetime.strptime(str(at), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return False
+    return (dt.datetime.now() - ts).total_seconds() < ttl
+
+
+def _days_in(store, start: str, end: str) -> int:
+    try:
+        row = store.conn.execute(
+            "SELECT COUNT(*) AS n FROM daily WHERE date BETWEEN ? AND ?",
+            (start, end)).fetchone()
+        return int(row["n"] if row else 0)
+    except Exception:
+        return 0
+
+
+def _backfill_coros(span_days: int = COROS_SPAN_DAYS) -> dict:
+    """高驰的历史补全：与佳明同一套游标，区间 90 天。
+
+    **以前补历史是佳明专用**：`backfill_next` 直接调佳明的 `sync_range`，
+    高驰用户不管刷新多少次，都只有刷新时那 30 天（上限 180）——
+    真机反馈「高驰只能拉到最近 30 天」就是这个原因。
+
+    高驰没有「列活动翻到底」那种便宜探测，停止线改用活动列表的 totalCount
+    直接翻到最后一页（两次请求，缓存 30 天）；拿不到时退回「连续两段没数据」。
+    """
+    if not _coros_session_ok():
+        return {"ok": True, "done": True, "ran": False, "fetched": 0,
+                "skipped": 0, "start": "", "end": "", "earliest": "",
+                "reason": "no_coros"}
+    from . import coros as C
+    from .coros import CorosAuthError
+
+    today = dt.date.today()
+    store = Store(DB)
+    try:
+        cached = store.get_meta(COROS_EARLIEST_META)      # "" / None / 日期
+        raw = store.get_meta(COROS_BACKFILL_META) or today.isoformat()
+        fresh = _fresh_at(store, COROS_EARLIEST_AT_META)
+        try:
+            streak = int(store.get_meta(COROS_EMPTY_META) or 0)
+        except (TypeError, ValueError):
+            streak = 0
+    finally:
+        store.conn.close()
+    try:
+        cur = dt.date.fromisoformat(str(raw))
+    except ValueError:
+        cur = today
+    if cur > today:
+        cur = today
+
+    floor = _backfill_floor(today, cached)
+    if cur > floor and not fresh:
+        got = C.earliest_activity(HOME)          # 两次请求；结果缓存 30 天
+        if got or cached is None:
+            store = Store(DB)
+            try:
+                store.set_meta(COROS_EARLIEST_META, got or "")
+                store.set_meta(COROS_EARLIEST_AT_META,
+                               dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            finally:
+                store.conn.close()
+            cached = got or ""
+            floor = _backfill_floor(today, cached)
+
+    if cur <= floor:
+        return {"ok": True, "done": True, "ran": False, "start": "", "end": "",
+                "fetched": 0, "skipped": 0, "cursor": floor.isoformat(),
+                "floor": floor.isoformat(), "earliest": cached or "",
+                "reason": "reached_earliest" if cached else "reached_floor"}
+
+    start, end, nxt, done = _backfill_segment(cur, floor, span_days)
+    store = Store(DB)
+    reason = ""
+    try:
+        out = C.sync_range(store, HOME, start.isoformat(), end.isoformat())
+        if _days_in(store, start.isoformat(), end.isoformat()) > 0:
+            streak = 0
+        else:
+            streak += 1
+            if streak >= 2 and cached is None:
+                done = True
+                reason = "empty_segments"
+        store.set_meta(COROS_EMPTY_META, str(streak))
+        store.set_meta(COROS_BACKFILL_META, nxt.isoformat())
+    except CorosAuthError as e:
+        return {"ok": False, "done": False, "ran": True,
+                "start": start.isoformat(), "end": cur.isoformat(),
+                "need_login": True, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "done": False, "ran": True,
+                "start": start.isoformat(), "end": cur.isoformat(),
+                "error": f"{type(e).__name__}: {e}"}
+    finally:
+        store.conn.close()
+
+    daily = int(out.get("daily") or 0)
+    new_days = int(out.get("new_days") or 0)
+    return {"ok": True, "done": done, "ran": True,
+            "start": start.isoformat(), "end": end.isoformat(),
+            "fetched": new_days, "skipped": max(0, daily - new_days),
+            "activities": out.get("activities", 0),
+            "cursor": nxt.isoformat(), "floor": floor.isoformat(),
+            "earliest": cached or "", "reason": reason}
+
+
+def backfill_next(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
+    """补**一段**历史：佳明与高驰各推一步，两个都到终点才算 done。
+
+    两个数据源各有自己的游标与停止线（佳明看活动列表最早一条，高驰看
+    列表 totalCount），互不影响；只有一个账号时另一侧直接跳过。
+    """
+    g = _backfill_garmin(span_days)
+    c = _backfill_coros()
+    parts = [p for p in (g, c) if p.get("ran")]
+    failed = [p for p in parts if not p.get("ok")]
+    if failed:
+        f = failed[0]
+        return {"ok": False, "done": False,
+                "start": f.get("start", ""), "end": f.get("end", ""),
+                "need_login": any(p.get("need_login") for p in failed),
+                "need_mfa": any(p.get("need_mfa") for p in failed),
+                "error": f.get("error") or "补全失败"}
+    done = bool(g.get("done", True)) and bool(c.get("done", True))
+    ran = parts[0] if parts else {}
+    return {
+        "ok": True, "done": done,
+        "start": ran.get("start", ""), "end": ran.get("end", ""),
+        "fetched": sum(int(p.get("fetched") or 0) for p in parts),
+        "skipped": sum(int(p.get("skipped") or 0) for p in parts),
+        "activities": sum(int(p.get("activities") or 0) for p in parts),
+        "earliest": (g.get("earliest") or c.get("earliest") or ""),
+        "cursor": ran.get("cursor", ""), "floor": ran.get("floor", ""),
+        "reason": ",".join(x for x in (g.get("reason"), c.get("reason"))
+                           if x and not str(x).startswith("no_")),
+        "garmin": {"done": g.get("done"), "ran": g.get("ran"),
+                   "start": g.get("start"), "end": g.get("end")},
+        "coros": {"done": c.get("done"), "ran": c.get("ran"),
+                  "start": c.get("start"), "end": c.get("end")},
+    }
 
 
 def _activity_days(today: str) -> set[str]:
