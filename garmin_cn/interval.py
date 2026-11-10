@@ -322,6 +322,57 @@ def detect(detail: dict | None) -> dict | None:
     return got
 
 
+def detect_coros(detail: dict | None) -> dict | None:
+    """高驰版：没有官方「间歇标记」，改看**手动计圈结构**。
+
+    高驰不会下发 `hasIntensityIntervals`（官方文档也没有等价字段，真机
+    明细里只有分圈、没有训练模式），所以不能用佳明那套「只认标记」。
+    但间歇课几乎必然留下结构痕迹：**表盘上按组计圈**——整组圈距不是
+    1 km 自动圈（400 m / 800 m / 200 m 恢复圈都算），且快慢交替明显。
+
+    判定取两组证据的交集，宁可不出双栏也不误报（越野、等红灯的匀速跑
+    分圈仍是整齐的公里圈，进不来）：
+
+    1. 有一组「手动计圈」（整组多数圈距明显不是 1 km）；
+    2. 该组通过严格门槛的快慢交替（`from_laps` 非 forced 模式：
+       快慢各 ≥3 组、切换 ≥5 次、慢段占比 ≥15%、速度差 ≥1.35×）。
+
+    达标后仍按佳明口径输出，只是 `source` 标成 `coros:laps`、`mode`
+    标成 `coros-laps`，方便出问题和日志里区分。
+    """
+    d = detail or {}
+    groups = d.get("lap_groups") or []
+
+    def manual(laps: list[dict], lap_m: float | None) -> bool:
+        """整组是不是手动计圈：不是 1 km 自动圈。"""
+        if len(laps) < 4:
+            return False
+        if lap_m and abs(lap_m - 1000) <= 60:
+            return False
+        km_like = sum(1 for l in laps
+                      if abs((l.get("dist_m") or 0) - 1000) <= 60)
+        return km_like < len(laps) * 0.6
+
+    cands: list[list[dict]] = []
+    for g in groups:
+        if isinstance(g, dict) and manual(g.get("laps") or [], g.get("lap_m")):
+            cands.append(g["laps"])
+    # 没带 lap_groups 的旧缓存 / 只有选中一组时，用展示用的分圈表兜底
+    laps = d.get("laps") or []
+    if manual(laps, d.get("lap_distance_m")):
+        cands.append(laps)
+
+    best: dict | None = None
+    for laps_ in cands:
+        got = from_laps(laps_)
+        if got and (best is None or got["sets"] > best["sets"]):
+            best = got
+    if best:
+        best["source"] = "coros:" + str(best.get("source") or "laps")
+        best["mode"] = "coros-laps"
+    return best
+
+
 def check() -> None:
     """离线自检：典型间歇要认出，匀速 / 偶发减速 / 单调加速都不能误报。"""
     assert abs(_split([1, 1, 1, 1, 4, 4, 4, 4])[0] - 2.5) < 1e-9

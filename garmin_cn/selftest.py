@@ -2736,7 +2736,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 90' in (
+    assert 'versionCode = 91' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -2943,7 +2943,7 @@ def run() -> int:
         "垂直步幅比（%）被当成垂直振幅了，会印出假数字"
 
     # ---- 1.0.2：分圈组缺失时的 type=-1 回退（运动场跑等特殊类型）--------
-    assert _CA.ADAPTER_VERSION == 7, "适配器版本没升，旧缓存不会重抓"
+    assert _CA.ADAPTER_VERSION == 8, "适配器版本没升，旧缓存不会重抓"
     _r = _CA.normalize({"summary": {"sportType": 100}, "lapList": [
         {"type": -1, "lapDistance": 1195000, "lapItemList": [
             {"distance": 1195000, "time": 481000, "avgHr": 141}]}]}, "st")
@@ -2951,6 +2951,43 @@ def run() -> int:
         "只有 type=-1 分圈组时没有回退，会显示「无分圈数据」"
     _r2 = _CA.normalize({"summary": {"sportType": 100}}, "st2")
     assert _r2["laps"] == [], "完全无 lapList 时应保持空（诊断日志负责定位）"
+
+    # ---- 1.0.2：高驰没有间歇标记，改用手动计圈结构判定 ---------------------
+    # 高驰不下发 hasIntensityIntervals（官方文档也没有等价字段），所以
+    # 「是不是间歇课」看分圈：整组不是 1 km 自动圈 + 严格门槛的快慢交替。
+    def _cg(lap_m, laps):
+        return {"type": 0, "lap_m": lap_m,
+                "laps": [{"dist_m": d, "dur_s": s, "hr_avg": 160} for d, s in laps]}
+
+    _manual = _cg(0, [(400, 86)] * 15 + [(40, 90)] * 15)
+    # 交替顺序要真的交替，这里重建：400 m 快 + 90 s 走
+    _manual["laps"] = []
+    for _ in range(15):
+        _manual["laps"].append({"dist_m": 400.0, "dur_s": 86.0, "hr_avg": 168})
+        _manual["laps"].append({"dist_m": 40.0, "dur_s": 90.0, "hr_avg": 145})
+    _iv = IV.detect_coros({"lap_groups": [_manual], "laps": _manual["laps"]})
+    assert _iv and _iv["sets"] == 15 and _iv["mode"] == "coros-laps", _iv
+    assert _iv["source"].startswith("coros:") and _iv["slow"]["rest"], _iv
+    # 自动公里圈：哪怕有 2 圈慢（等红灯/爬坡）也不许出双栏
+    _km = _cg(1000, [(1000.0, 430.0 if i in (3, 7) else 333.0) for i in range(10)])
+    assert IV.detect_coros({"lap_groups": [_km], "laps": _km["laps"]}) is None, \
+        "整齐公里圈被误判成间歇（越野/等红灯正是这种）"
+    # 手动计圈但全程匀速（例如按公里手按的匀速跑）：切不出快慢，回默认
+    _even_manual = _cg(500, [(500.0, 180.0) for _ in range(8)])
+    assert IV.detect_coros({"lap_groups": [_even_manual]}) is None
+    # 没有 lap_groups 的旧缓存：退回展示用分圈表，同样要求手动计圈
+    assert IV.detect_coros({"laps": _manual["laps"], "lap_distance_m": 0}) is not None
+    assert IV.detect_coros({"laps": _km["laps"], "lap_distance_m": 1000}) is None
+    # 空明细 / 只有 1 圈：不许抛异常
+    assert IV.detect_coros({}) is None and IV.detect_coros(None) is None
+    assert IV.detect_coros({"laps": [{"dist_m": 400.0, "dur_s": 80.0}]}) is None
+    # 高驰适配层要把各组圈距带进明细（判定层才有数据可用）
+    _rr = _CA.normalize({"summary": {"sportType": 100}, "lapList": [
+        {"type": 1, "lapDistance": 100000, "lapItemList": [
+            {"distance": 100000, "time": 33300, "avgHr": 150} for _ in range(6)]},
+        {"type": 0, "lapDistance": 40000, "lapItemList": [
+            {"distance": 40000, "time": 8600, "avgHr": 168} for _ in range(6)]}]}, "st3")
+    assert [g["lap_m"] for g in _rr["lap_groups"]] == [1000.0, 400.0], _rr["lap_groups"]
 
     # ---- 1.0.2：间歇标记只认活动列表 raw，且 raw 永远优先 -----------------
     # 真机教训（两轮）：① 设备端明细是老版本抓的、没有 training 键，联网补抓

@@ -24,8 +24,8 @@ from . import activity as act
 from . import route
 from .coros import CorosAuthError, CorosCloud, CorosError
 
-# 7 = 垂直振幅命中 avgVertVibration、分圈空解析留诊断；废弃 6 的旧缓存
-ADAPTER_VERSION = 7
+# 8 = 分圈组元数据 lap_groups（间歇版式据此判定）+ 训练模式诊断；废弃 7 的旧缓存
+ADAPTER_VERSION = 8
 
 
 def raw_activity(row: dict) -> dict:
@@ -148,6 +148,66 @@ def _diag_laps(groups: list, selected: dict, parsed: int) -> None:
                       + " 值=" + ",".join(f"{k}:{str(v)[:10]}"
                                          for k, v in list(first.items())[:14]))
         _dg.log_exc("coros.laps", f"laps={parsed} 组：" + (" | ".join(parts) or "缺失") + sample)
+    except Exception:
+        pass
+
+
+def _lite_laps(group: dict, cap: int = 40) -> list[dict]:
+    """分圈组 → 判定用的最小圈信息（距离 / 时长 / 心率），不带展示字段。
+
+    高驰的 lapList 往往同时有「自动公里圈」「手动计圈」「全程汇总」几组，
+    哪一组才是间歇课的分段无法预设，所以每组都留一份轻量副本给判定层。
+    """
+    out: list[dict] = []
+    for lap in (group.get("lapItemList") or [])[:cap]:
+        if not isinstance(lap, dict):
+            continue
+        d = number(lap.get("distance"), 100) or 0     # 厘米 → 米
+        t = number(lap.get("time", lap.get("totalTime")), 100) or 0   # 厘秒 → 秒
+        if d > 0 and t > 0:
+            out.append({"dist_m": d, "dur_s": t,
+                        "hr_avg": number(lap.get("avgHr"))})
+    return out
+
+
+def lap_groups_of(groups: list) -> list[dict]:
+    """lapList 各组 → [{type, lap_m, laps}]（最多 6 组）。出图不需要，判定需要。"""
+    out: list[dict] = []
+    for g in groups or []:
+        if not isinstance(g, dict):
+            continue
+        laps = _lite_laps(g)
+        if not laps:
+            continue
+        out.append({"type": g.get("type"),
+                    "lap_m": number(g.get("lapDistance"), 100),
+                    "laps": laps})
+        if len(out) >= 6:
+            break
+    return out
+
+
+def _diag_training(data: dict, lap_groups: list) -> None:
+    """记录高驰是否暴露了「训练/间歇」类字段，以及各组圈距。
+
+    高驰没有佳明 `hasIntensityIntervals` 那样的官方标记（官方文档也未公开），
+    现阶段靠「手动计圈结构」判定。这条日志是为了在朋友下次同步后确认：
+    接口里到底有没有可直接用的 interval/workout 字段——有就换成权威判定。
+    """
+    try:
+        from . import diag as _dg
+
+        native = data.get("summary") or {}
+        keys = []
+        for src, tag in ((native, "summary"), (data, "top")):
+            if isinstance(src, dict):
+                keys += [f"{tag}.{k}" for k in src
+                         if any(s in str(k).lower() for s in
+                                ("interval", "lap", "workout", "train", "plan", "session"))]
+        groups = " | ".join(f"type={g['type']} lap_m={g['lap_m']} n={len(g['laps'])}"
+                            for g in lap_groups) or "无分圈组"
+        _dg.log_exc("coros.training",
+                    "训练相关字段：" + (",".join(keys) or "无") + " ｜ " + groups)
     except Exception:
         pass
 
@@ -281,11 +341,15 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
                  "seconds": number(z.get("second")) or 0}
                 for z in sorted(zones, key=lambda z: number(z.get("zoneIndex")) or 0)]
     track_points = track if track else act.build_track(canonical)
+    lap_groups = lap_groups_of(groups)
+    _diag_training(data, lap_groups)
     return {"activity_id": str(activity_id), "source": "coros",
             "adapter_version": ADAPTER_VERSION,
             "fetched_at": dt.datetime.now().isoformat(timespec="seconds"),
             "summary": summary, "laps": laps, "hr_zones": hr_zones,
             "lap_distance_m": number(selected.get("lapDistance"), 100),
+            # 间歇判定用：各组圈距/圈数（含手动计圈组），展示层不用
+            "lap_groups": lap_groups,
             "series": {"points": act._thin(points, act.SERIES_POINTS)},
             "track": act._thin(track_points, act.TRACK_POINTS),
             "route": route.build(canonical),
