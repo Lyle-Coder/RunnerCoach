@@ -413,9 +413,8 @@ def page(kicker: str, title: str, lede: str, body: str,
         head_cls += " rc-compact"
     # 首屏要脱离 .app 的 820px 上限：宽屏时铺满 12 栅格，其它 tab 不受影响。
     app_cls = "app rc-page" if screen else "app"
-    # 页头左上角放一枚品牌角标：和启动器、开屏、一图流是同一个图形。
-    # 只做装饰，读屏器跳过；真正的标题仍是 h1。
-    badge = BR.badge_html(26, "rc-head-badge")
+    # 页头不再放品牌角标：原生顶栏已经有一枚同样的图形（0.6.11），
+    # 两枚叠在左上角显得重复。页脚左下角的字标保留，仍是同一个图形。
     foot_html = ('<div class="rc-foot">' + BR.badge_html(18) +
                  '<span>RunnerCoach</span></div>' + esc(foot))
     lede_html = "" if screen else f'<p class="lede">{esc(lede)}</p>'
@@ -427,7 +426,7 @@ def page(kicker: str, title: str, lede: str, body: str,
 {back_html}
 <header class="page-head{head_cls}">
   {action}
-  <div class="brandline">{badge}<div class="kicker">{esc(kicker)}</div></div>
+  <div class="brandline"><div class="kicker">{esc(kicker)}</div></div>
   <h1>{esc(title)}</h1>{lede_html}
   <div class="meta">{chips}</div>
 </header>

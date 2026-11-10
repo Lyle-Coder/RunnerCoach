@@ -2577,8 +2577,13 @@ def run() -> int:
         "品牌图形缺了跑道或心电脉冲"
     assert "%23" in _BR.mark_uri(), "data URI 没把 # 编码，CSS 背景图标会断"
     _shell = U.page("TEST", "标题", "说明", "")
-    assert 'class="rc-badge' in _shell and 'class="brandline"' in _shell, \
-        "页面外壳没有品牌角标"
+    # 页头不该再挂角标（原生顶栏已有一枚），但页脚左下角的字标要留着。
+    # 只查 <header> 段：整页字符串里页脚本来就有 rc-badge，会误判。
+    _shell_head = _shell.split("<header")[1].split("</header>")[0]
+    assert "rc-badge" not in _shell_head and 'class="brandline"' in _shell, \
+        "页头又挂上品牌角标了（原生顶栏已有一枚）"
+    assert 'class="rc-badge' in _shell.split('<div class="foot">')[1], \
+        "页脚左下角的品牌字标被一起删了"
     assert ".rc-badge" in _u.CSS and "radial-gradient" in _u.CSS, \
         "页面 CSS 没带品牌角标与辉光"
     for _n in ("card.py", "actcard.py", "racecard.py", "report.py"):
@@ -2705,7 +2710,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 76' in (
+    assert 'versionCode = 77' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -2789,6 +2794,24 @@ def run() -> int:
         "页脚左下角的品牌字标必须保留"
     assert 'BR.BRAND_CSS' in _card_src and 'BR.BRAND_CSS' in _act_src, \
         "角标删掉后不要把整套品牌样式也一起摘了"
+
+    # ---- 0.6.11：手机横屏紧凑大屏 + 页头角标收敛 ---------------------
+    _land_css = _css.split(
+        "@media (orientation:landscape) and (min-width:640px)")[1]
+    assert "max-height:520px" in _land_css and "max-height:340px" in _css, \
+        "手机横屏缺独立断点，或极矮屏没有二次压缩"
+    assert "height:calc(100dvh - 92px)" in _land_css and \
+        "min-height:0" in _land_css, \
+        "横屏栅格还带着 560px 下限或写死高度"
+    assert "rc-samples{display:none}" in _land_css and \
+        ".rc-load-chart{display:none}" in _land_css and \
+        "grid-template-columns:repeat(4,minmax(0,1fr))" in _land_css, \
+        "横屏没把样本/双线图收起，或身体面板仍是 2×2"
+    assert _css.count('"h h h h l l l l b b b b"') == 1, \
+        "宽屏栅格被复制成两份"
+    _u_src = (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8")
+    assert 'BR.badge_html(26' not in _u_src and 'BR.badge_html(18' in _u_src, \
+        "页头角标没删干净，或页脚字标被一起删了"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")

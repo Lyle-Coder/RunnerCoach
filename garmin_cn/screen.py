@@ -8,10 +8,13 @@
 
   * 竖屏 390：结论条 44 → 恢复环 ≈176 → 负荷带 60 → 身体 2×2 ≈172
                → 计划一条 72 → 最近 7 天 ≈300；
-  * 宽屏 / 横屏：同一个 HTML 用 `@media (min-width:900px)` 重排成
+  * 宽屏 ≥900px：同一个 HTML 用 `@media (min-width:900px)` 重排成
                12 栅格 2 行 5 面板（恢复 4 / 负荷 4 / 身体 4；7 天 8 / 计划 4），
-               Python 侧零改动、零新增请求。首屏与「一页大屏」就此合一，
-               `report.py` 只保留按日期导出/回看，不再是首页的第二套视觉。
+               Python 侧零改动、零新增请求；
+  * 手机横屏（≥640 且高 ≤520）：0.6.11 起另有一套紧凑栅格，压页头页脚、
+               缩恢复环、收起双线图与样本，五块数据仍在同一屏、页面不滚。
+               首屏与「一页大屏」就此合一，`report.py` 只保留按日期导出/回看，
+               不再是首页的第二套视觉。
 
 三条原则也写进了 CSS：
 
@@ -216,9 +219,88 @@ _BIG = """
 {p}.rc-week .rc-days{height:80px}
 """
 
+# 手机横屏专用紧凑栅格（0.6.11）。
+# 触发条件是「横屏 + 宽 ≥640 + 高 ≤520」，且刻意放在宽屏规则之后：
+# 915×412 这类同时命中两条的设备也走这套，不会被 560px 下限撑爆；
+# 1280×800 的平板/桌面高度超过 520，仍走上面那份 12 栅格。
+# 竖屏不受影响。目标是一屏不滚：压页头页脚、缩恢复环、去掉双线图与样本，
+# 五块数据都留在同屏。字号底线仍是 11px，不靠缩小文字硬塞。
+_LAND = """
+@media (orientation:landscape) and (min-width:640px) and (max-height:520px){
+.rc-page{max-width:none;padding:0 10px 4px}
+.rc-page .page-head.rc-compact{padding:2px 0 3px;margin-bottom:2px}
+.rc-page .page-head.rc-compact .brandline{display:none}
+.rc-page .page-head.rc-compact h1{font-size:15px;margin:0}
+.rc-page .page-head.rc-compact .meta{margin-top:2px}
+.rc-page .head-act{top:0;min-height:36px;padding:0 10px;font-size:11px}
+.rc-page .foot{margin-top:3px;padding-top:2px;line-height:1.4}
+.rc-screen{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));
+  grid-template-areas:
+    "v v v v v v v v v v v v"
+    "h h h h l l l l p p p p"
+    "w w w w w w b b b b b b";
+  grid-template-rows:30px minmax(0,1fr) minmax(0,1fr);
+  gap:8px;min-height:0;height:calc(100vh - 92px);
+  height:calc(100dvh - 92px)}
+.rc-verdict{grid-area:v;min-height:0;padding:2px 10px}
+.rc-verdict .v{font-size:14px}
+.rc-hero-panel{grid-area:h}
+.rc-load{grid-area:l}
+.rc-plan-panel{grid-area:p}
+.rc-week-panel{grid-area:w}
+.rc-body-panel{grid-area:b}
+.rc-panel{padding:6px 9px;border-radius:12px;overflow:hidden}
+.rc-panel-hd{margin:0 0 4px}
+.rc-hero{gap:8px}
+.rc-ring{flex:0 0 68px;width:68px;height:68px}
+.rc-hero-side{gap:4px}
+.rc-parts{gap:3px}
+.rc-part{grid-template-columns:46px 1fr 22px;gap:4px}
+.rc-advice{display:none}
+/* 负荷带在窄横屏里改竖排三行、每行的窗口标签跟在数值后面，避免
+   三列各 ~55px 时标签换行把面板撑破。 */
+.rc-load{min-height:0;padding:2px 8px;align-content:center;overflow:hidden;
+  grid-template-columns:1fr;grid-template-rows:repeat(3,auto);gap:2px}
+.rc-load .item{display:flex;align-items:baseline;gap:8px;padding:2px 0;
+  border-right:0;border-bottom:1px solid var(--line2,rgba(96,165,250,.09))}
+.rc-load .item:last-child{border-bottom:0}
+.rc-load .k,.rc-load .w{white-space:nowrap}
+.rc-load .w{margin-left:auto}
+.rc-load .v{font-size:15px}
+.rc-load-chart{display:none}
+/* 身体 2×2 在矮横屏里会纵向溢出，改成一行四格；变化说明在 ~90px 宽的
+   格子里必然折行，横屏先收起，数值与单位保持完整。 */
+.rc-body{gap:5px;grid-template-columns:repeat(4,minmax(0,1fr))}
+.rc-cell{padding:3px 6px;border-radius:9px}
+.rc-cell .v{font-size:14px;margin-top:0}
+.rc-cell .sub,.rc-cell .spark{display:none}
+.rc-week-hd .side{display:none}
+.rc-week .rc-days{height:46px;gap:5px;margin-top:4px}
+.rc-day{min-width:24px}
+.rc-week-hd .big-num{font-size:19px}
+.rc-samples{display:none}
+.rc-plan{min-height:0;gap:8px}
+.rc-plan .when{flex:0 0 46px}
+.rc-plan .when b{font-size:14px}
+.rc-plan .t{font-size:14px}
+.rc-plan .go{min-height:40px}
+.rc-foot-line{display:none}
+}
+/* 老小屏横过来只有 320px 高：再收掉面板标题、把环缩到 52px，
+   保证五块数据仍在同一屏而不是被 overflow 悄悄裁掉。 */
+@media (orientation:landscape) and (min-width:640px) and (max-height:340px){
+.rc-panel-hd{display:none}
+.rc-ring{flex:0 0 52px;width:52px;height:52px}
+.rc-week .rc-days{height:38px}
+.rc-day .lbl{line-height:1}
+.rc-cell{padding:2px 5px}
+}
+"""
+
 SCREEN_CSS = (
     _BASE
     + "@media(min-width:900px){" + _BIG.replace("{p}", "") + "}\n"
+    + _LAND
 )
 
 RING_R = 45
