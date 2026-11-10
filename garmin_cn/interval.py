@@ -55,8 +55,11 @@ BAND_MAX = 4
 MIN_BAND_GAP = 0.08
 # 拆分后每档至少几段（含 2 档时）。一段的「档」只是噪声。
 BAND_MIN_SETS = 2
-# 低于这个速度视为休息/走动，不参与强度分档（恢复段没有「档」可言）。
+# 低于这个速度视为站立/走路型恢复；慢跑恢复仍算恢复，只是展示配速。
 REST_SPD = 1.2
+# 间歇段的「组距」离散度：低于它就认为所有组同一距离（15×400 m 这种），
+# 只出一行「间歇」，不因配速自然漂移（负分段、后程掉速）切出快/慢档。
+WORK_DIST_TOL = 0.2
 
 BAND_NAMES = {2: ("快", "慢"), 3: ("快", "中", "慢"),
               4: ("快", "中快", "中慢", "慢")}
@@ -185,6 +188,98 @@ def _kmeans(values: list[float], weights: list[float], k: int,
     return assign, centers
 
 
+def _pack(label: str, picked: list[dict], rest: bool = False) -> dict:
+    """把一组分段折成一行汇总（队/恢复通用）。"""
+    dist = sum(s["dist_m"] for s in picked)
+    dur = sum(s["dur_s"] for s in picked)
+    spd = dist / dur if dur else 0.0
+    return {
+        "label": label, "sets": len(picked),
+        "dist_m": round(dist, 1), "dur_s": round(dur, 1),
+        "spd": spd,
+        "pace_s": round(dur / (dist / 1000)) if dist > 50 else None,
+        "recover_s": round(dur / len(picked)) if picked else None,
+        "rest": rest,
+        # 慢跑恢复（spd 不算静止）展示配速；站桩恢复展示时长
+        "jog": bool(rest and spd >= REST_SPD),
+        "hr_avg": _wmean([s["hr_avg"] or 0 for s in picked],
+                         [s["dur_s"] for s in picked]),
+        "cad": _wmean([s["cad"] or 0 for s in picked],
+                      [s["dur_s"] for s in picked]),
+        "segs": picked,
+    }
+
+
+def work_rest(order: list[dict] | None) -> dict | None:
+    """按时序把段拆成「间歇段 / 恢复段」，恢复**不按速度高低判定**。
+
+    为什么不能靠速度分档
+    --------------------
+    8×800 m + 400 m 慢跑恢复是全马备赛最常见的课，恢复段 5'30"/km 很容易
+    被聚成「慢组」，于是一个标准间歇被读成「快组 / 慢组」两种强度——这是
+    语义错误：恢复就是恢复，慢跑恢复也不构成一个强度档。分档只该用在
+    **间歇段之间配速不同**的课（金字塔、变速、法特莱克）。
+
+    判据是结构：段必须「快-慢-快-慢…」交替，且奇数位（恢复）确实慢于
+    偶数位。交替不成立（三/四段课）时返回 None，交回 band_split 处理。
+    """
+    segs = [o for o in (order or []) if isinstance(o, dict)]
+    if len(segs) < 4:
+        return None
+    work: list[dict] = []
+    rest: list[dict] = []
+    k = 0
+    while k + 1 < len(segs):
+        a, b = segs[k], segs[k + 1]
+        if (a.get("spd") or 0) <= (b.get("spd") or 0):
+            return None
+        work.append(a)
+        rest.append(b)
+        k += 2
+    if k < len(segs) and (segs[k].get("spd") or 0) > (rest[-1].get("spd") or 0):
+        work.append(segs[k])        # 末尾多跑了一组、没跟恢复
+    if len(work) < 3 or len(rest) < 2:
+        return None
+    return {"work": work, "rest": rest}
+
+
+def attach_work_rest(order: list[dict]) -> tuple[list[dict], list[dict]] | None:
+    """交替结构 → (bands, order_with_band)。标准间歇只给「间歇 / 恢复」两行。"""
+    wr = work_rest(order)
+    if not wr:
+        return None
+    work, rest = wr["work"], wr["rest"]
+    # **分档的判据是「组距不同」而不是「配速不同」**：同距多组（15×400 m）
+    # 就算配速从 3'45" 漂到 3'16"（负分段、后程顶不住），那也是同一节课的
+    # 体力分配，不是两种强度；只有 400/200/200、400/800/1200 这种组距本身
+    # 不同的课（金字塔、阶梯、变速）才需要在间歇段内再分档。
+    dists = [s["dist_m"] for s in work if (s.get("dist_m") or 0) > 0]
+    d_spread = ((max(dists) - min(dists)) / min(dists)
+                if dists and min(dists) > 0 else 0.0)
+    work_bands: list[dict] = []
+    band_of: dict[int, int] = {}
+    if d_spread > WORK_DIST_TOL:
+        sub = band_split(work, kmax=3)
+        if sub:
+            work_bands = sub["bands"]
+            for i, b in enumerate(work_bands):
+                for sg in b["segs"]:
+                    band_of[id(sg)] = i
+    if not work_bands:
+        work_bands = [_pack("间歇", work)]
+        band_of = {id(s): 0 for s in work}
+    rest_band = _pack("恢复", rest, True)
+    bands = work_bands + [rest_band]
+    rest_idx = len(bands) - 1
+    ordered = sorted(order, key=lambda o: o.get("t0") or 0)
+    out = []
+    for o in ordered:
+        is_rest = o in rest
+        out.append({**o, "rest": is_rest,
+                    "band": rest_idx if is_rest else band_of.get(id(o), 0)})
+    return bands, out
+
+
 def band_split(segs: list[dict] | None, kmax: int = BAND_MAX) -> dict | None:
     """把分段按速度聚成 2~kmax 档强度带（快 / 中 / 慢…）。
 
@@ -209,23 +304,6 @@ def band_split(segs: list[dict] | None, kmax: int = BAND_MAX) -> dict | None:
         return None
     vals = [s["spd"] for _, s in moving]
     wts = [max(s["dur_s"], 1.0) for _, s in moving]
-
-    def pack(label: str, picked: list[dict], rest: bool) -> dict:
-        dist = sum(s["dist_m"] for s in picked)
-        dur = sum(s["dur_s"] for s in picked)
-        return {
-            "label": label, "sets": len(picked),
-            "dist_m": round(dist, 1), "dur_s": round(dur, 1),
-            "spd": dist / dur if dur else 0.0,
-            "pace_s": round(dur / (dist / 1000)) if dist > 50 else None,
-            "recover_s": round(dur / len(picked)) if picked else None,
-            "rest": rest,
-            "hr_avg": _wmean([s["hr_avg"] or 0 for s in picked],
-                             [s["dur_s"] for s in picked]),
-            "cad": _wmean([s["cad"] or 0 for s in picked],
-                          [s["dur_s"] for s in picked]),
-            "segs": picked,
-        }
 
     best: tuple[int, list[int], list[float]] | None = None
     for k in range(2, min(kmax, len(moving) // BAND_MIN_SETS) + 1):
@@ -252,7 +330,7 @@ def band_split(segs: list[dict] | None, kmax: int = BAND_MAX) -> dict | None:
         if not rest_only or len(moving) < 3:
             return None
         moving_segs = [s for _, s in moving]
-        bands = [pack("跑动", moving_segs, False), pack("恢复", rest_only, True)]
+        bands = [_pack("间歇", moving_segs), _pack("恢复", rest_only, True)]
         order = []
         for i in sorted(range(len(segs)), key=lambda i: segs[i].get("t0") or 0):
             s = segs[i]
@@ -269,12 +347,12 @@ def band_split(segs: list[dict] | None, kmax: int = BAND_MAX) -> dict | None:
     for c in order_c:
         picked = [s for j, (_, s) in enumerate(moving) if assign[j] == c]
         if picked:
-            bands.append(pack(names[rank[c]] if rank[c] < len(names)
-                              else f"档{rank[c] + 1}", picked, False))
+            bands.append(_pack(names[rank[c]] if rank[c] < len(names)
+                               else f"档{rank[c] + 1}", picked))
     # 休息段单独一档放最慢：原地站着没有「配速档」可言
     rest = [s for s in segs if (s.get("spd") or 0) < REST_SPD]
     if rest:
-        bands.append(pack("恢复", rest, True))
+        bands.append(_pack("恢复", rest, True))
 
     # 时序结构条：按开始时间排，每段标出属于哪一档（供 N 档版式画柱）
     seg_band: dict[int, int] = {}
@@ -454,6 +532,13 @@ def attach_bands(got: dict | None, detail: dict | None,
     if not segs:
         segs = ([dict(s) for s in got["fast"]["segs"]]
                 + [dict(s) for s in got["slow"]["segs"]])
+    ordered = sorted(segs, key=lambda s: s.get("t0") or 0)
+    # 先看有没有「间歇-恢复」交替结构：有就只分「间歇 / 恢复」，恢复不当强度档。
+    # 只有间歇段之间配速不同（金字塔、变速）时才在间歇段内部再分 2~3 档。
+    wr = attach_work_rest(ordered)
+    if wr:
+        got["bands"], got["order"] = wr
+        return got
     bs = band_split(segs)
     if bs:
         got["bands"] = bs["bands"]

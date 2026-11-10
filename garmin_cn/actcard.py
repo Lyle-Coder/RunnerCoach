@@ -899,7 +899,11 @@ def interval_bands(iv: dict, theme: dict | None = None) -> str:
         color = (REST_COLOR if b.get("rest")
                  else BAND_COLORS[min(i, len(BAND_COLORS) - 1)])
         if b.get("rest"):
-            val, val_lab = dur_txt(b.get("recover_s")), "平均恢复"
+            # 站桩恢复没有「配速」可言，给平均恢复时长；慢跑恢复给配速
+            if b.get("jog"):
+                val, val_lab = main(b.get("pace_s")), "恢复配速"
+            else:
+                val, val_lab = dur_txt(b.get("recover_s")), "平均恢复"
         else:
             val = main(b.get("pace_s"))
             val_lab = "平均速度" if speed else "平均配速"
@@ -1377,9 +1381,8 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
   vertical-align:middle}
 .lg.pace{background:var(--acc)}
 .lg.hr{background:#E8843A}
-/* 间歇结构：底部整块切成左右双栏，左快组右慢组。
-   两栏等高；15 组以内的常见间歇逐组列全，行距压紧，不让长图撑爆。 */
-/* 间歇结构：柱 = 一组（跑动 + 组间恢复），柱下三行标注配速/时间/距离 */
+/* 间歇结构：柱 = 一组（间歇 + 组间恢复），柱下三行标注配速/时间/距离。
+   组数是「间歇组数」：15×400 m 是 15 根柱，恢复画成柱底细灰条。 */
 .ivband{background:#10161C;border:1px solid #23364A;border-radius:14px;padding:14px 16px}
 .ivcols{display:flex;gap:5px;align-items:stretch;padding-bottom:10px;
   border-bottom:1px solid #1C2A38;margin-bottom:12px}

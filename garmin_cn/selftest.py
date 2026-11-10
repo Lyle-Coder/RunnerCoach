@@ -231,7 +231,22 @@ def run() -> int:
     # 24 段超过逐组标注上限（16），退化为纯结构条：形状仍要看得出，只是不标数字
     assert 'class="ivsb' in _tri_html and 'class="ivc"' not in _tri_html
     assert _tri_html.count("ivsb") > 20
-    # 两段课（15×400 + 原地恢复）仍走双栏，不能被强行切成三档
+    # ---- 标准间歇不许被读成「两种强度」 -------------------------------
+    # 8×800 m + 400 m 慢跑恢复：恢复段配速 5'xx" 会被 k-means 聚成「慢组」，
+    # 但恢复就是恢复，不是第二个强度档。交替结构必须只出「间歇 / 恢复」两行。
+    _jog = _blocks(sum(([(3.9, 123.0), (2.6, 130.0)] for _ in range(8)), []))
+    _jiv = IV.detect({"series": {"points": _jog},
+                      "training": {"interval": True, "type": "running"}})
+    assert _jiv and [b["label"] for b in _jiv["bands"]] == ["间歇", "恢复"], \
+        _jiv and [b["label"] for b in _jiv["bands"]]
+    assert _jiv["bands"][1].get("jog") is True, "慢跑恢复要标成 jog（展示配速）"
+    _jhtml = ACTCARD.build_html(
+        {}, {"series": {"points": _jog}, "laps": [],
+             "training": {"interval": True, "type": "running"}},
+        None, None, "慢跑恢复自检")
+    assert "快组" not in _jhtml and "慢组" not in _jhtml, "标准间歇不许出现快/慢组"
+    assert "恢复配速" in _jhtml, "慢跑恢复应展示恢复配速"
+    # 两段课（15×400 + 原地恢复）仍走结构条，不能被强行切成三档
     _two = _blocks(sum(([(4.6, 86.0), (0.45, 90.0)] for _ in range(15)), []))
     _two_iv = IV.detect({"series": {"points": _two},
                          "training": {"interval": True, "type": "running"}})
@@ -242,6 +257,38 @@ def run() -> int:
         None, None, "两段自检")
     # 两段课也走同一版式（双栏已废弃），只有两档颜色
     assert 'class="ivband"' in _two_html and 'class="ivcols"' in _two_html
+    # 同配速 + 站桩恢复：同样只有「间歇 / 恢复」，恢复行给时长而不是配速
+    assert [b["label"] for b in _two_iv["bands"]] == ["间歇", "恢复"], \
+        [b["label"] for b in _two_iv["bands"]]
+    assert "平均恢复" in _two_html and "恢复配速" not in _two_html
+    assert "快组" not in _two_html and "慢组" not in _two_html
+    # 同距多组 + 配速自然漂移（真实 10-21：3'45" → 3'16"）不许切成快/中档：
+    # 组距一致说明这是一节课，配速变化是体力分配，不是两种强度。
+    _drift_laps = []
+    for i in range(15):
+        _pace = 225 - i * 4
+        _drift_laps.append({"dist_m": 400.0, "dur_s": 400 * _pace / 1000,
+                            "pace_s": _pace, "hr_avg": 170, "cad": 188})
+        _drift_laps.append({"dist_m": 40.0, "dur_s": 90.0, "pace_s": None,
+                            "hr_avg": 150, "cad": 0})
+    _div = IV.detect({"series": {"points": []}, "laps": _drift_laps,
+                      "lap_distance_m": 0,
+                      "training": {"interval": True, "type": "running"}})
+    assert _div and [b["label"] for b in _div["bands"]] == ["间歇", "恢复"], \
+        _div and [b["label"] for b in _div["bands"]]
+    # 组距不同但配速相同（400/800 m 同速）：也不该造档，只出一行「间歇」
+    _ladder = []
+    for _ in range(4):
+        for _d in (400.0, 800.0):
+            _ladder.append({"dist_m": _d, "dur_s": _d / 4.2, "pace_s": 238,
+                            "hr_avg": 170, "cad": 188})
+            _ladder.append({"dist_m": 200.0, "dur_s": 90.0, "pace_s": None,
+                            "hr_avg": 150, "cad": 0})
+    _lad = IV.detect({"series": {"points": []}, "laps": _ladder,
+                      "lap_distance_m": 0,
+                      "training": {"interval": True, "type": "running"}})
+    assert _lad and [b["label"] for b in _lad["bands"]] == ["间歇", "恢复"], \
+        _lad and [b["label"] for b in _lad["bands"]]
     assert _two_html.count('class="ivc"') == 15 and _two_html.count('class="ivbr"') == 2
     # 四档：金字塔式递进速度，最多切到 4 档，不能无限细分
     _four = _blocks(sum(([(4.9, 60.0), (4.2, 60.0), (3.5, 60.0), (2.6, 60.0)]
@@ -2795,7 +2842,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 93' in (
+    assert 'versionCode = 94' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
