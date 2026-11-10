@@ -81,11 +81,12 @@ def _remember_email(email: str) -> None:
 
 
 def _client(email: str | None = None, password: str | None = None,
-            revalidate: bool = False) -> GarminCNClient:
+            revalidate: bool = False,
+            min_interval: float = 0.5) -> GarminCNClient:
     from .net import Net
 
     auth = GarminCNAuth(HOME)
-    net = Net(auth.session_path, min_interval=0.5)
+    net = Net(auth.session_path, min_interval=min_interval)
     ok = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
 
     # 有票据不等于票据还有效：Garmin 的 JWT 几小时就会失效，服务端直接 401。
@@ -97,11 +98,11 @@ def _client(email: str | None = None, password: str | None = None,
             ok = False
         else:
             # 校验过程中服务端可能轮换过 Cookie，重新从磁盘读一次最新值
-            net = Net(auth.session_path, min_interval=0.5)
+            net = Net(auth.session_path, min_interval=min_interval)
 
     if not ok and email and password:
         auth.login(email, password)      # 可能要验证码，交给上层处理
-        net = Net(auth.session_path, min_interval=0.5)
+        net = Net(auth.session_path, min_interval=min_interval)
         ok = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
 
     if not ok:
@@ -785,7 +786,8 @@ def coros_sync(days: int = 30, email: str = "", password: str = "") -> dict:
 # ---------------------------------------------------------------- 同步
 def sync(days: int = 30, email: str | None = None, password: str | None = None,
          with_body: bool = True, progress=None, force: bool = False,
-         end: str | None = None, activity_pages: int = 1) -> dict:
+         end: str | None = None, activity_pages: int = 1,
+         bulk: bool = False) -> dict:
     """拉数据。`email/password` 只在会话过期时用来续一次，不会被写盘。
 
     增量是默认行为：已有数据且早已过完的日子不会再请求一遍，
@@ -803,8 +805,10 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
             except Exception:
                 pass
 
+    # 补历史走后台批量：间隔收紧到 BULK_MIN_INTERVAL；日常同步保持 0.5s
+    _gap = BULK_MIN_INTERVAL if bulk else 0.5
     try:
-        client = _client(email, password, revalidate=True)
+        client = _client(email, password, revalidate=True, min_interval=_gap)
     except MfaRequired:
         return {"ok": False, "need_mfa": True, "error": "续期需要邮箱验证码，请重新登录"}
     except AuthError as e:
@@ -820,7 +824,7 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
         if not (email and password):
             return {"ok": False, "need_login": True, "error": "会话已过期"}
         try:
-            client = _client(email, password)
+            client = _client(email, password, min_interval=_gap)
             res = SyncService(client, store).sync(
                 days=days, end=end, extras=False, progress=cb,
                 force=force, activity_pages=activity_pages)
@@ -856,7 +860,8 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
 def sync_range(start: str, end: str | None = None,
                email: str | None = None, password: str | None = None,
                with_body: bool = True, force: bool = False,
-               activity_pages: int | None = None) -> dict:
+               activity_pages: int | None = None,
+               bulk: bool = False) -> dict:
     """按日期区间补历史数据（App「拉取更多历史」用）。
 
     `start` / `end` 是 YYYY-MM-DD，end 默认今天。一次最多 3 年，
@@ -877,7 +882,7 @@ def sync_range(start: str, end: str | None = None,
         20, max(1, (days + 29) // 30))
     out = sync(days=days, email=email, password=password,
                with_body=with_body, progress=None, force=force,
-               end=e.isoformat(), activity_pages=pages)
+               end=e.isoformat(), activity_pages=pages, bulk=bulk)
     if out.get("ok"):
         out["start"] = s.isoformat()
         out["end"] = e.isoformat()
@@ -1006,7 +1011,13 @@ def card_html(date: str | None = None) -> dict:
 # 弹窗、跑完也只是「跳过 90 天缓存」，用户看完只觉得没反应。现在改成**游标式**：
 # 每次刷新由近到远补一段，游标存进 meta，直到回到最早年为止，全程后台。
 BACKFILL_META = "backfill_cursor"
-BACKFILL_SPAN_DAYS = 365      # 一段一年：太长中间没反馈，太短请求次数翻倍
+# 一段半年：单段 180 天 ≈ 360 次请求，按批量节流约 1.5 分钟；
+# 以前一年一段是 700+ 次、4 分钟以上，用户在这段时间里看不到任何新数据。
+BACKFILL_SPAN_DAYS = 180
+# 批量拉历史时的最小请求间隔（秒）。日常同步仍是 0.5s——交互场景宁可慢一点
+# 也不要被限流；补历史是后台任务，密一点但保留 429 退避（net.py 里会把间隔
+# 自动放大），整体快 2 倍。
+BULK_MIN_INTERVAL = 0.25
 BACKFILL_MAX_YEARS = 8        # 硬下限：账号再老也不翻 8 年以上
 BACKFILL_PAGES = 20           # 每段最多翻 20 页活动（约 1200 条）
 
@@ -1215,7 +1226,8 @@ def _backfill_garmin(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
 
     start, end, nxt, done = _backfill_segment(cur, floor, span_days)
     out = sync_range(start.isoformat(), end.isoformat(),
-                     with_body=False, force=False, activity_pages=BACKFILL_PAGES)
+                     with_body=False, force=False, activity_pages=BACKFILL_PAGES,
+                     bulk=True)
     if not out.get("ok"):
         return {"ok": False, "done": False, "ran": True,
                 "start": start.isoformat(), "end": cur.isoformat(),

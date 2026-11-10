@@ -592,7 +592,12 @@ class MainActivity : Activity() {
                     val b = r.optString("end")
                     Log.i(TAG, "backfill seg=$seg $a~$b fetched=${r.optInt("fetched")} " +
                         "skipped=${r.optInt("skipped")}")
-                    ui { subtitle.text = "补齐历史 第 $seg 段：$a ~ $b（新拉 ${r.optInt("fetched")} 天）" }
+                    ui {
+                        subtitle.text = "补齐历史 第 $seg 段：$a ~ $b（新拉 ${r.optInt("fetched")} 天）"
+                        // 一段要跑一分多钟：停在「历史」页时每补完一段就刷一次，
+                        // 否则用户盯着的是几分钟前的列表，以为没拉到东西。
+                        if (activeTab == 1) web.reload()
+                    }
                 }
             }
             backfilling = false
