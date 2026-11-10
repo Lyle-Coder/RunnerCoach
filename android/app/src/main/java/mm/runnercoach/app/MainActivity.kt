@@ -444,6 +444,7 @@ class MainActivity : Activity() {
                     // 数据源行直接进对应登录，不再先弹「佳明还是高驰」的二层选择器
                     "login:garmin" -> askGarminLogin()
                     "login:coros" -> askCorosLogin()
+                    "corosSleep" -> askCorosSleep()
                     "login" -> showLoginPicker()
                     "mi" -> showMiPanel()
                     "hw" -> showHwPanel()
@@ -994,6 +995,96 @@ class MainActivity : Activity() {
                             .setPositiveButton("知道了", null)
                             .show()
                     else toast("登录失败：$msg")
+                }
+            }
+        }
+    }
+
+    // --------------------------------------------------- 高驰睡眠（官方 MCP）
+    /**
+     * 睡眠不在 Training Hub 的 REST 里（那里只有 HRV / 静息心率 / 负荷），
+     * 只能走官方 MCP 网关。授权是 OAuth：打开高驰登录页、用户点同意，
+     * 回调地址由 CorosLoginActivity 拦下来，code 交给 Python 换 token。
+     *
+     * 和移动端 API 那条路的最大区别：**不会把用户手机上的高驰 App 挤下线**。
+     */
+    private fun askCorosSleep() {
+        busy(true)
+        thread {
+            val st = apiCall("coros_mcp_status")
+            ui {
+                busy(false)
+                val authed = st.optBoolean("authorized")
+                val left = st.optInt("expires_in_min")
+                AlertDialog.Builder(this)
+                    .setTitle("高驰睡眠")
+                    .setMessage(
+                        if (authed)
+                            "已授权（${st.optString("region_cn")}，access token 还剩 $left 分钟，" +
+                                "到期自动续期）。\n\n睡眠评分、主睡眠时长与深/浅/REM 会并进日汇总，" +
+                                "一图流和恢复度都会用上。"
+                        else
+                            "高驰的睡眠不在网页接口里，要用官方 MCP 授权才能读。\n\n" +
+                                "点「去授权」会打开高驰登录页，登录并同意即可。" +
+                                "不会把你手机上的高驰 App 挤下线，数据也不经过我们的服务器。"
+                    )
+                    .setPositiveButton(if (authed) "同步睡眠" else "去授权") { _, _ ->
+                        if (authed) doCorosMcpSync() else startCorosMcpAuth()
+                    }
+                    .apply {
+                        if (authed) setNeutralButton("重新授权") { _, _ -> startCorosMcpAuth() }
+                        setNegativeButton("关闭", null)
+                    }
+                    .show()
+            }
+        }
+    }
+
+    private fun startCorosMcpAuth() {
+        busy(true)
+        thread {
+            val r = apiCall("coros_mcp_login_url", "asia")
+            ui {
+                busy(false)
+                if (r.optBoolean("ok"))
+                    startActivityForResult(
+                        Intent(this, CorosLoginActivity::class.java)
+                            .putExtra("url", r.optString("url")),
+                        7302
+                    )
+                else toast("打不开高驰授权页：${r.optString("error")}")
+            }
+        }
+    }
+
+    private fun finishCorosMcpAuth(callback: String) {
+        busy(true)
+        thread {
+            val r = apiCall("coros_mcp_finish", callback)
+            ui {
+                if (!r.optBoolean("ok")) {
+                    busy(false)
+                    toast("授权失败：${r.optString("error")}")
+                } else {
+                    toast("高驰授权成功，正在同步睡眠…")
+                    doCorosMcpSync()
+                }
+            }
+        }
+    }
+
+    private fun doCorosMcpSync() {
+        busy(true)
+        thread {
+            val r = apiCall("coros_mcp_sleep", 30)
+            ui {
+                busy(false)
+                if (r.optBoolean("ok")) {
+                    val n = r.optInt("sleep_days")
+                    toast(if (n > 0) "已同步 $n 天睡眠" else "授权正常，但这段时间没有睡眠记录")
+                    reload()
+                } else {
+                    toast("同步睡眠失败：${r.optString("error")}")
                 }
             }
         }
@@ -1630,6 +1721,15 @@ class MainActivity : Activity() {
             } else {
                 thread { apiCall("hw_login_cancel") }
                 toast("已取消华为登录")
+            }
+            return
+        }
+        if (requestCode == 7302) {
+            val callback = data?.getStringExtra("callback")
+            if (resultCode == RESULT_OK && !callback.isNullOrBlank()) {
+                finishCorosMcpAuth(callback)
+            } else {
+                toast("已取消高驰授权")
             }
             return
         }

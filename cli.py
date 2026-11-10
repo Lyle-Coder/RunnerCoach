@@ -1516,6 +1516,13 @@ def cmd_coros(args) -> int:
     from garmin_cn import coros as C
 
     act = (args.action or "status").lower()
+    if act.startswith("mcp-"):
+        from garmin_cn import coros_mcp as MC
+        try:
+            return MC.cli(act, HOME, DB, region=args.region or "asia", days=args.days or 30)
+        except MC.McpError as e:
+            print(f"× {e}")
+            return 2
     cloud = C.CorosCloud(HOME)
 
     if act == "logout":
@@ -2494,7 +2501,8 @@ def main() -> int:
 
     q = sub.add_parser("coros", help="高驰：登录 / 状态 / 同步（数据源）")
     q.add_argument("action", nargs="?", default="status",
-                   choices=["login", "status", "sync", "logout"])
+                   choices=["login", "status", "sync", "logout", "mcp-login",
+                            "mcp-status", "mcp-sleep", "mcp-logout"])
     q.add_argument("--user", help="高驰账号邮箱（sync 时带上可自动重登）")
     q.add_argument("--password", help="密码（不推荐写在命令行历史里）")
     q.add_argument("--region", choices=["asia", "eu", "us"], default="asia",

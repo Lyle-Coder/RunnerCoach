@@ -2879,6 +2879,32 @@ def run() -> int:
         "background:rgba(9,14,22,.42)" in _land_load, \
         "横屏负荷带没有做成和其余四块一致的卡片"
 
+    # ---- 1.0.2：高驰睡眠走官方 MCP（OAuth），并有 App 内授权入口 ---------
+    from garmin_cn import coros_mcp as _MC
+
+    assert _MC.SLEEP_TOOL == "querySleepOverview", "睡眠工具名不对"
+    assert _MC.CALLBACK.startswith("http://127.0.0.1:"), "回调必须是本机地址"
+    _st = _MC.CorosMcp(tmp_db.parent, "asia").status()
+    assert set(_st) >= {"authorized", "region", "can_refresh"}, "状态字段不全"
+    assert _MC.parse_sleep({"content": [{"type": "text", "text": "无数据"}]}) == [], \
+        "空数据没有被安静跳过"
+    assert _MC._minutes("7h 57min") == 477, "时长解析错了"
+    assert _MC._pct(0.27) == 27, "比例没统一成百分数"
+    _api_src = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    for _fn in ("coros_mcp_status", "coros_mcp_login_url", "coros_mcp_finish",
+                "coros_mcp_sleep", "coros_mcp_logout"):
+        assert f'"{_fn}"' in _api_src, f"接口白名单漏了 {_fn}"
+    _mcp_kt = (KT / "CorosLoginActivity.kt").read_text(encoding="utf-8")
+    assert 'host.endsWith(".coros.com")' in _mcp_kt, \
+        "授权页没限制在高驰域内，等于把 WebView 交给任意页面"
+    assert 'uri.port == 53682' in _mcp_kt, "回调地址判断和 Python 侧不一致"
+    assert "CorosLoginActivity" in (
+        ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8"), \
+        "AndroidManifest 没声明授权页"
+    _kt_mcp = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert '"corosSleep" -> askCorosSleep()' in _kt_mcp, "「我的」里的高驰睡眠入口没接上"
+    assert "corosSleep" in U.me_page(), "「我的」里没有高驰睡眠这一行"
+
     # ---- 1.0.2：高驰跑步动态（触地 / 垂直振幅）的字段与量纲收敛 --------
     from garmin_cn import coros_activity as _CA
 
