@@ -25,7 +25,7 @@ from . import route
 from .coros import CorosAuthError, CorosCloud, CorosError
 
 # 3 = 原生汇总/步态/六区心率，优先公里分圈；废弃佳明修正后的旧缓存
-ADAPTER_VERSION = 3
+ADAPTER_VERSION = 4
 
 
 def raw_activity(row: dict) -> dict:
@@ -50,6 +50,50 @@ def number(value, divisor: float = 1) -> float | None:
     except (TypeError, ValueError):
         return None
     return n / divisor if math.isfinite(n) and n != 65535 else None
+
+
+# 跑步动态（触地时间 / 垂直振幅）：高驰不同固件与接口版本给的字段名不统一，
+# 官方文档也没公开，所以按候选名找。找到后必须按量纲归一，否则卡上会印出
+# 「触地 0 ms」这类看着像 bug 的数字。
+GCT_KEYS = ("avgGroundContactTime", "groundContactTime", "avgContactTime",
+            "contactTime", "avgGct", "gct", "avgStanceTime", "stanceTime")
+VO_KEYS = ("avgVerticalOscillation", "verticalOscillation", "avgVertOscillation",
+           "vertOscillation", "avgVosc", "vosc")
+
+
+def dynamics(native: dict) -> tuple[float | None, float | None]:
+    """从高驰 summary 里取（触地时间 ms，垂直振幅 cm）。
+
+    找不到或量纲不在合理区间就返回 None —— 出图侧会显示「—」，这比印一个
+    错数量级的数字安全。合理区间：触地 60~600 ms，垂直振幅 2~25 cm。
+    """
+    if not isinstance(native, dict):
+        return None, None
+    pools = [native]
+    for key in ("runningDynamics", "runDynamics", "dynamics", "metrics"):
+        sub = native.get(key)
+        if isinstance(sub, dict):
+            pools.append(sub)
+
+    def pick(keys: tuple[str, ...]) -> float | None:
+        for pool in pools:
+            for key in keys:
+                v = number(pool.get(key))
+                if v is not None and v != 0:
+                    return v
+        return None
+
+    gct = pick(GCT_KEYS)
+    if gct is not None:
+        if gct < 1:                 # 秒 → 毫秒
+            gct *= 1000
+        gct = gct if 60 <= gct <= 600 else None
+    vo = pick(VO_KEYS)
+    if vo is not None:
+        if vo < 2:                  # 米 → 厘米
+            vo *= 100
+        vo = vo if 2 <= vo <= 25 else None
+    return gct, vo
 
 
 def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
@@ -95,10 +139,25 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
                        "ele": ele, "dist": dist, "pwr": power,
                        "bb": None, "gap": None, "source": "coros"})
     native = data.get("summary") or {}
+    _gct, _vo = dynamics(native)
+    _sport = number(data.get("sportType") or native.get("sportType"))
+    _is_run = _sport is not None and int(_sport) in (100, 101, 102, 103)
+    if _gct is None and _vo is None and _is_run:
+        # 高驰官方没公开跑步动态的字段名，只能按候选名试。真没有就留一条
+        # 带字段名的诊断记录 —— 用户把「诊断日志」发过来就能确认到底叫什么。
+        try:
+            from . import diag as _dg
+            _dg.log_exc("coros.dynamics",
+                        "未找到触地/垂直振幅，summary 字段："
+                        + ", ".join(sorted(str(k) for k in native)[:40]))
+        except Exception:
+            pass
+    _gct, _vo = dynamics(native)
     summary = {"cad_avg": number(native.get("avgCadence")),
                "cad_max": number(native.get("maxCadence")),
                "stride_avg": number(native.get("avgStepLen")),
                "hr_run_avg": number(native.get("avgHr")),
+               "gct_ms": _gct, "vo_cm": _vo,
                "all_samples": len(points), "repaired": 0, "rescaled": 0,
                "drift": None}
     # lapList 包含公里、5 公里、10 公里和全程汇总，只选一组。

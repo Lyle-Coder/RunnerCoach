@@ -2879,6 +2879,23 @@ def run() -> int:
         "background:rgba(9,14,22,.42)" in _land_load, \
         "横屏负荷带没有做成和其余四块一致的卡片"
 
+    # ---- 1.0.2：高驰跑步动态（触地 / 垂直振幅）的字段与量纲收敛 --------
+    from garmin_cn import coros_activity as _CA
+
+    def _near(pair, want, tol=0.05) -> bool:
+        return all(w is None and g is None or (g is not None and w is not None
+                                               and abs(g - w) <= tol)
+                   for g, w in zip(pair, want))
+
+    assert _near(_CA.dynamics({"avgGroundContactTime": 0.245,
+                              "avgVerticalOscillation": 0.085}), (245, 8.5)), \
+        "秒/米量纲没有换算成毫秒/厘米"
+    assert _near(_CA.dynamics({"runningDynamics": {"gct": 268, "vosc": 9.1}}),
+                 (268, 9.1)), "嵌在 runningDynamics 里的字段没找到"
+    assert _CA.dynamics({"avgGct": 9999, "avgVerticalOscillation": 120}) == (None, None), \
+        "离谱量纲没被丢掉，卡片会印出错误数量级"
+    assert _CA.dynamics(None) == (None, None), "空 summary 没兜住"
+
     # ---- 1.0.1：高驰 1030 不再只丢一句英文，手机号账号会换类型的重试 ------
     from garmin_cn import coros as _CO
 
