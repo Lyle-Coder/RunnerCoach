@@ -2919,7 +2919,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 106' in (
+    assert 'versionCode = 107' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -3367,6 +3367,12 @@ def run() -> int:
     assert '"update" -> checkUpdate(silent = false)' in _kt4, "手动入口没接上"
     assert "checkUpdate(silent = true)" in _kt4, "启动时没做静默检查"
     assert "update_skipped" in _kt4, "点「稍后」没有记住，会天天弹同一个版本"
+    # 1.0.3 真机没弹窗：节流只按时间、不看版本，升到新包也会被 24h 挡住；
+    # 且时间戳在请求前写，一次失败就封锁一天。两处都要钉住。
+    assert "update_checked_ver" in _kt4, "节流没按版本判断，升级后不会立即检查"
+    assert _kt4.index("prefs.edit()\n                    .putLong(\"update_checked_at\"") \
+        > _kt4.index("if (!r.optBoolean(\"ok\")) {"), \
+        "失败路径也写了时间戳，网络抖动会把下次检查堵 24 小时"
 
     # ---- 1.0.0：内核版本与 APK 版本必须对齐（发版最容易漏的一端）-------
     from garmin_cn import __version__ as _kv
