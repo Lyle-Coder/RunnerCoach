@@ -1250,9 +1250,79 @@ def run() -> int:
     from garmin_cn import appapi as _AA2
     _aa_src = Path(_AA2.__file__).read_text(encoding="utf-8")
     assert "def _client(email: str | None = None, password: str | None = None,\n" \
-        "            revalidate: bool = False)" in _aa_src, \
+        "            revalidate: bool = False" in _aa_src, \
         "_client 没有 revalidate，会带着死票据跑完整轮同步才失败"
-    assert "client = _client(email, password, revalidate=True)" in _aa_src, \
+    # 批量补历史的节流：间隔必须能收紧，且 429 退避仍在 net 里
+    assert "min_interval: float = 0.5)" in _aa_src, "_client 没暴露 min_interval"
+    assert _AA2.BULK_MIN_INTERVAL < 0.5, "批量间隔没比日常同步更密，慢的瓶颈没解决"
+    assert "bulk=True" in _aa_src, "补历史没走批量节流"
+    # 踩过的坑：bulk 只加进了 sync 的签名，却没传给 SyncService.sync，
+    # 结果 light 模式从未生效、还抛 NameError。这里钉住参数必须一路传下去。
+    assert "activity_pages=activity_pages, bulk=bulk" in _aa_src, \
+        "bulk 没传给 SyncService.sync，light 模式不会生效"
+    _sy_src = (ROOT / "garmin_cn/sync.py").read_text(encoding="utf-8")
+    assert "activity_pages: int = 1,\n             bulk: bool = False" in _sy_src, \
+        "SyncService.sync 没有 bulk 参数"
+    # 历史页要及时更新：停在历史 tab 时，每补完一段就 reload
+    _kt6 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    # ---- 账号卡片：已登录不再要求重输密码 -------------------------------
+    from garmin_cn import appapi as _AAI
+
+    assert "account_info" in _AAI._API and "garmin_logout" in _AAI._API, \
+        "账号卡片/退出登录没进桥接白名单"
+    assert _AAI._mask_mail("abcdef@qq.com") == "ab***@qq.com"
+    assert _AAI._mask_mail("a@qq.com") == "a*@qq.com"
+    assert _AAI._mask_mail(None) == ""
+    _kt7 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert '"login:garmin" -> openAccount("garmin")' in _kt7, "已登录仍直接弹登录框"
+    assert '"login:coros" -> openAccount("coros")' in _kt7
+    assert "点击可重新登录" not in _kt7, "文案还写着「点击可重新登录」"
+    assert "更换其他账号" in _kt7 and "退出登录" in _kt7, "账号卡片缺换号/退出按钮"
+    assert "fun openAccount(" in _kt7 and "fun showAccountCard(" in _kt7
+    # 高驰补历史不额外拉 MCP 睡眠（日汇总里已含睡眠字段）
+    _csrc2 = (ROOT / "garmin_cn/coros.py").read_text(encoding="utf-8")
+    _range_src = _csrc2.split("def sync_range")[1].split("def earliest_activity")[0]
+    assert "coros_mcp_sleep" not in _range_src, "高驰补历史又去拉 MCP 睡眠了，白花请求"
+
+    # ---- 老日期只拉日汇总（睡眠/HRV 不参与那段时间的判断）-----------
+    from garmin_cn import sync as _SY
+    from garmin_cn.store import Store as _Store
+
+    assert 60 <= _SY.LIGHT_AFTER_DAYS <= 365, "分析窗口大小不合理（恢复度 7 天 / ACWR 28 / CTL 90）"
+
+    class _FakeSyncClient:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def daily_summary(self, d):
+            self.calls.append("daily")
+            return {"totalSteps": 9000, "restingHeartRate": 48}
+
+        def sleep(self, d):
+            self.calls.append("sleep")
+            return {"dailySleepDTO": {"sleepTimeSeconds": 25200}}
+
+        def hrv(self, d):
+            self.calls.append("hrv")
+            return {"hrvSummary": {"lastNightAvg": 55}}
+
+    _ldb = _Path(tempfile.mkdtemp()) / "light.db"
+    _lst = _Store(_ldb)
+    _fc = _FakeSyncClient()
+    _SY.SyncService(_fc, _lst).sync_day("2025-01-05", light=True)
+    assert _fc.calls == ["daily"], f"老日期还在多拉请求：{_fc.calls}"
+    _lrow = _lst.day("2025-01-05")
+    assert _lrow.get("steps") == 9000 and _lrow.get("resting_hr") == 48, \
+        "跳过睡眠后日汇总的关键指标也没了"
+    assert _lrow.get("sleep_total_min") is None
+    _fc2 = _FakeSyncClient()
+    _SY.SyncService(_fc2, _lst).sync_day("2026-11-05")
+    assert _fc2.calls == ["daily", "sleep", "hrv"], "近期日期要保留完整口径"
+    assert _lst.day("2026-11-05").get("sleep_total_min") == 420
+    _st_src = (ROOT / "garmin_cn/sync.py").read_text(encoding="utf-8")
+    assert "light=bool(light_from and d < light_from)" in _st_src, \
+        "补历史没有按日期切到 light 模式"
+    assert "client = _client(email, password, revalidate=True" in _aa_src, \
         "同步入口没有先校验会话"
     # 3) 补拉：旧版拿「本地有没有密码」当门槛，密码为空时按钮点了只弹登录。
     #    现在连按钮都没有了 —— 后台自动跑，这条只守「别再被密码拦住」。
@@ -2239,9 +2309,14 @@ def run() -> int:
     _floor = _AP3._backfill_floor(_cur)
     assert _floor.isoformat() == "2018-11-09", f"补全下限算错：{_floor}"
     _a, _b, _nxt, _done = _AP3._backfill_segment(_cur, _floor)
-    assert (_a.isoformat(), _b.isoformat()) == ("2025-11-10", "2026-11-09"), \
+    # 段长由 BACKFILL_SPAN_DAYS 决定（现在是 180 天：一年一段要跑 700+ 请求，
+    # 用户 4 分钟看不到任何新数据）。断言按常量算，别写死日期。
+    _want_start = (_cur - dt.timedelta(days=_AP3.BACKFILL_SPAN_DAYS - 1)).isoformat()
+    assert (_a.isoformat(), _b.isoformat()) == (_want_start, "2026-11-09"), \
         f"第一段区间不对：{_a} ~ {_b}"
-    assert _nxt.isoformat() == "2025-11-09", "游标没有往前挪一天"
+    assert 90 <= _AP3.BACKFILL_SPAN_DAYS <= 365
+    _want_next = (_cur - dt.timedelta(days=_AP3.BACKFILL_SPAN_DAYS)).isoformat()
+    assert _nxt.isoformat() == _want_next, "游标没有往前挪一天"
     assert _done is False, "第一段就判定补完了"
     # 正好退到下限：这一段补完就要说 done，否则会无限循环
     _a2, _b2, _nxt2, _done2 = _AP3._backfill_segment(_floor + dt.timedelta(days=1),
@@ -2252,8 +2327,10 @@ def run() -> int:
     # 每段要花 365 次日汇总请求，用户看到的就是「一直在拉」。
     _e_floor = _AP3._backfill_floor(_cur, "2024-05-01")
     assert _e_floor.isoformat() == "2024-04-30", f"最早记录没当停止线：{_e_floor}"
+    # 这里在测「被停止线截断」的逻辑，与当前段长无关，显式给 365 天
     _a3, _b3, _nxt3, _done3 = _AP3._backfill_segment(
-        dt.date(2024, 11, 9), _e_floor)
+        dt.date(2024, 11, 9), _e_floor, 365)
+    # 最后一段被停止线截断：起点必须正好是最早记录前一天
     assert (_a3.isoformat(), _b3.isoformat()) == ("2024-04-30", "2024-11-09"), \
         f"最后一段应停在最早记录：{_a3} ~ {_b3}"
     assert _done3 is True and _nxt3 == _e_floor, "到最早记录那一段没标 done"
@@ -2842,7 +2919,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 101' in (
+    assert 'versionCode = 106' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----

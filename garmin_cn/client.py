@@ -133,6 +133,57 @@ class GarminCNClient:
         return False
 
     # ---------- 账号 ----------
+    def devices(self) -> list[dict]:
+        """已绑定设备列表。接口不保证字段名，所以只做宽松提取。"""
+        for path in ("/device-service/deviceregistration/devices",
+                     "/device-service/deviceservice/device-info/devices"):
+            try:
+                data = self.get(path)
+            except SessionExpired:
+                raise
+            except Exception:
+                continue
+            rows: list = []
+            if isinstance(data, list):
+                rows = data
+            elif isinstance(data, dict):
+                for k in ("deviceInfos", "devices", "deviceList"):
+                    v = data.get(k)
+                    if isinstance(v, list):
+                        rows = v
+                        break
+            if rows:
+                return [r for r in rows if isinstance(r, dict)]
+        return []
+
+    def primary_device(self) -> str:
+        """当前主设备名，例如「Forerunner 570」。取不到返回空串。"""
+        rows = self.devices()
+        if not rows:
+            return ""
+
+        def name_of(d: dict) -> str:
+            for k in ("productDisplayName", "displayName", "deviceName",
+                      "productName", "unitName"):
+                v = d.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+            return ""
+
+        def ts_of(d: dict) -> str:
+            for k in ("lastSyncTime", "lastUsedTime", "updateTime"):
+                v = d.get(k)
+                if isinstance(v, str):
+                    return v
+            return ""
+
+        named = [d for d in rows if name_of(d)]
+        if not named:
+            return ""
+        # 多设备时取最近同步的那台：用户戴哪块表跑，那块就是「当前设备」
+        named.sort(key=ts_of, reverse=True)
+        return name_of(named[0])
+
     def profile(self) -> dict | None:
         data = self.get("/userprofile-service/socialProfile")
         if isinstance(data, dict) and data.get("displayName"):
