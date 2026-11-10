@@ -940,7 +940,7 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
     svc = SyncService(client, store)
     try:
         res = svc.sync(days=days, end=end, extras=False, progress=cb,
-                       force=force, activity_pages=activity_pages)
+                       force=force, activity_pages=activity_pages, bulk=bulk)
     except SessionExpired:
         # 会话刚好过期：有凭据就重登一次再试，没有就让界面去登录
         if not (email and password):
@@ -949,7 +949,7 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
             client = _client(email, password, min_interval=_gap)
             res = SyncService(client, store).sync(
                 days=days, end=end, extras=False, progress=cb,
-                force=force, activity_pages=activity_pages)
+                force=force, activity_pages=activity_pages, bulk=bulk)
         except MfaRequired:
             return {"ok": False, "need_mfa": True, "error": "续期需要验证码"}
         except Exception as e:

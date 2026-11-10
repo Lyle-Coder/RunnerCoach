@@ -1256,6 +1256,13 @@ def run() -> int:
     assert "min_interval: float = 0.5)" in _aa_src, "_client 没暴露 min_interval"
     assert _AA2.BULK_MIN_INTERVAL < 0.5, "批量间隔没比日常同步更密，慢的瓶颈没解决"
     assert "bulk=True" in _aa_src, "补历史没走批量节流"
+    # 踩过的坑：bulk 只加进了 sync 的签名，却没传给 SyncService.sync，
+    # 结果 light 模式从未生效、还抛 NameError。这里钉住参数必须一路传下去。
+    assert "activity_pages=activity_pages, bulk=bulk" in _aa_src, \
+        "bulk 没传给 SyncService.sync，light 模式不会生效"
+    _sy_src = (ROOT / "garmin_cn/sync.py").read_text(encoding="utf-8")
+    assert "activity_pages: int = 1,\n             bulk: bool = False" in _sy_src, \
+        "SyncService.sync 没有 bulk 参数"
     # 历史页要及时更新：停在历史 tab 时，每补完一段就 reload
     _kt6 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     # ---- 账号卡片：已登录不再要求重输密码 -------------------------------
@@ -2912,7 +2919,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 104' in (
+    assert 'versionCode = 105' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----

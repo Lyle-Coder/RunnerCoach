@@ -291,7 +291,8 @@ class SyncService:
         return total
 
     def sync(self, days: int = 30, end: str | None = None, extras: bool = False,
-             progress=None, force: bool = False, activity_pages: int = 1) -> dict:
+             progress=None, force: bool = False, activity_pages: int = 1,
+             bulk: bool = False) -> dict:
         """同步最近 N 天（或截止到 `end` 往前 N 天）。
 
         增量是默认行为：**已经稳定的一天不会再拉一遍**。判定标准是
