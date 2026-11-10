@@ -2,24 +2,25 @@
 
 **把跑表里的数据，变成「今天该怎么练」和一张能直接发出去的成绩单。**
 
+<p align="center">
+  <a href="docs/media/promo-web.mp4"><img src="docs/media/promo-loop.gif" width="270" alt="RunnerCoach 宣传片预览"></a>
+</p>
+
+<p align="center">
+  ▶ <b>30 秒宣传片</b>（真实使用画面）：<a href="docs/media/promo-web.mp4">网页播放版</a>（已剪掉黑场开场）
+  ｜ <a href="docs/media/promo-30s.mp4">原版 1080×1920</a>
+</p>
+
 本地优先 · 佳明国区 + 高驰双数据源 · 零第三方依赖 · 断网可用
 
 > 下面所有截图都来自 `demo` 仿真数据（[`tools/readme_shots.py`](tools/readme_shots.py) 可一键重现），
-> 不含任何真实账号、GPS 轨迹或健康数值。下方预告片为真实使用画面，
+> 不含任何真实账号、GPS 轨迹或健康数值。上方宣传片为真实使用画面，
 > 仅含聚合统计与课表名，不含账号与姓名。
 
 | 一图流 · 1080×1920 | 单次活动图 | 轨迹回放成片 |
 |:--:|:--:|:--:|
 | <img src="docs/img/card.png" width="230"> | <img src="docs/img/activity.png" width="230"> | <img src="docs/img/replay.png" width="230"> |
 | 睡眠 / 恢复 / 负荷 / 今日课表，一屏说完 | 分圈、配速曲线、心率区间、轨迹与天气 | 轨迹逐米回放，可插入自己拍的视频与照片 |
-
-**30 秒预告片**（纯音乐版）：
-
-<p align="center">
-<video src="docs/media/promo-30s.mp4" poster="docs/media/promo-30s-poster.jpg" controls muted playsinline loop preload="none" width="300"></video>
-</p>
-
-> 网页里放不出来就[直接打开文件](docs/media/promo-30s.mp4)（1080×1920，1.8 MB）。
 
 ---
 
