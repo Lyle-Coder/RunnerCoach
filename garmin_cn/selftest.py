@@ -1250,9 +1250,13 @@ def run() -> int:
     from garmin_cn import appapi as _AA2
     _aa_src = Path(_AA2.__file__).read_text(encoding="utf-8")
     assert "def _client(email: str | None = None, password: str | None = None,\n" \
-        "            revalidate: bool = False)" in _aa_src, \
+        "            revalidate: bool = False" in _aa_src, \
         "_client 没有 revalidate，会带着死票据跑完整轮同步才失败"
-    assert "client = _client(email, password, revalidate=True)" in _aa_src, \
+    # 批量补历史的节流：间隔必须能收紧，且 429 退避仍在 net 里
+    assert "min_interval: float = 0.5)" in _aa_src, "_client 没暴露 min_interval"
+    assert _AA2.BULK_MIN_INTERVAL < 0.5, "批量间隔没比日常同步更密，慢的瓶颈没解决"
+    assert "bulk=True" in _aa_src, "补历史没走批量节流"
+    assert "client = _client(email, password, revalidate=True" in _aa_src, \
         "同步入口没有先校验会话"
     # 3) 补拉：旧版拿「本地有没有密码」当门槛，密码为空时按钮点了只弹登录。
     #    现在连按钮都没有了 —— 后台自动跑，这条只守「别再被密码拦住」。
@@ -2239,9 +2243,14 @@ def run() -> int:
     _floor = _AP3._backfill_floor(_cur)
     assert _floor.isoformat() == "2018-11-09", f"补全下限算错：{_floor}"
     _a, _b, _nxt, _done = _AP3._backfill_segment(_cur, _floor)
-    assert (_a.isoformat(), _b.isoformat()) == ("2025-11-10", "2026-11-09"), \
+    # 段长由 BACKFILL_SPAN_DAYS 决定（现在是 180 天：一年一段要跑 700+ 请求，
+    # 用户 4 分钟看不到任何新数据）。断言按常量算，别写死日期。
+    _want_start = (_cur - dt.timedelta(days=_AP3.BACKFILL_SPAN_DAYS - 1)).isoformat()
+    assert (_a.isoformat(), _b.isoformat()) == (_want_start, "2026-11-09"), \
         f"第一段区间不对：{_a} ~ {_b}"
-    assert _nxt.isoformat() == "2025-11-09", "游标没有往前挪一天"
+    assert 90 <= _AP3.BACKFILL_SPAN_DAYS <= 365
+    _want_next = (_cur - dt.timedelta(days=_AP3.BACKFILL_SPAN_DAYS)).isoformat()
+    assert _nxt.isoformat() == _want_next, "游标没有往前挪一天"
     assert _done is False, "第一段就判定补完了"
     # 正好退到下限：这一段补完就要说 done，否则会无限循环
     _a2, _b2, _nxt2, _done2 = _AP3._backfill_segment(_floor + dt.timedelta(days=1),
@@ -2252,8 +2261,10 @@ def run() -> int:
     # 每段要花 365 次日汇总请求，用户看到的就是「一直在拉」。
     _e_floor = _AP3._backfill_floor(_cur, "2024-05-01")
     assert _e_floor.isoformat() == "2024-04-30", f"最早记录没当停止线：{_e_floor}"
+    # 这里在测「被停止线截断」的逻辑，与当前段长无关，显式给 365 天
     _a3, _b3, _nxt3, _done3 = _AP3._backfill_segment(
-        dt.date(2024, 11, 9), _e_floor)
+        dt.date(2024, 11, 9), _e_floor, 365)
+    # 最后一段被停止线截断：起点必须正好是最早记录前一天
     assert (_a3.isoformat(), _b3.isoformat()) == ("2024-04-30", "2024-11-09"), \
         f"最后一段应停在最早记录：{_a3} ~ {_b3}"
     assert _done3 is True and _nxt3 == _e_floor, "到最早记录那一段没标 done"
@@ -2842,7 +2853,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 101' in (
+    assert 'versionCode = 102' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
