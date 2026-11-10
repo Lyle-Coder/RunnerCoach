@@ -51,6 +51,8 @@ class GarminCNAuth:
         self.session_path = home / "data" / "session.json"
         self.net = Net(self.session_path, min_interval=0.5)
         self._pending_ticket_ctx: dict | None = None
+        # 本次登录到底有没有换出「新」会话（False = 只是旧会话还活着）
+        self.fresh_exchange = False
 
     # ---------------- 登录 ----------------
     def login(self, email: str, password: str) -> dict:
@@ -117,6 +119,7 @@ class GarminCNAuth:
         nav = NAV_HEADERS
         tried: list[str] = []
         html = ""
+        before = self._session_sig()  # 用于判断这次到底有没有换出「新」会话
         for url in (
             f"{CONNECT}/app/?ticket={q}",
             f"{CONNECT}/modern/?ticket={q}",
@@ -140,6 +143,10 @@ class GarminCNAuth:
                 f"当前 Cookie：{', '.join(self.net.cookie_names()) or '无'}"
             )
 
+        # 只有 Cookie 真的变了才算「换票成功」。没变说明用的是磁盘里带进来的旧会话，
+        # 后面接口哪怕能通也是旧会话在撑——不标出来就会误报「登录成功」。
+        self.fresh_exchange = self._session_sig() != before
+
         csrf = self._extract_csrf(html) or self._csrf_from_cookies()
         if not csrf:
             csrf = self.refresh_csrf()
@@ -154,11 +161,20 @@ class GarminCNAuth:
                 "会话 Cookie 拿到了，但数据接口仍拒绝访问"
                 f"（{getattr(self, 'last_verify', '未知原因')}）。"
             )
-        return {"csrf": csrf, "profile": profile}
+        return {"csrf": csrf, "profile": profile, "fresh": self.fresh_exchange}
 
     def _has_session_cookie(self) -> bool:
         names = {c.name for c in self.net.jar}
         return bool(names & {"JWT_WEB", "SESSIONID", "session"})
+
+    def _session_sig(self) -> tuple:
+        """会话 Cookie 的 (名字, 值) 快照，用来判断会话有没有被真正换掉。
+
+        只看 JWT_WEB / SESSIONID / session 这几枚，别把 CASTGC 之类
+        每次登录都会变的 Cookie 算进来——否则「没换会话」会被误判成「换了」。
+        """
+        names = {"JWT_WEB", "SESSIONID", "session"}
+        return tuple(sorted((c.name, c.value) for c in self.net.jar if c.name in names))
 
     def _extract_csrf(self, html: str) -> str | None:
         return extract_csrf(html)
@@ -196,6 +212,7 @@ class GarminCNAuth:
     # ---------------- 手动导入 Cookie ----------------
     def import_cookies(self, cookie_header: str) -> dict:
         """从浏览器 DevTools 复制的 Cookie 字符串导入会话。"""
+        self.net.drop_garmin_cookies()  # 先扔掉旧的，免得新旧混在一起
         count = 0
         for part in cookie_header.split(";"):
             part = part.strip()
@@ -206,7 +223,32 @@ class GarminCNAuth:
             count += 1
         if not count:
             raise AuthError("没有解析到任何 Cookie")
-        # 浏览器 Cookie 里不会有 CSRF（它在页面 meta 里），必须现取
+        return self._settle(count)
+
+    def adopt_cookies(self, items) -> dict:
+        """接浏览器托管登录拿回来的 Cookie（[{name,value,domain,path}]）。
+
+        浏览器给的作用域是 connect / sso / .garmin.cn 好几套，这里统一挂到
+        `.garmin.cn`：connect 的数据接口和 sso 的续期都能带上，省得漏发。
+        """
+        count = 0
+        self.net.drop_garmin_cookies()  # 浏览器这套是完整的，旧的全扔掉
+        for it in items or []:
+            name = (it.get("name") or "").strip()
+            value = it.get("value") or ""
+            if not name or not value:
+                continue
+            if not (it.get("domain") or "").endswith("garmin.cn"):
+                continue
+            self.net.set_cookie(name, value)
+            count += 1
+        if not count:
+            raise AuthError("浏览器里没抓到任何 garmin.cn 的 Cookie")
+        return self._settle(count)
+
+    def _settle(self, count: int) -> dict:
+        """Cookie 就位后的收尾：补 CSRF → 落盘 → 用数据接口验一次。"""
+        # 浏览器登录一般自带 connect-csrf-token；没有才去页面 meta 里现取
         csrf = self._csrf_from_cookies() or self.refresh_csrf()
         self.net.save_session()
         profile = self._verify()

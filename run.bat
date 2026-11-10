@@ -8,7 +8,10 @@ rem  (WindowsApps\python.exe). It prints nothing and exits 9009,
 rem  so "python cli.py login" looks like it does nothing at all.
 rem
 rem  Usage:
-rem    run.bat login               sign in
+rem    run.bat login               sign in (opens a browser: portal SSO + Cloudflare)
+rem    run.bat login --timeout 600  wait longer before giving up
+rem    run.bat login --force        re-login even when the saved session still works
+rem    run.bat login --password     legacy mobile-SSO path (web app rejects its ticket now)
 rem    run.bat sync --days 30      pull Garmin data + Xiaomi scale (--no-body to skip)
 rem    run.bat report --open       build dashboard
 rem    run.bat card --open         build vertical one-pager PNG

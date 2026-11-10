@@ -864,7 +864,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     table = (
         '<div class="tbl-scroll">'
         "<table><thead><tr><th>日期</th><th>类型</th><th>名称</th><th>时长</th>"
-        "<th>距离</th><th>配速</th><th>均心率</th><th>负荷</th></tr></thead><tbody>"
+        "<th>距离</th><th>配速</th><th>平均心率</th><th>负荷</th></tr></thead><tbody>"
         + ("".join(rows) or '<tr><td colspan="8" class="empty">近 5 周没有活动记录</td></tr>')
         + "</tbody></table></div>"
     )
