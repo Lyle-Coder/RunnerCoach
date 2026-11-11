@@ -614,10 +614,10 @@ def zone_block(times: list[float], title: str, unit_label: str = "", *,
     colors = (["#778899"] + list(ZONE_COLORS)) if coros else ZONE_COLORS
     names = [f"Z{i + 1}" for i in range(len(times))] if coros else ZONE_NAMES
     if coros:
-        descriptions = [""] * len(times)
+        descriptions = ["恢复", "有氧耐力", "有氧动力", "阈值", "无氧耐力", "无氧动力"]
     else:
         src = descriptions if descriptions is not None else HRZ.zone_descriptions()
-        descriptions = [esc(x) for x in (list(src) + [""] * len(times))[:len(times)]]
+        descriptions = (list(src) + [""] * len(times))[:len(times)]
     bar = []
     for i, t in enumerate(times):
         pct = t / total * 100
@@ -630,13 +630,13 @@ def zone_block(times: list[float], title: str, unit_label: str = "", *,
         rows.append(
             f'<div class="zrow">'
             f'<span class="zdot" style="background:{colors[i]}"></span>'
-            f'<span class="zname">{names[i]}<em>{descriptions[i]}</em></span>'
+            f'<span class="zname">{names[i]}<em>{esc(descriptions[i])}</em></span>'
             f'<span class="zbar"><i style="width:{min(100, pct):.1f}%;background:{colors[i]}"></i></span>'
             f'<span class="zval">{dur_txt(t, "0:00")}</span>'
             f'<span class="zpct" style="color:{colors[i]}">{pct:.0f}%</span>'
             f'</div>')
     return f"""
-<div class="zblock">
+<div class="zblock{' zcoros' if coros else ''}">
   <div class="zhead">{esc(title)}<span>{esc(unit_label)}</span></div>
   <div class="zbar-stack">{''.join(bar)}</div>
   {''.join(rows)}
@@ -1022,22 +1022,26 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
         if w.get("temp_c") is not None:
             bits.append(f"{w['temp_c']:.0f}℃")
         if w.get("humidity") is not None:
-            bits.append(f"湿度 {w['humidity']}%")
+            bits.append(f"湿度 {w['humidity']:g}%")
         if w.get("text"):
             bits.append(WEATHER_CN.get(str(w["text"]), str(w["text"])))
         if w.get("wind_dir"):
             key = str(w["wind_dir"]).upper()
             name = WIND_CN.get(key, f"{key} 风")
             spd = num(w.get("wind_speed"))
-            bits.append(f"{name} {spd:.0f} km/h" if spd else name)
+            bits.append(f"{name} {spd:.0f} km/h" if spd is not None else name)
+        elif num(w.get("wind_speed")) is not None:
+            bits.append(f"风速 {num(w['wind_speed']):.0f} km/h")
         weather_txt = " · ".join(bits)
 
     te_a = f'{num(row["aerobic_te"]):.1f}' if num(row.get("aerobic_te")) is not None else "—"
     te_n = f'{num(row["anaerobic_te"]):.1f}' if num(row.get("anaerobic_te")) is not None else "—"
     # 佳明在活动列表 raw 里带这两个字段；高驰的跑步动态在明细 summary 里，
     # 由 coros_activity.dynamics() 归一成 ms / cm 后放在 gct_ms、vo_cm。
-    gct = num(raw.get("avgGroundContactTime")) or num(s.get("gct_ms"))
-    vo = num(raw.get("avgVerticalOscillation")) or num(s.get("vo_cm"))
+    gct = (num(s.get("gct_ms")) if is_coros else
+           num(raw.get("avgGroundContactTime")) or num(s.get("gct_ms")))
+    vo = (num(s.get("vo_cm")) if is_coros else
+          num(raw.get("avgVerticalOscillation")) or num(s.get("vo_cm")))
     n_real = len([l for l in laps if (l.get("pace_s") or 0) > 0])
     # 间歇版式的唯一依据是佳明的训练模式标记（hasIntensityIntervals）：
     # 训练里设置了间歇才切「底部双栏」，其余一律走原来的分圈表。
@@ -1408,6 +1412,8 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .zname em{font-style:normal;font-size:15px;color:#76838F;margin-left:5px;
           display:inline-block;max-width:52px;overflow:hidden;
           text-overflow:ellipsis;white-space:nowrap}
+.zcoros .zname{width:120px}
+.zcoros .zname em{max-width:none}
 .zbar{flex:1;height:10px;background:#10161C;border-radius:5px;overflow:hidden}
 .zbar i{display:block;height:100%;border-radius:5px}
 .zval{width:74px;text-align:right;font-size:19px;color:#939FAD;font-variant-numeric:tabular-nums}
