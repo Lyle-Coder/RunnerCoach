@@ -44,6 +44,7 @@ import datetime as dt
 import gzip
 import hashlib
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -132,11 +133,39 @@ def _iso(yyyymmdd) -> str | None:
     s = str(yyyymmdd or "").strip()
     if len(s) == 8 and s.isdigit():
         return f"{s[:4]}-{s[4:6]}-{s[6:]}"
+    # 不同版本的 happenDay 见过 "2026-11-10" / "2026/11/10" / 带时刻的
+    # "2026-11-10 00:00:00"。以前只认 8 位数字，形状一变就整天被丢掉，
+    # 看起来像「这几天没有静息心率」。只补日期格式，不猜时间戳（时区会错）。
+    m = re.match(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})", s)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
     return None
 
 
 def _day_key(iso: str) -> str:
     return iso.replace("-", "")[:8]
+
+
+def _any_day(v) -> str | None:
+    """把活动列表里的 startTime 统一成 YYYY-MM-DD，形状再怪也不抛异常。
+
+    真机上 `/activity/query` 的 startTime 是**毫秒时间戳 int**（也有接口给
+    "2026-11-10 07:00:00" / "20261110" / 秒级数字串）。`earliest_activity`
+    以前直接写 `(startTime or "")[:10]`，遇到 int 就抛
+    `'int' object is not subscriptable`，异常一路冒到 `backfill_next`，
+    整轮补历史（连佳明那段）都跟着失败。这里做唯一的容错入口：
+      数字/数字串 → 走 _ts 按时区换算；其余字符串 → 走 _iso 取日期部分。
+    """
+    if v in (None, ""):
+        return None
+    s = str(v).strip()
+    # 8 位 YYYYMMDD 是日期不是 epoch，必须先认，否则会被当时间戳丢掉
+    if len(s) == 8 and s.isdigit():
+        return _iso(s)
+    if isinstance(v, (int, float)) or s.lstrip("-").isdigit():
+        ts = _ts(v)                  # 毫秒/秒级 epoch，按本地时区换算
+        return ts[:10] if ts else None
+    return _iso(s)                   # "2026-11-10 07:00:00" / "2026/11/10"
 
 
 def _ts(v) -> str | None:
@@ -373,6 +402,20 @@ class CorosCloud:
                 "synced_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "raw": json.dumps(it, ensure_ascii=False)[:20000],
             })
+        # 静息心率口径排障：把服务端给的 happenDay / rhr 与同一条记录里所有
+        # 心率相关键留一行在诊断日志。用户不用导出数据库，只要贴这几行文字，
+        # 就能判断「App 52 / 这里 45」是服务端口径不同、日期错位，还是我们取错。
+        try:
+            from . import diag as _dg
+            _dg.log_exc("coros.rhr", "dayDetail 最近: " + " | ".join(
+                f"{r['date']}:rhr={r['resting_hr']}" for r in rows[-3:]))
+            if day_list:
+                hr_keys = {k: v for k, v in day_list[-1].items()
+                           if "hr" in str(k).lower() or "heart" in str(k).lower()}
+                _dg.log_exc("coros.rhr", "HR 字段: "
+                            + json.dumps(hr_keys, ensure_ascii=False)[:400])
+        except Exception:
+            pass
         return rows
 
     def activities(self, start: str, end: str, limit: int = 60) -> list[dict]:
@@ -385,9 +428,13 @@ class CorosCloud:
                 "pageNumber": page, "size": size,
             })
             data = out.get("data") or {}
+            if not isinstance(data, dict):
+                break
             batch = data.get("dataList") or data.get("list") or []
+            if not isinstance(batch, list):
+                break
             items.extend(batch)
-            total = data.get("totalCount") or data.get("count") or len(items)
+            total = _num(data.get("totalCount") or data.get("count")) or len(items)
             if not batch or len(items) >= total or len(items) >= limit:
                 break
             page += 1
@@ -406,7 +453,8 @@ class CorosCloud:
         cal = _num(a.get("calorie"))
         return {
             "activity_id": str(aid),
-            "date": (start_ts or "")[:10] or _iso(a.get("happenDay")),
+            "date": (_ts(a.get("startTime")) or "")[:10]
+                    or _any_day(a.get("happenDay")),
             "start_ts": start_ts,
             "type": SPORT_TYPE.get(a.get("sportType"), "other"),
             "name": a.get("name") or a.get("remark") or "高驰活动",
@@ -626,7 +674,11 @@ def earliest_activity(home: Path, years: int = 8) -> str:
         out = cloud._req("GET", "/activity/query",
                          params={**params, "pageNumber": page})
         data = out.get("data") or {}
+        if not isinstance(data, dict):
+            return [], 0
         rows = data.get("dataList") or data.get("list") or []
+        if not isinstance(rows, list):
+            return [], 0
         total = int(_num(data.get("totalCount") or data.get("count")) or 0)
         return rows, total or len(rows)
 
@@ -637,7 +689,8 @@ def earliest_activity(home: Path, years: int = 8) -> str:
     last = max(1, -(-total // size))
     if last > 1:
         rows, _ = _batch(last)
-    dates = [(r.get("startTime") or "")[:10] for r in (rows or [])
-             if isinstance(r, dict)]
-    dates = [d for d in dates if len(d) == 10]
+    # startTime 可能是 int 毫秒时间戳；统一走 _any_day，绝不直接切片
+    dates = [_any_day(r.get("startTime")) or _any_day(r.get("happenDay"))
+             for r in (rows or []) if isinstance(r, dict)]
+    dates = [d for d in dates if d and len(d) == 10 and d[4] == "-"]
     return min(dates) if dates else ""

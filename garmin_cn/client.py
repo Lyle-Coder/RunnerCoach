@@ -301,7 +301,10 @@ class GarminCNClient:
             for a in items:
                 if not isinstance(a, dict):
                     continue
-                d = (a.get("startTimeLocal") or "")[:10]
+                # startTimeLocal 偶尔是 epoch 数字而不是 ISO 串，直接切片会抛
+                # 'int' object is not subscriptable；高驰侧已踩过一次
+                raw = a.get("startTimeLocal")
+                d = raw[:10] if isinstance(raw, str) else ""
                 if d and (oldest is None or d < oldest):
                     oldest = d
             if len(items) < page_size:
