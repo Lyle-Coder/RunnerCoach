@@ -343,8 +343,13 @@ class Store:
         d = self.conn.execute(
             "SELECT COUNT(*) c, MIN(date) a, MAX(date) b FROM daily"
         ).fetchone()
-        # 活动数按去重后算：同一次跑步被两个源各记一条时不该显示成两次
-        a = len(self.activities("0000-01-01", "9999-12-31"))
+        # 活动数按去重后算，但单源时直接 COUNT(*)：
+        # 为了一个数字扫全表 + 去重，会让每次切页都白白多花几十到几百毫秒
+        src_n = self.conn.execute(
+            "SELECT COUNT(DISTINCT COALESCE(source,'garmin')) FROM activities"
+        ).fetchone()[0]
+        a = (self.conn.execute("SELECT COUNT(*) c FROM activities").fetchone()["c"]
+             if src_n <= 1 else len(self.activities("0000-01-01", "9999-12-31")))
         return {
             "days": d["c"], "first": d["a"], "last": d["b"],
             "activities": a,
