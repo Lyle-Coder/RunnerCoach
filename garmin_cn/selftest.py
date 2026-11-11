@@ -3633,6 +3633,61 @@ def run() -> int:
     assert "静息心率 · 昨夜" not in _tp3 and "静息心率 · " in _tp3
     assert "心率区间的设定值口径可能不同" in _tp3
 
+    # ------------------------------------------------------------ 心率分区名称
+    # 五段时长是佳明按账号里的区间算出来的（hrTimeInZone_1..5），中文副名
+    # 必须跟佳明 Connect 走；以前那套 E/M/I/T/R「恢复/节奏」是另一套边界。
+    from garmin_cn import hrzones as _HZ
+    from garmin_cn import actcard as _AC4
+    from garmin_cn import racecard as _RC4
+
+    _garmin_names = ["热身", "轻松", "有氧", "阈值", "极限"]
+    assert _HZ.zone_descriptions({}) == _garmin_names, "默认必须是佳明官方中文分区名"
+    assert _HZ.zone_descriptions({"hr_zone_names": None}) == _garmin_names
+    assert _HZ.zone_descriptions({"hr_zone_names": ["A"]}) == _garmin_names, \
+        "自定义名不足 5 个时整组回退，不能和默认名混着用"
+    _custom = ["慢跑", "马配", "阈值", "间歇", "冲刺"]
+    assert _HZ.zone_descriptions({"hr_zone_names": _custom}) == _custom, \
+        "用户在佳明里改过名称时，要能按 Z1→Z5 覆盖"
+    assert "<" not in _HZ.zone_descriptions(
+        {"hr_zone_names": ["<b>", "B", "C", "D", "E"]})[0], \
+        "自定义名里的 HTML 不能带进一图流"
+    assert _HZ.zone_descriptions({"hr_zone_names": ["", "B", "C", "D", "E"]})[0] == "热身", \
+        "自定义名为空时按官方默认名兜底"
+    assert _HZ.zone_label(4, {}) == "Z5 极限"
+
+    # 渲染断言不依赖本机 config.json：临时把配置路径指到不存在的文件
+    _orig_cfg_path = _HZ.CONFIG
+    _HZ.CONFIG = Path(tempfile.gettempdir()) / "__runnercoach_no_zone_config__.json"
+    try:
+        _zb = _AC4.zone_block([10, 20, 30, 40, 50], "心率分区", "占比 / 时长")
+        for _i, _n in enumerate(_garmin_names):
+            assert f"Z{_i + 1}<em>{_n}</em>" in _zb, f"活动一图流 Z{_i + 1} 名称不对"
+        assert "<em>恢复</em>" not in _zb and "<em>节奏</em>" not in _zb, \
+            "别把 E/M/I/T/R 训练强度名贴回佳明分区"
+        _zb_custom = _AC4.zone_block([1, 1, 1, 1, 1], "心率分区",
+                                     descriptions=["A", "B", "C", "D", "E"])
+        assert "Z1<em>A</em>" in _zb_custom and "Z5<em>E</em>" in _zb_custom
+        _zb_coros = _AC4.zone_block([1, 2, 3, 4, 5, 6], "心率分区", coros=True)
+        assert "热身" not in _zb_coros and _zb_coros.count("<em></em>") == 6, \
+            "高驰是自己的六区口径，不能套佳明的名称"
+
+        _rz = _RC4._zones({"hrTimeInZone_1": 10, "hrTimeInZone_5": 20})
+        assert [x[1] for x in _rz] == _garmin_names, "赛后复盘图也要用同一套名称"
+        _rhtml = _RC4._zone_block({"hrTimeInZone_1": 10, "hrTimeInZone_5": 20})
+        assert "<em>极限</em>" in _rhtml and "<em>无氧</em>" not in _rhtml
+    finally:
+        _HZ.CONFIG = _orig_cfg_path
+
+    _acsrc4 = (ROOT / "garmin_cn/actcard.py").read_text(encoding="utf-8")
+    _rcsrc4 = (ROOT / "garmin_cn/racecard.py").read_text(encoding="utf-8")
+    assert "from . import hrzones as HRZ" in _acsrc4 and "from . import hrzones as HRZ" in _rcsrc4
+    assert 'ZONE_DESC = ["恢复"' not in _acsrc4 and 'ZONE_DESC = ["恢复"' not in _rcsrc4, \
+        "分区名称不许再在两个一图流里各写一份"
+    assert '"Z5 无氧占比"' not in _rcsrc4 and "zone_label(4)" in _rcsrc4, \
+        "Z5 占比文案要跟着分区名称联动"
+    assert "text-overflow:ellipsis" in _acsrc4 and "text-overflow:ellipsis" in _rcsrc4, \
+        "自定义名过长会撑破卡片，必须有省略兜底"
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):

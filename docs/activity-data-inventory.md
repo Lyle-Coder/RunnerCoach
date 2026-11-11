@@ -72,4 +72,5 @@ directElevation / directLatitude / directLongitude / directBodyBattery / directP
 - 左右触地平衡、左右功率平衡：需要 HRM-Pro / Rally 等双模设备
 - 恢复时间（Recovery Time）、训练状态标签：属于日级数据，不在活动对象内
 - 心率区间边界数值：`/biometric-service/biometric/hrZones` 可能返回 null，只能用服务端算好的 `hrTimeInZone_*`
+- 心率区间名称：活动 raw 与详情 payload 实测只有时长，没有 `zoneName` / `zoneFloor`。一图流的中文副名由 `garmin_cn/hrzones.py` 按佳明 Connect 官方默认名（热身 / 轻松 / 有氧 / 阈值 / 极限）提供；在 Connect 里改过名称时，用 `config.json` 的 `hr_zone_names`（5 个字符串，Z1→Z5）覆盖
 - 能量来源（碳水/脂肪占比）、核心体温、血氧曲线：本设备/本接口未提供
