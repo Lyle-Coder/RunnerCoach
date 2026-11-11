@@ -117,6 +117,13 @@ def main() -> int:
     import garmin_cn.appapi as A
     A.DB = db
     A.OUT = tmp
+    # 截图里绝不能出现真实账号：把凭据/会话/config 一起指到临时目录，
+    # 所有页面按「未登录」渲染，数据只来自 demo 库。改 HOME 后
+    # status/coros_status/mi_status/hw_status 都读不到本机的 session 与 token。
+    A.HOME = tmp
+    A.CONFIG = tmp / "config.json"
+    from garmin_cn import hrzones as _HZ
+    _HZ.CONFIG = A.CONFIG
 
     from garmin_cn import actcard, aiui, card, history, motion, ui
     from garmin_cn.metrics import derive
@@ -166,6 +173,9 @@ def main() -> int:
         ("app-today", "今日", ui.home_page()),
         ("app-history", "历史", history.history_page({"mode": ["month"]})),
         ("app-ai", "AI 教练", aiui.render({})),
+        # 「我的」：1.0.6 把卡片压到统一 68px、账号行并成一组，
+        # README 里放一张能看出「数据源 / 迁移 / 关于」的实际排布。
+        ("app-me", "我的", ui.me_page()),
     ):
         src = tmp / f"{name}.html"
         src.write_text(html, encoding="utf-8")
