@@ -444,6 +444,7 @@ class MainActivity : Activity() {
                     // 数据源行直接进对应登录，不再先弹「佳明还是高驰」的二层选择器
                     "login:garmin" -> openAccount("garmin")
                     "login:coros" -> openAccount("coros")
+                    "login:keep" -> openAccount("keep")
                     "corosSleep" -> askCorosSleep()
                     "login" -> showLoginPicker()
                     "mi" -> showMiPanel()
@@ -685,9 +686,11 @@ class MainActivity : Activity() {
         val gEmail = secrets.email()
         val gPwd = secrets.password()
         val cEmail = secrets.corosEmail()
+        val kMobile = secrets.keepMobile()
         val hasG = !gEmail.isNullOrBlank() && !gPwd.isNullOrBlank()
         val hasC = !cEmail.isNullOrBlank()
-        if (!hasG && !hasC) {
+        val hasK = !kMobile.isNullOrBlank()
+        if (!hasG && !hasC && !hasK) {
             // 手势已经拉开，但这次只是要去登录，先把指示器收回去
             pull.cancel()
             showLoginPicker()
@@ -701,6 +704,8 @@ class MainActivity : Activity() {
         val gPwd = secrets.password()
         val cEmail = secrets.corosEmail()
         val cPwd = secrets.corosPassword() ?: ""
+        val kMobile = secrets.keepMobile() ?: ""
+        val kPwd = secrets.keepPassword() ?: ""
         ui {
             pull.setRefreshing(true)
             subtitle.text = "正在同步…"
@@ -711,6 +716,7 @@ class MainActivity : Activity() {
             var garminDead = false
             var garminMfa = false
             var corosDead = false
+            var keepDead = false
             var err = ""
 
             if (!gEmail.isNullOrBlank() && !gPwd.isNullOrBlank()) {
@@ -745,6 +751,18 @@ class MainActivity : Activity() {
                     else -> err = (if (err.isEmpty()) "" else "$err · ") + "高驰：" + r.optString("error")
                 }
             }
+            if (kMobile.isNotBlank()) {
+                // 账密从 Keystore 传过去：token 过期时 Python 侧会静默重登
+                val r = apiCall("keep_sync", 30, kMobile, kPwd)
+                when {
+                    r.optBoolean("ok") -> {
+                        okAny = true
+                        msgs.add("Keep ${r.optInt("activities")} 条")
+                    }
+                    r.optBoolean("need_login") -> keepDead = true
+                    else -> err = (if (err.isEmpty()) "" else "$err · ") + "Keep：" + r.optString("error")
+                }
+            }
 
             ui {
                 pull.setRefreshing(false)
@@ -757,6 +775,7 @@ class MainActivity : Activity() {
                         ui {
                             if (garminDead) toast("佳明登录已失效，请在「账号登录」里重登")
                             else if (corosDead) toast("高驰登录已过期，请在「账号登录」里重登")
+                            if (keepDead) toast("Keep 登录已过期，请在「我的」里重登")
                             reload()
                             // 每次刷新（含刚登录）都在后台往前补一段；
                             // 已经补完的库会在第一次调用时立即返回，不发请求。
@@ -781,6 +800,10 @@ class MainActivity : Activity() {
                         corosDead -> {
                             toast("高驰登录已过期，请重新登录")
                             askCorosLogin()
+                        }
+                        keepDead -> {
+                            toast("Keep 登录已过期，请重新登录")
+                            askKeepLogin()
                         }
                         else -> toast("同步失败：$err")
                     }
@@ -865,7 +888,11 @@ class MainActivity : Activity() {
             ui {
                 busy(false)
                 if (!r.optBoolean("ok") || !r.optBoolean("logged_in")) {
-                    if (source == "coros") askCorosLogin() else askGarminLogin()
+                    when (source) {
+                        "coros" -> askCorosLogin()
+                        "keep" -> askKeepLogin()
+                        else -> askGarminLogin()
+                    }
                     return@ui
                 }
                 showAccountCard(source, r, mcp)
@@ -892,7 +919,11 @@ class MainActivity : Activity() {
             .setTitle(r.optString("label", "账号"))
             .setMessage(lines.joinToString("\n"))
             .setPositiveButton("更换其他账号") { _, _ ->
-                if (source == "coros") askCorosLogin() else askGarminLogin()
+                when (source) {
+                    "coros" -> askCorosLogin()
+                    "keep" -> askKeepLogin()
+                    else -> askGarminLogin()
+                }
             }
         if (source == "coros" && mcp != null) {
             // 高驰多一个睡眠入口：登录时点过「暂不」的人在这里补授权
@@ -908,21 +939,33 @@ class MainActivity : Activity() {
     }
 
     private fun confirmLogout(source: String) {
-        val who = if (source == "coros") "高驰" else "佳明"
+        val who = when (source) {
+            "coros" -> "高驰"
+            "keep" -> "Keep"
+            else -> "佳明"
+        }
         AlertDialog.Builder(this)
             .setTitle("退出$who 账号")
             .setMessage("只清除登录状态，本机历史数据不会被删除。退出后可以换一个${who}账号登录。")
             .setPositiveButton("退出") { _, _ ->
                 busy(true)
                 thread {
-                    val r = apiCall(if (source == "coros") "coros_logout" else "garmin_logout")
+                    val r = apiCall(when (source) {
+                        "coros" -> "coros_logout"
+                        "keep" -> "keep_logout"
+                        else -> "garmin_logout"
+                    })
                     ui {
                         busy(false)
                         if (!r.optBoolean("ok")) {
                             toast("退出失败：${r.optString("error")}")
                             return@ui
                         }
-                        if (source == "coros") secrets.clearCoros() else secrets.clear()
+                        when (source) {
+                            "coros" -> secrets.clearCoros()
+                            "keep" -> secrets.clearKeep()
+                            else -> secrets.clear()
+                        }
                         toast("已退出${who}账号")
                         thread {
                             setStatus(apiCall("status"))
@@ -1145,6 +1188,64 @@ class MainActivity : Activity() {
                 else doCorosLogin(e, p, regionKeys[regionIdx])
             }
             .show()
+    }
+
+    // ------------------------------------------------------------ Keep
+    /**
+     * Keep 的登录框。Keep 没有长效票据，token 过期必须账密重登，
+     * 所以密码交给 Keystore 保管，Python 侧每次同步时收参数。
+     */
+    private fun askKeepLogin(mobile: String = "", pwd: String = "", err: String? = null) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(56, 24, 56, 0)
+        }
+        val eMobile = EditText(this).apply {
+            hint = "Keep 手机号"
+            inputType = InputType.TYPE_CLASS_PHONE
+            setText(mobile.ifBlank { secrets.keepMobile() ?: "" })
+        }
+        val ePwd = EditText(this).apply {
+            hint = "密码"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(pwd)
+        }
+        box.addView(eMobile)
+        box.addView(ePwd)
+        addShowPassword(box, ePwd)
+        val tip = if (err.isNullOrBlank())
+            "与 Keep App 同一个手机号。只同步运动记录摘要（时间、距离、时长、心率），" +
+                "没有轨迹和分圈；凭据用系统 Keystore 加密，只存本机。"
+        else "上次登录失败：$err"
+        AlertDialog.Builder(this)
+            .setTitle(if (err.isNullOrBlank()) "登录 Keep" else "重新登录 Keep")
+            .setMessage(tip)
+            .setView(box)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("登录") { _, _ ->
+                val m = eMobile.text.toString().trim()
+                val p = ePwd.text.toString()
+                if (m.isBlank() || p.isBlank()) toast("手机号和密码都要填")
+                else doKeepLogin(m, p)
+            }
+            .show()
+    }
+
+    private fun doKeepLogin(mobile: String, pwd: String) {
+        val card = showLoginCard("正在登录 Keep", mobile)
+        thread {
+            val r = apiCall("keep_login", mobile, pwd)
+            ui {
+                card.dismiss()
+                if (r.optBoolean("ok")) {
+                    secrets.saveKeep(mobile, pwd)
+                    toast("Keep 登录成功")
+                    doSync()
+                } else {
+                    askKeepLogin(mobile, pwd, r.optString("error").ifBlank { "未知错误" })
+                }
+            }
+        }
     }
 
     private fun doCorosLogin(email: String, pwd: String, region: String) {

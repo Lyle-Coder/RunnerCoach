@@ -3752,6 +3752,75 @@ def run() -> int:
     assert "DD.dedupe(out)" in (ROOT / "garmin_cn/store.py").read_text(encoding="utf-8"), \
         "Store.activities 没接去重"
 
+    # ------------------------------------------------------------ Keep 接入
+    from garmin_cn import keep as _K
+    from garmin_cn import secretstore as _SS
+
+    if _SS.available():
+        _cipher = _SS.protect("13800138000|pw|token")
+        assert _SS.unprotect(_cipher) == "13800138000|pw|token", "DPAPI 加解密回环失败"
+
+    _row = _K.parse({"startTime": 1762732800000, "duration": 3000, "distance": 10000,
+                     "calorie": 600, "dataType": "outdoorRunning",
+                     "heartRate": {"averageHeartRate": 152}},
+                    "abc_9223370441312156007_rn")
+    assert _row["activity_id"] == "keep_9223370441312156007"
+    assert _row["type"] == "running" and _row["distance_m"] == 10000
+    assert abs(_row["pace_s_km"] - 300) < 0.01 and _row["avg_hr"] == 152
+    assert _row["source"] == "keep"
+    assert _K.parse({"startTime": 1762732800000, "duration": 0, "distance": 0}, "x") is None, \
+        "没有时长/距离的 Keep 记录不该入库"
+
+    _khome = Path(tempfile.mkdtemp())
+    _kc = _K.KeepCloud(_khome)
+    _kc.mobile, _kc.password, _kc.token = "13800138000", "pw", "tok"
+    _kc.token_at, _kc.device_id = time.time(), "dev"
+    _kc.save()
+    _kc2 = _K.KeepCloud(_khome)
+    assert _kc2.load() and _kc2.token == "tok", "Keep 凭据存不进去"
+    if _SS.available():
+        assert _kc2.password == "pw", "加密保存后解不出密码，过期就没法自动重登"
+        _raw = (_khome / "data" / "keep_auth.json").read_text(encoding="utf-8")
+        assert "13800138000" not in _raw and '"pw"' not in _raw, "Keep 凭据明文落盘了"
+    _kc.clear()
+
+    # token 过期要能自动重登（不联网，mock 掉 login）
+    from unittest import mock as _um2
+
+    _kc3 = _K.KeepCloud(_khome)
+    _kc3.mobile, _kc3.password, _kc3.token = "13800138000", "pw", "old"
+    _kc3.token_at = 0.0
+    _login_calls = {"n": 0}
+
+    def _fake_login(m, p):
+        _login_calls["n"] += 1
+        _kc3.token, _kc3.token_at = "new", time.time()
+        return {"user_id": "u", "token": "new"}
+
+    with _um2.patch.object(_kc3, "login", _fake_login):
+        _kc3.ensure_token()
+    assert _login_calls["n"] == 1 and _kc3.token == "new", "Keep token 过期没有自动重登"
+
+    # Keep 与佳明同一次跑步：去重保留佳明
+    _k2 = {"activity_id": "keep_1", "source": "keep", "date": "2026-11-01",
+           "start_ts": "2026-11-01 07:00:30", "distance_m": 10020,
+           "duration_s": 3010, "type": "running"}
+    _g2 = {"activity_id": "g_x", "source": "garmin", "date": "2026-11-01",
+           "start_ts": "2026-11-01 07:00:00", "distance_m": 10000,
+           "duration_s": 3000, "type": "running"}
+    _kept2, _ = _DD.pick_unique([_g2, _k2])
+    assert len(_kept2) == 1 and _kept2[0]["source"] == "garmin", \
+        "Keep 与佳明同一次跑步时没保留佳明"
+
+    _api_src5 = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    for _fn in ("keep_status", "keep_login", "keep_logout", "keep_sync"):
+        assert f'"{_fn}"' in _api_src5, f"接口白名单漏了 {_fn}"
+    _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert '"login:keep" -> openAccount("keep")' in _kt5, "「我的」里的 Keep 入口没接上"
+    assert 'apiCall("keep_sync", 30, kMobile, kPwd)' in _kt5, "App 同步没带 Keep"
+    assert "fun saveKeep" in (KT / "Secrets.kt").read_text(encoding="utf-8"), \
+        "Keep 凭据没走 Keystore"
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):
