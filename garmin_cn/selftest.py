@@ -3827,6 +3827,42 @@ def run() -> int:
     assert "fun saveKeep" in (KT / "Secrets.kt").read_text(encoding="utf-8"), \
         "Keep 凭据没走 Keystore"
 
+    # ---- 手动补录小睡要影响睡眠得分；设备自带小睡则不重复估算 --------
+    import garmin_cn.manual as _MN
+    from garmin_cn import metrics as _M2
+
+    _mhome = Path(tempfile.mkdtemp())
+    _mpath = _mhome / "manual.json"
+    _mstore = _Store3(_mhome / "sleep.db")
+    _mday = "2026-11-05"
+    _mstore.upsert_daily({"date": _mday, "sleep_total_min": 420,
+                          "sleep_score": 70, "sleep_need_min": 480,
+                          "resting_hr": 50, "hrv_night": 60})
+    with _um2.patch.object(_MN, "PATH", _mpath):
+        _before = _M2.derive(_mstore, _mday)
+        assert _before["sleep"]["score_est"] is None, "没补录就冒出一个估算分"
+        assert _before["sleep"]["score"] == 70
+        _MN.add_nap(_mday, 60, "13:00")
+        _after = _M2.derive(_mstore, _mday)
+        assert _after["sleep"]["score_est"] == 100, \
+            f"补录 60 分小睡后估算分不对：{_after['sleep']['score_est']}"
+        assert _after["sleep"]["nap_eff"] == 60
+        _sp = next(p for p in _after["readiness"]["parts"] if p["name"] == "睡眠")
+        assert _sp["score"] == 100, "恢复度的睡眠分量没跟着补录变"
+        # 设备自带小睡（佳明/高驰）：信任设备算法，不再叠一层估算
+        _mstore.upsert_daily({"date": _mday, "sleep_total_min": 420,
+                              "sleep_score": 70, "nap_min": 45,
+                              "sleep_need_min": 480})
+        _dev = _M2.derive(_mstore, _mday)
+        assert _dev["sleep"]["score_est"] is None, \
+            "设备已经给了小睡，还重复估算会算两遍"
+        assert _dev["sleep"]["score"] == 70
+    try:
+        _mstore.conn.close()
+        (_mhome / "sleep.db").unlink(missing_ok=True)
+    except OSError:
+        pass
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):

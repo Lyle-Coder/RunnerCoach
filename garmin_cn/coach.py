@@ -281,8 +281,11 @@ def blocks(res: dict) -> list[dict]:
     sl = res["sleep"]
     if sl["total_min"]:
         text = f"昨晚睡了 {sl['total_h']} 小时"
-        if sl["score"]:
-            text += f"，评分 {sl['score']:.0f}"
+        _sc = (sl.get("score_est") if sl.get("score_est") is not None
+               else sl.get("score"))
+        if _sc is not None:
+            text += (f"，{'估算' if sl.get('score_est') is not None else '评分'} "
+                     f"{_sc:.0f}")
         if sl["debt_h"] and sl["debt_h"] > 0:
             text += f"；近 7 天累计缺口 {sl['debt_h']} 小时"
         out.append({"title": "睡眠", "text": text + "。"})
