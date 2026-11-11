@@ -81,8 +81,8 @@ PROVIDERS = {
         "label": "OpenCode Go", "base_url": "https://opencode.ai/inference/go/openai/v1",
         "model": "deepseek-v4.1-flash", "key_url": "https://opencode.ai/console",
         "note": ("订阅制出口，地址必须是 /inference/go/openai/v1；每个请求要带稳定的 "
-                 "x-opencode-session（本 App 自动补）。拍照识热量要选多模态模型，"
-                 "如 mimo-v2.5 / kimi-k3 / qwen3.8-flash"),
+                 "x-opencode-session（本 App 自动补）。拍照识热量可用 deepseek-v4.1-flash"
+                 "（支持图片），mimo-v2.5 / kimi-k3 也可以"),
         "session": "opencode",
     },
     "opencode_payg": {
@@ -352,6 +352,15 @@ def _endpoint(cfg: dict) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------- HTTP
+# 一定要带一个「像客户端」的 User-Agent。
+# urllib 默认发的是 `Python-urllib/3.13`，OpenCode 前面的 Cloudflare 会直接
+# 回 `403 error code: 1010`（浏览器完整性校验），跟 key 对不对完全无关——
+# 之前这个 403 被归到了「密钥无效」，把排查方向带偏了很久。
+from . import __version__ as _VERSION
+
+USER_AGENT = (f"RunnerCoach/{_VERSION} "
+              "(Android; +https://gitee.com/liyufei-lye/RunnerCoach)")
+
 AUTH_STYLES = ("bearer", "x-api-key", "both")
 
 
@@ -446,6 +455,36 @@ def _auth_retryable(raw: str) -> bool:
     return "<html" not in low and "链接不完整" not in low
 
 
+# 上游明说「没收到 key」，才值得换一种头重试。像 OpenCode 的 "Invalid credential"
+# 是「key 不对」，换头不会变好，只会把真正的原因盖掉。
+_HDR_HINTS = ("requires an api key", "missing api key", "no api key",
+              "api key required", "missing x-api-key", "缺少 api key",
+              "未提供 api key", "no credential provided")
+
+
+def _should_retry_auth(raw: str) -> bool:
+    if not _auth_retryable(raw):
+        return False
+    low = (raw or "").lower().strip()
+    if not low:                     # 空报文：说不清原因，换一种试试
+        return True
+    return any(k in low for k in _HDR_HINTS)
+
+
+# 两种头都失败时，优先报「有信息量」的那条（invalid/expired…），
+# 而不是把 "requires an api key" 这种误导性文案给用户。
+_AUTH_INFORMATIVE = ("invalid", "expired", "revoked", "forbidden",
+                     "not allowed", "disabled", "incorrect")
+
+
+def _pick_auth_error(errs: list[tuple[int, str]]) -> tuple[int, str]:
+    for code, raw in errs:
+        low = (raw or "").lower()
+        if any(k in low for k in _AUTH_INFORMATIVE):
+            return code, raw
+    return errs[-1] if errs else (0, "")
+
+
 def _post(url: str, token: str, payload: dict, timeout: int = READ_TIMEOUT,
           stream: bool = False, extra_headers: dict | None = None,
           cfg: dict | None = None):
@@ -455,12 +494,13 @@ def _post(url: str, token: str, payload: dict, timeout: int = READ_TIMEOUT,
     """
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json",
+               "User-Agent": USER_AGENT,
                "Accept": "text/event-stream" if stream else "application/json"}
     headers.update(_session_headers(cfg, url))
     headers.update(extra_headers or {})
     styles = _auth_styles(cfg, token, url)
     host = _host_of(url)
-    last = (0, "")
+    errs: list[tuple[int, str]] = []
     for idx, style in enumerate(styles):
         req = urllib.request.Request(url, data=body, method="POST")
         for k, v in headers.items():
@@ -474,15 +514,18 @@ def _post(url: str, token: str, payload: dict, timeout: int = READ_TIMEOUT,
                 raw = e.read().decode("utf-8", "replace")
             except Exception:
                 raw = ""
-            last = (e.code, raw)
+            errs.append((e.code, raw))
             if (e.code in (401, 403) and idx < len(styles) - 1
-                    and _auth_retryable(raw)):
-                continue          # 换一种头再试
-            raise _http_error_raw(e.code, raw) from None
+                    and _should_retry_auth(raw)):
+                continue          # 只在这一种情况下换头：上游说没收到 key
+            code, text = ((_pick_auth_error(errs) if e.code in (401, 403)
+                           else (e.code, raw)))
+            raise _http_error_raw(code, text) from None
         if idx > 0:
             _remember_auth(host, style)      # 探测成功，记住这个域名要哪种头
         return resp
-    raise _http_error_raw(last[0], last[1])
+    code, text = _pick_auth_error(errs) if errs else (0, "")
+    raise _http_error_raw(code, text)
 
 
 def _ready_config() -> dict:
@@ -544,6 +587,15 @@ def _http_error_raw(code: int, raw: str) -> LLMError:
 
     low = (raw or "").lower()
     if code in (401, 403):
+        # Cloudflare 的浏览器完整性校验：403 + `error code: 1010`（text/plain）。
+        # 这跟 key 一点关系都没有，是客户端标识被当成脚本了（urllib 默认 UA）。
+        # 必须排在「密钥无效」前面，否则会把用户带去找 key 的问题。
+        if ("error code: 1010" in low or "error code: 1020" in low
+                or "attention required" in low or "cf-error-details" in low):
+            return LLMError(
+                "blocked",
+                "请求被网关的 Cloudflare 风控挡下（客户端标识被判定为脚本），升级到最新版 App 再试",
+                raw)
         # 平台分享门禁返回的是 HTML「链接不完整」，不是 JSON——这和 key 无效
         # 完全是两回事，别再让用户去检查 API Key。
         if "<html" in low or "链接不完整" in raw or "share" in low:
@@ -554,18 +606,30 @@ def _http_error_raw(code: int, raw: str) -> LLMError:
             return LLMError("model", "这个免费模型只能在 OpenCode 客户端里用，换付费或 Go 模型", raw)
         if "model access" in low or "not enabled" in low or "disabled" in low:
             return LLMError("model", "这个 key 没有该模型的权限，去 Console 开通或换个模型", raw)
-        return LLMError("auth", "密钥无效或没有权限，检查 API Key / 平台令牌", raw)
+        # 把上游原话带上：光说「密钥无效」分不清是 key 过期、被撤销、
+        # 还是这个 key 不属于 Go 订阅的 workspace。
+        up = str(msg).strip()
+        tip = ""
+        if up and up != raw and "<" not in up and len(up) <= 80:
+            tip = f"（上游：{up}）"
+        return LLMError("auth", "密钥无效或没有权限，检查 API Key / 平台令牌" + tip, raw)
     if code == 402:
         return LLMError("quota", "额度不足，充值或换一个 key", raw)
     if code == 429:
         return LLMError("rate", "请求太频繁或额度用尽，等一会儿再试", raw)
     if code in (400, 422):
+        # OpenCode Go 的会话头缺失是 400 + MissingSessionID，和「参数写错」不是一回事
+        if "missingsessionid" in low or "x-opencode-session" in low:
+            return LLMError(
+                "session",
+                "网关没收到 x-opencode-session 会话头（OpenCode Go 强制要求），请升级 App 后重试",
+                raw)
         # 图片被拒和「参数写错」是两件事：前者要换多模态模型，后者要改请求。
         if any(k in low for k in ("image", "vision", "multimodal", "modality",
                                   "unsupported content", "content type")):
             return LLMError(
                 "vision",
-                "当前模型不支持图片输入，换一个多模态模型（如 mimo-v2.5 / kimi-k3 / qwen3.8-flash）",
+                "当前模型不支持图片输入，换一个多模态模型（如 deepseek-v4.1-flash / mimo-v2.5 / kimi-k3）",
                 raw)
         return LLMError("request", f"请求被拒绝：{str(msg)[:160]}", raw)
     if code >= 500:
@@ -754,6 +818,7 @@ def _platform_get(path: str, token: str) -> dict:
     if not base:
         raise LLMError("config", "还没填平台服务地址", "")
     req = urllib.request.Request(base + path, method="GET")
+    req.add_header("User-Agent", USER_AGENT)
     if cfg.get("platform_share_code"):
         req.add_header("X-Share-Code", cfg["platform_share_code"])
     if token:
@@ -776,6 +841,7 @@ def _platform_post(path: str, body: dict, token: str) -> dict:
     req = urllib.request.Request(base + path, method="POST",
                                  data=json.dumps(body).encode("utf-8"))
     req.add_header("Content-Type", "application/json")
+    req.add_header("User-Agent", USER_AGENT)
     if cfg.get("platform_share_code"):
         req.add_header("X-Share-Code", cfg["platform_share_code"])
     if token:
