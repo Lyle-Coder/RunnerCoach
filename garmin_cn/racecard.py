@@ -33,6 +33,7 @@ from . import brand as BR
 from .card import _find_browser
 from .exportspec import probe as _export_probe
 from .metrics import num
+from . import hrzones as HRZ
 
 W, H = 1080, 1920
 _EXPORT_PROBE = _export_probe()
@@ -49,8 +50,8 @@ GOOD = "#4FD6A6"
 BAD = "#E06A5F"
 
 ZONE_COLORS = ["#4E8FD6", "#2FBF8F", "#E8C547", "#E8843A", "#E05555"]
-ZONE_NAMES = ["Z1", "Z2", "Z3", "Z4", "Z5"]
-ZONE_DESC = ["恢复", "有氧", "节奏", "阈值", "无氧"]
+# 与活动图同源：佳明 Connect 的 Z1–Z5 名称由 hrzones 统一提供
+ZONE_NAMES = list(HRZ.ZONE_LABELS)
 
 
 def esc(s) -> str:
@@ -181,10 +182,11 @@ def _mix(c1: str, c2: str, k: float) -> str:
 
 
 def _zones(raw: dict) -> list[tuple[str, str, float, float]]:
+    descs = HRZ.zone_descriptions()
     out = []
     for i in range(5):
         t = num(raw.get(f"hrTimeInZone_{i + 1}")) or 0
-        out.append((ZONE_NAMES[i], ZONE_DESC[i], t, 0))
+        out.append((ZONE_NAMES[i], descs[i], t, 0))
     tot = sum(x[2] for x in out) or 1
     return [(n, d, t, t / tot * 100) for n, d, t, _ in out]
 
@@ -201,7 +203,7 @@ def _zone_block(raw: dict) -> str:
     for i, (n, d, t, pct) in enumerate(zs):
         rows.append(
             f'<div class="zr"><span class="zd" style="background:{ZONE_COLORS[i]}"></span>'
-            f'<span class="zn">{n}<em>{d}</em></span>'
+            f'<span class="zn">{n}<em>{esc(d)}</em></span>'
             f'<span class="zb"><i style="width:{min(100, pct):.1f}%;background:{ZONE_COLORS[i]}"></i></span>'
             f'<span class="zv">{hms(t, "0:00")}</span>'
             f'<span class="zp" style="color:{ZONE_COLORS[i]}">{pct:.0f}%</span></div>')
@@ -301,7 +303,7 @@ def build_html(race: dict, detail: dict, week_rows: list[dict],
         tech.append((pace_txt(fast["pace_s"]), f"最快 3km（{fast['idx']}）"))
         tech.append((pace_txt(slow["pace_s"]), f"最慢 3km（{slow['idx']}）"))
     z5 = _zones(raw)[4][3] if raw else 0
-    tech.append((f"{z5:.0f}%", "Z5 无氧占比"))
+    tech.append((f"{z5:.0f}%", f"{HRZ.zone_label(4)}占比"))
     tech.append((f"{load:.0f}" if load else "—", "训练负荷"))
     tech_html = "".join(
         f'<div class="tt"><b>{esc(v)}</b><span>{esc(u)}</span></div>' for v, u in tech)
@@ -477,8 +479,10 @@ body{width:var(--page-w);overflow:hidden;background:#12161B;
 .zstack i{display:block}
 .zr{display:flex;align-items:center;gap:8px;margin-top:7px}
 .zd{width:10px;height:10px;border-radius:3px;flex:none}
-.zn{width:74px;font-size:18px;color:#D3DBE4;flex:none}
-.zn em{font-style:normal;font-size:14px;color:#76838F;margin-left:4px}
+.zn{width:74px;font-size:18px;color:#D3DBE4;flex:none;white-space:nowrap}
+.zn em{font-style:normal;font-size:14px;color:#76838F;margin-left:4px;
+       display:inline-block;max-width:44px;overflow:hidden;
+       text-overflow:ellipsis;white-space:nowrap}
 .zb{flex:1;height:9px;background:#141A20;border-radius:5px;overflow:hidden}
 .zb i{display:block;height:100%;border-radius:5px}
 .zv{width:58px;text-align:right;font-size:17px;color:#8B97A5;flex:none;
