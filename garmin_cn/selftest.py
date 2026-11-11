@@ -3982,12 +3982,35 @@ def run() -> int:
                                 "https://opencode.ai/x")[0] == "x-api-key", \
             "记住之后没有优先用生效的那种头"
 
+        # 上游明说「Invalid credential」时不该再换头重试——换了也不会好，
+        # 还会把真正的原因盖成 "requires an api key"，用户就查不到方向了。
+        _tries: list[int] = []
+
+        def _fake_401(req, timeout=None):
+            _tries.append(1)
+            raise urllib.error.HTTPError(
+                req.full_url, 401, "no", {},
+                io.BytesIO(b'{"error":{"type":"authentication_error",'
+                           b'"message":"Invalid credential"}}'))
+
+        with _um3.patch.object(_LG.urllib.request, "urlopen", _fake_401):
+            try:
+                _LG._post("https://opencode.ai/inference/go/openai/v1/chat/completions",
+                          "oc_sk_demo", {"model": "m"}, cfg=_LG.load_config())
+                assert False, "401 居然没抛错"
+            except _LG.LLMError as _e4:
+                assert "Invalid credential" in _e4.message, \
+                    f"上游原因被吞掉了，用户没法判断是 key 过期还是填错：{_e4.message}"
+        assert len(_tries) == 1, "key 明确无效还在换头重试，白多打一次 401"
+
     _ve = _LG._http_error_raw(400, '{"error":"image input is not supported"}')
     assert _ve.kind == "vision", f"图片被拒没单独归类（现在是 {_ve.kind}）"
     _fe = _LG._http_error_raw(403, '{"error":"FreeTierError: free models only in app"}')
     assert _fe.kind == "model", "免费模型 403 被误判成密钥无效，用户会去换 key"
     _pe = _LG._http_error_raw(401, '{"error":"invalid api key"}')
     assert _pe.kind == "auth", "真·密钥错误没有归到 auth"
+    _se = _LG._http_error_raw(400, '{"type":"error","error":{"type":"MissingSessionID"}}')
+    assert _se.kind == "session", "缺会话头被当成普通参数错误，用户会去乱改模型名"
     assert "x-api-key" in (ROOT / "garmin_cn/aiui.py").read_text(encoding="utf-8"), \
         "「模型服务」里没有鉴权方式选择，用户没法手工兜底"
 

@@ -446,6 +446,36 @@ def _auth_retryable(raw: str) -> bool:
     return "<html" not in low and "链接不完整" not in low
 
 
+# 上游明说「没收到 key」，才值得换一种头重试。像 OpenCode 的 "Invalid credential"
+# 是「key 不对」，换头不会变好，只会把真正的原因盖掉。
+_HDR_HINTS = ("requires an api key", "missing api key", "no api key",
+              "api key required", "missing x-api-key", "缺少 api key",
+              "未提供 api key", "no credential provided")
+
+
+def _should_retry_auth(raw: str) -> bool:
+    if not _auth_retryable(raw):
+        return False
+    low = (raw or "").lower().strip()
+    if not low:                     # 空报文：说不清原因，换一种试试
+        return True
+    return any(k in low for k in _HDR_HINTS)
+
+
+# 两种头都失败时，优先报「有信息量」的那条（invalid/expired…），
+# 而不是把 "requires an api key" 这种误导性文案给用户。
+_AUTH_INFORMATIVE = ("invalid", "expired", "revoked", "forbidden",
+                     "not allowed", "disabled", "incorrect")
+
+
+def _pick_auth_error(errs: list[tuple[int, str]]) -> tuple[int, str]:
+    for code, raw in errs:
+        low = (raw or "").lower()
+        if any(k in low for k in _AUTH_INFORMATIVE):
+            return code, raw
+    return errs[-1] if errs else (0, "")
+
+
 def _post(url: str, token: str, payload: dict, timeout: int = READ_TIMEOUT,
           stream: bool = False, extra_headers: dict | None = None,
           cfg: dict | None = None):
@@ -460,7 +490,7 @@ def _post(url: str, token: str, payload: dict, timeout: int = READ_TIMEOUT,
     headers.update(extra_headers or {})
     styles = _auth_styles(cfg, token, url)
     host = _host_of(url)
-    last = (0, "")
+    errs: list[tuple[int, str]] = []
     for idx, style in enumerate(styles):
         req = urllib.request.Request(url, data=body, method="POST")
         for k, v in headers.items():
@@ -474,15 +504,18 @@ def _post(url: str, token: str, payload: dict, timeout: int = READ_TIMEOUT,
                 raw = e.read().decode("utf-8", "replace")
             except Exception:
                 raw = ""
-            last = (e.code, raw)
+            errs.append((e.code, raw))
             if (e.code in (401, 403) and idx < len(styles) - 1
-                    and _auth_retryable(raw)):
-                continue          # 换一种头再试
-            raise _http_error_raw(e.code, raw) from None
+                    and _should_retry_auth(raw)):
+                continue          # 只在这一种情况下换头：上游说没收到 key
+            code, text = ((_pick_auth_error(errs) if e.code in (401, 403)
+                           else (e.code, raw)))
+            raise _http_error_raw(code, text) from None
         if idx > 0:
             _remember_auth(host, style)      # 探测成功，记住这个域名要哪种头
         return resp
-    raise _http_error_raw(last[0], last[1])
+    code, text = _pick_auth_error(errs) if errs else (0, "")
+    raise _http_error_raw(code, text)
 
 
 def _ready_config() -> dict:
@@ -554,12 +587,24 @@ def _http_error_raw(code: int, raw: str) -> LLMError:
             return LLMError("model", "这个免费模型只能在 OpenCode 客户端里用，换付费或 Go 模型", raw)
         if "model access" in low or "not enabled" in low or "disabled" in low:
             return LLMError("model", "这个 key 没有该模型的权限，去 Console 开通或换个模型", raw)
-        return LLMError("auth", "密钥无效或没有权限，检查 API Key / 平台令牌", raw)
+        # 把上游原话带上：光说「密钥无效」分不清是 key 过期、被撤销、
+        # 还是这个 key 不属于 Go 订阅的 workspace。
+        up = str(msg).strip()
+        tip = ""
+        if up and up != raw and "<" not in up and len(up) <= 80:
+            tip = f"（上游：{up}）"
+        return LLMError("auth", "密钥无效或没有权限，检查 API Key / 平台令牌" + tip, raw)
     if code == 402:
         return LLMError("quota", "额度不足，充值或换一个 key", raw)
     if code == 429:
         return LLMError("rate", "请求太频繁或额度用尽，等一会儿再试", raw)
     if code in (400, 422):
+        # OpenCode Go 的会话头缺失是 400 + MissingSessionID，和「参数写错」不是一回事
+        if "missingsessionid" in low or "x-opencode-session" in low:
+            return LLMError(
+                "session",
+                "网关没收到 x-opencode-session 会话头（OpenCode Go 强制要求），请升级 App 后重试",
+                raw)
         # 图片被拒和「参数写错」是两件事：前者要换多模态模型，后者要改请求。
         if any(k in low for k in ("image", "vision", "multimodal", "modality",
                                   "unsupported content", "content type")):
