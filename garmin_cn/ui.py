@@ -1302,12 +1302,22 @@ def me_page() -> str:
     g = "已登录" if st.get("logged_in") else "未登录"
     c_ok = "已登录" if c.get("logged_in") else "未连接"
     try:
-        _mcp = A.coros_mcp_status()
-        cs_ok = "已授权" if _mcp.get("authorized") else "未授权"
+        _sleep_ok = bool(A.coros_mcp_status().get("authorized"))
     except Exception:
-        cs_ok = "未授权"
+        _sleep_ok = False
+    # 睡眠授权并进高驰这一行：登录成功时会直接问一次意向，没同意也能从
+    # 账号卡片里补，不必再单独占一行「高驰睡眠」。
+    c_sub = (f"{c_ok} · {'睡眠已授权' if _sleep_ok else '睡眠未授权'}"
+             + (" · 查看 / 更换" if c_ok == "已登录" else " · 可独立同步活动"))
     m_ok = "已登录" if m.get("logged_in") else "未连接"
     h_ok = "已登录" if h.get("logged_in") else "未连接"
+    try:
+        k_ok = "已登录" if A.keep_status().get("logged_in") else "未连接"
+    except Exception:
+        k_ok = "未连接"
+    # Keep 只有运动摘要（没有轨迹/分圈），文案里先说清楚，免得用户以为漏了图
+    k_sub = (f"{k_ok} · 运动摘要，无轨迹"
+             + (" · 查看 / 更换" if k_ok == "已登录" else ""))
     bs = A.body_sources()
     pref = bs.get("preferred", "mi")
     pref_label = bs.get("labels", {}).get(pref, pref)
@@ -1320,11 +1330,9 @@ def me_page() -> str:
                    f"{g} · {esc(_mask_email(st.get('email')) or '未设置账号')}"
                    + (" · 查看 / 更换" if g == "已登录" else ""),
                    act="login:garmin") +
-               row("C", "高驰 COROS",
-                   f"{c_ok} · 可独立同步活动" + (" · 查看 / 更换" if c_ok == "已登录" else ""),
+               row("C", "高驰 COROS", c_sub,
                    act="login:coros", tone="b") +
-               row("C", "高驰睡眠", f"{cs_ok} · 官方 MCP 授权，不踢手机 App",
-                   act="corosSleep", tone="b") +
+               row("K", "Keep", k_sub, act="login:keep", tone="b") +
                # 三个体重行并成一行：小米/华为的登录放进来源选择器的「登录账号」，
                # 少两行，语义反而更清楚（都在说「体重数据从哪来」）。
                row("W", "体重数据",

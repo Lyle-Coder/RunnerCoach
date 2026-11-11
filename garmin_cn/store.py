@@ -298,12 +298,22 @@ class Store:
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
 
-    def activities(self, start: str, end: str) -> list[dict]:
+    def activities(self, start: str, end: str, *, dedupe: bool = True) -> list[dict]:
+        """区间内的活动。
+
+        `dedupe` 默认开着：同一次跑步可能被佳明和高驰各记一条，列表、跑量、
+        训练负荷都不该算两次。判定规则见 `dedupe.py`（只跨源判、同源永不合并）。
+        """
         rows = self.conn.execute(
             "SELECT * FROM activities WHERE date BETWEEN ? AND ? ORDER BY date DESC, start_ts DESC",
             (start, end),
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = [dict(r) for r in rows]
+        if dedupe and len(out) > 1:
+            from . import dedupe as DD
+
+            out = DD.dedupe(out)
+        return out
 
     def latest_note(self) -> dict | None:
         row = self.conn.execute(
@@ -333,9 +343,10 @@ class Store:
         d = self.conn.execute(
             "SELECT COUNT(*) c, MIN(date) a, MAX(date) b FROM daily"
         ).fetchone()
-        a = self.conn.execute("SELECT COUNT(*) c FROM activities").fetchone()
+        # 活动数按去重后算：同一次跑步被两个源各记一条时不该显示成两次
+        a = len(self.activities("0000-01-01", "9999-12-31"))
         return {
             "days": d["c"], "first": d["a"], "last": d["b"],
-            "activities": a["c"],
+            "activities": a,
             "path": str(self.path),
         }

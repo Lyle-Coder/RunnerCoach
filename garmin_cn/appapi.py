@@ -153,6 +153,7 @@ _API = {
     "coros_status", "coros_login", "coros_logout", "coros_sync",
     "coros_mcp_status", "coros_mcp_login_url", "coros_mcp_finish",
     "coros_mcp_sleep", "coros_mcp_logout",
+    "keep_status", "keep_login", "keep_logout", "keep_sync",
 }
 
 # 模型接口配置（App「设置」写入）：未来的 AI 点评等功能从这里读。
@@ -657,7 +658,9 @@ def _src_stats(source: str) -> dict:
                     "last": (row["last"] if row else "") or "",
                     "days": int(days["n"] or 0) if days else 0,
                     "last_sync": store.get_meta(
-                        "last_sync_coros" if source == "coros" else "last_sync") or ""}
+                        "last_sync_coros" if source == "coros"
+                        else "last_sync_keep" if source == "keep"
+                        else "last_sync") or ""}
         finally:
             store.conn.close()
     except Exception as e:
@@ -704,8 +707,22 @@ def account_info(source: str = "garmin") -> dict:
     只做只读状态汇总：账号、设备、会话能否续期、本地覆盖范围。
     换账号/退出走卡片上的按钮，不再要求用户重输一遍密码。
     """
-    src = "coros" if str(source or "").lower().startswith("coros") else "garmin"
+    low = str(source or "").lower()
+    src = ("coros" if low.startswith("coros")
+           else "keep" if low.startswith("keep") else "garmin")
     stats = _src_stats(src)
+    if src == "keep":
+        from . import keep as K
+
+        cloud = K.KeepCloud(HOME)
+        ok = bool(cloud.load())
+        return {"ok": True, "source": "keep", "logged_in": ok,
+                "account": _mask_phone(cloud.mobile) if ok else "",
+                "label": "Keep",
+                "region": "国内",
+                "device": "手机（Keep App 记录）" if ok else "",
+                "session": "token 过期后自动重登" if ok else "",
+                **stats}
     if src == "coros":
         from . import coros as C
 
@@ -788,12 +805,30 @@ def coros_login(email: str, password: str, region: str = "asia") -> dict:
 _MCP_PENDING: dict[str, object] = {}
 
 
+def _coros_region() -> str:
+    """高驰账号所在区域。
+
+    官方 MCP 有三套网关（国内 mcpcn / 欧洲 mcpeu / 美国 mcpus），授权页与
+    token 必须跟账号区域一致。以前这里写死 asia，欧/美区账号点「授权睡眠」
+    会跳到错误的网关。账号没登录时按国内处理，登录后自然跟随。
+    """
+    try:
+        from . import coros as C
+
+        cloud = C.CorosCloud(HOME)
+        if cloud.load() and cloud.region:
+            return cloud.region
+    except Exception:
+        pass
+    return "asia"
+
+
 def coros_mcp_status() -> dict:
     """官方 MCP（睡眠）的授权状态。只看本地 token，不联网。"""
     try:
         from . import coros_mcp as MC
 
-        cloud = MC.CorosMcp(HOME, "asia")
+        cloud = MC.CorosMcp(HOME, _coros_region())
         st = cloud.status()
         return {"ok": True, **st,
                 "region_cn": MC.REGION_CN.get(st["region"], st["region"])}
@@ -801,12 +836,15 @@ def coros_mcp_status() -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-def coros_mcp_login_url(region: str = "asia") -> dict:
-    """生成授权页地址。verifier 留在进程里，回调回来后用 coros_mcp_finish 收尾。"""
+def coros_mcp_login_url(region: str = "") -> dict:
+    """生成授权页地址。verifier 留在进程里，回调回来后用 coros_mcp_finish 收尾。
+
+    `region` 留空时跟随高驰账号所在区域；调用方不用再关心国内/欧洲/美国。
+    """
     try:
         from . import coros_mcp as MC
 
-        cloud = MC.CorosMcp(HOME, region or "asia")
+        cloud = MC.CorosMcp(HOME, region or _coros_region())
         url = cloud.authorize_url()
         _MCP_PENDING["cloud"] = cloud
         return {"ok": True, "url": url, "callback": MC.CALLBACK,
@@ -831,13 +869,13 @@ def coros_mcp_finish(callback: str) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-def coros_mcp_sleep(days: int = 30) -> dict:
+def coros_mcp_sleep(days: int = 30, region: str = "") -> dict:
     """拉高驰睡眠并写入日汇总（merge，不动佳明已写的字段）。"""
     try:
         from . import coros_mcp as MC
         from .store import Store
 
-        cloud = MC.CorosMcp(HOME, "asia")
+        cloud = MC.CorosMcp(HOME, region or _coros_region())
         rows = cloud.sleep(days)
         store = Store(DB)
         for row in rows:
@@ -858,11 +896,78 @@ def coros_mcp_logout() -> dict:
     try:
         from . import coros_mcp as MC
 
-        MC.CorosMcp(HOME, "asia").clear()
+        MC.CorosMcp(HOME, _coros_region()).clear()
         _MCP_PENDING.pop("cloud", None)
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+# ---------------------------------------------------------------- Keep
+def _mask_phone(p: str) -> str:
+    p = str(p or "")
+    return (p[:3] + "****" + p[-4:]) if len(p) >= 8 else p
+
+
+def keep_status() -> dict:
+    """Keep 登录态（只看本地凭据，不联网）。"""
+    try:
+        from . import keep as K
+
+        cloud = K.KeepCloud(HOME)
+        ok = cloud.load()
+        return {"ok": True, "logged_in": ok,
+                "mobile": _mask_phone(cloud.mobile) if ok else "",
+                "user_id": cloud.user_id if ok else "",
+                "can_relogin": bool(cloud.mobile and cloud.password)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def keep_login(mobile: str, password: str) -> dict:
+    """账号密码登录 Keep（私有接口）。账密用 secretstore 加密后存 0600。"""
+    if not mobile or not password:
+        return {"ok": False, "error": "账号和密码都要填"}
+    from . import keep as K
+
+    cloud = K.KeepCloud(HOME)
+    cloud.load()
+    try:
+        r = cloud.login(mobile, password)
+    except K.KeepError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "user_id": r.get("user_id"), "mobile": _mask_phone(mobile)}
+
+
+def keep_logout() -> dict:
+    try:
+        from . import keep as K
+
+        K.KeepCloud(HOME).clear()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def keep_sync(days: int = 30, mobile: str = "", password: str = "") -> dict:
+    """拉 Keep 运动摘要并写入 activities（source=keep，无轨迹）。"""
+    from . import keep as K
+    from .store import Store
+
+    store = Store(DB)
+    try:
+        r = K.sync(store, HOME, days=days, mobile=mobile, password=password)
+        return {"ok": True, **r}
+    except K.KeepAuthError as e:
+        return {"ok": False, "need_login": True, "error": str(e)}
+    except K.KeepError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        store.conn.close()
 
 
 def coros_logout() -> dict:
@@ -894,7 +999,7 @@ def coros_sync(days: int = 30, email: str = "", password: str = "") -> dict:
     try:
         from . import coros_mcp as MC
 
-        if MC.CorosMcp(HOME, "asia").status()["authorized"]:
+        if MC.CorosMcp(HOME, _coros_region()).status()["authorized"]:
             sleep_days = int(coros_mcp_sleep(days).get("sleep_days") or 0)
     except Exception as e:
         from . import diag as _dg
