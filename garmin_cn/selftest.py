@@ -4216,6 +4216,25 @@ def run() -> int:
     assert 'window.gcTick&&window.gcTick()' in (KT / "MainActivity.kt").read_text(encoding="utf-8"), \
         "原生没有在生成期间定时调用 gcTick"
 
+    # ---- 训练计划的按日覆盖：比赛日替换后，周量口径必须与 7 天课表相加一致 ----
+    from garmin_cn import raceplan as _RP
+
+    if _RP.available():
+        assert _RP.day_info(dt.date(2027, 6, 1)) is None, "计划区间外的日期不该有课次"
+        _wk = 4
+        _d0 = _RP.span()[0] + dt.timedelta(days=(_wk - 1) * 7)
+        _rows = _RP.week_rows(_d0)
+        _sum_km = sum(r["km"] for r in _rows)
+        _info = _RP.day_info(_d0)
+        assert abs(_sum_km - _info["week_km"]) <= 1.0, \
+            (f"第 {_wk} 周周量口径不一致：7 天合计 {_sum_km:.1f} vs 卡头 {_info['week_km']}")
+        _ov = _RP.overrides().get(str(_wk)) or {}
+        for _iso, _o in (_ov.get("days") or {}).items():
+            _hit = _RP.day_info(dt.date.fromisoformat(_iso))
+            assert _hit and _hit["kind"] == _o.get("kind", _hit["kind"]), \
+                f"日内覆盖没生效：{_iso}"
+            assert abs(_hit["km"] - float(_o.get("km", _hit["km"]))) < 0.1, \
+                f"日内覆盖的里程没写进去：{_iso}"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
