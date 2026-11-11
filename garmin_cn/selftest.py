@@ -3206,8 +3206,19 @@ def run() -> int:
         ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8"), \
         "AndroidManifest 没声明授权页"
     _kt_mcp = (KT / "MainActivity.kt").read_text(encoding="utf-8")
-    assert '"corosSleep" -> askCorosSleep()' in _kt_mcp, "「我的」里的高驰睡眠入口没接上"
-    assert "corosSleep" in U.me_page(), "「我的」里没有高驰睡眠这一行"
+    assert '"corosSleep" -> askCorosSleep()' in _kt_mcp, \
+        "旧页面缓存里的 corosSleep 入口没接上，点了会没反应"
+    assert "private fun askSleepAfterLogin" in _kt_mcp and "askSleepAfterLogin()" in _kt_mcp, \
+        "高驰登录成功后没有询问睡眠授权意向"
+    assert 'apiCall("coros_mcp_login_url", "asia")' not in _kt_mcp, \
+        "睡眠授权页把区域写死成国内，欧/美区账号会跳到错误网关"
+    assert "def _coros_region" in _api_src, \
+        "MCP 区域没有跟随高驰账号，欧/美区会跳到错误网关"
+    _me = U.me_page()
+    assert "高驰睡眠" not in _me, "「我的」里还留着独立的高驰睡眠行（应并进高驰那一行）"
+    _ui_src = (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8")
+    assert "睡眠已授权" in _ui_src and "睡眠未授权" in _ui_src, \
+        "高驰行没带睡眠授权状态，用户看不出还差一步"
 
     # ---- 1.0.2：高驰跑步动态（触地 / 垂直振幅）的字段与量纲收敛 --------
     from garmin_cn import coros_activity as _CA
