@@ -410,6 +410,7 @@ def weight_review(days: int = 60, date: str | None = None) -> dict:
         w = num(r.get("weight_kg"))
         if w:
             daily.setdefault(r["date"], []).append(w)
+    for r in rows:
         # body 表的列名是 body_fat_pct / muscle_kg（不是 fat_pct）
         f = num(r.get("body_fat_pct"))
         if f:
@@ -445,7 +446,8 @@ def weight_review(days: int = 60, date: str | None = None) -> dict:
         # 字段名以 metrics.derive 的 body 段为准（body_fat / muscle，不是 fat / muscle_kg）
         "body": {k: bd.get(k) for k in
                  ("latest", "delta_w", "delta_4w", "body_fat", "fat_delta", "muscle",
-                  "muscle_delta", "bmr", "water", "visceral", "verdict", "source", "source_label")
+                  "muscle_delta", "bmr", "water", "visceral", "verdict", "source", "source_label",
+                  "body_fat_any", "body_fat_any_src", "muscle_any", "water_any")
                  if bd.get(k) is not None},
         # nutrition 的目标热量叫 target_kcal；没有体重时 ok=False、这些字段全缺
         "nutrition_target": {k: nt.get(k) for k in
@@ -480,7 +482,9 @@ def weight_review(days: int = 60, date: str | None = None) -> dict:
 }}
 
 纪律：
-- 数据里没有体脂/肌肉量，就不要提这两项，只说体重。
+- body_fat_any / muscle_any 是另一台秤的读数（body_fat_any_src 写明来源）：
+  可以提，但要说清「与体重不是同一台秤」，别当成同一天的同一口径。
+- 连 body_fat_any 都没有，才不要提体脂/肌肉量，只说体重。
 - 变化速率要和训练量对照：周跑量涨了 20% 还在掉体重，要提醒补碳水和睡眠。
 - 不做医疗诊断。出现连续快速下降（周降幅超过体重 1%）只提醒，不下结论。"""
 

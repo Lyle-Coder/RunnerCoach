@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 import json
 import os
 import re
@@ -20,6 +21,7 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib.error
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -3028,7 +3030,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 112' in (
+    assert 'versionCode = 113' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -3826,6 +3828,168 @@ def run() -> int:
     assert 'apiCall("keep_sync", 30, kMobile, kPwd)' in _kt5, "App 同步没带 Keep"
     assert "fun saveKeep" in (KT / "Secrets.kt").read_text(encoding="utf-8"), \
         "Keep 凭据没走 Keystore"
+
+    # ---- 手动补录小睡要影响睡眠得分；设备自带小睡则不重复估算 --------
+    import garmin_cn.manual as _MN
+    from garmin_cn import metrics as _M2
+
+    _mhome = Path(tempfile.mkdtemp())
+    _mpath = _mhome / "manual.json"
+    _mstore = _Store3(_mhome / "sleep.db")
+    _mday = "2026-11-05"
+    _mstore.upsert_daily({"date": _mday, "sleep_total_min": 420,
+                          "sleep_score": 70, "sleep_need_min": 480,
+                          "resting_hr": 50, "hrv_night": 60})
+    with _um2.patch.object(_MN, "PATH", _mpath):
+        _before = _M2.derive(_mstore, _mday)
+        assert _before["sleep"]["score_est"] is None, "没补录就冒出一个估算分"
+        assert _before["sleep"]["score"] == 70
+        _MN.add_nap(_mday, 60, "13:00")
+        _after = _M2.derive(_mstore, _mday)
+        assert _after["sleep"]["score_est"] == 100, \
+            f"补录 60 分小睡后估算分不对：{_after['sleep']['score_est']}"
+        assert _after["sleep"]["nap_eff"] == 60
+        _sp = next(p for p in _after["readiness"]["parts"] if p["name"] == "睡眠")
+        assert _sp["score"] == 100, "恢复度的睡眠分量没跟着补录变"
+        # 设备自带小睡（佳明/高驰）：信任设备算法，不再叠一层估算
+        _mstore.upsert_daily({"date": _mday, "sleep_total_min": 420,
+                              "sleep_score": 70, "nap_min": 45,
+                              "sleep_need_min": 480})
+        _dev = _M2.derive(_mstore, _mday)
+        assert _dev["sleep"]["score_est"] is None, \
+            "设备已经给了小睡，还重复估算会算两遍"
+        assert _dev["sleep"]["score"] == 70
+    try:
+        _mstore.conn.close()
+        (_mhome / "sleep.db").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    # ---- 体成分跨来源：体重来自小米、体脂来自华为，不能按日选首选来源就丢掉
+    from garmin_cn import body as _BD
+
+    _bhome = Path(tempfile.mkdtemp())
+    _bst = _Store3(_bhome / "b.db")
+    _BD.ensure(_bst)
+    _bst.conn.execute(
+        "INSERT INTO body (date, ts, weight_kg, source) VALUES (?,?,?,?)",
+        ("2026-11-03", "2026-11-03 07:00", 65.0, "mi"))
+    _bst.conn.execute(
+        "INSERT INTO body (date, ts, weight_kg, body_fat_pct, muscle_kg, water_pct, source) "
+        "VALUES (?,?,?,?,?,?,?)",
+        ("2026-11-03", "2026-11-03 07:05", 65.0, 18.5, 50.2, 55.0, "huawei"))
+    _bst.conn.commit()
+    _bst.set_meta("body.preferred_source", "mi")
+    _bs = _BD.stats(_bst, "2026-11-03")
+    assert _bs["body_fat"] is None, "主口径不该混用另一台秤的体脂"
+    assert _bs["body_fat_any"] == 18.5 and _bs["body_fat_any_src"] == "华为", \
+        f"教练兜底值没取到另一来源的体脂：{_bs.get('body_fat_any')}"
+    _btxt = _BD.text(_bs)
+    assert "体脂 18.5%" in _btxt and "不同秤" in _btxt, \
+        f"教练上下文没把另一来源的体脂说出来：{_btxt}"
+    try:
+        _bst.conn.close()
+        (_bhome / "b.db").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    # ---- 静息心率：高驰 rhr 与佳明 restingHeartRate 不同算法，基线只比同口径
+    from garmin_cn import metrics as _M3
+
+    _rhist = [{"date": f"2026-11-0{i + 1}", "resting_hr": 50,
+               "rhr_src": "garmin", "raw": '{"restingHeartRate": 50}'}
+              for i in range(6)]
+    _rhist += [{"date": f"2026-11-{i + 1:02d}", "resting_hr": 56,
+                "rhr_src": "coros", "raw": '{"rhr": 56}'}
+               for i in range(6, 12)]
+    _rtoday = {"date": "2026-11-12", "resting_hr": 56, "rhr_src": "coros",
+               "raw": '{"rhr": 56}', "sleep_total_min": 420}
+    _rr = _M3.readiness(_rtoday, _rhist)
+    _rpart = next(p for p in _rr["parts"] if p["name"] == "静息心率")
+    assert "基线 56" in _rpart["detail"], \
+        f"静息心率基线混用了两家口径：{_rpart['detail']}"
+
+    # ---- 拍照识热量：解析模型返回、批量落库、进当日合计 --------
+    from garmin_cn import nutrition as _NT
+    from unittest import mock as _um3
+
+    _mhome2 = Path(tempfile.mkdtemp())
+    _meals_path = _mhome2 / "meals.json"
+    _reply = ('```json\n{"items":[{"name":"米饭","grams":200,"kcal":232,'
+              '"protein_g":4.8,"carb_g":51.6,"fat_g":0.6},'
+              '{"name":"鸡胸","grams":120,"kcal":198,"protein_g":37,'
+              '"carb_g":0,"fat_g":4.2}],"note":"蛋白够，碳水偏少"}\n```')
+    with _um3.patch.object(_NT, "MEALS", _meals_path), \
+            _um3.patch("garmin_cn.llm.chat",
+                       return_value={"text": _reply, "model": "m", "elapsed": 1.2}):
+        _est = _NT.estimate_meal("AAAA", "image/jpeg")
+        assert len(_est["items"]) == 2 and _est["total"]["kcal"] == 430, \
+            f"识热量解析不对：{_est}"
+        assert _est["items"][1]["protein_g"] == 37
+        _saved = _NT.add_meals("2026-11-11", _est["items"])
+        assert _saved["total"]["kcal"] == 430 and _saved["total"]["protein_g"] == 42
+        assert _NT.intake("2026-11-11")["count"] == 2
+    _api_src6 = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    for _fn in ("meal_today", "meal_add", "meal_estimate"):
+        assert f'"{_fn}"' in _api_src6, f"接口白名单漏了 {_fn}"
+    _kt6 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert '"mealShot" -> askMealPhoto()' in _kt6, "教练页的拍照入口没接上"
+    assert 'apiCall("meal_estimate"' in _kt6 and 'apiCall("meal_add"' in _kt6
+    assert "mealShot" in (ROOT / "garmin_cn/aiui.py").read_text(encoding="utf-8")
+
+    # ---- 模型服务：第三方地址纠偏 / 鉴权头自动识别 / 多模态错误 --------
+    from garmin_cn import llm as _LG
+
+    _lhome = Path(tempfile.mkdtemp())
+    with _um3.patch.object(_LG, "CONFIG_PATH", _lhome / "llm_config.json"):
+        assert _LG.normalize_base("https://opencode.ai/inference/go") == \
+            "https://opencode.ai/inference/go/openai/v1", \
+            "OpenCode 地址少了 /openai/v1（会 404）"
+        assert _LG.normalize_base(
+            "https://opencode.ai/inference/go/openai/v1/chat/completions") == \
+            "https://opencode.ai/inference/go/openai/v1", \
+            "粘贴整条接口地址时没去掉尾部，会拼成 /chat/completions/chat/completions"
+        assert _LG.normalize_base("https://api.deepseek.com/v1") == \
+            "https://api.deepseek.com/v1", "普通 OpenAI 兼容地址被纠坏了"
+
+        _cfg0 = _LG.save_config(mode="own", provider="opencode_go", api_key="oc_sk_demo")
+        assert _LG.effective_base(_cfg0).endswith("/go/openai/v1"), \
+            f"OpenCode Go 预设地址不对：{_LG.effective_base(_cfg0)}"
+
+        # 同一份 key：Bearer 被拒 → 自动换 x-api-key，并把结果记住
+        _hits: list[tuple] = []
+
+        def _fake_open(req, timeout=None):
+            _hits.append((req.get_header("Authorization"),
+                          req.get_header("X-api-key"),
+                          req.get_header("X-opencode-session")))
+            if req.get_header("Authorization"):
+                raise urllib.error.HTTPError(
+                    req.full_url, 401, "no", {},
+                    io.BytesIO(b'{"error":"missing api key"}'))
+            return io.BytesIO(b'{"choices":[]}')
+
+        with _um3.patch.object(_LG.urllib.request, "urlopen", _fake_open):
+            _LG._post("https://opencode.ai/inference/go/openai/v1/chat/completions",
+                      "oc_sk_demo", {"model": "m"}, cfg=_cfg0)
+        assert len(_hits) == 2 and _hits[1][1] == "oc_sk_demo", \
+            "401 之后没有换 x-api-key 重试，只认 Bearer 的网关会一直失败"
+        assert _hits[0][2] and str(_hits[0][2]).startswith("ses_"), \
+            "OpenCode 的 x-opencode-session 没带上（Go 网关要求必带）"
+        assert _LG.load_config()["auth_map"].get("opencode.ai") == "x-api-key", \
+            "探测成功的鉴权方式没记住，每次都要多打一次 401"
+        assert _LG._auth_styles(_LG.load_config(), "k",
+                                "https://opencode.ai/x")[0] == "x-api-key", \
+            "记住之后没有优先用生效的那种头"
+
+    _ve = _LG._http_error_raw(400, '{"error":"image input is not supported"}')
+    assert _ve.kind == "vision", f"图片被拒没单独归类（现在是 {_ve.kind}）"
+    _fe = _LG._http_error_raw(403, '{"error":"FreeTierError: free models only in app"}')
+    assert _fe.kind == "model", "免费模型 403 被误判成密钥无效，用户会去换 key"
+    _pe = _LG._http_error_raw(401, '{"error":"invalid api key"}')
+    assert _pe.kind == "auth", "真·密钥错误没有归到 auth"
+    assert "x-api-key" in (ROOT / "garmin_cn/aiui.py").read_text(encoding="utf-8"), \
+        "「模型服务」里没有鉴权方式选择，用户没法手工兜底"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")

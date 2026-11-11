@@ -51,18 +51,38 @@ def baseline(rows: list[dict], key: str, days: int = 28) -> float | None:
     return median(vals)
 
 
+def _rhr_source(row: dict) -> str:
+    """静息心率的来源口径：高驰 `rhr` 和佳明 `restingHeartRate` 是两套算法。
+
+    高驰用睡眠心率预测「晨起坐姿静息心率」，佳明取全天最低 30 分钟均值；
+    同一个人两边能差 2~5 bpm。基线必须按同口径比，否则「比基线高 6 bpm」
+    会把口径差当成状态差。日汇总行的 raw 里保留了原始响应，用它判断来源。
+    """
+    raw = str(row.get("raw") or "")
+    if '"rhr"' in raw:
+        return "coros"
+    if '"restingHeartRate"' in raw:
+        return "garmin"
+    return ""
+
+
 # ---------------- 恢复度 ----------------
-def readiness(today: dict, history: list[dict]) -> dict:
+def readiness(today: dict, history: list[dict],
+              sleep_score: float | None = None) -> dict:
     """0-100 恢复度。权重：睡眠 35% / HRV 30% / 静息心率 20% / 身体电量 15%。
 
     每个分量都会和 28 天基线比较，缺席的分量按剩余权重归一化。
+    `sleep_score` 由调用方传入时优先用它（含手动补录小睡后的估算分），
+    否则读设备原始分。
     """
     parts = []
 
     sleep_min = num(today.get("sleep_total_min"))
-    sleep_score = num(today.get("sleep_score"))
+    override = num(sleep_score)
+    sleep_score = override if override is not None else num(today.get("sleep_score"))
     if sleep_score is not None:
-        parts.append(("睡眠", 0.35, clamp(sleep_score), f"睡眠评分 {sleep_score:.0f}"))
+        tag = "睡眠估算" if override is not None else "睡眠评分"
+        parts.append(("睡眠", 0.35, clamp(sleep_score), f"{tag} {sleep_score:.0f}"))
     elif sleep_min:
         s = clamp(sleep_min / SLEEP_NEED_MIN * 100)
         parts.append(("睡眠", 0.35, s, f"睡眠 {sleep_min/60:.1f} 小时"))
@@ -78,7 +98,12 @@ def readiness(today: dict, history: list[dict]) -> dict:
         parts.append(("HRV", 0.30, s, f"{hrv:.0f} ms / 基线 {hrv_base:.0f}"))
 
     rhr = num(today.get("resting_hr"))
-    rhr_base = baseline(history, "resting_hr")
+    _src = str(today.get("rhr_src") or "")
+    # 只用同口径的日期算基线：高驰与佳明的静息心率算法不同，混着算会把
+    # 「口径差 3 bpm」误判成「状态变差」。同源不足 3 天时退回全部历史。
+    _pool = [r for r in history if not _src or r.get("rhr_src") in (_src, "")]
+    rhr_base = (baseline(_pool or history, "resting_hr")
+                or baseline(history, "resting_hr"))
     if rhr and rhr_base:
         delta = rhr - rhr_base            # 高出基线多少 bpm，正数=偏高
         s = clamp(100 - max(delta, 0) / 6 * 100)
@@ -311,6 +336,10 @@ def derive(store, date: str, window: int = 30) -> dict:
 
     history = store.recent_days(window, end=date)
     today = store.day(date) or (history[-1] if history else {"date": date})
+    # 标出静息心率的来源口径（高驰 rhr / 佳明 restingHeartRate），
+    # 只用于恢复度基线做同口径比较，不落库。
+    for _r in [today, *history]:
+        _r["rhr_src"] = _rhr_source(_r)
     # 今天还没同步时，上面这行会拿「库里最后一天」顶上，但页面标题仍写「今日」。
     # 高驰真机反馈的「App 52 / 这里 45」就是这么来的：45 是前一天的值，
     # 日间波动 5~10 bpm 很正常。把真实数据日期与滞后天数一起交出去，
@@ -332,19 +361,33 @@ def derive(store, date: str, window: int = 30) -> dict:
             if r.get("date") == date:
                 manual.apply_sleep_fix(r, fix, date)
 
+    # 手动补录的小睡：设备（佳明/高驰）肯定没把它算进睡眠评分，所以按
+    # 「主睡眠 + 补录」对需求估一个分，让修正能进恢复度和看板得分。
+    # 设备自带小睡时信任设备算法（高驰的评分本身就含小睡修正），不重算。
+    _nap_eff, _nap_src = manual.merge(today.get("nap_min"), date)
+    _eff_min = (num(today.get("sleep_total_min")) or 0) + (_nap_eff or 0)
+    _need_min = num(today.get("sleep_need_min")) or SLEEP_NEED_MIN
+    _score_device = num(today.get("sleep_score"))
+    _score_est = (round(clamp(_eff_min / _need_min * 100))
+                  if _nap_src == "manual" and _eff_min > 0 and _need_min > 0
+                  else None)
+
     res = {
         "date": date,
         "data_date": data_date,
         "data_stale_days": stale_days,
         "today": today,
         "history": history,
-        "readiness": readiness(today, history),
+        "readiness": readiness(today, history, sleep_score=_score_est),
         "sleep": {
             "total_min": num(today.get("sleep_total_min")),
             "total_h": round((num(today.get("sleep_total_min")) or 0) / 60, 2),
             "nap_min": num(today.get("nap_min")),
+            "nap_eff": _nap_eff or 0,
+            "nap_src": _nap_src,
             "naps": num(today.get("naps")),
-            "score": num(today.get("sleep_score")),
+            "score": _score_device,
+            "score_est": _score_est,
             "deep_min": num(today.get("deep_min")),
             "light_min": num(today.get("light_min")),
             "rem_min": num(today.get("rem_min")),
