@@ -278,6 +278,8 @@ RunnerCoach/
 | [`docs/华为体重自动同步调研.md`](docs/华为体重自动同步调研.md) | 华为健康云已验证协议：三家主机分工、token + x-huid 认证、游标翻页、续期 |
 | [`docs/activity-data-inventory.md`](docs/activity-data-inventory.md) | 国区接口分层与字段清单 |
 | [`docs/发布流程.md`](docs/发布流程.md) | 版本规范、正式签名、打包校验、APK 分发与回滚 |
+| [`docs/iOS迁移评估.md`](docs/iOS迁移评估.md) | 迁移到苹果平台的可行性、分层映射与工作量（暂无 Mac，先做储备） |
+| [`docs/iOS-CI打包调研.md`](docs/iOS-CI打包调研.md) | iOS 打包链路：证书、TestFlight 与 GitHub Actions 的可行路径 |
 | [`docs/隐私说明.md`](docs/隐私说明.md) | 收集什么、存在哪、什么时候出网、怎么删 |
 | [`docs/0.6.0-checklist.md`](docs/0.6.0-checklist.md) | 1.0 发布清单与验收标准 |
 
