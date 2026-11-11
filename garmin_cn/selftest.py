@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 import json
 import os
 import re
@@ -20,6 +21,7 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib.error
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -3934,6 +3936,60 @@ def run() -> int:
     assert '"mealShot" -> askMealPhoto()' in _kt6, "教练页的拍照入口没接上"
     assert 'apiCall("meal_estimate"' in _kt6 and 'apiCall("meal_add"' in _kt6
     assert "mealShot" in (ROOT / "garmin_cn/aiui.py").read_text(encoding="utf-8")
+
+    # ---- 模型服务：第三方地址纠偏 / 鉴权头自动识别 / 多模态错误 --------
+    from garmin_cn import llm as _LG
+
+    _lhome = Path(tempfile.mkdtemp())
+    with _um3.patch.object(_LG, "CONFIG_PATH", _lhome / "llm_config.json"):
+        assert _LG.normalize_base("https://opencode.ai/inference/go") == \
+            "https://opencode.ai/inference/go/openai/v1", \
+            "OpenCode 地址少了 /openai/v1（会 404）"
+        assert _LG.normalize_base(
+            "https://opencode.ai/inference/go/openai/v1/chat/completions") == \
+            "https://opencode.ai/inference/go/openai/v1", \
+            "粘贴整条接口地址时没去掉尾部，会拼成 /chat/completions/chat/completions"
+        assert _LG.normalize_base("https://api.deepseek.com/v1") == \
+            "https://api.deepseek.com/v1", "普通 OpenAI 兼容地址被纠坏了"
+
+        _cfg0 = _LG.save_config(mode="own", provider="opencode_go", api_key="oc_sk_demo")
+        assert _LG.effective_base(_cfg0).endswith("/go/openai/v1"), \
+            f"OpenCode Go 预设地址不对：{_LG.effective_base(_cfg0)}"
+
+        # 同一份 key：Bearer 被拒 → 自动换 x-api-key，并把结果记住
+        _hits: list[tuple] = []
+
+        def _fake_open(req, timeout=None):
+            _hits.append((req.get_header("Authorization"),
+                          req.get_header("X-api-key"),
+                          req.get_header("X-opencode-session")))
+            if req.get_header("Authorization"):
+                raise urllib.error.HTTPError(
+                    req.full_url, 401, "no", {},
+                    io.BytesIO(b'{"error":"missing api key"}'))
+            return io.BytesIO(b'{"choices":[]}')
+
+        with _um3.patch.object(_LG.urllib.request, "urlopen", _fake_open):
+            _LG._post("https://opencode.ai/inference/go/openai/v1/chat/completions",
+                      "oc_sk_demo", {"model": "m"}, cfg=_cfg0)
+        assert len(_hits) == 2 and _hits[1][1] == "oc_sk_demo", \
+            "401 之后没有换 x-api-key 重试，只认 Bearer 的网关会一直失败"
+        assert _hits[0][2] and str(_hits[0][2]).startswith("ses_"), \
+            "OpenCode 的 x-opencode-session 没带上（Go 网关要求必带）"
+        assert _LG.load_config()["auth_map"].get("opencode.ai") == "x-api-key", \
+            "探测成功的鉴权方式没记住，每次都要多打一次 401"
+        assert _LG._auth_styles(_LG.load_config(), "k",
+                                "https://opencode.ai/x")[0] == "x-api-key", \
+            "记住之后没有优先用生效的那种头"
+
+    _ve = _LG._http_error_raw(400, '{"error":"image input is not supported"}')
+    assert _ve.kind == "vision", f"图片被拒没单独归类（现在是 {_ve.kind}）"
+    _fe = _LG._http_error_raw(403, '{"error":"FreeTierError: free models only in app"}')
+    assert _fe.kind == "model", "免费模型 403 被误判成密钥无效，用户会去换 key"
+    _pe = _LG._http_error_raw(401, '{"error":"invalid api key"}')
+    assert _pe.kind == "auth", "真·密钥错误没有归到 auth"
+    assert "x-api-key" in (ROOT / "garmin_cn/aiui.py").read_text(encoding="utf-8"), \
+        "「模型服务」里没有鉴权方式选择，用户没法手工兜底"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
