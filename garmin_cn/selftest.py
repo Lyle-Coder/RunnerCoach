@@ -3030,7 +3030,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 113' in (
+    assert 'versionCode = 114' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -3962,7 +3962,8 @@ def run() -> int:
         def _fake_open(req, timeout=None):
             _hits.append((req.get_header("Authorization"),
                           req.get_header("X-api-key"),
-                          req.get_header("X-opencode-session")))
+                          req.get_header("X-opencode-session"),
+                          req.get_header("User-agent")))
             if req.get_header("Authorization"):
                 raise urllib.error.HTTPError(
                     req.full_url, 401, "no", {},
@@ -3976,11 +3977,35 @@ def run() -> int:
             "401 之后没有换 x-api-key 重试，只认 Bearer 的网关会一直失败"
         assert _hits[0][2] and str(_hits[0][2]).startswith("ses_"), \
             "OpenCode 的 x-opencode-session 没带上（Go 网关要求必带）"
+        # urllib 默认 UA 是 Python-urllib/x.y，Cloudflare 会直接回 403 1010
+        assert _hits[0][3] and str(_hits[0][3]).startswith("RunnerCoach/"), \
+            f"请求没带自己的 User-Agent（现在是 {_hits[0][3]}），Cloudflare 会 1010 拦掉"
         assert _LG.load_config()["auth_map"].get("opencode.ai") == "x-api-key", \
             "探测成功的鉴权方式没记住，每次都要多打一次 401"
         assert _LG._auth_styles(_LG.load_config(), "k",
                                 "https://opencode.ai/x")[0] == "x-api-key", \
             "记住之后没有优先用生效的那种头"
+
+        # 上游明说「Invalid credential」时不该再换头重试——换了也不会好，
+        # 还会把真正的原因盖成 "requires an api key"，用户就查不到方向了。
+        _tries: list[int] = []
+
+        def _fake_401(req, timeout=None):
+            _tries.append(1)
+            raise urllib.error.HTTPError(
+                req.full_url, 401, "no", {},
+                io.BytesIO(b'{"error":{"type":"authentication_error",'
+                           b'"message":"Invalid credential"}}'))
+
+        with _um3.patch.object(_LG.urllib.request, "urlopen", _fake_401):
+            try:
+                _LG._post("https://opencode.ai/inference/go/openai/v1/chat/completions",
+                          "oc_sk_demo", {"model": "m"}, cfg=_LG.load_config())
+                assert False, "401 居然没抛错"
+            except _LG.LLMError as _e4:
+                assert "Invalid credential" in _e4.message, \
+                    f"上游原因被吞掉了，用户没法判断是 key 过期还是填错：{_e4.message}"
+        assert len(_tries) == 1, "key 明确无效还在换头重试，白多打一次 401"
 
     _ve = _LG._http_error_raw(400, '{"error":"image input is not supported"}')
     assert _ve.kind == "vision", f"图片被拒没单独归类（现在是 {_ve.kind}）"
@@ -3988,6 +4013,13 @@ def run() -> int:
     assert _fe.kind == "model", "免费模型 403 被误判成密钥无效，用户会去换 key"
     _pe = _LG._http_error_raw(401, '{"error":"invalid api key"}')
     assert _pe.kind == "auth", "真·密钥错误没有归到 auth"
+    _se = _LG._http_error_raw(400, '{"type":"error","error":{"type":"MissingSessionID"}}')
+    assert _se.kind == "session", "缺会话头被当成普通参数错误，用户会去乱改模型名"
+    # 实测：urllib 默认 UA 打 OpenCode 会被 Cloudflare 回 403 text/plain "error code: 1010"，
+    # 这不是密钥问题，报成「密钥无效」会让用户白折腾半天。
+    _cf = _LG._http_error_raw(403, "error code: 1010")
+    assert _cf.kind == "blocked" and "Cloudflare" in _cf.message, \
+        f"Cloudflare 1010 被归成了 {_cf.kind}，用户会被误导去换 key"
     assert "x-api-key" in (ROOT / "garmin_cn/aiui.py").read_text(encoding="utf-8"), \
         "「模型服务」里没有鉴权方式选择，用户没法手工兜底"
 
