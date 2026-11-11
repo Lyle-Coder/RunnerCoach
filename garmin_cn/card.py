@@ -447,7 +447,7 @@ def build_html(res: dict, sync_at: str | None = None,
 
     # 小睡单独在 nap_min 里，不算进主睡眠时长；睡眠债是「主睡眠 + 小睡」对动态需求算的，
     # 两个数不摆出来，看图的人会以为 7.5 h 就是全部，也看不出债务为什么被抵扣了。
-    nap_today = num(t.get("nap_min")) or 0
+    nap_today = num(sl.get("nap_eff")) or num(t.get("nap_min")) or 0
     nap_note = f" + 小睡 {nap_today:.0f} 分" if nap_today else ""
     debt_nap = "（含小睡）" if ((sl.get("debt") or {}).get("nap_min") or 0) else ""
     # 手动矫正过的夜晚要标出来：不显示佳明评分（没有），改显示矫正时段。
@@ -455,7 +455,10 @@ def build_html(res: dict, sync_at: str | None = None,
     if (t.get("sleep_src") == "manual") and sl.get("start") and sl.get("end"):
         sleep_sub = f"睡眠 · 矫正 {sl['start'][11:16]}–{sl['end'][11:16]}"
     else:
-        sleep_sub = (f"睡眠 · 评 {_f(sl.get('score'))}"
+        _est = num(sl.get("score_est"))
+        _sc = _est if _est is not None else sl.get("score")
+        _tag = "估" if _est is not None else "评"
+        sleep_sub = (f"睡眠 · {_tag} {_f(_sc)}"
                      f"{('+' + f'{nap_today:.0f}′小睡') if nap_today else ''}")
 
     flags = "".join(f'<li>{esc(f["text"])}</li>' for f in res["flags"][:3]) or "<li>没有需要提醒的异常</li>"

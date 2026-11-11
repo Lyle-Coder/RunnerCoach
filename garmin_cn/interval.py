@@ -109,7 +109,12 @@ def _runs(flags: list[bool]) -> list[tuple[bool, int, int]]:
 
 def _seg(chunk: list[dict], fast: bool, smooth: list[float] | None = None,
          a: int = 0, b: int = 0) -> dict | None:
-    """把一段连续采样点折成一行展示数据。距离用速度梯形积分，不依赖累积距离字段。"""
+    """把一段连续采样点折成一行展示数据。
+
+    距离优先用设备累计距离（`dist`，米）的首尾差分，缺失或跳变时才退回
+    速度梯形积分。操场弯道里 GPS 瞬时速度偏低，纯积分会把 1.2 km 的间歇
+    算成 1.1 km，而设备累计距离已经做过跑道/步幅校准，和高驰表内一致。
+    """
     if len(chunk) < 2:
         return None
     dur = (chunk[-1].get("t") or 0) - (chunk[0].get("t") or 0)
@@ -123,6 +128,13 @@ def _seg(chunk: list[dict], fast: bool, smooth: list[float] | None = None,
         s0 = chunk[i - 1].get("spd") or 0.0
         s1 = chunk[i].get("spd") or 0.0
         dist += (s0 + s1) / 2 * dt
+    d0, d1 = chunk[0].get("dist"), chunk[-1].get("dist")
+    if d0 is not None and d1 is not None:
+        cand = float(d1) - float(d0)
+        # 累计距离必须为正且与积分同量级（0.6~1.7）；差太多说明设备跳变
+        # 或单位不对，宁可退回积分也不印一个离谱数字。
+        if cand > 0 and (dist <= 0 or 0.6 <= cand / dist <= 1.7):
+            dist = cand
     spd = dist / dur
     if smooth and b > a:
         spd = sum(smooth[a:b]) / (b - a) or spd
@@ -713,6 +725,11 @@ def detect_coros(detail: dict | None) -> dict | None:
 def check() -> None:
     """离线自检：典型间歇要认出，匀速 / 偶发减速 / 单调加速都不能误报。"""
     assert abs(_split([1, 1, 1, 1, 4, 4, 4, 4])[0] - 2.5) < 1e-9
+    # 有设备累计距离时优先用它：速度积分在操场会少 8%（1.2km → 1.1km）
+    _pts2 = [{"t": i * 5.0, "spd": 3.0, "dist": i * 5.0 * 3.24} for i in range(30)]
+    _s2 = _seg(_pts2, True)
+    assert _s2 and abs(_s2["dist_m"] - 29 * 5 * 3.24) < 1.0, \
+        "有累计距离时仍按速度积分，操场间歇会少一截"
     # 6 组：快 400 m @ 4.2 m/s + 慢 200 m @ 2.6 m/s，采样间隔 5 s
     pts: list[dict] = []
     t, dist = 0.0, 0.0

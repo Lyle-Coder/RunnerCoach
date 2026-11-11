@@ -197,6 +197,15 @@ BODY = """
       <label class="f">API Key</label>
       <input class="f" id="apiKey" type="password" placeholder="sk-…" autocapitalize="off" spellcheck="false">
       <div class="note" id="keyNote">只存在本机 data/llm_config.json（权限 600），不上传。已有：<span id="keyHint">无</span></div>
+
+      <label class="f">鉴权方式</label>
+      <select class="f" id="authStyle">
+        <option value="">自动识别（推荐）</option>
+        <option value="bearer">Authorization: Bearer</option>
+        <option value="x-api-key">x-api-key</option>
+        <option value="both">两个都带</option>
+      </select>
+      <div class="note" id="authNote">自动：先按 Bearer 发，被 401/403 拒绝就换 x-api-key 重试，命中后记住这个域名要哪种头。</div>
     </div>
 
     <div id="platBox" style="display:none">
@@ -424,6 +433,30 @@ async function viewToday(force) {
   ab.onclick = () => analyzeLast(ab, last);
   last.appendChild(ab);
   frag.appendChild(last);
+
+  // 拍照记饮食：识别结果由 App 原生弹框确认；保存后一图流/看板/教练上下文
+  // 读的都是同一份 meals.json，不需要在这里再传一遍。
+  const mealCard = el('div', 'card');
+  mealCard.appendChild(el('h3', null, '今天吃了什么'));
+  mealCard.appendChild(el('div', 'focus',
+    '拍照让教练估热量和三大营养素。照片只用于这一次识别、不留存；记完一图流与看板同步更新。'));
+  const mtxt = el('div', 'note', '正在读取今日记录…');
+  mtxt.style.marginTop = '10px';
+  mealCard.appendChild(mtxt);
+  const mbtn = el('button', 'btn primary', '拍照记饮食');
+  mbtn.style.marginTop = '12px';
+  mbtn.onclick = () => {
+    if (window.GC && GC.action) GC.action('mealShot');
+    else alert('拍照记饮食需要在 App 里使用');
+  };
+  mealCard.appendChild(mbtn);
+  api('meal.today').then(m => {
+    if (!m || !m.ok) { mtxt.textContent = ''; return; }
+    mtxt.textContent = m.kcal
+      ? `今日已记 ${m.kcal} kcal · 蛋白 ${m.protein_g} g · ${m.count || 0} 项`
+      : '今天还没记录';
+  });
+  frag.appendChild(mealCard);
 
   cache.today = frag;
   v.replaceChildren(frag);
@@ -685,6 +718,12 @@ function fillSheet(c) {
   $('#model').placeholder = c.model || '';
   $('#apiKey').value = '';
   $('#keyHint').textContent = c.api_key_hint || '无';
+  $('#authStyle').value = c.auth_style || '';
+  const _authLabel = {bearer: 'Authorization: Bearer', 'x-api-key': 'x-api-key', both: '两个头都带'};
+  $('#authNote').textContent = c.auth_style
+    ? ('已固定用 ' + (_authLabel[c.auth_style] || c.auth_style) + '（失败时不再自动换头）')
+    : ('自动：这个地址上次实测用 ' + (_authLabel[c.auth_effective] || 'Bearer')
+       + (c.session_on ? '；已自动补 x-opencode-session 会话头' : ''));
   /* 官方服务地址出厂内置，界面上不再让用户填；只有勾了「自定义」才显示输入框 */
   const auto = c.platform_auto !== false;
   const cb = $('#platCustom');
@@ -737,6 +776,7 @@ function collect() {
     provider: $('#provider').value,
     base_url: $('#baseUrl').value.trim(),
     model: $('#model').value.trim(),
+    auth_style: $('#authStyle').value,
     platform_auto: !custom
   };
   if (custom) p.platform_base = $('#platBase').value.trim();

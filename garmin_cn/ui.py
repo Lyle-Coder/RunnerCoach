@@ -772,8 +772,12 @@ def home_page() -> str:
     hrv_base = M.baseline(hist, "hrv_night") if hist else None
     rhr_base = M.baseline(hist, "resting_hr") if hist else None
     _sleep_sub = []
-    if sleep.get("score") is not None:
-        _sleep_sub.append(f"评分 {sleep['score']:.0f}")
+    _sc = (sleep.get("score_est") if sleep.get("score_est") is not None
+           else sleep.get("score"))
+    if _sc is not None:
+        _sleep_sub.append(
+            ("估算 " if sleep.get("score_est") is not None else "评分 ")
+            + f"{_sc:.0f}")
     _debt = (sleep.get("debt") or {}).get("deficit_h")
     if _debt:
         _sleep_sub.append(f"7 日欠债 {_debt:.1f}h")

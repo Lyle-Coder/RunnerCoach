@@ -703,7 +703,12 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     atl = L["atl_series"][-len(dates):] if L["atl_series"] else []
 
     tr = res["trends"]
-    sleep_label = "睡眠" + (f" · 评分 {fmt(sl['score'])}" if sl["score"] else "")
+    # 手动补录小睡后给的是估算分：标「估」，别和设备原始评分混为一谈
+    _sleep_sc = (sl.get("score_est") if sl.get("score_est") is not None
+                 else sl.get("score"))
+    _sleep_tag = "估" if sl.get("score_est") is not None else "评"
+    sleep_label = ("睡眠" + (f" · {_sleep_tag} {fmt(_sleep_sc)}"
+                             if _sleep_sc is not None else ""))
     # 指标卡按数据可用性出：佳明六件套（睡眠/HRV/静息心率/电量/压力/步数）
     # 有数据就保持原样；高驰没有的（睡眠分期、电量、压力、步数）自动让位给
     # 高驰真有的指标（VO2max/今日负荷/HRV 基线/今日距离），不留「—」空卡。
@@ -901,7 +906,8 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     </div>
     <p class="sess-why" style="margin-top:12px;font-size:12.5px">
       {esc((sl['start'] or '—')[11:])} 入睡 · {esc((sl['end'] or '—')[11:])} 起床
-      {'· 睡眠评分 ' + fmt(sl['score']) if sl['score'] else ''}
+      {('· 睡眠' + ('估 ' if sl.get('score_est') is not None else '评分 ')
+        + fmt(_sleep_sc)) if _sleep_sc is not None else ''}
       {f"· 佳明动态需求 {fmt(round(sl['debt']['need_avg_min'] / 60, 1), ' h', 1)}/晚" if (sl.get('debt') or {}).get('need_avg_min') else ''}
     </p>
     <p class="m-delta" style="margin-top:6px">{sleep_ratio}</p>

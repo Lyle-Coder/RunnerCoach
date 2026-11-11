@@ -48,6 +48,7 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -445,6 +446,7 @@ class MainActivity : Activity() {
                     "login:garmin" -> openAccount("garmin")
                     "login:coros" -> openAccount("coros")
                     "login:keep" -> openAccount("keep")
+                    "mealShot" -> askMealPhoto()
                     "corosSleep" -> askCorosSleep()
                     "login" -> showLoginPicker()
                     "mi" -> showMiPanel()
@@ -1245,6 +1247,152 @@ class MainActivity : Activity() {
                     askKeepLogin(mobile, pwd, r.optString("error").ifBlank { "未知错误" })
                 }
             }
+        }
+    }
+
+    // ------------------------------------------------------------ 拍照记饮食
+    /** 拍照识热量：图片在原生侧压缩后交给 Python，识别结果确认后才落库。 */
+    private var mealPhotoUri: Uri? = null
+
+    private fun askMealPhoto() {
+        AlertDialog.Builder(this)
+            .setTitle("拍照记饮食")
+            .setItems(arrayOf("拍照", "从相册选")) { _, which ->
+                if (which == 0) takeMealPhoto() else pickMealPhoto()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun takeMealPhoto() {
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME,
+                    "meal_${System.currentTimeMillis()}.jpg")
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            }
+            val uri = contentResolver.insert(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            if (uri == null) {
+                toast("无法创建照片文件")
+                return
+            }
+            mealPhotoUri = uri
+            startActivityForResult(
+                Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                    .putExtra(MediaStore.EXTRA_OUTPUT, uri),
+                REQ_MEAL_SHOT,
+            )
+        } catch (t: Throwable) {
+            toast("打不开相机：${t.message}")
+        }
+    }
+
+    private fun pickMealPhoto() {
+        try {
+            startActivityForResult(
+                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "image/*"
+                },
+                REQ_MEAL_PICK,
+            )
+        } catch (t: Throwable) {
+            toast("打不开相册：${t.message}")
+        }
+    }
+
+    private fun doMealEstimate(uri: Uri) {
+        val card = showLoginCard("正在识别", "让模型看看这餐有多少热量…")
+        thread {
+            val pair = mealImageBase64(uri)
+            if (pair == null) {
+                ui { card.dismiss(); toast("读不出这张照片") }
+                return@thread
+            }
+            val r = apiCall("meal_estimate", pair.first, pair.second)
+            ui {
+                card.dismiss()
+                if (!r.optBoolean("ok")) {
+                    toast("识别失败：${r.optString("error")}")
+                    return@ui
+                }
+                showMealResult(r)
+            }
+        }
+    }
+
+    private fun showMealResult(j: JSONObject) {
+        val items = j.optJSONArray("items") ?: JSONArray()
+        if (items.length() == 0) {
+            toast("没认出食物，换个角度再拍一张")
+            return
+        }
+        val total = j.optJSONObject("total") ?: JSONObject()
+        val sb = StringBuilder()
+        for (i in 0 until items.length()) {
+            val it = items.optJSONObject(i) ?: continue
+            sb.append("· ").append(it.optString("name"))
+                .append("  ").append(it.optInt("kcal")).append(" kcal")
+            val p = it.optDouble("protein_g", 0.0)
+            if (p > 0) sb.append("（蛋白 ").append(p).append(" g）")
+            sb.append("\n")
+        }
+        val note = j.optString("note")
+        if (note.isNotBlank()) sb.append("\n").append(note)
+        AlertDialog.Builder(this)
+            .setTitle("识别结果 · ${total.optInt("kcal")} kcal")
+            .setMessage(sb.toString().trim())
+            .setPositiveButton("记下") { _, _ -> saveMeal(items) }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun saveMeal(items: JSONArray) {
+        thread {
+            val r = apiCall("meal_add", items.toString())
+            ui {
+                if (!r.optBoolean("ok")) {
+                    toast("保存失败：${r.optString("error")}")
+                    return@ui
+                }
+                val kcal = r.optJSONObject("total")?.optInt("kcal") ?: 0
+                toast("已记下 $kcal kcal，一图流和看板已更新")
+                reload()
+            }
+        }
+    }
+
+    /** 压缩到 1280 px / JPEG 80：够模型看，又不会把几 MB 原图塞进桥。 */
+    private fun mealImageBase64(uri: Uri, maxSide: Int = 1280): Pair<String, String>? {
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            contentResolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, bounds)
+            }
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxSide * 2) {
+                sample *= 2
+            }
+            val src = contentResolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                })
+            } ?: return null
+            val scale = maxSide.toFloat() / maxOf(src.width, src.height)
+            val out = if (scale < 1f)
+                Bitmap.createScaledBitmap(src, (src.width * scale).toInt(),
+                    (src.height * scale).toInt(), true)
+            else src
+            val bos = ByteArrayOutputStream()
+            out.compress(Bitmap.CompressFormat.JPEG, 80, bos)
+            if (out !== src) out.recycle()
+            src.recycle()
+            Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP) to "image/jpeg"
+        } catch (t: Throwable) {
+            Log.w(TAG, "meal image", t)
+            null
         }
     }
 
@@ -2052,6 +2200,13 @@ class MainActivity : Activity() {
                 toast("已取消高驰授权")
                 // 登录流程里跳过授权时，活动数据还没同步，不能一起丢掉
                 doSync()
+            }
+            return
+        }
+        if (requestCode == REQ_MEAL_PICK || requestCode == REQ_MEAL_SHOT) {
+            if (resultCode == RESULT_OK) {
+                val uri = if (requestCode == REQ_MEAL_SHOT) mealPhotoUri else data?.data
+                if (uri != null) doMealEstimate(uri) else toast("没拿到照片")
             }
             return
         }
@@ -4049,6 +4204,8 @@ class MainActivity : Activity() {
         /** 相册选素材的请求号。 */
         const val REQ_VIDEO = 1001
         const val REQ_BUNDLE = 1002
+        const val REQ_MEAL_PICK = 1003
+        const val REQ_MEAL_SHOT = 1004
 
         /**
          * 读 HTML 里的导出探针；旧版 Python 没有探针时返回空串，走尺寸兜底。

@@ -33,6 +33,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 # 项目根目录：桌面/Termux 是代码所在目录；APK 里由 GARMIN_HOME 指到 filesDir
@@ -76,6 +77,21 @@ PROVIDERS = {
         "model": "qwen2.5:7b", "key_url": "https://ollama.com",
         "note": "完全离线，数据不出本机；质量取决于本机算力",
     },
+    "opencode_go": {
+        "label": "OpenCode Go", "base_url": "https://opencode.ai/inference/go/openai/v1",
+        "model": "deepseek-v4.1-flash", "key_url": "https://opencode.ai/console",
+        "note": ("订阅制出口，地址必须是 /inference/go/openai/v1；每个请求要带稳定的 "
+                 "x-opencode-session（本 App 自动补）。拍照识热量要选多模态模型，"
+                 "如 mimo-v2.5 / kimi-k3 / qwen3.8-flash"),
+        "session": "opencode",
+    },
+    "opencode_payg": {
+        "label": "OpenCode 按量", "base_url": "https://opencode.ai/inference/openai/v1",
+        "model": "deepseek-v4.1-flash", "key_url": "https://opencode.ai/console",
+        "note": ("同一个 Console key，走按量计费（地址不带 /go）。"
+                 "Go 订阅请选上面那个预设"),
+        "session": "opencode",
+    },
     "custom": {
         "label": "自定义", "base_url": "", "model": "", "key_url": "",
         "note": "任意 OpenAI 兼容服务，自己填地址与模型名",
@@ -116,6 +132,11 @@ DEFAULTS = {
     "platform_sync_at": 0,      # 上次尝试下发的时刻（成功失败都记，避免反复等超时）
     "temperature": 0.6,
     "auto_advice": True,        # 打开看板时自动生成今日建议
+    # 鉴权头：空=自动识别（先 Bearer，401/403 再换 x-api-key）；也可强制
+    # bearer / x-api-key / both。OpenAI 兼容只约定了请求体，没约定 key 放哪个头。
+    "auth_style": "",
+    "auth_map": {},             # {域名: 实际生效的方式}，自动探测命中后记下来
+    "session_id": "",           # OpenCode 网关要求的稳定会话号（ses_…）
 }
 
 CONNECT_TIMEOUT = 12
@@ -191,6 +212,9 @@ def save_config(**patch) -> dict:
                 if k.lower() == "sharecode" and v:
                     cfg["platform_share_code"] = v
             cfg["platform_base"] = head
+    # 地址在保存时就纠成可用形态（少 /openai/v1、多贴 /chat/completions 都会 404），
+    # 界面上也能立刻看到真正会被请求的地址。
+    cfg["base_url"] = normalize_base(cfg.get("base_url") or "", cfg.get("provider") or "")
     _resolve_platform(cfg)
     cfg["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -213,8 +237,13 @@ def public_config() -> dict:
         "mode": cfg["mode"],
         "provider": cfg["provider"],
         "provider_label": prov["label"],
-        "base_url": cfg["base_url"] or prov["base_url"],
+        "base_url": normalize_base(cfg["base_url"] or prov["base_url"], cfg["provider"]),
         "base_url_custom": bool(cfg["base_url"]),
+        "auth_style": cfg.get("auth_style") or "",
+        "auth_effective": (str((cfg.get("auth_map") or {}).get(
+            _host_of(effective_base(cfg))) or "") or "bearer"),
+        "session_on": (_provider_flag(cfg) == "opencode"
+                       or "opencode.ai" in _host_of(effective_base(cfg))),
         "model": cfg["model"] or prov["model"],
         "model_custom": bool(cfg["model"]),
         "api_key_hint": (key[:4] + "…（" + str(len(key)) + " 位）") if key else "",
@@ -231,7 +260,8 @@ def public_config() -> dict:
         "configured": is_configured(cfg),
         "providers": [
             {"id": k, "label": v["label"], "base_url": v["base_url"],
-             "model": v["model"], "key_url": v["key_url"], "note": v["note"]}
+             "model": v["model"], "key_url": v["key_url"], "note": v["note"],
+             "session": bool(v.get("session"))}
             for k, v in PROVIDERS.items()
         ],
     }
@@ -244,11 +274,58 @@ def is_configured(cfg: dict | None = None) -> bool:
     return bool(effective_base(cfg) and cfg.get("api_key"))
 
 
+# 用户手填地址时最常见的两种错法：整条接口地址粘进来，或者只填到网关根。
+_ENDPOINT_SUFFIXES = ("/chat/completions", "/completions", "/responses", "/messages")
+
+# OpenCode 的各条入口路径 —— 它把「计划」和「协议」都编进了路径里，
+# 少一段就是 404，所以这里统一纠成 <base>/openai/v1 这一级。
+_OPENCODE_PATHS = {
+    "": "/inference/openai/v1",
+    "/inference": "/inference/openai/v1",
+    "/inference/go": "/inference/go/openai/v1",
+    "/zen": "/inference/openai/v1",
+    "/zen/go": "/inference/go/openai/v1",
+}
+
+
+def normalize_base(url: str, provider: str = "") -> str:
+    """把地址收拾成「以 /v1 结尾、可以直接拼 /chat/completions」的样子。
+
+    纠三类输入：粘贴了完整接口路径、只填到网关根、OpenCode 那种多段路径。
+    非 OpenCode 的地址原样保留（Ollama 的 /v1、智谱的 /api/paas/v4 都不能动）。
+    """
+    u = (url or "").strip().rstrip("/")
+    if not u:
+        return ""
+    low = u.lower()
+    for suf in _ENDPOINT_SUFFIXES:
+        if low.endswith(suf):
+            u = u[: -len(suf)].rstrip("/")
+            low = u.lower()
+            break
+    sp = urllib.parse.urlsplit(u)
+    if not sp.netloc:
+        return u
+    host, path = sp.netloc.lower(), sp.path.rstrip("/")
+    if host == "opencode.ai" or host.endswith(".opencode.ai"):
+        if path in _OPENCODE_PATHS:
+            path = _OPENCODE_PATHS[path]
+        elif path.endswith("/openai/v1"):
+            pass
+        elif path.endswith("/openai"):
+            path += "/v1"
+        else:
+            path = _OPENCODE_PATHS[""]
+            if provider == "opencode_go":
+                path = _OPENCODE_PATHS["/inference/go"]
+        return urllib.parse.urlunsplit((sp.scheme or "https", sp.netloc, path, "", ""))
+    return u
+
+
 def effective_base(cfg: dict) -> str:
-    if cfg.get("base_url"):
-        return cfg["base_url"].rstrip("/")
     prov = PROVIDERS.get(cfg.get("provider") or DEFAULT_PROVIDER) or {}
-    return (prov.get("base_url") or "").rstrip("/")
+    base = cfg.get("base_url") or prov.get("base_url") or ""
+    return normalize_base(base, cfg.get("provider") or "")
 
 
 def effective_model(cfg: dict) -> str:
@@ -275,17 +352,137 @@ def _endpoint(cfg: dict) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------- HTTP
+AUTH_STYLES = ("bearer", "x-api-key", "both")
+
+
+def _host_of(url: str) -> str:
+    try:
+        return urllib.parse.urlsplit(url).netloc.lower()
+    except Exception:
+        return ""
+
+
+def _auth_headers(style: str, token: str) -> dict:
+    if not token or style == "none":
+        return {}
+    if style == "x-api-key":
+        return {"x-api-key": token}
+    if style == "both":
+        return {"Authorization": f"Bearer {token}", "x-api-key": token}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _auth_styles(cfg: dict | None, token: str, url: str) -> list[str]:
+    """按顺序尝试的鉴权方式。
+
+    OpenAI 兼容只约定了「请求体长什么样」，没约定 key 放哪个头：OpenCode 新的
+    /inference 网关认 `Authorization: Bearer`，老的 zen 网关只认 `x-api-key`，
+    还有的读 `api-key`。用户不该被要求知道这些差异——默认先用主流的 Bearer，
+    401/403 再换头重试，命中后记到 auth_map，下次直接用对的那个。
+    """
+    if not token:
+        return ["none"]
+    if cfg is not None and cfg.get("mode") == "platform":
+        return ["bearer"]
+    forced = (cfg.get("auth_style") or "").strip().lower()
+    if forced in AUTH_STYLES:
+        return [forced]
+    order = ["bearer", "x-api-key"]
+    learned = str((cfg.get("auth_map") or {}).get(_host_of(url)) or "").strip()
+    if learned in order:
+        order.remove(learned)
+        order.insert(0, learned)
+    return order
+
+
+def _remember_auth(host: str, style: str) -> None:
+    """记下某个域名真正吃哪套头。只在不等于当前记录时写盘，避免每次请求都 I/O。"""
+    if not host or style in ("", "none"):
+        return
+    try:
+        cfg = load_config()
+        amap = dict(cfg.get("auth_map") or {})
+        if amap.get(host) == style:
+            return
+        amap[host] = style
+        save_config(auth_map=amap)
+    except Exception:
+        pass
+
+
+def session_id(cfg: dict | None = None) -> str:
+    """稳定的会话号。OpenCode 的 Go 网关要求每个请求都带（用于路由与提示缓存），
+    每次换新的会让缓存全失效，所以生成一次就落盘复用。"""
+    cfg = cfg if cfg is not None else load_config()
+    sid = str(cfg.get("session_id") or "").strip()
+    if sid.startswith("ses_") and len(sid) > 8:
+        return sid
+    sid = "ses_" + uuid.uuid4().hex[:24]
+    cfg["session_id"] = sid
+    try:
+        save_config(session_id=sid)
+    except Exception:
+        pass
+    return sid
+
+
+def _provider_flag(cfg: dict | None) -> str:
+    prov = PROVIDERS.get((cfg or {}).get("provider") or "") or {}
+    return str(prov.get("session") or "")
+
+
+def _session_headers(cfg: dict | None, url: str) -> dict:
+    """OpenCode 专用会话头。别的服务收到未知头一般会忽略，但没必要发。"""
+    if not cfg or cfg.get("mode") == "platform":
+        return {}
+    if "opencode.ai" in _host_of(url) or _provider_flag(cfg) == "opencode":
+        return {"x-opencode-session": session_id(cfg)}
+    return {}
+
+
+def _auth_retryable(raw: str) -> bool:
+    """401/403 是不是「头放错了」。平台分享门禁回 HTML，换头也没用，别瞎试。"""
+    low = (raw or "").lower()
+    return "<html" not in low and "链接不完整" not in low
+
+
 def _post(url: str, token: str, payload: dict, timeout: int = READ_TIMEOUT,
-          stream: bool = False, extra_headers: dict | None = None):
+          stream: bool = False, extra_headers: dict | None = None,
+          cfg: dict | None = None):
+    """POST 到上游，失败时按需换鉴权头重试一次。
+
+    返回 urlopen 的响应；所有失败都抛 LLMError（不再让调用方猜 HTTPError）。
+    """
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=body, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Accept", "text/event-stream" if stream else "application/json")
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
-    for k, v in (extra_headers or {}).items():
-        req.add_header(k, v)
-    return urllib.request.urlopen(req, timeout=timeout)
+    headers = {"Content-Type": "application/json",
+               "Accept": "text/event-stream" if stream else "application/json"}
+    headers.update(_session_headers(cfg, url))
+    headers.update(extra_headers or {})
+    styles = _auth_styles(cfg, token, url)
+    host = _host_of(url)
+    last = (0, "")
+    for idx, style in enumerate(styles):
+        req = urllib.request.Request(url, data=body, method="POST")
+        for k, v in headers.items():
+            req.add_header(k, v)
+        for k, v in _auth_headers(style, token).items():
+            req.add_header(k, v)
+        try:
+            resp = urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            try:
+                raw = e.read().decode("utf-8", "replace")
+            except Exception:
+                raw = ""
+            last = (e.code, raw)
+            if (e.code in (401, 403) and idx < len(styles) - 1
+                    and _auth_retryable(raw)):
+                continue          # 换一种头再试
+            raise _http_error_raw(e.code, raw) from None
+        if idx > 0:
+            _remember_auth(host, style)      # 探测成功，记住这个域名要哪种头
+        return resp
+    raise _http_error_raw(last[0], last[1])
 
 
 def _ready_config() -> dict:
@@ -322,11 +519,16 @@ def _platform_headers(cfg: dict, token: str = "") -> dict:
 
 
 def _http_error(e: urllib.error.HTTPError) -> LLMError:
-    """把上游的状态码翻成「该怎么办」，原始报文留在 detail 里备查。"""
+    """兼容老调用点：先把报文读出来，再交给 _http_error_raw 分类。"""
     try:
         raw = e.read().decode("utf-8", "replace")
     except Exception:
         raw = ""
+    return _http_error_raw(e.code, raw)
+
+
+def _http_error_raw(code: int, raw: str) -> LLMError:
+    """把上游的状态码翻成「该怎么办」，原始报文留在 detail 里备查。"""
     msg = raw
     try:
         obj = json.loads(raw)
@@ -340,18 +542,31 @@ def _http_error(e: urllib.error.HTTPError) -> LLMError:
     except Exception:
         pass
 
-    code = e.code
+    low = (raw or "").lower()
     if code in (401, 403):
         # 平台分享门禁返回的是 HTML「链接不完整」，不是 JSON——这和 key 无效
         # 完全是两回事，别再让用户去检查 API Key。
-        if "<html" in raw.lower() or "链接不完整" in raw or "share" in raw.lower():
+        if "<html" in low or "链接不完整" in raw or "share" in low:
             return LLMError("auth", "平台访问凭证无效（分享链接不完整），请升级到最新版 App", raw)
+        # 403 不全是 key 的问题：免费模型只能在官方客户端里用、账号没开这个模型，
+        # 都会回 403。这两种换 key 也没用，必须说清楚。
+        if "freetier" in low or "free tier" in low or "free-tier" in low:
+            return LLMError("model", "这个免费模型只能在 OpenCode 客户端里用，换付费或 Go 模型", raw)
+        if "model access" in low or "not enabled" in low or "disabled" in low:
+            return LLMError("model", "这个 key 没有该模型的权限，去 Console 开通或换个模型", raw)
         return LLMError("auth", "密钥无效或没有权限，检查 API Key / 平台令牌", raw)
     if code == 402:
         return LLMError("quota", "额度不足，充值或换一个 key", raw)
     if code == 429:
         return LLMError("rate", "请求太频繁或额度用尽，等一会儿再试", raw)
     if code in (400, 422):
+        # 图片被拒和「参数写错」是两件事：前者要换多模态模型，后者要改请求。
+        if any(k in low for k in ("image", "vision", "multimodal", "modality",
+                                  "unsupported content", "content type")):
+            return LLMError(
+                "vision",
+                "当前模型不支持图片输入，换一个多模态模型（如 mimo-v2.5 / kimi-k3 / qwen3.8-flash）",
+                raw)
         return LLMError("request", f"请求被拒绝：{str(msg)[:160]}", raw)
     if code >= 500:
         # 中转站 504 表示本机隧道没应答，不是上游模型故障——提示要指向「电脑没开」
@@ -397,8 +612,10 @@ def chat(messages: list[dict], *, temperature: float | None = None,
 
     t0 = time.time()
     try:
-        resp = _post(url, token, payload, timeout=timeout, extra_headers=extra)
+        resp = _post(url, token, payload, timeout=timeout, extra_headers=extra, cfg=cfg)
         raw = resp.read().decode("utf-8", "replace")
+    except LLMError:
+        raise                      # _post 已经分好类，别再包一层「网络错误」
     except urllib.error.HTTPError as e:
         raise _http_error(e) from None
     except Exception as e:
@@ -447,7 +664,9 @@ def chat_stream(messages: list[dict], *, temperature: float | None = None,
         "stream": True,
     }
     try:
-        resp = _post(url, token, payload, stream=True, extra_headers=extra)
+        resp = _post(url, token, payload, stream=True, extra_headers=extra, cfg=cfg)
+    except LLMError:
+        raise
     except urllib.error.HTTPError as e:
         raise _http_error(e) from None
     except Exception as e:

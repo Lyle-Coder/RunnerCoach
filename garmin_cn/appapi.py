@@ -154,6 +154,7 @@ _API = {
     "coros_mcp_status", "coros_mcp_login_url", "coros_mcp_finish",
     "coros_mcp_sleep", "coros_mcp_logout",
     "keep_status", "keep_login", "keep_logout", "keep_sync",
+    "meal_today", "meal_add", "meal_estimate",
 }
 
 # 模型接口配置（App「设置」写入）：未来的 AI 点评等功能从这里读。
@@ -899,6 +900,47 @@ def coros_mcp_logout() -> dict:
         MC.CorosMcp(HOME, _coros_region()).clear()
         _MCP_PENDING.pop("cloud", None)
         return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+# ---------------------------------------------------------------- 饮食 / 拍照识热量
+def meal_today(date: str = "") -> dict:
+    """当天已记录的饮食合计（meals.json）。"""
+    from . import nutrition as N
+
+    d = date or dt.date.today().isoformat()
+    data = N.intake(d)
+    # intake 的 ok 表示「有没有记录」，别让它把接口层的 ok=True 覆盖掉
+    has = bool(data.pop("ok", False))
+    return {"ok": True, "date": d, "has": has, **data}
+
+
+def meal_add(items, date: str = "") -> dict:
+    """把识别/编辑后的食物写进 meals.json，一图流与教练上下文随后自动读到。"""
+    from . import nutrition as N
+
+    d = date or dt.date.today().isoformat()
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except ValueError:
+            return {"ok": False, "error": "items 不是合法 JSON"}
+    if not isinstance(items, list) or not items:
+        return {"ok": False, "error": "没有可记录的食物"}
+    r = N.add_meals(d, items)
+    return {"ok": True, "date": d, **r}
+
+
+def meal_estimate(image_b64: str, mime: str = "image/jpeg") -> dict:
+    """拍照识热量：图片交给视觉模型，返回食物清单与营养估算（不落库）。"""
+    from . import llm
+    from . import nutrition as N
+
+    try:
+        return {"ok": True, **N.estimate_meal(image_b64, mime or "image/jpeg")}
+    except llm.LLMError as e:
+        return {"ok": False, "error": e.message, "code": e.kind}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
