@@ -1457,8 +1457,17 @@ def _backfill_coros(span_days: int = COROS_SPAN_DAYS) -> dict:
 
     floor = _backfill_floor(today, cached)
     if cur > floor and not fresh:
-        got = C.earliest_activity(HOME)          # 两次请求；结果缓存 30 天
-        if got or cached is None:
+        # 探测「最早一条活动」失败不该拖垮整段补历史：拿不到就沿用旧停止线
+        # 继续补，下次刷新再试。真机上 /activity/query 的 startTime 是 int
+        # 毫秒时间戳，以前会在这里抛 TypeError 一直冒到 backfill_next。
+        try:
+            got = C.earliest_activity(HOME)      # 两次请求；结果缓存 30 天
+        except Exception as e:
+            from . import diag as _dg
+
+            _dg.log_exc("coros.earliest", e)
+            got = None
+        if got is not None and (got or cached is None):
             store = Store(DB)
             try:
                 store.set_meta(COROS_EARLIEST_META, got or "")
@@ -1515,18 +1524,42 @@ def backfill_next(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
 
     两个数据源各有自己的游标与停止线（佳明看活动列表最早一条，高驰看
     列表 totalCount），互不影响；只有一个账号时另一侧直接跳过。
+
+    **单侧异常必须就地兜住**：以前任何一侧抛出去，异常会一路冒到 `call()`，
+    另一侧已经跑完的结果也一起丢掉，用户只看到一句
+    "TypeError: 'int' object is not subscriptable"。现在转成该侧的
+    ok=false，另一侧照常推进游标。
     """
-    g = _backfill_garmin(span_days)
-    c = _backfill_coros()
+    def _guard(tag: str, fn) -> dict:
+        try:
+            return fn()
+        except Exception as e:
+            from . import diag as _dg
+
+            _dg.log_exc(f"backfill:{tag}", e)
+            return {"ok": False, "done": False, "ran": True,
+                    "start": "", "end": "", "fetched": 0, "skipped": 0,
+                    "error": f"{type(e).__name__}: {e}"}
+
+    g = _guard("garmin", lambda: _backfill_garmin(span_days))
+    c = _guard("coros", lambda: _backfill_coros())
     parts = [p for p in (g, c) if p.get("ran")]
     failed = [p for p in parts if not p.get("ok")]
     if failed:
         f = failed[0]
+        # 失败也要带回两侧的明细：单侧炸掉时，另一侧其实已经推进了游标，
+        # App 和诊断日志都得看得见，否则「补历史没反应」无从排查。
         return {"ok": False, "done": False,
                 "start": f.get("start", ""), "end": f.get("end", ""),
                 "need_login": any(p.get("need_login") for p in failed),
                 "need_mfa": any(p.get("need_mfa") for p in failed),
-                "error": f.get("error") or "补全失败"}
+                "error": f.get("error") or "补全失败",
+                "garmin": {"done": g.get("done"), "ran": g.get("ran"),
+                           "ok": g.get("ok"), "start": g.get("start"),
+                           "end": g.get("end")},
+                "coros": {"done": c.get("done"), "ran": c.get("ran"),
+                          "ok": c.get("ok"), "start": c.get("start"),
+                          "end": c.get("end")}}
     done = bool(g.get("done", True)) and bool(c.get("done", True))
     ran = parts[0] if parts else {}
     return {

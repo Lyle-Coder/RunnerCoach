@@ -146,6 +146,28 @@ def _day_key(iso: str) -> str:
     return iso.replace("-", "")[:8]
 
 
+def _any_day(v) -> str | None:
+    """把活动列表里的 startTime 统一成 YYYY-MM-DD，形状再怪也不抛异常。
+
+    真机上 `/activity/query` 的 startTime 是**毫秒时间戳 int**（也有接口给
+    "2026-11-10 07:00:00" / "20261110" / 秒级数字串）。`earliest_activity`
+    以前直接写 `(startTime or "")[:10]`，遇到 int 就抛
+    `'int' object is not subscriptable`，异常一路冒到 `backfill_next`，
+    整轮补历史（连佳明那段）都跟着失败。这里做唯一的容错入口：
+      数字/数字串 → 走 _ts 按时区换算；其余字符串 → 走 _iso 取日期部分。
+    """
+    if v in (None, ""):
+        return None
+    s = str(v).strip()
+    # 8 位 YYYYMMDD 是日期不是 epoch，必须先认，否则会被当时间戳丢掉
+    if len(s) == 8 and s.isdigit():
+        return _iso(s)
+    if isinstance(v, (int, float)) or s.lstrip("-").isdigit():
+        ts = _ts(v)                  # 毫秒/秒级 epoch，按本地时区换算
+        return ts[:10] if ts else None
+    return _iso(s)                   # "2026-11-10 07:00:00" / "2026/11/10"
+
+
 def _ts(v) -> str | None:
     """epoch 秒/毫秒 → 本地 "YYYY-MM-DDTHH:MM:SS"（与佳明 startTimeLocal 同形）。"""
     if v in (None, ""):
@@ -406,9 +428,13 @@ class CorosCloud:
                 "pageNumber": page, "size": size,
             })
             data = out.get("data") or {}
+            if not isinstance(data, dict):
+                break
             batch = data.get("dataList") or data.get("list") or []
+            if not isinstance(batch, list):
+                break
             items.extend(batch)
-            total = data.get("totalCount") or data.get("count") or len(items)
+            total = _num(data.get("totalCount") or data.get("count")) or len(items)
             if not batch or len(items) >= total or len(items) >= limit:
                 break
             page += 1
@@ -427,7 +453,8 @@ class CorosCloud:
         cal = _num(a.get("calorie"))
         return {
             "activity_id": str(aid),
-            "date": (start_ts or "")[:10] or _iso(a.get("happenDay")),
+            "date": (_ts(a.get("startTime")) or "")[:10]
+                    or _any_day(a.get("happenDay")),
             "start_ts": start_ts,
             "type": SPORT_TYPE.get(a.get("sportType"), "other"),
             "name": a.get("name") or a.get("remark") or "高驰活动",
@@ -647,7 +674,11 @@ def earliest_activity(home: Path, years: int = 8) -> str:
         out = cloud._req("GET", "/activity/query",
                          params={**params, "pageNumber": page})
         data = out.get("data") or {}
+        if not isinstance(data, dict):
+            return [], 0
         rows = data.get("dataList") or data.get("list") or []
+        if not isinstance(rows, list):
+            return [], 0
         total = int(_num(data.get("totalCount") or data.get("count")) or 0)
         return rows, total or len(rows)
 
@@ -658,7 +689,8 @@ def earliest_activity(home: Path, years: int = 8) -> str:
     last = max(1, -(-total // size))
     if last > 1:
         rows, _ = _batch(last)
-    dates = [(r.get("startTime") or "")[:10] for r in (rows or [])
-             if isinstance(r, dict)]
-    dates = [d for d in dates if len(d) == 10]
+    # startTime 可能是 int 毫秒时间戳；统一走 _any_day，绝不直接切片
+    dates = [_any_day(r.get("startTime")) or _any_day(r.get("happenDay"))
+             for r in (rows or []) if isinstance(r, dict)]
+    dates = [d for d in dates if d and len(d) == 10 and d[4] == "-"]
     return min(dates) if dates else ""
