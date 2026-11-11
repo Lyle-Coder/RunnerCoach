@@ -3028,7 +3028,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 111' in (
+    assert 'versionCode = 112' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -3231,14 +3231,18 @@ def run() -> int:
     assert _near(_CA.dynamics({"avgGroundContactTime": 0.245,
                               "avgVerticalOscillation": 0.085}), (245, 8.5)), \
         "秒/米量纲没有换算成毫秒/厘米"
-    assert _near(_CA.dynamics({"runningDynamics": {"gct": 268, "vosc": 9.1}}),
-                 (268, 9.1)), "嵌在 runningDynamics 里的字段没找到"
     assert _CA.dynamics({"avgGct": 9999, "avgVerticalOscillation": 120}) == (None, None), \
         "离谱量纲没被丢掉，卡片会印出错误数量级"
     assert _CA.dynamics(None) == (None, None), "空 summary 没兜住"
+    # 真机 summary 可能全 0，要靠 graphList 的均值（按 key 匹配，不看顺序）
+    _graph = {"graphList": [
+        {"key": "groundTime", "graphItem": {"avg": 260}},
+        {"key": "verticalVibration", "graphItem": {"avg": 84}}]}
+    assert _CA.dynamics(_graph) == (260.0, 8.4), "graphList 的均值没取到"
+    # 不递归进分圈/逐点层：那里是单圈值，当全程会印错
     _deep = {"summary": {"sportType": 100}, "runAbility": {"core": {"avgGct": 268, "vosc": 9.1}}}
-    assert _CA.dynamics(_deep) == (268.0, 9.1), \
-        "跑步动态藏在明细深层时找不到（只扫 summary 是不够的）"
+    assert _CA.dynamics(_deep) == (None, None), \
+        "又开始递归进分圈/采样层找跑姿了，容易把单圈值当全程"
     assert "runAbility{core}" in _CA.key_tree(_deep), "键树诊断没把子键列出来"
     _real = {"summary": {"avgGroundTime": 245, "avgVertVibration": 8.6, "avgVertRatio": 7.4}}
     assert _CA.dynamics(_real) == (245.0, 8.6), "高驰真机字段（avgGroundTime/avgVertVibration）没命中"
@@ -3679,8 +3683,10 @@ def run() -> int:
                                      descriptions=["A", "B", "C", "D", "E"])
         assert "Z1<em>A</em>" in _zb_custom and "Z5<em>E</em>" in _zb_custom
         _zb_coros = _AC4.zone_block([1, 2, 3, 4, 5, 6], "心率分区", coros=True)
-        assert "热身" not in _zb_coros and _zb_coros.count("<em></em>") == 6, \
+        assert "热身" not in _zb_coros and "轻松" not in _zb_coros, \
             "高驰是自己的六区口径，不能套佳明的名称"
+        for _n in ("恢复", "有氧耐力", "有氧动力", "阈值", "无氧耐力", "无氧动力"):
+            assert f"<em>{_n}</em>" in _zb_coros, f"高驰六区少了「{_n}」"
 
         _rz = _RC4._zones({"hrTimeInZone_1": 10, "hrTimeInZone_5": 20})
         assert [x[1] for x in _rz] == _garmin_names, "赛后复盘图也要用同一套名称"
