@@ -3028,7 +3028,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 111' in (
+    assert 'versionCode = 112' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -3206,8 +3206,19 @@ def run() -> int:
         ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8"), \
         "AndroidManifest 没声明授权页"
     _kt_mcp = (KT / "MainActivity.kt").read_text(encoding="utf-8")
-    assert '"corosSleep" -> askCorosSleep()' in _kt_mcp, "「我的」里的高驰睡眠入口没接上"
-    assert "corosSleep" in U.me_page(), "「我的」里没有高驰睡眠这一行"
+    assert '"corosSleep" -> askCorosSleep()' in _kt_mcp, \
+        "旧页面缓存里的 corosSleep 入口没接上，点了会没反应"
+    assert "private fun askSleepAfterLogin" in _kt_mcp and "askSleepAfterLogin()" in _kt_mcp, \
+        "高驰登录成功后没有询问睡眠授权意向"
+    assert 'apiCall("coros_mcp_login_url", "asia")' not in _kt_mcp, \
+        "睡眠授权页把区域写死成国内，欧/美区账号会跳到错误网关"
+    assert "def _coros_region" in _api_src, \
+        "MCP 区域没有跟随高驰账号，欧/美区会跳到错误网关"
+    _me = U.me_page()
+    assert "高驰睡眠" not in _me, "「我的」里还留着独立的高驰睡眠行（应并进高驰那一行）"
+    _ui_src = (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8")
+    assert "睡眠已授权" in _ui_src and "睡眠未授权" in _ui_src, \
+        "高驰行没带睡眠授权状态，用户看不出还差一步"
 
     # ---- 1.0.2：高驰跑步动态（触地 / 垂直振幅）的字段与量纲收敛 --------
     from garmin_cn import coros_activity as _CA
@@ -3220,14 +3231,18 @@ def run() -> int:
     assert _near(_CA.dynamics({"avgGroundContactTime": 0.245,
                               "avgVerticalOscillation": 0.085}), (245, 8.5)), \
         "秒/米量纲没有换算成毫秒/厘米"
-    assert _near(_CA.dynamics({"runningDynamics": {"gct": 268, "vosc": 9.1}}),
-                 (268, 9.1)), "嵌在 runningDynamics 里的字段没找到"
     assert _CA.dynamics({"avgGct": 9999, "avgVerticalOscillation": 120}) == (None, None), \
         "离谱量纲没被丢掉，卡片会印出错误数量级"
     assert _CA.dynamics(None) == (None, None), "空 summary 没兜住"
+    # 真机 summary 可能全 0，要靠 graphList 的均值（按 key 匹配，不看顺序）
+    _graph = {"graphList": [
+        {"key": "groundTime", "graphItem": {"avg": 260}},
+        {"key": "verticalVibration", "graphItem": {"avg": 84}}]}
+    assert _CA.dynamics(_graph) == (260.0, 8.4), "graphList 的均值没取到"
+    # 不递归进分圈/逐点层：那里是单圈值，当全程会印错
     _deep = {"summary": {"sportType": 100}, "runAbility": {"core": {"avgGct": 268, "vosc": 9.1}}}
-    assert _CA.dynamics(_deep) == (268.0, 9.1), \
-        "跑步动态藏在明细深层时找不到（只扫 summary 是不够的）"
+    assert _CA.dynamics(_deep) == (None, None), \
+        "又开始递归进分圈/采样层找跑姿了，容易把单圈值当全程"
     assert "runAbility{core}" in _CA.key_tree(_deep), "键树诊断没把子键列出来"
     _real = {"summary": {"avgGroundTime": 245, "avgVertVibration": 8.6, "avgVertRatio": 7.4}}
     assert _CA.dynamics(_real) == (245.0, 8.6), "高驰真机字段（avgGroundTime/avgVertVibration）没命中"
@@ -3668,8 +3683,10 @@ def run() -> int:
                                      descriptions=["A", "B", "C", "D", "E"])
         assert "Z1<em>A</em>" in _zb_custom and "Z5<em>E</em>" in _zb_custom
         _zb_coros = _AC4.zone_block([1, 2, 3, 4, 5, 6], "心率分区", coros=True)
-        assert "热身" not in _zb_coros and _zb_coros.count("<em></em>") == 6, \
+        assert "热身" not in _zb_coros and "轻松" not in _zb_coros, \
             "高驰是自己的六区口径，不能套佳明的名称"
+        for _n in ("恢复", "有氧耐力", "有氧动力", "阈值", "无氧耐力", "无氧动力"):
+            assert f"<em>{_n}</em>" in _zb_coros, f"高驰六区少了「{_n}」"
 
         _rz = _RC4._zones({"hrTimeInZone_1": 10, "hrTimeInZone_5": 20})
         assert [x[1] for x in _rz] == _garmin_names, "赛后复盘图也要用同一套名称"
@@ -3687,6 +3704,128 @@ def run() -> int:
         "Z5 占比文案要跟着分区名称联动"
     assert "text-overflow:ellipsis" in _acsrc4 and "text-overflow:ellipsis" in _rcsrc4, \
         "自定义名过长会撑破卡片，必须有省略兜底"
+
+    # ------------------------------------------------------------ 跨源活动去重
+    # 同一次跑步可能被佳明和高驰各记一条（将来还有 Keep）：只跨源判、
+    # 同源永不合并，保留优先级 佳明 > 高驰 > Keep。
+    from garmin_cn import dedupe as _DD
+
+    def _act(aid, src, day, hms, dist, dur, kind="running"):
+        return {"activity_id": aid, "source": src, "date": day,
+                "start_ts": f"{day} {hms}", "distance_m": dist,
+                "duration_s": dur, "type": kind}
+
+    _g = _act("g1", "garmin", "2026-11-01", "07:00:00", 10000, 3000)
+    _c = _act("c1", "coros", "2026-11-01", "07:00:40", 10050, 3040)
+    _kept, _drop = _DD.pick_unique([_c, _g])
+    assert [x["activity_id"] for x in _kept] == ["g1"], "跨源同一次跑步没去重"
+    assert _drop and _drop[0]["duplicate_of"] == "g1", "没优先保留佳明"
+
+    assert len(_DD.pick_unique(
+        [_g, _act("g2", "garmin", "2026-11-01", "07:00:40", 10050, 3040)])[0]) == 2, \
+        "同源两条被当成重复（同一天两练是真实的）"
+    assert len(_DD.pick_unique(
+        [_g, _act("c2", "coros", "2026-11-01", "07:12:00", 10000, 3000)])[0]) == 2, \
+        "时间差 12 分钟还算重复"
+    assert len(_DD.pick_unique(
+        [_g, _act("c3", "coros", "2026-11-01", "07:00:30", 12000, 3000)])[0]) == 2, \
+        "距离差 20% 还算重复"
+    assert len(_DD.pick_unique(
+        [_g, _act("k1", "keep", "2026-11-01", "07:00:30", 10000, 3000, "cycling")])[0]) == 2, \
+        "跑步和骑行被互判了"
+    assert len(_DD.pick_unique(
+        [_act("g9", "garmin", "2026-11-01", "07:00:00", 400, 200),
+         _act("c9", "coros", "2026-11-01", "07:00:20", 400, 200)])[0]) == 2, \
+        "500 m 以下的活动不该参与去重"
+
+    # Store 集成：列表与 stats 都要是去重后的数
+    _ddb = Path(tempfile.mkdtemp()) / "dedupe.db"
+    _ds = _Store3(_ddb)
+    for _r in (_g, _c, _act("g3", "garmin", "2026-11-02", "07:00:00", 8000, 2400)):
+        _ds.conn.execute(
+            "INSERT INTO activities (activity_id,date,start_ts,type,duration_s,distance_m,source) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (_r["activity_id"], _r["date"], _r["start_ts"], _r["type"],
+             _r["duration_s"], _r["distance_m"], _r["source"]))
+    _ds.conn.commit()
+    assert len(_ds.activities("2026-11-01", "2026-11-02")) == 2, "Store 列表没去重"
+    assert _ds.stats()["activities"] == 2, "活动统计数没去重"
+    try:
+        _ds.conn.close()
+        _ddb.unlink(missing_ok=True)
+    except OSError:
+        pass
+    assert "DD.dedupe(out)" in (ROOT / "garmin_cn/store.py").read_text(encoding="utf-8"), \
+        "Store.activities 没接去重"
+
+    # ------------------------------------------------------------ Keep 接入
+    from garmin_cn import keep as _K
+    from garmin_cn import secretstore as _SS
+
+    if _SS.available():
+        _cipher = _SS.protect("13800138000|pw|token")
+        assert _SS.unprotect(_cipher) == "13800138000|pw|token", "DPAPI 加解密回环失败"
+
+    _row = _K.parse({"startTime": 1762732800000, "duration": 3000, "distance": 10000,
+                     "calorie": 600, "dataType": "outdoorRunning",
+                     "heartRate": {"averageHeartRate": 152}},
+                    "abc_9223370441312156007_rn")
+    assert _row["activity_id"] == "keep_9223370441312156007"
+    assert _row["type"] == "running" and _row["distance_m"] == 10000
+    assert abs(_row["pace_s_km"] - 300) < 0.01 and _row["avg_hr"] == 152
+    assert _row["source"] == "keep"
+    assert _K.parse({"startTime": 1762732800000, "duration": 0, "distance": 0}, "x") is None, \
+        "没有时长/距离的 Keep 记录不该入库"
+
+    _khome = Path(tempfile.mkdtemp())
+    _kc = _K.KeepCloud(_khome)
+    _kc.mobile, _kc.password, _kc.token = "13800138000", "pw", "tok"
+    _kc.token_at, _kc.device_id = time.time(), "dev"
+    _kc.save()
+    _kc2 = _K.KeepCloud(_khome)
+    assert _kc2.load() and _kc2.token == "tok", "Keep 凭据存不进去"
+    if _SS.available():
+        assert _kc2.password == "pw", "加密保存后解不出密码，过期就没法自动重登"
+        _raw = (_khome / "data" / "keep_auth.json").read_text(encoding="utf-8")
+        assert "13800138000" not in _raw and '"pw"' not in _raw, "Keep 凭据明文落盘了"
+    _kc.clear()
+
+    # token 过期要能自动重登（不联网，mock 掉 login）
+    from unittest import mock as _um2
+
+    _kc3 = _K.KeepCloud(_khome)
+    _kc3.mobile, _kc3.password, _kc3.token = "13800138000", "pw", "old"
+    _kc3.token_at = 0.0
+    _login_calls = {"n": 0}
+
+    def _fake_login(m, p):
+        _login_calls["n"] += 1
+        _kc3.token, _kc3.token_at = "new", time.time()
+        return {"user_id": "u", "token": "new"}
+
+    with _um2.patch.object(_kc3, "login", _fake_login):
+        _kc3.ensure_token()
+    assert _login_calls["n"] == 1 and _kc3.token == "new", "Keep token 过期没有自动重登"
+
+    # Keep 与佳明同一次跑步：去重保留佳明
+    _k2 = {"activity_id": "keep_1", "source": "keep", "date": "2026-11-01",
+           "start_ts": "2026-11-01 07:00:30", "distance_m": 10020,
+           "duration_s": 3010, "type": "running"}
+    _g2 = {"activity_id": "g_x", "source": "garmin", "date": "2026-11-01",
+           "start_ts": "2026-11-01 07:00:00", "distance_m": 10000,
+           "duration_s": 3000, "type": "running"}
+    _kept2, _ = _DD.pick_unique([_g2, _k2])
+    assert len(_kept2) == 1 and _kept2[0]["source"] == "garmin", \
+        "Keep 与佳明同一次跑步时没保留佳明"
+
+    _api_src5 = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    for _fn in ("keep_status", "keep_login", "keep_logout", "keep_sync"):
+        assert f'"{_fn}"' in _api_src5, f"接口白名单漏了 {_fn}"
+    _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert '"login:keep" -> openAccount("keep")' in _kt5, "「我的」里的 Keep 入口没接上"
+    assert 'apiCall("keep_sync", 30, kMobile, kPwd)' in _kt5, "App 同步没带 Keep"
+    assert "fun saveKeep" in (KT / "Secrets.kt").read_text(encoding="utf-8"), \
+        "Keep 凭据没走 Keystore"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")

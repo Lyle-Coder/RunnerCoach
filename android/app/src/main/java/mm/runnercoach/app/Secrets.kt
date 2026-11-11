@@ -44,6 +44,21 @@ class Secrets(ctx: Context) {
             .apply()
     }
 
+    // Keep：同一套 Keystore 加密，键名前缀区分。Keep 的 token 短效，
+    // 过期后要靠这里的手机号+密码自动重登，所以密码必须留着。
+    fun keepMobile(): String? = prefs.getString("keep_mobile", null)
+
+    fun keepPassword(): String? = decrypt("keep_iv", "keep_pwd")
+
+    fun saveKeep(mobile: String, password: String) =
+        saveTo("keep_mobile", "keep_iv", "keep_pwd", mobile, password)
+
+    fun clearKeep() {
+        prefs.edit()
+            .remove("keep_mobile").remove("keep_iv").remove("keep_pwd")
+            .apply()
+    }
+
     fun clear() {
         prefs.edit().clear().apply()
     }
