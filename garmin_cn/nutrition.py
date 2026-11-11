@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from pathlib import Path
 
 from .metrics import num
@@ -66,6 +67,105 @@ def add_meal(date: str, name: str, kcal: float, protein_g: float | None = None,
     MEALS.parent.mkdir(parents=True, exist_ok=True)
     MEALS.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"row": row, "total": intake(date)}
+
+
+def add_meals(date: str, items: list[dict], clock: str | None = None) -> dict:
+    """批量记一餐（拍照识别常见 2~5 个菜），只写一次文件。"""
+    data = load_meals()
+    rows = []
+    for it in items or []:
+        name = str((it or {}).get("name") or "").strip()
+        kcal = num((it or {}).get("kcal"))
+        if not name or not kcal or kcal <= 0:
+            continue
+        row = {
+            "time": clock or dt.datetime.now().strftime("%H:%M"),
+            "name": name[:30],
+            "kcal": round(kcal),
+            "protein_g": round(num(it.get("protein_g")) or 0, 1),
+            "carb_g": round(num(it.get("carb_g")) or 0, 1),
+            "fat_g": round(num(it.get("fat_g")) or 0, 1),
+        }
+        data.setdefault(date, []).append(row)
+        rows.append(row)
+    if rows:
+        MEALS.parent.mkdir(parents=True, exist_ok=True)
+        MEALS.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                         encoding="utf-8")
+    return {"rows": rows, "total": intake(date)}
+
+
+# ---------------------------------------------------------------- 拍照识热量
+MEAL_PROMPT = """你是运动营养师。看照片识别食物，估算**整份**的份量与营养。
+只返回 JSON，不要解释：
+{"items":[{"name":"米饭","grams":200,"kcal":232,"protein_g":4.8,"carb_g":51.6,"fat_g":0.6}],"note":"可选的一句提醒"}
+规则：
+- 按照片里实际可见的份量估，拿不准取常见中位数；
+- 只估照片里有的食物，不要补没看到的菜；
+- kcal / 蛋白 / 碳水 / 脂肪都按整份计，不是每 100 g；
+- 最多 8 项；认不出食物就返回空 items。"""
+
+
+def _json_obj(text: str) -> dict:
+    """容忍 ```json 围栏和前后废话，取第一个 JSON 对象。"""
+    t = str(text or "").strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
+        t = re.sub(r"\s*```$", "", t)
+    i, j = t.find("{"), t.rfind("}")
+    if i >= 0 and j > i:
+        t = t[i:j + 1]
+    try:
+        obj = json.loads(t)
+        return obj if isinstance(obj, dict) else {}
+    except ValueError:
+        return {}
+
+
+def estimate_meal(image_b64: str, mime: str = "image/jpeg") -> dict:
+    """图片（base64）→ 食物清单与营养估算。失败抛 llm.LLMError / ValueError。"""
+    from . import llm
+
+    if not image_b64:
+        raise ValueError("没有图片")
+    msg = [
+        {"role": "system", "content": MEAL_PROMPT},
+        {"role": "user", "content": [
+            {"type": "text", "text": "估算这一餐的热量和三大营养素。"},
+            {"type": "image_url", "image_url": {
+                "url": f"data:{mime or 'image/jpeg'};base64,{image_b64}"}},
+        ]},
+    ]
+    r = llm.chat(msg, temperature=0.2, max_tokens=900)
+    obj = _json_obj(r.get("text") or "")
+    items = []
+    for it in (obj.get("items") or [])[:8]:
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("name") or "").strip()
+        kcal = num(it.get("kcal"))
+        if not name or not kcal or kcal <= 0:
+            continue
+        items.append({
+            "name": name[:30],
+            "grams": round(num(it.get("grams")) or 0),
+            "kcal": round(kcal),
+            "protein_g": round(num(it.get("protein_g")) or 0, 1),
+            "carb_g": round(num(it.get("carb_g")) or 0, 1),
+            "fat_g": round(num(it.get("fat_g")) or 0, 1),
+        })
+    return {
+        "items": items,
+        "total": {
+            "kcal": round(sum(i["kcal"] for i in items)),
+            "protein_g": round(sum(i["protein_g"] for i in items), 1),
+            "carb_g": round(sum(i["carb_g"] for i in items), 1),
+            "fat_g": round(sum(i["fat_g"] for i in items), 1),
+        },
+        "note": str(obj.get("note") or "")[:120],
+        "model": r.get("model"),
+        "elapsed": r.get("elapsed"),
+    }
 
 
 def intake(date: str) -> dict:

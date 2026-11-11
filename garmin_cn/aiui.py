@@ -425,6 +425,30 @@ async function viewToday(force) {
   last.appendChild(ab);
   frag.appendChild(last);
 
+  // 拍照记饮食：识别结果由 App 原生弹框确认；保存后一图流/看板/教练上下文
+  // 读的都是同一份 meals.json，不需要在这里再传一遍。
+  const mealCard = el('div', 'card');
+  mealCard.appendChild(el('h3', null, '今天吃了什么'));
+  mealCard.appendChild(el('div', 'focus',
+    '拍照让教练估热量和三大营养素。照片只用于这一次识别、不留存；记完一图流与看板同步更新。'));
+  const mtxt = el('div', 'note', '正在读取今日记录…');
+  mtxt.style.marginTop = '10px';
+  mealCard.appendChild(mtxt);
+  const mbtn = el('button', 'btn primary', '拍照记饮食');
+  mbtn.style.marginTop = '12px';
+  mbtn.onclick = () => {
+    if (window.GC && GC.action) GC.action('mealShot');
+    else alert('拍照记饮食需要在 App 里使用');
+  };
+  mealCard.appendChild(mbtn);
+  api('meal.today').then(m => {
+    if (!m || !m.ok) { mtxt.textContent = ''; return; }
+    mtxt.textContent = m.kcal
+      ? `今日已记 ${m.kcal} kcal · 蛋白 ${m.protein_g} g · ${m.count || 0} 项`
+      : '今天还没记录';
+  });
+  frag.appendChild(mealCard);
+
   cache.today = frag;
   v.replaceChildren(frag);
 }
