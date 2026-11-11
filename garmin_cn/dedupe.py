@@ -4,7 +4,7 @@
 为什么需要
 ----------
 同一次跑步可能同时被佳明和高驰记录（用户戴两块表，或其中一块只是转存），
-将来接入 Keep 后还会再多一条（Keep 会从手表同步）。如果都算进统计，
+接入 Keep 后还会再多一条（Keep 会从手表同步）。如果都算进统计，
 跑量、活动数、训练负荷都会翻倍，恢复度和 ACWR 也会跟着失真。
 
 判定「同一次」要同时满足
@@ -18,6 +18,14 @@
 
 距离小于 500 m 的活动不参与判定：热身、拉伸、力量课没有可比的里程，
 硬判只会制造误伤。
+
+性能
+----
+切 tab 每次都要重算，不能写成 O(n²)。这里做三件事：
+1. **单源直接返回**：绝大多数用户只有佳明，没有可比的第二条，O(n log n) 排完就走；
+2. 每条只解析一次时间戳与距离，循环里不再重复 `fromisoformat`；
+3. 多源时按天分桶，180 s 的时间差只可能落在当天或相邻一天，
+   内层只比同桶的几条，整体接近 O(n)。
 
 保留谁
 ------
@@ -40,6 +48,7 @@ SOURCE_RANK = {"garmin": 0, "coros": 1, "keep": 2}
 
 _RUN = {"running", "trail_running", "treadmill_running", "track_running", "virtual_run"}
 _BIKE = {"cycling", "road_biking", "mountain_biking", "gravel_cycling", "indoor_cycling"}
+_DAY = 86400.0
 
 
 def source_of(row: dict) -> str:
@@ -66,6 +75,27 @@ def _family(kind) -> str:
     return ""
 
 
+def _day_key(ts: float) -> int:
+    return int(ts // _DAY)
+
+
+def _same_parsed(a: dict, b: dict) -> bool:
+    """两条预解析记录是否同一次（不看来源，来源由调用方先筛）。"""
+    if abs(a["ts"] - b["ts"]) > MAX_START_GAP_S:
+        return False
+    da, db = a["dist"], b["dist"]
+    if da < MIN_DIST_M or db < MIN_DIST_M:
+        return False
+    longer = max(da, db)
+    if abs(da - db) > min(MAX_DIST_ABS_M, longer * MAX_DIST_RATIO):
+        return False
+    sa, sb = a["dur"], b["dur"]
+    if sa and sb:
+        if abs(sa - sb) > min(MAX_DUR_ABS_S, max(sa, sb) * MAX_DUR_RATIO):
+            return False
+    return True
+
+
 def same_run(a: dict, b: dict) -> bool:
     """两条活动是否可能是同一次。同源直接 False（同源不互判）。"""
     if source_of(a) == source_of(b):
@@ -73,23 +103,19 @@ def same_run(a: dict, b: dict) -> bool:
     fam = _family(a.get("type"))
     if not fam or fam != _family(b.get("type")):
         return False
-    da = float(a.get("distance_m") or 0)
-    db = float(b.get("distance_m") or 0)
-    if da < MIN_DIST_M or db < MIN_DIST_M:
-        return False
     ta, tb = _ts(a), _ts(b)
-    if ta is None or tb is None or abs(ta - tb) > MAX_START_GAP_S:
+    if ta is None or tb is None:
         return False
-    longer = max(da, db)
-    if abs(da - db) > min(MAX_DIST_ABS_M, longer * MAX_DIST_RATIO):
-        return False
-    sa = float(a.get("duration_s") or 0)
-    sb = float(b.get("duration_s") or 0)
-    if sa and sb:
-        longer_s = max(sa, sb)
-        if abs(sa - sb) > min(MAX_DUR_ABS_S, longer_s * MAX_DUR_RATIO):
-            return False
-    return True
+    return _same_parsed(
+        {"ts": ta, "dist": float(a.get("distance_m") or 0),
+         "dur": float(a.get("duration_s") or 0)},
+        {"ts": tb, "dist": float(b.get("distance_m") or 0),
+         "dur": float(b.get("duration_s") or 0)},
+    )
+
+
+def _display_key(row: dict) -> tuple[str, str]:
+    return (str(row.get("date") or ""), str(row.get("start_ts") or ""))
 
 
 def pick_unique(rows: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -99,30 +125,49 @@ def pick_unique(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     某条判为同一次就丢弃。返回值按 `date`、`start_ts` 倒序，和
     `Store.activities()` 原来的展示顺序一致。
     """
-    ordered = sorted(rows, key=lambda r: (SOURCE_RANK.get(source_of(r), 9),
-                                          _ts(r) or 0.0))
+    if len(rows) < 2:
+        return list(rows), []
+
+    parsed = [{
+        "row": r,
+        "src": source_of(r),
+        "fam": _family(r.get("type")),
+        "ts": _ts(r),
+        "dist": float(r.get("distance_m") or 0),
+        "dur": float(r.get("duration_s") or 0),
+    } for r in rows]
+
+    # 单源（绝大多数用户）：没有可比的另一条，排完直接返回，不进 O(n²) 路径
+    if len({p["src"] for p in parsed}) <= 1:
+        parsed.sort(key=lambda p: _display_key(p["row"]), reverse=True)
+        return [p["row"] for p in parsed], []
+
+    kept_buckets: dict[int, list[dict]] = {}
     kept: list[dict] = []
     dropped: list[dict] = []
-    for row in ordered:
-        fam = _family(row.get("type"))
-        t = _ts(row)
+    # 先按来源优先级占位，再按时间：佳明先落，高驰/Keep 后到就被判重。
+    # 桶里只放**已保留**的条目——否则佳明会先撞上还没被处理的高驰，反把自己丢掉。
+    for p in sorted(parsed, key=lambda x: (SOURCE_RANK.get(x["src"], 9), x["ts"] or 0.0)):
         hit = None
-        if fam and t is not None and float(row.get("distance_m") or 0) >= MIN_DIST_M:
-            for k in kept:
-                if _family(k.get("type")) != fam:
-                    continue
-                kt = _ts(k)
-                if kt is not None and abs(kt - t) > MAX_START_GAP_S:
-                    continue
-                if same_run(row, k):
-                    hit = k
+        if p["fam"] and p["ts"] is not None and p["dist"] >= MIN_DIST_M:
+            day = _day_key(p["ts"])
+            for d in (day - 1, day, day + 1):
+                for q in kept_buckets.get(d, ()):
+                    if q["src"] == p["src"] or q["fam"] != p["fam"]:
+                        continue
+                    if _same_parsed(p, q):
+                        hit = q
+                        break
+                if hit is not None:
                     break
         if hit is None:
-            kept.append(row)
-        else:
-            dropped.append({**row, "duplicate_of": hit.get("activity_id")})
-    kept.sort(key=lambda r: (str(r.get("date") or ""), str(r.get("start_ts") or "")),
-              reverse=True)
+            kept.append(p["row"])
+            if p["fam"] and p["ts"] is not None and p["dist"] >= MIN_DIST_M:
+                kept_buckets.setdefault(_day_key(p["ts"]), []).append(p)
+            continue
+        dropped.append({**p["row"], "duplicate_of": hit["row"].get("activity_id")})
+
+    kept.sort(key=_display_key, reverse=True)
     return kept, dropped
 
 
