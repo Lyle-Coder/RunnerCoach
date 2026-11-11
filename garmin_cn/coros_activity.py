@@ -24,9 +24,8 @@ from . import activity as act
 from . import route
 from .coros import CorosAuthError, CorosCloud, CorosError
 
-# 9 = 分圈兜底（lapList 缺失时按 1 km 从逐点切）+ 垂直振幅候选键扩充
-#     + 残缺明细不再当成新缓存；废弃 8 的旧缓存
-ADAPTER_VERSION = 9
+# 12 = 接入高驰天气，旧缓存重新抓取以补齐天气
+ADAPTER_VERSION = 12
 
 
 def raw_activity(row: dict) -> dict:
@@ -121,51 +120,170 @@ def laps_from_points(points: list[dict], step_m: float = 1000.0) -> list[dict]:
 
 
 def dynamics(data: dict) -> tuple[float | None, float | None]:
-    """在整个明细里取（触地时间 ms，垂直振幅 cm）。
+    """全程触地时间 ms / 垂直振幅 cm；只读汇总，不能取第一圈或第一点。
 
-    高驰官方没公开跑步动态在明细里的位置，summary 只是猜测之一——
-    真实字段可能在任意子对象里，所以做限深递归：值命中候选键后仍要过
-    量纲校验（触地 60~600 ms，垂直振幅 2~25 cm），宁可显示「—」也不印
-    错数量级的数字。
+    Training Hub 的 summary 可能全为 0，但 graphList 仍有有效均值：
+    groundTime.graphItem.avg 是 ms，verticalVibration.graphItem.avg 是 mm。
+    按 key 匹配，不依赖图表顺序，也不把 verticalStrideRatio 当成振幅。
     """
     if not isinstance(data, dict):
         return None, None
-    pools: list[dict] = []
-    budget = [300]                      # 明细里的 points 是海量秒级采样，别全扫
 
-    def collect(obj, depth: int = 0) -> None:
-        if depth > 4 or budget[0] <= 0:
-            return
-        if isinstance(obj, dict):
-            budget[0] -= 1
-            pools.append(obj)
-            for v in obj.values():
-                collect(v, depth + 1)
-        elif isinstance(obj, list) and obj:
-            for v in obj[:3]:           # list 只探前几个元素，防 points 拖垮
-                collect(v, depth + 1)
+    def valid(value, low, high, divisor=1):
+        value = number(value, divisor)
+        return value if value is not None and low <= value <= high else None
 
-    collect(data)
-
-    def pick(keys: tuple[str, ...]) -> float | None:
-        for pool in pools:
-            for key in keys:
-                v = number(pool.get(key))
-                if v is not None and v != 0:
-                    return v
+    def pick(pool, keys, low, high, scale):
+        if not isinstance(pool, dict):
+            return None
+        for key in keys:
+            value = number(pool.get(key))
+            if value is None:
+                continue
+            # 兼容已有 summary 别名的秒/米口径；显式单位键不猜测。
+            if not key.endswith(("Ms", "Cm", "Centi")) and value < low:
+                value *= scale
+            value = valid(value, low, high)
+            if value is not None:
+                return value
         return None
 
-    gct = pick(GCT_KEYS)
-    if gct is not None:
-        if gct < 1:                 # 秒 → 毫秒
-            gct *= 1000
-        gct = gct if 60 <= gct <= 600 else None
-    vo = pick(VO_KEYS)
-    if vo is not None:
-        if vo < 2:                  # 米 → 厘米
-            vo *= 100
-        vo = vo if 2 <= vo <= 25 else None
+    summary = data.get("summary")
+    gct = pick(summary, GCT_KEYS, 60, 600, 1000)
+    vo = pick(summary, VO_KEYS, 2, 25, 100)
+    graphs = data.get("graphList")
+    for graph in graphs if isinstance(graphs, list) else []:
+        if not isinstance(graph, dict):
+            continue
+        item = graph.get("graphItem")
+        if not isinstance(item, dict):
+            continue
+        if graph.get("key") == "groundTime" and gct is None:
+            gct = valid(item.get("avg"), 60, 600)
+        elif graph.get("key") == "verticalVibration" and vo is None:
+            vo = valid(item.get("avg"), 2, 25, divisor=10)
+    # 某些旧响应直接把汇总放在顶层；不递归进入分圈与逐点采样。
+    if gct is None:
+        gct = pick(data, GCT_KEYS, 60, 600, 1000)
+    if vo is None:
+        vo = pick(data, VO_KEYS, 2, 25, 100)
     return gct, vo
+
+
+# Training Hub 的 provider=1 为 AccuWeather，provider=2 为心知天气；
+# 天气代码是两个不同枚举。映射核对自高驰官方中文 locale（2026-11-11）。
+WEATHER_TEXT = {1: {1: '晴',
+     2: '晴时多云',
+     3: '局部晴朗',
+     4: '晴间多云',
+     5: '阳光朦胧',
+     6: '大部多云',
+     7: '多云',
+     8: '阴天',
+     11: '雾',
+     12: '阵雨',
+     13: '大部多云转阵雨',
+     14: '局部晴朗转阵雨',
+     15: '暴风雨',
+     16: '大部多云转暴风雨',
+     17: '局部晴朗转暴风雨',
+     18: '雨',
+     19: '小雪',
+     20: '大部多云转小雪',
+     21: '局部晴朗转小雪',
+     22: '中雪',
+     23: '大部多云转中雪',
+     24: '冰',
+     25: '雨夹雪',
+     26: '冰雨',
+     29: '雨雪',
+     30: '高温',
+     31: '低温',
+     32: '风',
+     33: '晴',
+     34: '大部晴朗',
+     35: '局部多云',
+     36: '晴间多云',
+     37: '月色朦胧',
+     38: '大部多云',
+     39: '局部多云转阵雨',
+     40: '大部多云转阵雨',
+     41: '局部多云转暴风雨',
+     42: '大部多云转暴风雨',
+     43: '大部多云转小雪',
+     44: '大部多云转中雪'},
+ 2: {0: '晴',
+     1: '晴',
+     2: '晴',
+     3: '晴',
+     4: '多云',
+     5: '晴间多云',
+     6: '大部多云',
+     7: '晴间多云',
+     8: '大部多云',
+     9: '阴',
+     10: '阵雨',
+     11: '雷阵雨',
+     12: '雷阵雨伴有冰雹',
+     13: '小雨',
+     14: '中雨',
+     15: '大雨',
+     16: '暴雨',
+     17: '大暴雨',
+     18: '特大暴雨',
+     19: '冻雨',
+     20: '雨夹雪',
+     21: '阵雪',
+     22: '小雪',
+     23: '中雪',
+     24: '大雪',
+     25: '暴雪',
+     26: '浮尘',
+     27: '扬沙',
+     28: '沙尘暴',
+     29: '强沙尘暴',
+     30: '雾',
+     31: '霾',
+     32: '风',
+     33: '大风',
+     34: '飓风',
+     35: '热带风暴',
+     36: '龙卷风',
+     37: '低温',
+     38: '高温'}}
+WIND_DIRECTIONS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+
+def build_weather(weather: dict | None) -> dict | None:
+    """高驰天气 → activity.build_weather 的共用契约。
+
+    与 Training Hub 活动页一致：temperature / humidity / windSpeed 除以 10，
+    分别得到 ℃ / % / km/h；风向使用 windDirectionType 的八方位枚举。
+    不使用佳明的华氏温度换算，也不请求活动地点的当前天气。
+    """
+    if not isinstance(weather, dict) or not weather:
+        return None
+
+    def scaled(key, low, high):
+        value = number(weather.get(key), 10)
+        return value if value is not None and low <= value <= high else None
+
+    direction = number(weather.get("windDirectionType"))
+    wind_dir = (WIND_DIRECTIONS[int(direction)]
+                if direction is not None and direction.is_integer() and 0 <= direction < 8
+                else None)
+    provider = number(weather.get("provider"))
+    code = number(weather.get("weatherType"))
+    result = {
+        "temp_c": scaled("temperature", -100, 100),
+        "feels_c": scaled("bodyFeelTemp", -100, 100),
+        "humidity": scaled("humidity", 0, 100),
+        "wind_dir": wind_dir,
+        "wind_speed": scaled("windSpeed", 0, 500),
+        "text": WEATHER_TEXT.get(provider, {}).get(code),
+        "station": None,
+    }
+    return result if any(value is not None for value in result.values()) else None
 
 
 def key_tree(data: dict, limit: int = 700) -> str:
@@ -311,9 +429,9 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
     _gct, _vo = dynamics(data)
     _sport = number(data.get("sportType") or native.get("sportType"))
     _is_run = _sport is not None and int(_sport) in (100, 101, 102, 103)
-    if _gct is None and _vo is None and _is_run:
-        # 整个明细都没找到触地/垂直振幅：把键树记下来，用户发「诊断日志」
-        # 就能看到真实字段在哪一层、叫什么——这是唯一的定位手段。
+    if (_gct is None or _vo is None) and _is_run:
+        # 有任一跑步动态缺失：把键树记下来，用户发「诊断日志」
+        # 就能看到真实字段在哪一层、叫什么。
         try:
             from . import diag as _dg
 
@@ -431,7 +549,9 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
     zones = next((g.get("zoneItemList") or [] for g in data.get("zoneList") or []
                   if g.get("type") == 126), [])
     hr_zones = [{"index": int(number(z.get("zoneIndex")) or 0),
-                 "seconds": number(z.get("second")) or 0}
+                 "seconds": number(z.get("second")) or 0,
+                 "low_bpm": number(z.get("leftScope")),
+                 "high_bpm": number(z.get("rightScope"))}
                 for z in sorted(zones, key=lambda z: number(z.get("zoneIndex")) or 0)]
     track_points = track if track else act.build_track(canonical)
     lap_groups = lap_groups_of(groups)
@@ -449,7 +569,7 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
             "series": {"points": act._thin(points, act.SERIES_POINTS)},
             "track": act._thin(track_points, act.TRACK_POINTS),
             "route": route.build(canonical),
-            "weather": None, "row_metrics": {k: v for k, v in row_metrics.items() if v is not None}}
+            "weather": build_weather(data.get("weather")), "row_metrics": {k: v for k, v in row_metrics.items() if v is not None}}
 
 
 def is_current(detail: dict) -> bool:
