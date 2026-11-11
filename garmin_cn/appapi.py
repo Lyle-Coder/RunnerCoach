@@ -940,7 +940,7 @@ def meal_estimate(image_b64: str, mime: str = "image/jpeg") -> dict:
     try:
         return {"ok": True, **N.estimate_meal(image_b64, mime or "image/jpeg")}
     except llm.LLMError as e:
-        return {"ok": False, "error": str(e), "code": getattr(e, "code", "llm")}
+        return {"ok": False, "error": e.message, "code": e.kind}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 

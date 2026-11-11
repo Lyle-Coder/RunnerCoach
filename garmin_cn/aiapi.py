@@ -23,7 +23,7 @@ from . import aicoach, llm
 # 界面能改的配置字段（白名单）。故意不含 updated_at 之类内部字段。
 _WRITABLE = ("mode", "provider", "base_url", "model", "api_key",
              "platform_base", "platform_auto", "platform_token",
-             "temperature", "auto_advice")
+             "temperature", "auto_advice", "auth_style")
 
 
 def _truthy(v) -> bool:
