@@ -99,6 +99,43 @@ def _hhmm(minutes: int) -> str:
     return f"{h}h{m:02d}" if h else f"{m} min"
 
 
+def _day_override(no: int, d: dt.date) -> dict | None:
+    """周覆盖里的「按日替换」：{"days": {"2026-11-29": {...}}}。
+
+    用途是训练赛/临时改课：整周保持原计划，只把某一天换成比赛或减量课。
+    这里只认最终值，不再乘 scale —— 写进来的量就是想要的量。
+    """
+    ov = overrides().get(str(no)) or {}
+    return (ov.get("days") or {}).get(d.isoformat())
+
+
+def _week_totals(w) -> tuple[float, int]:
+    """本周实际口径的周量：先按日覆盖替换，再对未覆盖的日子乘周 scale。
+
+    与 day_info 的算法必须一致，否则卡头「本周 68 km」和 7 天课表加起来对不上。
+    """
+    mp = _mp()
+    base_km, base_vert = mp.totals(w)
+    ov = overrides().get(str(w["no"])) or {}
+    days = ov.get("days") or {}
+    scale = float(ov.get("scale") or 1.0)
+    if not days:
+        return base_km * scale, base_vert * scale
+    s = span()[0]
+    km = vert = 0.0
+    for row in mp.week_days(w):
+        i = row[7]
+        d = s + dt.timedelta(days=(w["no"] - 1) * 7 + i)
+        o = days.get(d.isoformat())
+        if o:
+            km += float(o.get("km") or 0)
+            vert += float(o.get("vert") or 0)
+        else:
+            km += float(row[3] or 0) * scale
+            vert += float(row[4] or 0) * scale
+    return km, vert
+
+
 def day_info(d: dt.date) -> dict | None:
     """某一天的完整课次信息。不在计划区间内返回 None。"""
     w, i = week_of(d)
@@ -124,9 +161,25 @@ def day_info(d: dt.date) -> dict | None:
         vert = int(round(vert * scale))
         minutes = int(round(minutes * scale))
 
-    main, sub = mc.abbr(w, i, kind, km, vert, minutes)
-    tip = (mc.note_of(w, i, kind, minutes, vert) or "").replace("\\n", " ")
-    tot_km, tot_vert = mp.totals(w)
+    day_ov = _day_override(w["no"], d)
+    if day_ov:
+        kind = day_ov.get("kind", kind)
+        title = day_ov.get("title", title)
+        km = float(day_ov.get("km", km) or 0)
+        vert = float(day_ov.get("vert", vert) or 0)
+        minutes = int(day_ov.get("minutes", minutes) or 0)
+
+    if day_ov and day_ov.get("abbr"):
+        main, sub = day_ov["abbr"], day_ov.get("sub", "")
+        tip = day_ov.get("tip", "")
+    else:
+        main, sub = mc.abbr(w, i, kind, km, vert, minutes)
+        tip = (mc.note_of(w, i, kind, minutes, vert) or "").replace("\\n", " ")
+    if day_ov and day_ov.get("hr"):
+        hr = day_ov["hr"]
+    if day_ov and day_ov.get("note"):
+        note = day_ov["note"]
+    tot_km, tot_vert = _week_totals(w)
     return {
         "date": d.isoformat(),
         "dow": mp.DOW[i],

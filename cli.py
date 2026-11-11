@@ -2510,11 +2510,8 @@ def main() -> int:
     q.add_argument("--days", type=int, default=30, help="同步回溯天数，默认 30")
     q.set_defaults(func=cmd_coros)
 
-    from garmin_cn import keep as K
-    K.register(sub, HOME, DB)
-
-    from garmin_cn import eventui
-    eventui.add_parser(sub)
+    from garmin_cn import eventui, keep as K
+    K.register(sub, HOME, DB); eventui.add_parser(sub)  # cli.py 有 2600 行上限，合成一行
 
     q = sub.add_parser("nutri", help="今天吃多少：热量与三大营养素目标（减脂/维持/增重）")
     q.add_argument("--date")
