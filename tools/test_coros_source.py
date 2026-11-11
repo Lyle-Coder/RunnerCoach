@@ -259,6 +259,149 @@ class CardRenderTest(unittest.TestCase):
         self.assertIn("2.3", html)
 
 
+class WeatherTest(unittest.TestCase):
+    @staticmethod
+    def native():
+        return {"temperature": 190, "bodyFeelTemp": 180, "humidity": 700,
+                "windSpeed": 73, "windDirection": 1130, "windDirectionType": 3,
+                "provider": 2, "weatherType": 0}
+
+    def test_native_weather_normalized_and_shown(self):
+        d = detail()
+        d["weather"] = self.native()
+        p = CA.normalize(d, "weather")
+        self.assertEqual(p["weather"], {"temp_c": 19, "feels_c": 18, "humidity": 70,
+                                       "wind_speed": 7.3, "wind_dir": "SE",
+                                       "text": "晴", "station": None})
+        html = actcard.build_html(CardRenderTest()._row(), p)
+        for text in ("19℃", "湿度 70%", "晴", "东南风 7 km/h"):
+            self.assertIn(text, html)
+
+    def test_provider_specific_codes(self):
+        self.assertEqual(CA.build_weather({"provider": 2, "weatherType": 30})["text"], "雾")
+        self.assertEqual(CA.build_weather({"provider": 1, "weatherType": 30})["text"], "高温")
+        self.assertIsNone(CA.build_weather({"provider": 99, "weatherType": 0}))
+        self.assertIsNone(CA.build_weather({"provider": 2, "weatherType": 99}))
+
+    def test_zero_negative_and_partial_values(self):
+        w = CA.build_weather({"temperature": 0, "bodyFeelTemp": -55, "humidity": 0,
+                              "windSpeed": 0, "windDirectionType": 0})
+        self.assertEqual((w["temp_c"], w["feels_c"], w["humidity"], w["wind_speed"],
+                          w["wind_dir"]), (0, -5.5, 0, 0, "N"))
+        html = actcard.build_html(CardRenderTest()._row(), {"source": "coros", "weather": w})
+        self.assertIn("北风 0 km/h", html)
+        self.assertIn("0℃", html)
+        d = CA.normalize({"summary": {}, "weather": {"windSpeed": 50}}, "partial")
+        html = actcard.build_html(CardRenderTest()._row(), d)
+        self.assertIn("风速 5 km/h", html)
+        self.assertNotIn("None", html)
+
+    def test_missing_and_invalid_weather(self):
+        for bad in (None, {}, [], "bad", {"temperature": 65535},
+                    {"temperature": float("nan"), "humidity": 1001,
+                     "windSpeed": -1, "windDirectionType": 8},
+                    {"temperature": "bad", "windDirectionType": 1.5}):
+            with self.subTest(bad=bad):
+                self.assertIsNone(CA.build_weather(bad))
+        self.assertIsNone(CA.normalize(detail(), "no-weather")["weather"])
+
+    def test_weather_cache_refreshes(self):
+        self.assertFalse(CA.is_current({"source": "coros", "adapter_version": 11,
+                                       "laps_absent_ok": True}))
+
+
+class HeartRateRangeTest(unittest.TestCase):
+    def test_native_bounds_survive_and_render(self):
+        d = detail()
+        bounds = [(140, 162), (140, 162), (163, 178), (179, 184), (185, 190), (190, 255)]
+        d["zoneList"] = [{"type": 126, "zoneItemList": [
+            {"zoneIndex": i, "leftScope": lo, "rightScope": hi,
+             "second": 195 if i == 0 else 2571 if i == 1 else 0}
+            for i, (lo, hi) in reversed(list(enumerate(bounds)))]}]
+        p = CA.normalize(d, "zones")
+        self.assertEqual([(z["low_bpm"], z["high_bpm"]) for z in p["hr_zones"]], bounds)
+        html = actcard.build_html(CardRenderTest()._row(), p)
+        for label in ("&lt;140", "140–162", "163–178", "179–184", "185–190", "&gt;190"):
+            self.assertNotIn(label, html)
+        self.assertIn("42:51", html)
+        self.assertIn("93%", html)
+        self.assertNotIn("bpm ·", html)
+        self.assertNotIn("zwith-ranges", html)
+        for name in ("恢复", "有氧耐力", "有氧动力", "阈值", "无氧耐力", "无氧动力"):
+            self.assertIn(name, html)
+
+    def test_missing_and_invalid_bounds_are_not_invented(self):
+        html = actcard.zone_block([30, 0, 0, 0, 0, 0], "心率分区", coros=True)
+        self.assertNotIn("zwith-ranges", html)
+        self.assertIn("Z6", html)
+
+    def test_version_10_cache_refreshes(self):
+        self.assertFalse(CA.is_current({"source": "coros", "adapter_version": 10,
+                                       "laps_absent_ok": True}))
+
+
+class RunningDynamicsTest(unittest.TestCase):
+    @staticmethod
+    def graphs():
+        # 真机结构的脱敏最小样本：动态图表不在前三项，summary 是占位零。
+        return [{"key": "power", "graphItem": {"avg": 173}}] * 4 + [
+            {"key": "groundTime", "type": 145, "graphItem": {"avg": 248}},
+            {"key": "verticalVibration", "type": 147, "graphItem": {"avg": 70}},
+            {"key": "verticalStrideRatio", "type": 148, "graphItem": {"avg": 92}}]
+
+    def test_graph_averages_and_card(self):
+        d = detail()
+        d["summary"].update(avgGroundTime=0, avgVertVibration=0)
+        d["graphList"] = self.graphs()
+        d["lapList"][0]["lapItemList"][0]["groundTime"] = 247
+        p = CA.normalize(d, "dynamics")
+        self.assertEqual((p["summary"]["gct_ms"], p["summary"]["vo_cm"]), (248, 7))
+        row = CardRenderTest()._row()
+        row["raw"] = json.dumps({"labelId": "1", "sportType": 100,
+                                 "avgGroundContactTime": 0.248,
+                                 "avgVerticalOscillation": 70})
+        html = actcard.build_html(row, p)
+        self.assertIn(">248<", html)
+        self.assertIn(">7.0<", html)
+
+    def test_summary_wins_independent_of_order(self):
+        d = {"graphList": self.graphs(),
+             "summary": {"avgGroundTime": 260, "avgVertVibration": 8.4}}
+        self.assertEqual(CA.dynamics(d), (260, 8.4))
+        d["graphList"].reverse()
+        self.assertEqual(CA.dynamics(d), (260, 8.4))
+
+    def test_invalid_summary_and_graph_entries_are_skipped(self):
+        for invalid in (0, -1, 65535, "bad", float("nan"), float("inf"), 9999):
+            d = {"summary": {"avgGroundTime": invalid, "avgVertVibration": invalid},
+                 "graphList": [None, {}, {"key": "groundTime", "graphItem": []},
+                               {"key": "groundTime", "graphItem": {"avg": invalid}}]
+                              + self.graphs()}
+            with self.subTest(invalid=invalid):
+                self.assertEqual(CA.dynamics(d), (248, 7))
+
+    def test_no_single_lap_sample_or_ratio_as_average(self):
+        d = {"summary": {"avgVertRatio": 8.4},
+             "frequencyList": [{"groundTime": 220, "verticalVibration": 8}],
+             "lapList": [{"lapItemList": [{"groundTime": 247, "strideHeight": 71}]}],
+             "graphList": [{"key": "verticalStrideRatio", "graphItem": {"avg": 92}}]}
+        self.assertEqual(CA.dynamics(d), (None, None))
+
+    def test_units_and_independent_fallback(self):
+        gct, vo = CA.dynamics({"summary": {"avgGroundTime": .248,
+                                         "avgVertVibration": .07}})
+        self.assertAlmostEqual(gct, 248)
+        self.assertAlmostEqual(vo, 7)
+        self.assertEqual(CA.dynamics({"summary": {"avgGroundTime": 260},
+                                     "graphList": self.graphs()}), (260, 7))
+        self.assertEqual(CA.dynamics({"summary": {"contactTimeMs": .248,
+                                                 "voCm": .07}}), (None, None))
+
+    def test_previous_adapter_cache_is_stale(self):
+        self.assertFalse(CA.is_current({"source": "coros", "adapter_version": 9,
+                                       "laps_absent_ok": True}))
+
+
 class LapFallbackTest(unittest.TestCase):
     """真机：明细只有「全程汇总组」时，底部整块是「无分圈数据」。
 
