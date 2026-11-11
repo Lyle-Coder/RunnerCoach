@@ -135,6 +135,9 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._html(ui.files_page(root))
         if u.path in ("/privacy", "/privacy.html"):
             return self._html(ui.privacy_page())
+        if u.path in ("/event", "/event.html"):
+            from . import eventui
+            return self._html(eventui.render_page(parse_qs(u.query)))
         if u.path.startswith("/basemap/"):
             return self._basemap(u.path)
         if u.path.startswith("/media/"):
@@ -338,6 +341,75 @@ class _Handler(SimpleHTTPRequestHandler):
         except BrokenPipeError:
             pass
 
+    def _event_gear(self, u) -> None:
+        """勾选一条强制装备（页面上的 checkbox 直接 POST 到这里）。
+
+        用表单 POST + 303 回跳，不写 JS：WebView 里少一层异步，
+        断网、脚本被拦也能用。body 只有 idx / done 两个字段。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 4096:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+        try:
+            idx = int((qs.get("idx") or ["-1"])[0])
+        except ValueError:
+            idx = -1
+        done = (qs.get("done") or ["1"])[0] in ("1", "on", "true")
+        from . import event as E
+        ev = E.load_event((qs.get("slug") or [None])[0])
+        if idx < 0 or not E.set_gear(ev["slug"], idx, done):
+            return self._json({"ok": False, "error": "没有这一条"}, 404)
+        # 回到赛事页（PRG：Post/Redirect/Get，避免刷新重复提交）
+        self.send_response(303)
+        self.send_header("Location", "/event")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _event_gpx(self, u) -> None:
+        """接收 App 从系统文件选择器 / 分享进来的 GPX，落到赛事目录并解析。
+
+        走本机回环 + 大小上限：GPX 是几十 KB 到几 MB 的文本，给 40 MB 足够，
+        再大就当异常请求拒掉（避免有人从局域网灌文件）。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机导入"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0:
+            return self._json({"ok": False, "error": "空文件"}, 400)
+        if n > 40 * 1024 * 1024:
+            return self._json({"ok": False, "error": "文件过大（上限 40 MB）"}, 413)
+        raw = self.rfile.read(n)
+        from . import event as E
+        ev = E.load_event(parse_qs(u.query).get("slug", [None])[0])
+        d = E._dir(ev["slug"])
+        d.mkdir(parents=True, exist_ok=True)
+        dst = d / "track.gpx"
+        dst.write_bytes(raw)
+        try:
+            r = E.parse_gpx(dst, slug=ev["slug"])
+        except Exception as e:
+            try:
+                dst.unlink()
+            except OSError:
+                pass
+            return self._json({"ok": False, "error": "解析失败：%s" % e}, 400)
+        off = abs(r["ascent_m"] - ev["ascent_m"]) > ev["ascent_m"] * 0.1
+        return self._json({
+            "ok": True, "slug": ev["slug"], "km": r["total_km"],
+            "ascent": r["ascent_m"], "descent": r["descent_m"],
+            "points": r["points"], "profile": len(r["profile"]),
+            "official_ascent": ev["ascent_m"], "ascent_off": off,
+        })
+
     def _files_delete(self) -> None:
         """批量删除产物。只允许本机，且只认 output 一层的产物后缀。
 
@@ -389,6 +461,10 @@ class _Handler(SimpleHTTPRequestHandler):
         # 回放视频：动画页 `?export=1` 会自己逐帧 POST 上来，这里只负责收。
         if u.path.startswith(("/__frame", "/__done", "/__timeline", "/__diag")):
             return self._frame_post(u)
+        if u.path == "/__event/gpx":
+            return self._event_gpx(u)
+        if u.path == "/__event/gear":
+            return self._event_gear(u)
         if u.path == "/__files/delete":
             # 产物页的批量删除。放在 gate 之前反而更安全：这里自己做本机校验，
             # 不带访问码的局域网访客一律 403。

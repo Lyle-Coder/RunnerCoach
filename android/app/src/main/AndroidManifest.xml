@@ -25,10 +25,43 @@
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="true"
+            android:launchMode="singleTop"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- 用 RunnerCoach 打开 GPX：文件管理器 / 浏览器「其他应用打开」。
+                 MIME 与扩展名各写一组：Android 的 <data> 在同一条里是「与」，
+                 跨条是「或」。很多文件管理器把 .gpx 报成 octet-stream，
+                 所以除 gpx+xml 外还要用 pathPattern 兜住扩展名。 -->
+            <intent-filter android:label="导入赛道 GPX">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" android:mimeType="application/gpx+xml" />
+                <data android:scheme="file" android:mimeType="application/gpx+xml" />
+                <data android:scheme="content" android:mimeType="application/xml"
+                    android:pathPattern=".*\\.gpx" />
+                <data android:scheme="content" android:mimeType="text/xml"
+                    android:pathPattern=".*\\.gpx" />
+                <data android:scheme="content" android:mimeType="application/octet-stream"
+                    android:pathPattern=".*\\.gpx" />
+                <data android:scheme="content" android:host="*"
+                    android:pathPattern=".*\\.gpx" />
+                <data android:scheme="file" android:host="*"
+                    android:pathPattern=".*\\.gpx" />
+            </intent-filter>
+
+            <!-- 微信 / QQ / 浏览器「分享到 RunnerCoach」。
+                 这里只收 gpx 专用 MIME：octet-stream 会让 App 出现在所有
+                 文件的分享菜单里（分享照片也弹出跑步 App 很荒谬），
+                 那些来源走上面的 VIEW 路径更准确。 -->
+            <intent-filter android:label="导入赛道 GPX">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/gpx+xml" />
             </intent-filter>
         </activity>
     </application>
