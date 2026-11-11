@@ -57,6 +57,7 @@ from .metrics import num
 from . import privacy as PV
 from . import interval as IV
 from . import easteregg as EG
+from . import hrzones as HRZ
 
 # 画幅宽 1080：内容高度约 1830（桌面/手机实测一致），裁掉页面留白后
 # 比例 ≈ 1.81，与 9:16 的 1.778 只差 2%，contain 后四边几乎只剩安全带。
@@ -99,8 +100,11 @@ ZONE_COLORS = ["#5FA8E0", "#4FD6A6", "#E8C547", "#E8843A", "#E06A5F"]
 # 曲线与坐标轴同色：主指标线跟随运动主题色（跑步青/骑行橙…），心率恒为橙，
 # 不用读图例也知道哪条对应哪根轴
 AXIS_HR = "#EE9A55"
-ZONE_NAMES = ["Z1", "Z2", "Z3", "Z4", "Z5"]
-ZONE_DESC = ["恢复", "有氧", "节奏", "阈值", "无氧"]
+# Z1–Z5 的中文副名统一走 hrzones：时长是佳明按账号里的心率区间算的，
+# 名称也必须用佳明 Connect 那一套（config.json 的 hr_zone_names 可覆盖）。
+# 旧版这里写死 E/M/I/T/R 训练强度名「恢复/有氧/节奏/阈值/无氧」，与 Z1–Z5
+# 边界不重合，会和佳明 App 里的名称对不上。
+ZONE_NAMES = list(HRZ.ZONE_LABELS)
 
 # ---- 运动类型主题 -----------------------------------------------------------
 # 一张活动图不该只有跑步一套皮。这里按 activityType.typeKey 给出：
@@ -595,14 +599,25 @@ def zone_times(raw: dict, prefix: str) -> list[float]:
     return [num(raw.get(key + str(i))) or 0.0 for i in range(1, 6)]
 
 
-def zone_block(times: list[float], title: str, unit_label: str = "", *, coros: bool = False) -> str:
+def zone_block(times: list[float], title: str, unit_label: str = "", *,
+               coros: bool = False, descriptions: list[str] | None = None) -> str:
+    """心率分区条。
+
+    `times` 是佳明 hrTimeInZone_1..5（或高驰自己的分区时长），`descriptions`
+    缺省时从 hrzones 取佳明 Connect 的 Z1–Z5 名称。高驰是另一套六区口径，
+    一律不显示中文副名，免得把佳明的名字贴到高驰数据上。
+    """
     if not sum(times):
         return (f'<div class="zhead">{esc(title)}<span>{esc(unit_label)}</span></div>'
                 f'<div class="zempty">本次未记录分区时长</div>')
     total = sum(times)
     colors = (["#778899"] + list(ZONE_COLORS)) if coros else ZONE_COLORS
     names = [f"Z{i + 1}" for i in range(len(times))] if coros else ZONE_NAMES
-    descriptions = [""] * len(times) if coros else ZONE_DESC
+    if coros:
+        descriptions = [""] * len(times)
+    else:
+        src = descriptions if descriptions is not None else HRZ.zone_descriptions()
+        descriptions = [esc(x) for x in (list(src) + [""] * len(times))[:len(times)]]
     bar = []
     for i, t in enumerate(times):
         pct = t / total * 100
@@ -1389,8 +1404,10 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .zbar-stack i{display:block}
 .zrow{display:flex;align-items:center;gap:10px;margin-top:11px}
 .zdot{width:12px;height:12px;border-radius:3px;flex:none}
-.zname{width:86px;font-size:20px;color:#D3DBE4;flex:none}
-.zname em{font-style:normal;font-size:15px;color:#76838F;margin-left:5px}
+.zname{width:86px;font-size:20px;color:#D3DBE4;flex:none;white-space:nowrap}
+.zname em{font-style:normal;font-size:15px;color:#76838F;margin-left:5px;
+          display:inline-block;max-width:52px;overflow:hidden;
+          text-overflow:ellipsis;white-space:nowrap}
 .zbar{flex:1;height:10px;background:#10161C;border-radius:5px;overflow:hidden}
 .zbar i{display:block;height:100%;border-radius:5px}
 .zval{width:74px;text-align:right;font-size:19px;color:#939FAD;font-variant-numeric:tabular-nums}

@@ -317,18 +317,22 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
         try:
             from . import diag as _dg
 
-            # 除了键树，再单独列出「名字里带 vert/osc/vib」的键和值——
-            # 真机上键树很长，700 字上限经常在命中之前就被截断。
+            # 除了键树，再单独列出候选键和它们的**值**——真机上 summary
+            # 有 avgGroundTime / avgVertVibration 却仍然报「未找到」，多半是
+            # 值为 0 或量纲不同。只列键名（旧版做法）永远查不出是哪一种。
+            # 触地类键名不含 vert/osc/vib，以前被漏掉，一并收进来。
             hits = []
 
             def _scan(obj, path="", depth=0):
-                if depth > 4 or len(hits) > 12:
+                if depth > 4 or len(hits) > 16:
                     return
                 if isinstance(obj, dict):
                     for k, v in obj.items():
                         kk = str(k)
                         low = kk.lower()
-                        if any(t in low for t in ("vert", "osc", "vib")):
+                        if any(t in low for t in ("vert", "osc", "vib",
+                                                  "ground", "contact", "gct",
+                                                  "stance")):
                             hits.append(f"{path}{kk}={str(v)[:12]}")
                         _scan(v, f"{path}{kk}.", depth + 1)
                 elif isinstance(obj, list) and obj:

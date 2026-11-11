@@ -2865,6 +2865,28 @@ def run() -> int:
     _ktme = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert "登录体重秤账号" in _ktme, "体重来源选择器里没有登录账号入口"
 
+    # ---- 1.0.5+：网格卡严格等高（68px），与账号行 67px 同一节奏 ---------
+    # 真事故：副标题有的 1 行有的 2 行，grid 拉伸后同排 136px、下一排
+    # 119px，两组网格之间还差一截，整页 1779px。CSS 与文案长度双保险。
+    _ucss = U.CSS
+    assert re.search(r"\.act\{[^}]*height:68px", _ucss, re.S), \
+        "网格卡没固定 68px，又会被内容撑高"
+    assert re.search(r"\.act \.at,\.act \.ad\{[^}]*white-space:nowrap", _ucss, re.S), \
+        "网格卡标题/说明没锁单行，会重新出现 1 行/2 行混排"
+    assert re.search(r"\.act \.ad\{[^}]*display:block", _ucss, re.S), \
+        ".ad 还在用两行 clamp，卡片高度又要跟着文案变"
+    assert ".acts,.grid{grid-template-columns:1fr}" not in _ucss, \
+        "360 宽下网格又退回单列，整页会凭空多 4 行"
+    assert "@media(max-width:340px){.acts{grid-template-columns:1fr}}" in _ucss, \
+        "极窄屏没留单列兜底"
+    assert ".me .sec{margin-top:16px}" in _ucss and '<div class="me">' in _me, \
+        "「我的」页专属紧凑留白没生效（别去改全局 .sec）"
+    assert re.search(r"\.me \.grid\.three \.card\{[^}]*height:88px", _ucss, re.S), \
+        "三张数值卡没固定高度"
+    _ads = re.findall(r'<span class="ad">([^<]*)</span>', _me)
+    assert len(_ads) == 8 and all(len(a) <= 14 for a in _ads), \
+        f"网格卡说明太长会换行/省略：{_ads}"
+
     # ---- 0.6.6：品牌图标统一到开屏 / 角标 / 三张出图 / 完整看板 ------------
     from garmin_cn import brand as _BR
     assert _BR.mark_svg(32) == _BR.mark_svg(32), \
@@ -3006,7 +3028,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 110' in (
+    assert 'versionCode = 111' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -3372,10 +3394,105 @@ def run() -> int:
     assert callable(_AA._backfill_coros) and callable(_AA._backfill_garmin)
     _bf = _AA.backfill_next
     _src = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
-    assert "g = _backfill_garmin(span_days)" in _src and "c = _backfill_coros()" in _src, \
+    assert "_backfill_garmin(span_days)" in _src and "_backfill_coros()" in _src, \
         "backfill_next 没把两个数据源都推一步，高驰历史永远不动"
-    assert "done = bool(g.get(\"done\", True)) and bool(c.get(\"done\", True))" in _src, \
+    assert 'done = bool(g.get("done", True)) and bool(c.get("done", True))' in _src, \
         "只有一个源补完就报 done，另一个会停在中途"
+    # 单侧异常必须就地兜住：真机 /activity/query 的 startTime 是 int 毫秒
+    # 时间戳，earliest_activity 直接切片抛 TypeError，异常一路冒到 call()，
+    # 连先跑完的佳明段都丢了。现在转成该侧 ok=false，另一侧照常推进。
+    assert '_guard("garmin"' in _src and '_guard("coros"' in _src, \
+        "补历史没有单侧异常隔离，一个源炸掉会拖垮另一个"
+    with _mock.patch.object(_AA, "_backfill_garmin",
+                            side_effect=TypeError("'int' object is not subscriptable")), \
+            _mock.patch.object(_AA, "_backfill_coros",
+                               return_value={"ok": True, "done": False, "ran": True,
+                                             "fetched": 3, "skipped": 0,
+                                             "start": "2026-11-01", "end": "2026-11-10"}):
+        _one = _AA.backfill_next()
+    assert _one.get("ok") is False and "TypeError" in str(_one.get("error")), \
+        "佳明侧炸了却报成功，错误被吞掉"
+    assert _one["coros"]["ran"] is True, \
+        "佳明侧异常把高驰那一侧也吞了，补历史会整个停摆"
+    assert _one.get("start") == "" or _one.get("start") == "2026-11-01", \
+        "异常侧的占位不该伪装成真实区间"
+    # 反过来：高驰侧炸，佳明侧结果必须保住
+    with _mock.patch.object(_AA, "_backfill_garmin",
+                            return_value={"ok": True, "done": False, "ran": True,
+                                          "fetched": 5, "skipped": 0,
+                                          "start": "2026-05-01", "end": "2026-10-28"}), \
+            _mock.patch.object(_AA, "_backfill_coros",
+                               side_effect=RuntimeError("探测失败")):
+        _two = _AA.backfill_next()
+    assert _two["garmin"]["ran"] is True and _two.get("error"), \
+        "高驰侧异常没被隔离或没上报错误"
+
+    # earliest_activity：真机 startTime 是 int 毫秒时间戳，不能直接 [:10]
+    from garmin_cn import coros as _CO4
+    class _FakeCoros(_CO4.CorosCloud):
+        def __init__(self, *a, **kw):
+            pass
+        def load(self):
+            return True
+        def _req(self, method, path, params=None, **kw):
+            if path == "/activity/query":
+                return {"data": {"dataList": [
+                    {"labelId": "a", "startTime": 1762732800000},
+                    {"labelId": "b", "startTime": 1762646400000},
+                ], "totalCount": 2}}
+            return {"data": {}}
+    with _mock.patch.object(_CO4, "CorosCloud", _FakeCoros):
+        _ed = _CO4.earliest_activity(Path(tempfile.mkdtemp()))
+    assert len(_ed) == 10 and _ed[4] == "-", \
+        "int 毫秒时间戳让 earliest_activity 抛异常或返回空，补历史会整轮失败"
+    for _v, _want in ((1762732800000, "2025-11-10"), ("20261110", "2026-11-10"),
+                      ("2026-11-10 07:00:00", "2026-11-10"),
+                      ("2026/11/10", "2026-11-10"), (None, None), ("x", None)):
+        assert _CO4._any_day(_v) == _want, f"活动日期形状 {_v!r} 没归一化"
+    assert 'except Exception as e:' in (
+        ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8").split(
+            "def _backfill_coros")[1].split("def backfill_next")[0], \
+        "高驰最早活动探测失败没兜住，会拖垮整段补历史"
+
+    # 诊断日志的「未找到跑步动态」必须带上候选键的值，否则下次还是查不出
+    # 到底是值为 0 还是量纲不同；触地类键名不含 vert/osc/vib，别漏掉
+    _casrc = (ROOT / "garmin_cn/coros_activity.py").read_text(encoding="utf-8")
+    assert '"ground", "contact", "gct"' in _casrc, \
+        "动态诊断没扫触地类键，真机日志看不到 avgGroundTime 的值"
+
+    # 真机诊断日志里的两种返回形状，都要能解出数据，不能「解析为空」：
+    #  ① MCP 睡眠给的是带标题/Note 行的可读报告，且换行可能是字面量 \n
+    #  ② summary 里 avgGroundTime / avgVertVibration 明明在，也不能报未找到
+    from garmin_cn import coros_mcp as _MC2
+    from garmin_cn import coros_activity as _CA2
+    _sleep_report = ('"Sleep Overview\\n========================\\n'
+                     'Note: each record below is dated by its wake-up day.\\n\\n'
+                     '2026-10-12\\nSleep Score: 89\\n'
+                     'Daily Sleep: 8h 47min (incl. naps)\\n'
+                     'Main Sleep (asleep): 7h 19min\\n'
+                     'Main Sleep Period (incl. awake): 7h 32min\\n'
+                     'Sleep metrics scope: daily\\nDeep Sleep Ratio: 14%\\n'
+                     'Light Sleep Ratio: 56%\\nREM Ratio: 27%\\n'
+                     'Awake Ratio: 3%\\nAwake Time: 13 min\\n'
+                     'Awake Count (>5 min): 0\\n'
+                     'Main Sleep Window: 2026-10-11 23:52 - 2026-10-12 07:24\\n'
+                     'Naps Total (asleep): 1h 28min\\nNaps Period: 1h 30min"')
+    _sr = _MC2.parse_sleep({"content": [{"type": "text", "text": _sleep_report}]})
+    assert len(_sr) == 1 and _sr[0]["date"] == "2026-10-12", \
+        "真机睡眠报告（字面 \\n + 标题行）又解析为空了"
+    assert _sr[0]["sleep_total_min"] == 439, \
+        "主睡眠时长被 Daily Sleep / Period 干扰行覆盖了"
+    assert _sr[0]["sleep_score"] == 89 and _sr[0]["deep_min"] == 61 \
+        and _sr[0]["nap_min"] == 88 and _sr[0]["awake_min"] == 13, \
+        "睡眠评分/分期/小睡/清醒解析不对"
+    # 日志里列的那批 summary 字段名（真机 1.0.5）：候选键要能命中，
+    # 且 avgVertRatio（垂直步幅比 %）绝不能被当成振幅
+    _log_summary = {"adjustedPace": 330, "avgGroundTime": 245,
+                    "avgVertVibration": 8.6, "avgVertRatio": 7.4,
+                    "avgLegStiffness": 9.2, "avgStepLen": 1.12,
+                    "avgCadence": 178, "avgHr": 152, "climbingTime": 0}
+    assert _CA2.dynamics({"summary": _log_summary}) == (245.0, 8.6), \
+        "真机 summary 字段明明在却取不到触地/垂直振幅"
     # 只有高驰账号时不能被佳明的 need_login 卡住
     assert "if not _garmin_session_ok():" in _src and "if not _coros_session_ok():" in _src
 
@@ -3470,6 +3587,106 @@ def run() -> int:
     assert _an.group(1) == _kv, \
         f"内核 {_kv} 与 APK versionName {_an.group(1)} 不一致"
     assert int(_ac.group(1)) >= 81, "versionCode 比 1.0.0 还小，老用户覆盖安装会失败"
+
+    # ---- 1.0.6：静息心率「App 52 / 这里 45」——数据日期必须可见 ----------
+    # 真机反馈高驰身体状态卡 52、我们 45。最可能是今天没同步时 derive 拿
+    # 库里最后一天顶上、页面却仍写「今日」；也可能是 Training Hub 与 App
+    # 两条口径不同。前者我们修掉，后者靠诊断日志自证——都不需要用户导出数据包。
+    from garmin_cn import coros as _CO3
+    assert _CO3._iso("20261110") == "2026-11-10"
+    assert _CO3._iso("2026-11-10") == "2026-11-10", "happenDay 带横杠不能整天丢掉"
+    assert _CO3._iso("2026/11/10 00:00:00") == "2026-11-10"
+    assert _CO3._iso(1762732800000) is None, "时间戳不能猜，时区会错"
+    _csrc3 = (ROOT / "garmin_cn/coros.py").read_text(encoding="utf-8")
+    assert '"resting_hr": _num(it.get("rhr"))' in _csrc3, \
+        "静息心率必须继续原样取 dayDetail 的 rhr，别自作主张换算"
+    assert '"coros.rhr"' in _csrc3 and "HR 字段" in _csrc3, \
+        "高驰心率字段的诊断日志没了，口径争议没法在不导出数据的情况下定位"
+
+    from garmin_cn.store import Store as _Store3
+    from garmin_cn import metrics as _M3
+    _sdb = Path(tempfile.mkdtemp()) / "rhr-stale.db"
+    _s3 = _Store3(_sdb)
+    _y3 = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    _t3 = dt.date.today().isoformat()
+    _s3.upsert_daily({"date": _y3, "resting_hr": 45})
+    _r3 = _M3.derive(_s3, _t3)
+    assert _r3["data_date"] == _y3 and _r3["data_stale_days"] == 1
+    assert _r3["today"]["resting_hr"] == 45, "回退时拿到的确实是昨天的原值"
+    _s3.upsert_daily({"date": _t3, "resting_hr": 52})
+    _r4 = _M3.derive(_s3, _t3)
+    assert _r4["data_date"] == _t3 and _r4["data_stale_days"] == 0
+    assert _r4["today"]["resting_hr"] == 52, "下拉刷新后应变成今天的值"
+    try:
+        _s3.conn.close()
+        _sdb.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    _uisrc3 = (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8")
+    _cardsrc3 = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
+    assert 'f"静息心率 · {_dd}"' in _uisrc3, "卡片标签没写数据日期"
+    assert "数据停在 {_dd} · 下拉刷新" in _uisrc3, "旧数据没有可执行提示"
+    assert "心率区间的设定值口径可能不同" in _uisrc3, "没解释口径差异"
+    assert "（未同步今日）" in _cardsrc3, "一图流没标数据日期"
+    _tp3 = _UI.home_page()
+    assert "静息心率 · 昨夜" not in _tp3 and "静息心率 · " in _tp3
+    assert "心率区间的设定值口径可能不同" in _tp3
+
+    # ------------------------------------------------------------ 心率分区名称
+    # 五段时长是佳明按账号里的区间算出来的（hrTimeInZone_1..5），中文副名
+    # 必须跟佳明 Connect 走；以前那套 E/M/I/T/R「恢复/节奏」是另一套边界。
+    from garmin_cn import hrzones as _HZ
+    from garmin_cn import actcard as _AC4
+    from garmin_cn import racecard as _RC4
+
+    _garmin_names = ["热身", "轻松", "有氧", "阈值", "极限"]
+    assert _HZ.zone_descriptions({}) == _garmin_names, "默认必须是佳明官方中文分区名"
+    assert _HZ.zone_descriptions({"hr_zone_names": None}) == _garmin_names
+    assert _HZ.zone_descriptions({"hr_zone_names": ["A"]}) == _garmin_names, \
+        "自定义名不足 5 个时整组回退，不能和默认名混着用"
+    _custom = ["慢跑", "马配", "阈值", "间歇", "冲刺"]
+    assert _HZ.zone_descriptions({"hr_zone_names": _custom}) == _custom, \
+        "用户在佳明里改过名称时，要能按 Z1→Z5 覆盖"
+    assert "<" not in _HZ.zone_descriptions(
+        {"hr_zone_names": ["<b>", "B", "C", "D", "E"]})[0], \
+        "自定义名里的 HTML 不能带进一图流"
+    assert _HZ.zone_descriptions({"hr_zone_names": ["", "B", "C", "D", "E"]})[0] == "热身", \
+        "自定义名为空时按官方默认名兜底"
+    assert _HZ.zone_label(4, {}) == "Z5 极限"
+
+    # 渲染断言不依赖本机 config.json：临时把配置路径指到不存在的文件
+    _orig_cfg_path = _HZ.CONFIG
+    _HZ.CONFIG = Path(tempfile.gettempdir()) / "__runnercoach_no_zone_config__.json"
+    try:
+        _zb = _AC4.zone_block([10, 20, 30, 40, 50], "心率分区", "占比 / 时长")
+        for _i, _n in enumerate(_garmin_names):
+            assert f"Z{_i + 1}<em>{_n}</em>" in _zb, f"活动一图流 Z{_i + 1} 名称不对"
+        assert "<em>恢复</em>" not in _zb and "<em>节奏</em>" not in _zb, \
+            "别把 E/M/I/T/R 训练强度名贴回佳明分区"
+        _zb_custom = _AC4.zone_block([1, 1, 1, 1, 1], "心率分区",
+                                     descriptions=["A", "B", "C", "D", "E"])
+        assert "Z1<em>A</em>" in _zb_custom and "Z5<em>E</em>" in _zb_custom
+        _zb_coros = _AC4.zone_block([1, 2, 3, 4, 5, 6], "心率分区", coros=True)
+        assert "热身" not in _zb_coros and _zb_coros.count("<em></em>") == 6, \
+            "高驰是自己的六区口径，不能套佳明的名称"
+
+        _rz = _RC4._zones({"hrTimeInZone_1": 10, "hrTimeInZone_5": 20})
+        assert [x[1] for x in _rz] == _garmin_names, "赛后复盘图也要用同一套名称"
+        _rhtml = _RC4._zone_block({"hrTimeInZone_1": 10, "hrTimeInZone_5": 20})
+        assert "<em>极限</em>" in _rhtml and "<em>无氧</em>" not in _rhtml
+    finally:
+        _HZ.CONFIG = _orig_cfg_path
+
+    _acsrc4 = (ROOT / "garmin_cn/actcard.py").read_text(encoding="utf-8")
+    _rcsrc4 = (ROOT / "garmin_cn/racecard.py").read_text(encoding="utf-8")
+    assert "from . import hrzones as HRZ" in _acsrc4 and "from . import hrzones as HRZ" in _rcsrc4
+    assert 'ZONE_DESC = ["恢复"' not in _acsrc4 and 'ZONE_DESC = ["恢复"' not in _rcsrc4, \
+        "分区名称不许再在两个一图流里各写一份"
+    assert '"Z5 无氧占比"' not in _rcsrc4 and "zone_label(4)" in _rcsrc4, \
+        "Z5 占比文案要跟着分区名称联动"
+    assert "text-overflow:ellipsis" in _acsrc4 and "text-overflow:ellipsis" in _rcsrc4, \
+        "自定义名过长会撑破卡片，必须有省略兜底"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")

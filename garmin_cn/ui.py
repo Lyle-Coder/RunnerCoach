@@ -190,28 +190,41 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
   overflow:hidden;word-break:break-word}
 .row .d{font-size:11.5px;color:var(--muted);margin-top:2px;font-variant-numeric:tabular-nums}
 .row .go{margin-left:auto;color:var(--faint);font-size:17px;flex:0 0 auto}
-.acts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-/* 「我的」页 2 列网格：一行放两个入口，把十几个低频项压到两屏内。
-   副标题最多两行，超出省略——网格里换行会把同一排卡片撑得高低不齐。 */
-.act .ad{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
-  overflow:hidden}
+.acts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+/* 「我的」页 2 列网格：图标在左，标题 + 一行说明在右，整卡固定 68px，
+   与账号行（67px）同一节奏。旧版是竖排「图标 / 标题 / 最多两行说明」，
+   副标题有的 1 行有的 2 行，被 grid 拉伸后同排 136px、下一排只有 119px，
+   两组网格之间也差一截；说明一律单行省略后所有卡片严格等高。 */
+.act{display:grid;grid-template-columns:28px minmax(0,1fr);
+  grid-template-rows:auto auto;column-gap:9px;row-gap:2px;
+  align-content:center;box-sizing:border-box;height:68px;padding:8px 10px;
+  background:linear-gradient(180deg,rgba(19,28,43,.88),rgba(14,21,33,.92));
+  border:1px solid var(--line);border-radius:var(--r);color:inherit;
+  cursor:pointer;box-shadow:var(--shadow);min-width:0}
+.act:active{background:rgba(59,130,246,.10);border-color:rgba(96,165,250,.34)}
+.act .ai{grid-row:1/3;align-self:center;width:28px;height:28px;border-radius:8px;
+  display:flex;align-items:center;justify-content:center;font-size:14px;
+  background:linear-gradient(160deg,rgba(34,211,238,.22),rgba(59,130,246,.12));
+  color:#8FE7F5;border:1px solid rgba(34,211,238,.24);
+  box-shadow:inset 0 0 12px rgba(34,211,238,.18)}
+.act .at,.act .ad{min-width:0;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.act .at{font-size:13px;font-weight:600;line-height:1.25;color:var(--ink)}
+.act .ad{display:block;font-size:11px;line-height:1.35;color:var(--muted)}
 /* 只读卡片（如「AI 模型服务」）：不暗示可点，也就不该有按下态 */
 .act.flat{cursor:default}
 .act.flat:active{background:linear-gradient(180deg,rgba(19,28,43,.88),rgba(14,21,33,.92));
   border-color:var(--line)}
-
-.act{display:flex;flex-direction:column;gap:7px;
-  background:linear-gradient(180deg,rgba(19,28,43,.88),rgba(14,21,33,.92));
-  border:1px solid var(--line);border-radius:var(--r);padding:15px;color:inherit;
-  cursor:pointer;box-shadow:var(--shadow)}
-.act:active{background:rgba(59,130,246,.10);border-color:rgba(96,165,250,.34)}
-.act .ai{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;
-  justify-content:center;font-size:16px;
-  background:linear-gradient(160deg,rgba(34,211,238,.22),rgba(59,130,246,.12));
-  color:#8FE7F5;border:1px solid rgba(34,211,238,.24);
-  box-shadow:inset 0 0 12px rgba(34,211,238,.18)}
-.act .at{font-size:13.5px;font-weight:600;color:var(--ink)}
-.act .ad{font-size:11.5px;color:var(--muted);line-height:1.5}
+/* 只收紧「我的」页的节奏，别的 tab 留白一概不动 */
+.me .sec{margin-top:16px}
+.me .sec-head{margin-bottom:8px}
+.me-diag{margin-top:10px}
+.me .grid.three .card{box-sizing:border-box;height:88px;padding:7px 9px}
+.me .grid.three .val{font-size:18px;line-height:1.15;margin-top:2px}
+.me .grid.three .note{font-size:11px;line-height:1.3;margin-top:2px;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+  overflow:hidden}
+.me .rc-about{padding:12px 14px}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
   border:1px solid var(--line);background:rgba(15,22,34,.72);color:var(--ink2);
   border-radius:999px;padding:0 16px;min-height:44px;font-size:13px;
@@ -273,9 +286,12 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .kvline:last-child{border-bottom:0}
 .kvline b{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
 @media(max-width:380px){
-  .acts,.grid{grid-template-columns:1fr}
+  /* 只有普通 .grid 退成单列；.acts 是 68px 的紧凑卡，360 宽下两列仍放得下，
+     退成单列会让「我的」页凭空多出 4 行、又变回长列表。 */
+  .grid{grid-template-columns:1fr}
   .big{font-size:40px}
 }
+@media(max-width:340px){.acts{grid-template-columns:1fr}}
 """ + BR.BRAND_CSS + SC.SCREEN_CSS
 
 # 看板是独立的宽版 HTML：在 App 里强制单列/收紧留白，别让三栏挤成一小坨。
@@ -763,6 +779,17 @@ def home_page() -> str:
         _sleep_sub.append(f"7 日欠债 {_debt:.1f}h")
     _hrv = today_row.get("hrv_night")
     _rhr = today_row.get("resting_hr")
+    # 「今天没同步」时 derive 会用库里最后一天顶上（见 metrics.derive）。
+    # 把真实数据日期写进卡片标签，别再笼统写「昨夜」让人拿旧值去对 App。
+    _data_date = str(res.get("data_date") or day)[:10]
+    _dd = _data_date[5:].replace("-", "/")
+    # today_page 传给 derive 的是「库里最后一天」，它自己算不出滞后，
+    # 这里直接拿真实的今天比，别让「今日」页把昨天的数据当今天而不吭声。
+    try:
+        _stale = max(0, (dt.date.today()
+                         - dt.date.fromisoformat(_data_date)).days)
+    except (TypeError, ValueError):
+        _stale = 0
     _w = body.get("latest")
     _wsub = []
     if body.get("stale_days") and body["stale_days"] >= 3:
@@ -773,13 +800,13 @@ def home_page() -> str:
     if _dw is not None and abs(_dw) >= 0.05:
         _wsub.append(f"较前 7 天 {_dw:+.1f} kg")
     cells = (
-        SC.body_cell("睡眠 · 昨夜", f"{sleep['total_h']:.1f}" if sleep.get("total_h") else None,
+        SC.body_cell(f"睡眠 · {_dd}", f"{sleep['total_h']:.1f}" if sleep.get("total_h") else None,
                      "h", " · ".join(_sleep_sub) or "7 日均 —",
                      _spark((series.get("sleep_h") or [])[-14:], h=22)),
-        SC.body_cell("HRV · 昨夜", f"{_hrv:.0f}" if _hrv else None, "ms",
+        SC.body_cell(f"HRV · {_dd}", f"{_hrv:.0f}" if _hrv else None, "ms",
                      f"28 天基线 {hrv_base:.0f} · {_wk('hrv')}" if hrv_base else _wk("hrv"),
                      _spark((series.get("hrv") or [])[-14:], h=22)),
-        SC.body_cell("静息心率 · 昨夜", f"{_rhr:.0f}" if _rhr else None, "bpm",
+        SC.body_cell(f"静息心率 · {_dd}", f"{_rhr:.0f}" if _rhr else None, "bpm",
                      f"28 天基线 {rhr_base:.0f} · {_wk('rhr')}" if rhr_base else _wk("rhr"),
                      _spark((series.get("rhr") or [])[-14:], h=22)),
         # 体重刻意给完整一行：不再 nowrap + ellipsis 把「较…」切掉。
@@ -898,11 +925,15 @@ def home_page() -> str:
     # 只留两个数据胶囊：宽屏自动铺成大屏，不再需要第三个按钮。
     # 一图流也不再挂页头：那枚胶囊在横屏大屏里孤零零地压着结论条，
     # 0.6.13 起统一收进「我的」页的低频动作列表。
-    chips = (chip(f"{st.get('days') or 0} 天数据") +
-             chip(f"上次同步 {esc(str(st.get('last_sync') or '—')[5:16])}"))
+    # 数据停在旧日期时，把「上次同步」胶囊换成可执行的提示。胶囊数不变，
+    # 不会碰到横屏 .rc-screen 的命名 grid 区域。
+    _sync_chip = (f"数据停在 {_dd} · 下拉刷新" if _stale else
+                  f"上次同步 {esc(str(st.get('last_sync') or '—')[5:16])}")
+    chips = (chip(f"{st.get('days') or 0} 天数据") + chip(_sync_chip))
     return page("TODAY · 今日", "今天该怎么练", "", body_html_all, chips,
                 screen=True,
-                foot="本机计算 · 不上传轨迹 · 离线可用。")
+                foot=("本机计算 · 不上传轨迹 · 离线可用。"
+                      "静息心率取数据源每日值，与设备 App 里用于心率区间的设定值口径可能不同。"))
 
 
 def _verdict(score) -> str:
@@ -1307,30 +1338,32 @@ def me_page() -> str:
         ai = AIAPI.dispatch("config.get", {}) or {}
     except Exception:
         ai = {}
+    # 网格卡的说明只有一行：模式名放得下，模型名放不下，塞进去只会变成半个
+    # 被省略号吃掉的名字。具体模型在「教练」页齿轮里看。
     if ai.get("configured"):
-        ai_txt = ((("平台额度" if ai.get("mode") == "platform" else "自配 API"))
-                  + " · " + str(ai.get("model") or ""))
+        ai_txt = ("平台额度" if ai.get("mode") == "platform" else "自配 API") + " · 已配置"
     else:
         ai_txt = "未配置"
 
     # 「补全历史」已经完全没有按钮了：它由 App 在每次刷新后**后台**由近到远
     # 自动往前挪，进度写在标题栏小字。这里只做只读展示，不提供点击 ——
     # 以前那个入口点开只有一个弹窗、跑完也只说「跳过 N 天」，用户只会觉得没反应。
-    # 常用动作走 2 列网格：同样四个入口，高度从 4×64px 降到 2×86px。
+    # 常用动作走 2 列网格：每张卡固定 68px，和账号行一样高。
+    # 说明文字一律控制在一行内（≤14 字），长文案改去别处说。
     tool_tiles = acts_grid([
-        act("⇪", "今日一图流", "1080×1920 看板，存相册或分享", action="export"),
-        act("✂", "素材", f"{_clip_count()} 个 · 回放时自动插入", action="clips"),
+        act("⇪", "今日一图流", "1080×1920 看板", action="export"),
+        act("✂", "素材", f"{_clip_count()} 个 · 回放插入", action="clips"),
         act("⌖", "地图底图",
-            "已配置 · 活动图带底图" if _map_on() else "未配置 · 矢量轨迹",
+            "已配置 · 带底图" if _map_on() else "未配置 · 矢量轨迹",
             action="amap"),
         # AI 只在这里展示：设置入口在「教练」页右上角，避免同一个开关两处出现
-        act("◍", "AI 模型服务", f"{ai_txt}"),
+        act("◍", "AI 模型服务", ai_txt),
     ])
     # 数据与备份：导出/导入是「换手机保命」的两个动作，放同一排最显眼
     data_tiles = acts_grid([
         act("⇩", "导出数据", "打包历史与设置", action="dbExport"),
-        act("⇧", "导入数据", "覆盖当前库（先自动备份）", action="dbImport"),
-        act("◫", "产物文件", "看板 / 图片 / 视频清单", href="/files"),
+        act("⇧", "导入数据", "先备份再覆盖", action="dbImport"),
+        act("◫", "产物文件", "图片 / 视频清单", href="/files"),
         act("⭡", "检查更新", f"当前 v{VER}", action="update"),
     ])
     # 诊断日志单独一行、样式压低：它只在出问题时才需要，不该抢网格的位置，
@@ -1339,32 +1372,34 @@ def me_page() -> str:
                    act="diag", tone="a")
 
     about = ('<div class="card rc-about"><div class="rc-about-h">' +
-             BR.badge_html(38) +
+             BR.badge_html(30) +
              f'<div><div class="lab">RunnerCoach · v{esc(VER)}</div>' +
              '<div class="note" style="margin-top:2px">本地优先的跑步教练</div>'
              '</div></div>'
-             '<div class="note" style="margin-top:10px;font-size:12.5px;line-height:1.8">'
-             '凭据与健康数据只存在这台设备的 App 私有目录；看板、图片、回放全部本地生成，'
-             '页面不加载任何 CDN、远程字体或统计脚本。卸载 App 即清空本地数据。'
-             '<br><a class="link-act" href="/privacy">完整隐私说明 →</a>'
+             '<div class="note" style="margin-top:8px;font-size:12px;line-height:1.65">'
+             '数据只存本机 App 私有目录，看板 / 图片 / 回放全本地生成；'
+             '无 CDN、远程字体与统计，卸载即清空。'
+             '<a class="link-act" href="/privacy"> 隐私说明 →</a>'
              '</div></div>')
 
     stat_line = (f'<div class="grid three">' +
-                 stat("日汇总", f"{cov['days']} 天", f"{cov['first']} ~ {cov['last']}") +
+                 stat("日汇总", f"{cov['days']} 天",
+                      f"{str(cov['first'])[5:]} ~ {str(cov['last'])[5:]}") +
                  stat("活动", f"{cov['activities']} 条", "全部本地") +
                  stat("上次同步", str(st.get("last_sync") or "—")[5:10],
-                     (str(st.get("last_sync") or "")[11:16] + " 同步 · 下拉可刷新").lstrip(" ·")) +
+                     (str(st.get("last_sync") or "")[11:16] + " 同步 · 可下拉刷新").lstrip(" ·")) +
                  '</div>'
-                 '<div class="note" style="margin-top:10px;line-height:1.7">'
-                 '历史由 App 在后台自动补齐：每次刷新从最近往前挪一段（一年一段，'
-                 '最多回溯 8 年），进度显示在标题栏；补完就不再发请求，无需手动操作。</div>')
+                 '<div class="note" style="margin-top:8px;line-height:1.6">'
+                 '历史在后台自动补齐，进度看标题栏；补完就不再请求，无需手动操作。</div>')
 
-    body = (sec("账号与数据", sources) +
+    body = ('<div class="me">' +
+            sec("账号与数据", sources) +
             sec("常用", tool_tiles) +
             sec("数据与备份", data_tiles) +
-            diag_row +
+            '<div class="me-diag">' + diag_row + '</div>' +
             sec("本地数据", stat_line) +
-            sec("关于", about))
+            sec("关于", about) +
+            '</div>')
     return page("ME · 我的", "数据与设置", "账号、同步、产物和隐私都在这里", body, chips)
 
 
