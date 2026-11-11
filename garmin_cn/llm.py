@@ -352,6 +352,15 @@ def _endpoint(cfg: dict) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------- HTTP
+# 一定要带一个「像客户端」的 User-Agent。
+# urllib 默认发的是 `Python-urllib/3.13`，OpenCode 前面的 Cloudflare 会直接
+# 回 `403 error code: 1010`（浏览器完整性校验），跟 key 对不对完全无关——
+# 之前这个 403 被归到了「密钥无效」，把排查方向带偏了很久。
+from . import __version__ as _VERSION
+
+USER_AGENT = (f"RunnerCoach/{_VERSION} "
+              "(Android; +https://gitee.com/liyufei-lye/RunnerCoach)")
+
 AUTH_STYLES = ("bearer", "x-api-key", "both")
 
 
@@ -485,6 +494,7 @@ def _post(url: str, token: str, payload: dict, timeout: int = READ_TIMEOUT,
     """
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json",
+               "User-Agent": USER_AGENT,
                "Accept": "text/event-stream" if stream else "application/json"}
     headers.update(_session_headers(cfg, url))
     headers.update(extra_headers or {})
@@ -577,6 +587,15 @@ def _http_error_raw(code: int, raw: str) -> LLMError:
 
     low = (raw or "").lower()
     if code in (401, 403):
+        # Cloudflare 的浏览器完整性校验：403 + `error code: 1010`（text/plain）。
+        # 这跟 key 一点关系都没有，是客户端标识被当成脚本了（urllib 默认 UA）。
+        # 必须排在「密钥无效」前面，否则会把用户带去找 key 的问题。
+        if ("error code: 1010" in low or "error code: 1020" in low
+                or "attention required" in low or "cf-error-details" in low):
+            return LLMError(
+                "blocked",
+                "请求被网关的 Cloudflare 风控挡下（客户端标识被判定为脚本），升级到最新版 App 再试",
+                raw)
         # 平台分享门禁返回的是 HTML「链接不完整」，不是 JSON——这和 key 无效
         # 完全是两回事，别再让用户去检查 API Key。
         if "<html" in low or "链接不完整" in raw or "share" in low:
@@ -799,6 +818,7 @@ def _platform_get(path: str, token: str) -> dict:
     if not base:
         raise LLMError("config", "还没填平台服务地址", "")
     req = urllib.request.Request(base + path, method="GET")
+    req.add_header("User-Agent", USER_AGENT)
     if cfg.get("platform_share_code"):
         req.add_header("X-Share-Code", cfg["platform_share_code"])
     if token:
@@ -821,6 +841,7 @@ def _platform_post(path: str, body: dict, token: str) -> dict:
     req = urllib.request.Request(base + path, method="POST",
                                  data=json.dumps(body).encode("utf-8"))
     req.add_header("Content-Type", "application/json")
+    req.add_header("User-Agent", USER_AGENT)
     if cfg.get("platform_share_code"):
         req.add_header("X-Share-Code", cfg["platform_share_code"])
     if token:
