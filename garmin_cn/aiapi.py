@@ -70,6 +70,11 @@ def dispatch(action: str, payload: dict | None = None) -> dict:
             return aicoach.coach_note(
                 str(p.get("date") or "").strip() or None,
                 force=_truthy(p.get("force")))
+        if action == "meal.today":
+            from . import appapi as _A
+
+            return _A.meal_today(str(p.get("date") or ""))
+
         if action == "weight":
             try:
                 days = max(14, min(365, int(p.get("days") or 60)))

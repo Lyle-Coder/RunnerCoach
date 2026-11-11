@@ -3907,6 +3907,34 @@ def run() -> int:
     assert "基线 56" in _rpart["detail"], \
         f"静息心率基线混用了两家口径：{_rpart['detail']}"
 
+    # ---- 拍照识热量：解析模型返回、批量落库、进当日合计 --------
+    from garmin_cn import nutrition as _NT
+    from unittest import mock as _um3
+
+    _mhome2 = Path(tempfile.mkdtemp())
+    _meals_path = _mhome2 / "meals.json"
+    _reply = ('```json\n{"items":[{"name":"米饭","grams":200,"kcal":232,'
+              '"protein_g":4.8,"carb_g":51.6,"fat_g":0.6},'
+              '{"name":"鸡胸","grams":120,"kcal":198,"protein_g":37,'
+              '"carb_g":0,"fat_g":4.2}],"note":"蛋白够，碳水偏少"}\n```')
+    with _um3.patch.object(_NT, "MEALS", _meals_path), \
+            _um3.patch("garmin_cn.llm.chat",
+                       return_value={"text": _reply, "model": "m", "elapsed": 1.2}):
+        _est = _NT.estimate_meal("AAAA", "image/jpeg")
+        assert len(_est["items"]) == 2 and _est["total"]["kcal"] == 430, \
+            f"识热量解析不对：{_est}"
+        assert _est["items"][1]["protein_g"] == 37
+        _saved = _NT.add_meals("2026-11-11", _est["items"])
+        assert _saved["total"]["kcal"] == 430 and _saved["total"]["protein_g"] == 42
+        assert _NT.intake("2026-11-11")["count"] == 2
+    _api_src6 = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    for _fn in ("meal_today", "meal_add", "meal_estimate"):
+        assert f'"{_fn}"' in _api_src6, f"接口白名单漏了 {_fn}"
+    _kt6 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert '"mealShot" -> askMealPhoto()' in _kt6, "教练页的拍照入口没接上"
+    assert 'apiCall("meal_estimate"' in _kt6 and 'apiCall("meal_add"' in _kt6
+    assert "mealShot" in (ROOT / "garmin_cn/aiui.py").read_text(encoding="utf-8")
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):
