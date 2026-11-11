@@ -3394,10 +3394,105 @@ def run() -> int:
     assert callable(_AA._backfill_coros) and callable(_AA._backfill_garmin)
     _bf = _AA.backfill_next
     _src = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
-    assert "g = _backfill_garmin(span_days)" in _src and "c = _backfill_coros()" in _src, \
+    assert "_backfill_garmin(span_days)" in _src and "_backfill_coros()" in _src, \
         "backfill_next 没把两个数据源都推一步，高驰历史永远不动"
-    assert "done = bool(g.get(\"done\", True)) and bool(c.get(\"done\", True))" in _src, \
+    assert 'done = bool(g.get("done", True)) and bool(c.get("done", True))' in _src, \
         "只有一个源补完就报 done，另一个会停在中途"
+    # 单侧异常必须就地兜住：真机 /activity/query 的 startTime 是 int 毫秒
+    # 时间戳，earliest_activity 直接切片抛 TypeError，异常一路冒到 call()，
+    # 连先跑完的佳明段都丢了。现在转成该侧 ok=false，另一侧照常推进。
+    assert '_guard("garmin"' in _src and '_guard("coros"' in _src, \
+        "补历史没有单侧异常隔离，一个源炸掉会拖垮另一个"
+    with _mock.patch.object(_AA, "_backfill_garmin",
+                            side_effect=TypeError("'int' object is not subscriptable")), \
+            _mock.patch.object(_AA, "_backfill_coros",
+                               return_value={"ok": True, "done": False, "ran": True,
+                                             "fetched": 3, "skipped": 0,
+                                             "start": "2026-11-01", "end": "2026-11-10"}):
+        _one = _AA.backfill_next()
+    assert _one.get("ok") is False and "TypeError" in str(_one.get("error")), \
+        "佳明侧炸了却报成功，错误被吞掉"
+    assert _one["coros"]["ran"] is True, \
+        "佳明侧异常把高驰那一侧也吞了，补历史会整个停摆"
+    assert _one.get("start") == "" or _one.get("start") == "2026-11-01", \
+        "异常侧的占位不该伪装成真实区间"
+    # 反过来：高驰侧炸，佳明侧结果必须保住
+    with _mock.patch.object(_AA, "_backfill_garmin",
+                            return_value={"ok": True, "done": False, "ran": True,
+                                          "fetched": 5, "skipped": 0,
+                                          "start": "2026-05-01", "end": "2026-10-28"}), \
+            _mock.patch.object(_AA, "_backfill_coros",
+                               side_effect=RuntimeError("探测失败")):
+        _two = _AA.backfill_next()
+    assert _two["garmin"]["ran"] is True and _two.get("error"), \
+        "高驰侧异常没被隔离或没上报错误"
+
+    # earliest_activity：真机 startTime 是 int 毫秒时间戳，不能直接 [:10]
+    from garmin_cn import coros as _CO4
+    class _FakeCoros(_CO4.CorosCloud):
+        def __init__(self, *a, **kw):
+            pass
+        def load(self):
+            return True
+        def _req(self, method, path, params=None, **kw):
+            if path == "/activity/query":
+                return {"data": {"dataList": [
+                    {"labelId": "a", "startTime": 1762732800000},
+                    {"labelId": "b", "startTime": 1762646400000},
+                ], "totalCount": 2}}
+            return {"data": {}}
+    with _mock.patch.object(_CO4, "CorosCloud", _FakeCoros):
+        _ed = _CO4.earliest_activity(Path(tempfile.mkdtemp()))
+    assert len(_ed) == 10 and _ed[4] == "-", \
+        "int 毫秒时间戳让 earliest_activity 抛异常或返回空，补历史会整轮失败"
+    for _v, _want in ((1762732800000, "2025-11-10"), ("20261110", "2026-11-10"),
+                      ("2026-11-10 07:00:00", "2026-11-10"),
+                      ("2026/11/10", "2026-11-10"), (None, None), ("x", None)):
+        assert _CO4._any_day(_v) == _want, f"活动日期形状 {_v!r} 没归一化"
+    assert 'except Exception as e:' in (
+        ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8").split(
+            "def _backfill_coros")[1].split("def backfill_next")[0], \
+        "高驰最早活动探测失败没兜住，会拖垮整段补历史"
+
+    # 诊断日志的「未找到跑步动态」必须带上候选键的值，否则下次还是查不出
+    # 到底是值为 0 还是量纲不同；触地类键名不含 vert/osc/vib，别漏掉
+    _casrc = (ROOT / "garmin_cn/coros_activity.py").read_text(encoding="utf-8")
+    assert '"ground", "contact", "gct"' in _casrc, \
+        "动态诊断没扫触地类键，真机日志看不到 avgGroundTime 的值"
+
+    # 真机诊断日志里的两种返回形状，都要能解出数据，不能「解析为空」：
+    #  ① MCP 睡眠给的是带标题/Note 行的可读报告，且换行可能是字面量 \n
+    #  ② summary 里 avgGroundTime / avgVertVibration 明明在，也不能报未找到
+    from garmin_cn import coros_mcp as _MC2
+    from garmin_cn import coros_activity as _CA2
+    _sleep_report = ('"Sleep Overview\\n========================\\n'
+                     'Note: each record below is dated by its wake-up day.\\n\\n'
+                     '2026-10-12\\nSleep Score: 89\\n'
+                     'Daily Sleep: 8h 47min (incl. naps)\\n'
+                     'Main Sleep (asleep): 7h 19min\\n'
+                     'Main Sleep Period (incl. awake): 7h 32min\\n'
+                     'Sleep metrics scope: daily\\nDeep Sleep Ratio: 14%\\n'
+                     'Light Sleep Ratio: 56%\\nREM Ratio: 27%\\n'
+                     'Awake Ratio: 3%\\nAwake Time: 13 min\\n'
+                     'Awake Count (>5 min): 0\\n'
+                     'Main Sleep Window: 2026-10-11 23:52 - 2026-10-12 07:24\\n'
+                     'Naps Total (asleep): 1h 28min\\nNaps Period: 1h 30min"')
+    _sr = _MC2.parse_sleep({"content": [{"type": "text", "text": _sleep_report}]})
+    assert len(_sr) == 1 and _sr[0]["date"] == "2026-10-12", \
+        "真机睡眠报告（字面 \\n + 标题行）又解析为空了"
+    assert _sr[0]["sleep_total_min"] == 439, \
+        "主睡眠时长被 Daily Sleep / Period 干扰行覆盖了"
+    assert _sr[0]["sleep_score"] == 89 and _sr[0]["deep_min"] == 61 \
+        and _sr[0]["nap_min"] == 88 and _sr[0]["awake_min"] == 13, \
+        "睡眠评分/分期/小睡/清醒解析不对"
+    # 日志里列的那批 summary 字段名（真机 1.0.5）：候选键要能命中，
+    # 且 avgVertRatio（垂直步幅比 %）绝不能被当成振幅
+    _log_summary = {"adjustedPace": 330, "avgGroundTime": 245,
+                    "avgVertVibration": 8.6, "avgVertRatio": 7.4,
+                    "avgLegStiffness": 9.2, "avgStepLen": 1.12,
+                    "avgCadence": 178, "avgHr": 152, "climbingTime": 0}
+    assert _CA2.dynamics({"summary": _log_summary}) == (245.0, 8.6), \
+        "真机 summary 字段明明在却取不到触地/垂直振幅"
     # 只有高驰账号时不能被佳明的 need_login 卡住
     assert "if not _garmin_session_ok():" in _src and "if not _coros_session_ok():" in _src
 
