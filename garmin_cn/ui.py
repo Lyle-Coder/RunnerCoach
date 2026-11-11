@@ -1311,6 +1311,13 @@ def me_page() -> str:
              + (" · 查看 / 更换" if c_ok == "已登录" else " · 可独立同步活动"))
     m_ok = "已登录" if m.get("logged_in") else "未连接"
     h_ok = "已登录" if h.get("logged_in") else "未连接"
+    try:
+        k_ok = "已登录" if A.keep_status().get("logged_in") else "未连接"
+    except Exception:
+        k_ok = "未连接"
+    # Keep 只有运动摘要（没有轨迹/分圈），文案里先说清楚，免得用户以为漏了图
+    k_sub = (f"{k_ok} · 运动摘要，无轨迹"
+             + (" · 查看 / 更换" if k_ok == "已登录" else ""))
     bs = A.body_sources()
     pref = bs.get("preferred", "mi")
     pref_label = bs.get("labels", {}).get(pref, pref)
@@ -1325,6 +1332,7 @@ def me_page() -> str:
                    act="login:garmin") +
                row("C", "高驰 COROS", c_sub,
                    act="login:coros", tone="b") +
+               row("K", "Keep", k_sub, act="login:keep", tone="b") +
                # 三个体重行并成一行：小米/华为的登录放进来源选择器的「登录账号」，
                # 少两行，语义反而更清楚（都在说「体重数据从哪来」）。
                row("W", "体重数据",
