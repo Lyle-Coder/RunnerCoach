@@ -81,8 +81,8 @@ PROVIDERS = {
         "label": "OpenCode Go", "base_url": "https://opencode.ai/inference/go/openai/v1",
         "model": "deepseek-v4.1-flash", "key_url": "https://opencode.ai/console",
         "note": ("订阅制出口，地址必须是 /inference/go/openai/v1；每个请求要带稳定的 "
-                 "x-opencode-session（本 App 自动补）。拍照识热量要选多模态模型，"
-                 "如 mimo-v2.5 / kimi-k3 / qwen3.8-flash"),
+                 "x-opencode-session（本 App 自动补）。拍照识热量可用 deepseek-v4.1-flash"
+                 "（支持图片），mimo-v2.5 / kimi-k3 也可以"),
         "session": "opencode",
     },
     "opencode_payg": {
@@ -629,7 +629,7 @@ def _http_error_raw(code: int, raw: str) -> LLMError:
                                   "unsupported content", "content type")):
             return LLMError(
                 "vision",
-                "当前模型不支持图片输入，换一个多模态模型（如 mimo-v2.5 / kimi-k3 / qwen3.8-flash）",
+                "当前模型不支持图片输入，换一个多模态模型（如 deepseek-v4.1-flash / mimo-v2.5 / kimi-k3）",
                 raw)
         return LLMError("request", f"请求被拒绝：{str(msg)[:160]}", raw)
     if code >= 500:
