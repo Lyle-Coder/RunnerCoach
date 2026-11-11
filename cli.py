@@ -2513,6 +2513,9 @@ def main() -> int:
     from garmin_cn import keep as K
     K.register(sub, HOME, DB)
 
+    from garmin_cn import eventui
+    eventui.add_parser(sub)
+
     q = sub.add_parser("nutri", help="今天吃多少：热量与三大营养素目标（减脂/维持/增重）")
     q.add_argument("--date")
     q.add_argument("--goal", choices=["cut", "maintain", "gain"],

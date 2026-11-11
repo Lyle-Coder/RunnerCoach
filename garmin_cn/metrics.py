@@ -327,6 +327,28 @@ def flags(res: dict) -> list[dict]:
         out.append({"level": "ok", "text": f"状态新鲜 TSB {tsb}，可安排强度课"})
     if not out:
         out.append({"level": "ok", "text": "各项指标平稳，按计划训练即可"})
+
+    # 赛事强制装备：只在赛前 due_days（默认 7 天）内、且没勾满时提醒。
+    # 平时不打扰——现在离 105K 还有 100 多天，天天提醒等于噪音。
+    try:
+        from . import event as _ev
+        _e = _ev.load_event()
+        _days = (dt.date.fromisoformat(_e["date"])
+                 - dt.date.fromisoformat(res["date"])).days
+        _lead = int(_e.get("gear_due_days", 7))
+        if 0 <= _days <= _lead:
+            _g = _ev.gear_progress(_e["slug"])
+            if _g["total"] and _g["done"] < _g["total"]:
+                _miss = "、".join(_g["missing"][:4])
+                if len(_g["missing"]) > 4:
+                    _miss += " 等 %d 项" % len(_g["missing"])
+                out.insert(0, {
+                    "level": "alert" if _days <= 3 else "warn",
+                    "text": '强制装备 %d/%d，距起跑 %d 天，还差：%s'
+                            % (_g["done"], _g["total"], _days, _miss),
+                })
+    except Exception:
+        pass
     return out
 
 
