@@ -3699,6 +3699,59 @@ def run() -> int:
     assert "text-overflow:ellipsis" in _acsrc4 and "text-overflow:ellipsis" in _rcsrc4, \
         "自定义名过长会撑破卡片，必须有省略兜底"
 
+    # ------------------------------------------------------------ 跨源活动去重
+    # 同一次跑步可能被佳明和高驰各记一条（将来还有 Keep）：只跨源判、
+    # 同源永不合并，保留优先级 佳明 > 高驰 > Keep。
+    from garmin_cn import dedupe as _DD
+
+    def _act(aid, src, day, hms, dist, dur, kind="running"):
+        return {"activity_id": aid, "source": src, "date": day,
+                "start_ts": f"{day} {hms}", "distance_m": dist,
+                "duration_s": dur, "type": kind}
+
+    _g = _act("g1", "garmin", "2026-11-01", "07:00:00", 10000, 3000)
+    _c = _act("c1", "coros", "2026-11-01", "07:00:40", 10050, 3040)
+    _kept, _drop = _DD.pick_unique([_c, _g])
+    assert [x["activity_id"] for x in _kept] == ["g1"], "跨源同一次跑步没去重"
+    assert _drop and _drop[0]["duplicate_of"] == "g1", "没优先保留佳明"
+
+    assert len(_DD.pick_unique(
+        [_g, _act("g2", "garmin", "2026-11-01", "07:00:40", 10050, 3040)])[0]) == 2, \
+        "同源两条被当成重复（同一天两练是真实的）"
+    assert len(_DD.pick_unique(
+        [_g, _act("c2", "coros", "2026-11-01", "07:12:00", 10000, 3000)])[0]) == 2, \
+        "时间差 12 分钟还算重复"
+    assert len(_DD.pick_unique(
+        [_g, _act("c3", "coros", "2026-11-01", "07:00:30", 12000, 3000)])[0]) == 2, \
+        "距离差 20% 还算重复"
+    assert len(_DD.pick_unique(
+        [_g, _act("k1", "keep", "2026-11-01", "07:00:30", 10000, 3000, "cycling")])[0]) == 2, \
+        "跑步和骑行被互判了"
+    assert len(_DD.pick_unique(
+        [_act("g9", "garmin", "2026-11-01", "07:00:00", 400, 200),
+         _act("c9", "coros", "2026-11-01", "07:00:20", 400, 200)])[0]) == 2, \
+        "500 m 以下的活动不该参与去重"
+
+    # Store 集成：列表与 stats 都要是去重后的数
+    _ddb = Path(tempfile.mkdtemp()) / "dedupe.db"
+    _ds = _Store3(_ddb)
+    for _r in (_g, _c, _act("g3", "garmin", "2026-11-02", "07:00:00", 8000, 2400)):
+        _ds.conn.execute(
+            "INSERT INTO activities (activity_id,date,start_ts,type,duration_s,distance_m,source) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (_r["activity_id"], _r["date"], _r["start_ts"], _r["type"],
+             _r["duration_s"], _r["distance_m"], _r["source"]))
+    _ds.conn.commit()
+    assert len(_ds.activities("2026-11-01", "2026-11-02")) == 2, "Store 列表没去重"
+    assert _ds.stats()["activities"] == 2, "活动统计数没去重"
+    try:
+        _ds.conn.close()
+        _ddb.unlink(missing_ok=True)
+    except OSError:
+        pass
+    assert "DD.dedupe(out)" in (ROOT / "garmin_cn/store.py").read_text(encoding="utf-8"), \
+        "Store.activities 没接去重"
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):
