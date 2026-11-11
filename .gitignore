@@ -27,6 +27,10 @@ captcha.jpg
 tools/make_plan.py
 tools/make_card.py
 
+# ── 软著材料：只在本机留存，不进仓库、不参与任何提交 ────────────
+docs/软著申请.md
+tools/copyright.py
+
 # ── 构建产物与大二进制 ──────────────────────────────────────
 tools/ffmpeg.exe
 tools/ffmpeg.zip
