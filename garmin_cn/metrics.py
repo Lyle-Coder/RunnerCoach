@@ -52,17 +52,22 @@ def baseline(rows: list[dict], key: str, days: int = 28) -> float | None:
 
 
 # ---------------- 恢复度 ----------------
-def readiness(today: dict, history: list[dict]) -> dict:
+def readiness(today: dict, history: list[dict],
+              sleep_score: float | None = None) -> dict:
     """0-100 恢复度。权重：睡眠 35% / HRV 30% / 静息心率 20% / 身体电量 15%。
 
     每个分量都会和 28 天基线比较，缺席的分量按剩余权重归一化。
+    `sleep_score` 由调用方传入时优先用它（含手动补录小睡后的估算分），
+    否则读设备原始分。
     """
     parts = []
 
     sleep_min = num(today.get("sleep_total_min"))
-    sleep_score = num(today.get("sleep_score"))
+    override = num(sleep_score)
+    sleep_score = override if override is not None else num(today.get("sleep_score"))
     if sleep_score is not None:
-        parts.append(("睡眠", 0.35, clamp(sleep_score), f"睡眠评分 {sleep_score:.0f}"))
+        tag = "睡眠估算" if override is not None else "睡眠评分"
+        parts.append(("睡眠", 0.35, clamp(sleep_score), f"{tag} {sleep_score:.0f}"))
     elif sleep_min:
         s = clamp(sleep_min / SLEEP_NEED_MIN * 100)
         parts.append(("睡眠", 0.35, s, f"睡眠 {sleep_min/60:.1f} 小时"))
@@ -332,19 +337,33 @@ def derive(store, date: str, window: int = 30) -> dict:
             if r.get("date") == date:
                 manual.apply_sleep_fix(r, fix, date)
 
+    # 手动补录的小睡：设备（佳明/高驰）肯定没把它算进睡眠评分，所以按
+    # 「主睡眠 + 补录」对需求估一个分，让修正能进恢复度和看板得分。
+    # 设备自带小睡时信任设备算法（高驰的评分本身就含小睡修正），不重算。
+    _nap_eff, _nap_src = manual.merge(today.get("nap_min"), date)
+    _eff_min = (num(today.get("sleep_total_min")) or 0) + (_nap_eff or 0)
+    _need_min = num(today.get("sleep_need_min")) or SLEEP_NEED_MIN
+    _score_device = num(today.get("sleep_score"))
+    _score_est = (round(clamp(_eff_min / _need_min * 100))
+                  if _nap_src == "manual" and _eff_min > 0 and _need_min > 0
+                  else None)
+
     res = {
         "date": date,
         "data_date": data_date,
         "data_stale_days": stale_days,
         "today": today,
         "history": history,
-        "readiness": readiness(today, history),
+        "readiness": readiness(today, history, sleep_score=_score_est),
         "sleep": {
             "total_min": num(today.get("sleep_total_min")),
             "total_h": round((num(today.get("sleep_total_min")) or 0) / 60, 2),
             "nap_min": num(today.get("nap_min")),
+            "nap_eff": _nap_eff or 0,
+            "nap_src": _nap_src,
             "naps": num(today.get("naps")),
-            "score": num(today.get("sleep_score")),
+            "score": _score_device,
+            "score_est": _score_est,
             "deep_min": num(today.get("deep_min")),
             "light_min": num(today.get("light_min")),
             "rem_min": num(today.get("rem_min")),
