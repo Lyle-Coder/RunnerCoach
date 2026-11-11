@@ -434,9 +434,21 @@ def _last(rs: list[dict], key: str):
     return None
 
 
+def _src_of_last(rs: list[dict], key: str) -> str | None:
+    """最近一条有该字段的记录的来源中文名，给教练上下文标注口径用。"""
+    for r in reversed(rs):
+        if r.get(key) not in (None, ""):
+            s = r.get("source")
+            return SOURCE_LABELS.get(s, s)
+    return None
+
+
 def stats(store, end: str | None = None, days: int = 28) -> dict:
     """体重趋势 + 体成分最新值 + 各指标变化。数据太少时判断留空，不硬编结论。"""
     rs = selected_rows(store, end, days + 14)
+    # 体成分的「主口径」仍跟体重同一来源（同一台秤的读数才可比）；
+    # 另取全量表给教练/简报兜底：首选来源没体脂时，别让模型以为完全没数据。
+    all_rs = rows(store, end, days + 14)
     series = _daily(rs)
     fat_series = _daily_key(rs, "body_fat_pct")
     muscle_series = _daily_key(rs, "muscle_kg", 2)
@@ -458,6 +470,12 @@ def stats(store, end: str | None = None, days: int = 28) -> dict:
         "bmr": _last(rs, "bmr"),
         "bmi": _raw_num(rs, "bmi", 8, 60),
         "score": _raw_num(rs, "body_score", 1, 100),
+        # 教练/简报兜底：首选来源没体脂时，给出其他来源的最近值与来源名。
+        # 主口径（上面的 body_fat）仍只认同一台秤，避免体重和体脂混源。
+        "body_fat_any": _last(all_rs, "body_fat_pct"),
+        "body_fat_any_src": _src_of_last(all_rs, "body_fat_pct"),
+        "muscle_any": _last(all_rs, "muscle_kg"),
+        "water_any": _last(all_rs, "water_pct"),
         "fat_series": fat_series[-30:],
         "muscle_series": muscle_series[-30:],
         "water_series": water_series[-30:],
@@ -578,11 +596,17 @@ def text(st: dict, ctl_delta: float | None = None) -> str:
         if st.get("fat_delta") is not None and abs(st["fat_delta"]) >= 1.0:
             fat += f"（{st['fat_span']} 天 {st['fat_delta']:+.1f} pt）"
         bits.append(fat)
+    elif st.get("body_fat_any"):
+        # 首选秤只称体重、体脂在另一台秤上：仍给出来，但标明不是同一口径
+        bits.append(f"体脂 {st['body_fat_any']:.1f}%（来自"
+                    f"{st.get('body_fat_any_src') or '另一来源'}，与体重不同秤）")
     if st.get("muscle"):
         mus = f"肌肉 {st['muscle']:.1f} kg"
         if st.get("muscle_delta") is not None:
             mus += f"（{st['muscle_delta_span']} 天 {st['muscle_delta']:+.1f}）"
         bits.append(mus)
+    elif st.get("muscle_any"):
+        bits.append(f"肌肉 {st['muscle_any']:.1f} kg（另一来源）")
     if st.get("water"):
         bits.append(f"水分 {st['water']:.0f}%")
     if st.get("visceral"):

@@ -3863,6 +3863,50 @@ def run() -> int:
     except OSError:
         pass
 
+    # ---- 体成分跨来源：体重来自小米、体脂来自华为，不能按日选首选来源就丢掉
+    from garmin_cn import body as _BD
+
+    _bhome = Path(tempfile.mkdtemp())
+    _bst = _Store3(_bhome / "b.db")
+    _BD.ensure(_bst)
+    _bst.conn.execute(
+        "INSERT INTO body (date, ts, weight_kg, source) VALUES (?,?,?,?)",
+        ("2026-11-03", "2026-11-03 07:00", 65.0, "mi"))
+    _bst.conn.execute(
+        "INSERT INTO body (date, ts, weight_kg, body_fat_pct, muscle_kg, water_pct, source) "
+        "VALUES (?,?,?,?,?,?,?)",
+        ("2026-11-03", "2026-11-03 07:05", 65.0, 18.5, 50.2, 55.0, "huawei"))
+    _bst.conn.commit()
+    _bst.set_meta("body.preferred_source", "mi")
+    _bs = _BD.stats(_bst, "2026-11-03")
+    assert _bs["body_fat"] is None, "主口径不该混用另一台秤的体脂"
+    assert _bs["body_fat_any"] == 18.5 and _bs["body_fat_any_src"] == "华为", \
+        f"教练兜底值没取到另一来源的体脂：{_bs.get('body_fat_any')}"
+    _btxt = _BD.text(_bs)
+    assert "体脂 18.5%" in _btxt and "不同秤" in _btxt, \
+        f"教练上下文没把另一来源的体脂说出来：{_btxt}"
+    try:
+        _bst.conn.close()
+        (_bhome / "b.db").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    # ---- 静息心率：高驰 rhr 与佳明 restingHeartRate 不同算法，基线只比同口径
+    from garmin_cn import metrics as _M3
+
+    _rhist = [{"date": f"2026-11-0{i + 1}", "resting_hr": 50,
+               "rhr_src": "garmin", "raw": '{"restingHeartRate": 50}'}
+              for i in range(6)]
+    _rhist += [{"date": f"2026-11-{i + 1:02d}", "resting_hr": 56,
+                "rhr_src": "coros", "raw": '{"rhr": 56}'}
+               for i in range(6, 12)]
+    _rtoday = {"date": "2026-11-12", "resting_hr": 56, "rhr_src": "coros",
+               "raw": '{"rhr": 56}', "sleep_total_min": 420}
+    _rr = _M3.readiness(_rtoday, _rhist)
+    _rpart = next(p for p in _rr["parts"] if p["name"] == "静息心率")
+    assert "基线 56" in _rpart["detail"], \
+        f"静息心率基线混用了两家口径：{_rpart['detail']}"
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):
