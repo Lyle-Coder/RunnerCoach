@@ -788,12 +788,30 @@ def coros_login(email: str, password: str, region: str = "asia") -> dict:
 _MCP_PENDING: dict[str, object] = {}
 
 
+def _coros_region() -> str:
+    """高驰账号所在区域。
+
+    官方 MCP 有三套网关（国内 mcpcn / 欧洲 mcpeu / 美国 mcpus），授权页与
+    token 必须跟账号区域一致。以前这里写死 asia，欧/美区账号点「授权睡眠」
+    会跳到错误的网关。账号没登录时按国内处理，登录后自然跟随。
+    """
+    try:
+        from . import coros as C
+
+        cloud = C.CorosCloud(HOME)
+        if cloud.load() and cloud.region:
+            return cloud.region
+    except Exception:
+        pass
+    return "asia"
+
+
 def coros_mcp_status() -> dict:
     """官方 MCP（睡眠）的授权状态。只看本地 token，不联网。"""
     try:
         from . import coros_mcp as MC
 
-        cloud = MC.CorosMcp(HOME, "asia")
+        cloud = MC.CorosMcp(HOME, _coros_region())
         st = cloud.status()
         return {"ok": True, **st,
                 "region_cn": MC.REGION_CN.get(st["region"], st["region"])}
@@ -801,12 +819,15 @@ def coros_mcp_status() -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-def coros_mcp_login_url(region: str = "asia") -> dict:
-    """生成授权页地址。verifier 留在进程里，回调回来后用 coros_mcp_finish 收尾。"""
+def coros_mcp_login_url(region: str = "") -> dict:
+    """生成授权页地址。verifier 留在进程里，回调回来后用 coros_mcp_finish 收尾。
+
+    `region` 留空时跟随高驰账号所在区域；调用方不用再关心国内/欧洲/美国。
+    """
     try:
         from . import coros_mcp as MC
 
-        cloud = MC.CorosMcp(HOME, region or "asia")
+        cloud = MC.CorosMcp(HOME, region or _coros_region())
         url = cloud.authorize_url()
         _MCP_PENDING["cloud"] = cloud
         return {"ok": True, "url": url, "callback": MC.CALLBACK,
@@ -831,13 +852,13 @@ def coros_mcp_finish(callback: str) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-def coros_mcp_sleep(days: int = 30) -> dict:
+def coros_mcp_sleep(days: int = 30, region: str = "") -> dict:
     """拉高驰睡眠并写入日汇总（merge，不动佳明已写的字段）。"""
     try:
         from . import coros_mcp as MC
         from .store import Store
 
-        cloud = MC.CorosMcp(HOME, "asia")
+        cloud = MC.CorosMcp(HOME, region or _coros_region())
         rows = cloud.sleep(days)
         store = Store(DB)
         for row in rows:
@@ -858,7 +879,7 @@ def coros_mcp_logout() -> dict:
     try:
         from . import coros_mcp as MC
 
-        MC.CorosMcp(HOME, "asia").clear()
+        MC.CorosMcp(HOME, _coros_region()).clear()
         _MCP_PENDING.pop("cloud", None)
         return {"ok": True}
     except Exception as e:
@@ -894,7 +915,7 @@ def coros_sync(days: int = 30, email: str = "", password: str = "") -> dict:
     try:
         from . import coros_mcp as MC
 
-        if MC.CorosMcp(HOME, "asia").status()["authorized"]:
+        if MC.CorosMcp(HOME, _coros_region()).status()["authorized"]:
             sleep_days = int(coros_mcp_sleep(days).get("sleep_days") or 0)
     except Exception as e:
         from . import diag as _dg

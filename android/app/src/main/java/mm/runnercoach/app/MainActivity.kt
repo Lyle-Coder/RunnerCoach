@@ -860,18 +860,20 @@ class MainActivity : Activity() {
         busy(true)
         thread {
             val r = apiCall("account_info", source)
+            // 高驰账号卡片要显示睡眠授权状态，并留一个补授权/同步的入口
+            val mcp = if (source == "coros") apiCall("coros_mcp_status") else null
             ui {
                 busy(false)
                 if (!r.optBoolean("ok") || !r.optBoolean("logged_in")) {
                     if (source == "coros") askCorosLogin() else askGarminLogin()
                     return@ui
                 }
-                showAccountCard(source, r)
+                showAccountCard(source, r, mcp)
             }
         }
     }
 
-    private fun showAccountCard(source: String, r: JSONObject) {
+    private fun showAccountCard(source: String, r: JSONObject, mcp: JSONObject? = null) {
         val lines = mutableListOf<String>()
         r.optString("account").takeIf { it.isNotBlank() }?.let { lines.add("账号    $it") }
         r.optString("device").takeIf { it.isNotBlank() }?.let { lines.add("设备    $it") }
@@ -883,15 +885,26 @@ class MainActivity : Activity() {
         if (acts > 0) lines.add("数据    $acts 条活动 · $first ~ $last")
         if (r.optInt("days") > 0) lines.add("日汇总  ${r.optInt("days")} 天")
         r.optString("last_sync").takeIf { it.isNotBlank() }?.let { lines.add("同步    $it") }
-        AlertDialog.Builder(this)
+        val sleepAuthed = mcp?.optBoolean("authorized") == true
+        if (source == "coros" && mcp != null)
+            lines.add("睡眠    " + if (sleepAuthed) "已授权（官方 MCP）" else "未授权（可选）")
+        val builder = AlertDialog.Builder(this)
             .setTitle(r.optString("label", "账号"))
             .setMessage(lines.joinToString("\n"))
             .setPositiveButton("更换其他账号") { _, _ ->
                 if (source == "coros") askCorosLogin() else askGarminLogin()
             }
-            .setNeutralButton("退出登录") { _, _ -> confirmLogout(source) }
-            .setNegativeButton("关闭", null)
-            .show()
+        if (source == "coros" && mcp != null) {
+            // 高驰多一个睡眠入口：登录时点过「暂不」的人在这里补授权
+            builder.setNeutralButton(if (sleepAuthed) "同步睡眠" else "授权睡眠") { _, _ ->
+                if (sleepAuthed) doCorosMcpSync() else askCorosSleep()
+            }
+            builder.setNegativeButton("退出登录") { _, _ -> confirmLogout(source) }
+        } else {
+            builder.setNeutralButton("退出登录") { _, _ -> confirmLogout(source) }
+            builder.setNegativeButton("关闭", null)
+        }
+        builder.show()
     }
 
     private fun confirmLogout(source: String) {
@@ -1143,12 +1156,46 @@ class MainActivity : Activity() {
                 if (r.optBoolean("ok")) {
                     secrets.saveCoros(email, pwd)
                     toast("高驰登录成功（${r.optString("user_id")}）")
-                    doSync()
+                    // 活动/HRV/静息心率已经能同步；睡眠还差一次官方 MCP 的 OAuth。
+                    // 直接在这里问意向，省掉「我的」里单独那个睡眠按钮。
+                    askSleepAfterLogin()
                 } else {
                     // 失败直接带着错误重开登录框：区域、账号、密码都还在，改一处再试
                     askCorosLogin(email, pwd, region,
                                   r.optString("error").ifBlank { "未知错误" })
                 }
+            }
+        }
+    }
+
+    /**
+     * 登录成功后的睡眠授权意向。
+     *
+     * 活动、HRV、静息心率用账号密码就能同步；睡眠不在 Training Hub 的 REST 里，
+     * 必须再走一次官方 MCP 的 OAuth。以前这件事占「我的」里单独一行，用户登录
+     * 完还得再找一次按钮——现在登录时就问清楚：同意直接跳授权页，不同意先同步
+     * 活动，之后账号卡片里还能补。
+     */
+    private fun askSleepAfterLogin() {
+        thread {
+            val st = apiCall("coros_mcp_status")
+            ui {
+                if (st.optBoolean("authorized")) {
+                    doSync()
+                    return@ui
+                }
+                AlertDialog.Builder(this)
+                    .setTitle("顺便授权睡眠数据？")
+                    .setMessage(
+                        "活动、HRV、静息心率已经能同步了；睡眠不在高驰的网页接口里，" +
+                            "要再用官方 MCP 授权一次才能读到睡眠评分和深/浅/REM。\n\n" +
+                            "点「去授权」会打开高驰登录页，登录并同意即可；" +
+                            "不会把手机上的高驰 App 挤下线，数据也不经过我们的服务器。"
+                    )
+                    .setPositiveButton("去授权") { _, _ -> startCorosMcpAuth() }
+                    .setNegativeButton("暂不") { _, _ -> doSync() }
+                    .setOnCancelListener { doSync() }
+                    .show()
             }
         }
     }
@@ -1196,7 +1243,8 @@ class MainActivity : Activity() {
     private fun startCorosMcpAuth() {
         busy(true)
         thread {
-            val r = apiCall("coros_mcp_login_url", "asia")
+            // 区域跟随高驰账号（国内/欧洲/美国），不再在这里写死
+            val r = apiCall("coros_mcp_login_url")
             ui {
                 busy(false)
                 if (r.optBoolean("ok"))
@@ -1220,13 +1268,14 @@ class MainActivity : Activity() {
                     toast("授权失败：${r.optString("error")}")
                 } else {
                     toast("高驰授权成功，正在同步睡眠…")
-                    doCorosMcpSync()
+                    // 从登录流程过来时活动还没同步过，睡眠收尾后补一次
+                    doCorosMcpSync(thenSync = true)
                 }
             }
         }
     }
 
-    private fun doCorosMcpSync() {
+    private fun doCorosMcpSync(thenSync: Boolean = false) {
         busy(true)
         thread {
             val r = apiCall("coros_mcp_sleep", 30)
@@ -1255,6 +1304,7 @@ class MainActivity : Activity() {
                 } else {
                     toast("同步睡眠失败：${r.optString("error")}")
                 }
+                if (thenSync) doSync()
             }
         }
     }
@@ -1899,6 +1949,8 @@ class MainActivity : Activity() {
                 finishCorosMcpAuth(callback)
             } else {
                 toast("已取消高驰授权")
+                // 登录流程里跳过授权时，活动数据还没同步，不能一起丢掉
+                doSync()
             }
             return
         }
