@@ -4236,6 +4236,17 @@ def run() -> int:
             assert abs(_hit["km"] - float(_o.get("km", _hit["km"]))) < 0.1, \
                 f"日内覆盖的里程没写进去：{_iso}"
 
+    # ---- 教练上下文要带赛事档案（没有本地数据就跳过，CI 上不跑） ----
+    try:
+        from garmin_cn import event as _EV
+
+        if _EV._read(_EV.SEED_EVENT["slug"], "event.json"):
+            _ctx = context_markdown(res)
+            assert "## 备赛赛事" in _ctx, "教练上下文没带上赛事，模型会只盯着当天恢复度"
+            assert "最紧关门" in _ctx, "上下文里没有余量预警"
+    except ImportError:
+        pass
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):
