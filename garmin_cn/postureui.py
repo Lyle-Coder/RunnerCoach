@@ -36,12 +36,39 @@ CSS = """<style>
 .pt-tb td.s-clear{color:#E06A5F}.pt-tb td.s-unclear{color:var(--muted,#7F8A97)}
 .pt-h{font-size:13px;margin:16px 0 8px;color:var(--ink-2,#C6D2DE)}
 .pt-why{font-size:11.5px;color:var(--muted,#7F8A97);line-height:1.55}
+.fold2{border:1px solid var(--line,#22303F);border-radius:10px;padding:8px 10px;margin:8px 0}
+.fold2 summary{font-size:12px;color:var(--muted,#7F8A97);cursor:pointer}
+.fold2[open]{padding-bottom:12px}
 </style>"""
 
 JS = """<script>
 (function(){
+  /* 多张判读各自保留，互不覆盖：以前每张都 innerHTML 覆盖整块，
+     第二张失败时连第一张的成功结果一起冲掉了（用户 2026-11-12 反馈）。
+     现在按动作存，任何一张成功都只是更新自己那一格，失败只落错误提示。 */
   const box = document.getElementById('pt-res');
+  const err = document.getElementById('pt-err');
+  const RES = {};
+  const ORDER = [];
+
+  async function refresh() {
+    const list = ORDER.map(k => RES[k]).filter(Boolean);
+    try {
+      const r = await fetch('/__posture/plan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({results: list})
+      });
+      const j = await r.json();
+      if (j.ok) box.innerHTML = j.html;
+      else err.innerHTML = '<div class="pt-lead">汇总失败：' + (j.error || '未知') + '</div>';
+    } catch (e) {
+      err.innerHTML = '<div class="pt-lead">汇总异常：' + e + '</div>';
+    }
+  }
+
   document.querySelectorAll('.pt-mv').forEach(function(card){
+    const move = card.dataset.move;
     const inp = card.querySelector('input[type=file]');
     const go = card.querySelector('.go');
     go.addEventListener('click', function(e){ e.preventDefault(); inp.click(); });
@@ -50,17 +77,26 @@ JS = """<script>
       if (!f) return;
       card.classList.add('busy');
       go.textContent = '判读中…';
+      err.innerHTML = '';
       try {
-        const r = await fetch('/__posture/assess?move=' + encodeURIComponent(card.dataset.move),
-                              {method:'POST', body:f, headers:{'Content-Type': f.type || 'image/jpeg'}});
+        const r = await fetch('/__posture/assess?move=' + encodeURIComponent(move),
+                              {method:'POST', body:f,
+                               headers:{'Content-Type': f.type || 'image/jpeg'}});
         const j = await r.json();
-        if (j.ok) { box.innerHTML = j.html; box.scrollIntoView({behavior:'smooth', block:'start'}); }
-        else { box.innerHTML = '<div class="pt-lead">评估失败：' + (j.error || '未知') + '</div>'; }
-      } catch (err) {
-        box.innerHTML = '<div class="pt-lead">网络异常：' + err + '</div>';
+        if (j.ok) {
+          RES[move] = j.result;
+          if (ORDER.indexOf(move) < 0) ORDER.push(move);
+          go.textContent = '重拍 / 换一张';
+          await refresh();
+          box.scrollIntoView({behavior:'smooth', block:'start'});
+        } else {
+          err.innerHTML = '<div class="pt-lead">' + (j.error || '评估失败') + '</div>';
+        }
+      } catch (e2) {
+        err.innerHTML = '<div class="pt-lead">网络异常：' + e2 + '</div>';
       } finally {
         card.classList.remove('busy');
-        go.textContent = '重新拍 / 换一张';
+        if (!RES[move]) go.textContent = '拍照 / 选图';
         inp.value = '';
       }
     });
@@ -83,11 +119,16 @@ def _cards() -> str:
     return "".join(out)
 
 
-def _plan_html(res: dict) -> str:
-    p = P.plan([res])
+def _plan_html(results: list[dict]) -> str:
+    """所有判读 → 一份统一方案。
+
+    多张照片各给一份方案是最省事的写法，但同一块薄弱项会被重复安排三遍，
+    用户还得自己合并。P.plan 已经按「命中次数」排过序，这里直接用。
+    """
+    p = P.plan(results)
     if p["empty"]:
         return ('<div class="pt-h">结论</div><div class="pt-lead">'
-                '这张照片没发现需要专项补的代偿。看不清的项会在下面列出来，'
+                '这些照片里没发现需要专项补的代偿。看不清的项会在下面列出来，'
                 '补拍一张更清楚的角度能提高覆盖度。</div>')
     weak = "".join(
         f'<div class="pt-mv"><b>{w["label"]}</b><span>{w["why"]}</span>'
@@ -108,20 +149,40 @@ def _plan_html(res: dict) -> str:
         + weeks + '</table>')
 
 
-def result_html(res: dict) -> str:
-    """一次判读 → 判读表 + 方案。给 /__posture/assess 直接返回。"""
-    rows = []
-    for cid, it in res["checks"].items():
-        c = P.CHECKS[cid]
-        rows.append(
-            f'<tr><td>{c["label"]}</td>'
-            f'<td class="s-{it["state"]}">{P.STATES[it["state"]]}</td>'
-            f'<td>{it["evidence"] or "—"}</td></tr>')
-    head = f'<div class="pt-h">{res["name"]} 判读</div>'
-    if res.get("shot_quality") == "bad":
-        head += '<div class="pt-lead">照片质量不够，判读可能不准，建议按上面的拍摄要点重拍。</div>'
-    return (head + '<table class="pt-tb"><tr><th>观察点</th><th>结果</th><th>依据</th></tr>'
-            + "".join(rows) + '</table>' + _plan_html(res))
+def _summary_row(r: dict) -> str:
+    """一张判读压成一行：动作 + 主要问题。细节折进下面的 details。"""
+    bad = [(c, it) for c, it in r["checks"].items() if it["state"] in ("mild", "clear")]
+    un = [c for c, it in r["checks"].items() if it["state"] == "unclear"]
+    if bad:
+        txt = "、".join(f'{P.CHECKS[c]["label"]}{P.STATES[it["state"]]}' for c, it in bad)
+        cls = "s-clear" if any(it["state"] == "clear" for _, it in bad) else "s-mild"
+    elif un:
+        txt = "看不清：" + "、".join(P.CHECKS[c]["label"] for c in un)
+        cls = "s-unclear"
+    else:
+        txt = "未发现明显代偿"
+        cls = "s-ok"
+    return f'<tr><td>{r["name"]}</td><td class="{cls}">{txt}</td></tr>'
+
+
+def summary_html(results: list[dict]) -> str:
+    """所有已完成的判读 → 一页汇总（不是每张各一份方案）。"""
+    if not results:
+        return '<div class="pt-lead">还没有判读结果。上面选一个动作拍一张就行。</div>'
+    rows = "".join(_summary_row(r) for r in results)
+    detail = "".join(
+        f'<details class="fold2"><summary>{r["name"]}</summary>'
+        '<table class="pt-tb"><tr><th>观察点</th><th>结果</th><th>依据</th></tr>'
+        + "".join(f'<tr><td>{P.CHECKS[c]["label"]}</td>'
+                  f'<td class="s-{it["state"]}">{P.STATES[it["state"]]}</td>'
+                  f'<td>{it["evidence"] or "—"}</td></tr>'
+                  for c, it in r["checks"].items())
+        + '</table></details>' for r in results)
+    return ('<div class="pt-h">已评 ' + str(len(results)) + ' 项</div>'
+            '<table class="pt-tb"><tr><th>动作</th><th>判读</th></tr>' + rows + '</table>'
+            + _plan_html(results)
+            + '<details class="fold2"><summary>展开每张的详细依据</summary>'
+            + detail + '</details>')
 
 
 def render() -> str:
@@ -129,7 +190,7 @@ def render() -> str:
 
     body = (CSS + '<p class="pt-lead">按提示做动作、拍一张全身照。'
                   '一张照片只评一个动作，正面和侧面分开拍。</p>'
-            + _cards() + '<div class="pt-res" id="pt-res"></div>' + JS)
+            + _cards() + '<div id="pt-err"></div><div class="pt-res" id="pt-res"></div>' + JS)
     return ui.page("COACH · 力量", "姿态评估",
                    "拍一张 → 找薄弱项 → 4 周方案",
                    body,
