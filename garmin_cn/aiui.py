@@ -446,11 +446,12 @@ async function viewToday(force) {
   mealCard.appendChild(el('h3', null, '今天吃了什么'));
   mealCard.appendChild(el('div', 'focus',
     '拍照让教练估热量和三大营养素，可以补一句描述（主食多少、几个菜）会更准。' +
-    '照片只用于这一次识别、不留存；记完一图流与看板同步更新。'));
+    '吃完了没拍照也行——直接写一句吃了什么。照片只用于这一次识别、不留存；' +
+    '记完一图流与看板同步更新。'));
   const mtxt = el('div', 'note', '正在读取今日记录…');
   mtxt.style.marginTop = '10px';
   mealCard.appendChild(mtxt);
-  const mbtn = el('button', 'btn primary', '拍照记饮食');
+  const mbtn = el('button', 'btn primary', '记饮食（拍照 / 直接描述）');
   mbtn.style.marginTop = '12px';
   mbtn.onclick = () => {
     if (window.GC && GC.action) GC.action('mealShot');

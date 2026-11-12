@@ -956,6 +956,8 @@ def meal_estimate(image_b64: str, mime: str = "image/jpeg", note: str = "") -> d
                 "error": "AI 功能已关闭。在「我的 → AI 模型服务」里打开后再拍。"}
     try:
         return {"ok": True, **N.estimate_meal(image_b64, mime or "image/jpeg", note)}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
     except llm.LLMError as e:
         return {"ok": False, "error": e.message, "code": e.kind}
     except Exception as e:

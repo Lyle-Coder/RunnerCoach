@@ -1282,12 +1282,62 @@ class MainActivity : Activity() {
 
     private fun askMealPhoto() {
         AlertDialog.Builder(this)
-            .setTitle("拍照记饮食")
-            .setItems(arrayOf("拍照", "从相册选")) { _, which ->
-                if (which == 0) takeMealPhoto() else pickMealPhoto()
+            .setTitle("记饮食")
+            .setItems(arrayOf("拍照", "从相册选", "直接描述（吃完了没拍）")) { _, which ->
+                when (which) {
+                    0 -> takeMealPhoto()
+                    1 -> pickMealPhoto()
+                    else -> askMealText()
+                }
             }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    /** 吃完了才想起来没拍照：用文字描述同一套估算，字段和拍照完全一致。 */
+    private fun askMealText() {
+        val input = android.widget.EditText(this).apply {
+            hint = "例如：一碗牛肉面，两个鸡蛋，一杯无糖豆浆"
+            setTextSize(14f)
+            minLines = 3
+            gravity = android.view.Gravity.TOP
+        }
+        val pad = dp(16)
+        val wrap = android.widget.FrameLayout(this).apply {
+            setPadding(pad, dp(8), pad, 0)
+            addView(input, android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT, dp(120)))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("直接描述这一餐")
+            .setMessage("写清吃了什么、大概多少；份量说得越具体，估得越准。")
+            .setView(wrap)
+            .setPositiveButton("估算") { _, _ ->
+                val desc = input.text.toString().trim()
+                if (desc.isBlank()) {
+                    toast("先写一句吃了什么")
+                } else {
+                    doMealEstimateText(desc)
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun doMealEstimateText(desc: String) {
+        val card = showLoginCard("正在估算", "让模型按描述估一下热量…")
+        thread {
+            // 图片参数留空：后端看到「没图但有描述」就走纯文字估算
+            val r = apiCall("meal_estimate", "", "image/jpeg", desc)
+            ui {
+                card.dismiss()
+                if (!r.optBoolean("ok")) {
+                    toast("估算失败：${r.optString("error")}")
+                    return@ui
+                }
+                showMealResult(r, desc)
+            }
+        }
     }
 
     private fun takeMealPhoto() {
