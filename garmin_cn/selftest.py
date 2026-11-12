@@ -4685,6 +4685,19 @@ def run() -> int:
     except (ImportError, AttributeError):
         pass
 
+    # ---- 可达性：注册了路由 ≠ 用户能进来 ----
+    # 2026-11-12 连续踩两次：/event 和 /posture 都能渲染、URL 直开也正常，
+    # 但页面上没有任何入口，用户装完发现「我们做的东西去哪了」。
+    # 这里检查的是**跳转语句**，不是路由注册——路由在 serve.py 里永远都有。
+    for _f, _needle, _what in (
+        ("garmin_cn/aiui.py", "location.href = '/event'", "备赛页"),
+        ("garmin_cn/aiui.py", "location.href = '/posture'", "姿态评估"),
+        ("android/app/src/main/java/mm/runnercoach/app/MainActivity.kt",
+         '"/ai"', "教练 tab"),
+    ):
+        assert _needle in (ROOT / _f).read_text(encoding="utf-8"), \
+            f"{_what} 没有入口：页面能渲染，但用户点不进去"
+
     # ---- 姿态评估：模板自洽 + 模型输出收敛 ----
     try:
         from . import posture as _PO
