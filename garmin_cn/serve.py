@@ -656,7 +656,8 @@ class _Handler(SimpleHTTPRequestHandler):
                                  float(one("distance_km") or 0),
                                  ascent_m=int(float(one("ascent_m") or 0)),
                                  start_time=one("start_time") or "08:00",
-                                 priority=one("priority") or "C")
+                                 priority=one("priority") or "C",
+                                 kind=one("kind") or "trail")
                 return self._back(ev["slug"], anchor="import",
                                   ok="已建好「%s」，接着可以粘贴 CP 表" % ev["name"])
             if u.path == "/__event/prev":

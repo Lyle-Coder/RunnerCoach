@@ -4481,6 +4481,13 @@ class MainActivity : Activity() {
      * 不做第二套 Kotlin 解析（否则数字会和桌面端对不上）。
      */
     private fun importGpx(uri: Uri) {
+        // 必须是「当前正在看的这一场」。以前不带 slug，后端只能按日期取「下一场」，
+        // 结果在 105K 页面导入的轨迹落到了 43K 的目录里（用户 2026-11-12 反馈）。
+        val curSlug = try {
+            android.net.Uri.parse(web.url ?: "").getQueryParameter("slug") ?: ""
+        } catch (t: Throwable) {
+            ""
+        }
         toast("正在读取 GPX…")
         thread {
             try {
@@ -4491,7 +4498,9 @@ class MainActivity : Activity() {
                     throw IllegalStateException("文件超过 40 MB，不像 GPX")
                 val p = port
                 if (p <= 0) throw IllegalStateException("本地服务还没起来，稍后再试")
-                val c = java.net.URL("http://127.0.0.1:$p/__event/gpx")
+                val q = if (curSlug.isNotBlank())
+                    "?slug=" + java.net.URLEncoder.encode(curSlug, "UTF-8") else ""
+                val c = java.net.URL("http://127.0.0.1:$p/__event/gpx$q")
                     .openConnection() as java.net.HttpURLConnection
                 c.requestMethod = "POST"
                 c.doOutput = true
@@ -4512,7 +4521,13 @@ class MainActivity : Activity() {
                         else ""
                         toast("已导入 ${o.optDouble("km")} km / +${o.optInt("ascent")} m$off")
                         if (this::web.isInitialized) {
-                            web.loadUrl("http://127.0.0.1:$p/event?imported=1")
+                            // 跳回「刚导入的那一场」，不是按日期猜的下一场
+                            val sl = o.optString("slug", "")
+                            val go = if (sl.isNotBlank())
+                                "/event?slug=" + java.net.URLEncoder.encode(sl, "UTF-8") +
+                                    "&imported=1"
+                            else "/event?imported=1"
+                            web.loadUrl("http://127.0.0.1:$p$go")
                         }
                     } else {
                         AlertDialog.Builder(this).setTitle("导入失败")
