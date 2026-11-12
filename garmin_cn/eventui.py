@@ -67,9 +67,9 @@ CSS = """<style>
 .ftot b{color:var(--fg,#E8F0FB);font-weight:600;font-variant-numeric:tabular-nums}
 .frm{margin:10px 0 0}
 .frow{display:flex;flex-wrap:wrap;gap:8px 10px;margin-bottom:8px}
-.frow label{display:flex;align-items:center;gap:5px;font-size:11.5px;
-  color:var(--muted,#7F8A97);flex:1 1 88px;min-width:0}
-.frow label.fw{flex:1 1 100%}
+/* 标签在上、输入在下：横排时 input 的 width:100% 会把标签挤成一个字一行 */
+.frow label{display:flex;flex-direction:column;align-items:stretch;gap:3px;
+  font-size:11px;color:var(--muted,#7F8A97);flex:1 1 86px;min-width:0}
 .fi{flex:1 1 auto;min-width:0;width:100%;background:rgba(255,255,255,.05);
   border:1px solid rgba(127,138,151,.28);border-radius:7px;color:var(--fg,#E8F0FB);
   font-size:12px;padding:5px 7px;font-variant-numeric:tabular-nums}
@@ -383,7 +383,7 @@ def render_page(qs: dict | None = None) -> str:
         '<form class="frm" method="post" action="/__event/target">'
         '<div class="frow"><label>目标完赛<input class="fi" name="goal_h" type="number" '
         f'step="0.5" min="10" max="34" value="{ev["goal_s"]/3600:g}"></label>'
-        f'<label class="fw">状态<select class="fi" name="status">{status_opts}</select></label>'
+        f'<label>状态<select class="fi" name="status">{status_opts}</select></label>'
         '<label>起跑<input class="fi" name="start_time" value="'
         f'{ui.esc(ev["start_time"])}"></label></div>'
         '<div class="fbtns"><button class="btn primary" type="submit">保存</button>'
