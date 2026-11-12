@@ -543,7 +543,7 @@ class _Handler(SimpleHTTPRequestHandler):
         if not self._is_loopback():
             return self._json({"ok": False, "error": "只允许本机操作"}, 403)
         import base64
-        from . import posture as P, postureui
+        from . import posture as P
 
         qs = parse_qs(u.query)
         move = (qs.get("move") or [""])[0].strip()
@@ -576,7 +576,36 @@ class _Handler(SimpleHTTPRequestHandler):
         except Exception as e:                    # noqa: BLE001
             return self._json(
                 {"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
-        return self._json({"ok": True, "html": postureui.result_html(res)})
+        return self._json({"ok": True, "result": res})
+
+    def _posture_plan(self, u) -> None:
+        """把已完成的几张判读合成一页：逐项摘要 + 一份统一方案。
+
+        为什么不每张各出一份方案：同一块薄弱项（比如两侧都膝内扣）会被
+        重复安排三遍，用户还得自己合并。`posture.plan()` 本来就接多份结果，
+        按命中次数排序，这里只负责把前端攒的结果传进去。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 256 * 1024:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        try:
+            payload = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+        except Exception:
+            return self._json({"ok": False, "error": "参数不是合法 JSON"}, 400)
+        from . import posture as P, postureui
+
+        raw = payload.get("results")
+        if not isinstance(raw, list):
+            return self._json({"ok": False, "error": "缺少 results"}, 400)
+        # 结果来自前端，只用于渲染；仍然只接受本模块认识的动作 id
+        clean = [r for r in raw[:8]
+                 if isinstance(r, dict) and r.get("move") in P.MOVES]
+        return self._json({"ok": True, "html": postureui.summary_html(clean)})
 
     def _event_doc(self, u) -> None:
         """资料条目：加一条 / 删一条。"""
@@ -862,6 +891,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._event_attach(u)
         if u.path == "/__posture/assess":
             return self._posture_assess(u)
+        if u.path == "/__posture/plan":
+            return self._posture_plan(u)
         if u.path == "/__files/delete":
             # 产物页的批量删除。放在 gate 之前反而更安全：这里自己做本机校验，
             # 不带访问码的局域网访客一律 403。
