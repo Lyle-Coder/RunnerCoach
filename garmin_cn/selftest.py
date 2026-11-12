@@ -4653,6 +4653,16 @@ def run() -> int:
             _CS.drop_last_user()
             assert _CS.load()["messages"][-1]["content"] != "这一句要撤掉"
 
+            # 「加载更早」：offset 的语义是「从最新往回跳过多少条」
+            for _i in range(60):
+                _CS.append("user", f"分页{_i}")
+            from . import aiapi as _AP
+            _p1 = _AP.dispatch("chat_history", {"limit": 80, "offset": 0})
+            assert len(_p1["messages"]) == 80 and _p1["has_more"] is True
+            _p2 = _AP.dispatch("chat_history", {"limit": 80, "offset": _p1["offset"]})
+            assert _p2["offset"] > _p1["offset"], "翻页后 offset 没往前走"
+            assert _p2["messages"][0] != _p1["messages"][0], "翻页拿到的是同一批"
+
             (_cd / "ai_chat.json").write_text("{坏掉的 json", encoding="utf-8")
             assert _CS.load()["messages"] == [], "历史文件损坏时没有兜底"
         shutil.rmtree(_cd, ignore_errors=True)

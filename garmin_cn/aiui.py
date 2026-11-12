@@ -106,6 +106,8 @@ ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:
 /* 归档提示：不是一条对话，是分隔线，所以居中 + 虚线 + 不占气泡宽度 */
 .msg.sys{align-self:center;max-width:92%;background:transparent;border:1px dashed var(--line);
   color:var(--muted);font-size:11.5px;padding:5px 10px;border-radius:10px}
+/* 「加载更早」：贴在对话顶部，虚线弱化，别跟气泡抢注意力 */
+.chat .more{align-self:center;margin:2px auto 4px;color:var(--muted);border-style:dashed}
 .quick{display:flex;gap:7px;flex-wrap:wrap;margin-top:4px}
 .quick button{border:1px solid var(--line);background:var(--card);border-radius:999px;
   padding:7px 12px;font-size:12.5px;color:var(--ink-2);font-family:inherit}
@@ -279,6 +281,11 @@ BODY = """
         <div class="note">令牌只是登录态，余额在账号上。换设备登录会自动覆盖。</div>
       </details>
     </div>
+
+    <div class="act" id="chatAct">
+      <button class="btn" id="clearChatBtn">清空对话历史</button>
+    </div>
+    <div class="note">历史只存在本机；清空后不可恢复。导出数据包会把它一起带走。</div>
 
     <div class="act" id="mainAct">
       <button class="btn" id="testBtn">测试连接</button>
@@ -620,19 +627,35 @@ const QUICK = ['今天的心率区间怎么控制？', '这周跑量是不是加
 
 /* 历史只在服务端：每次进对话页都拉一遍，页面里的 CHAT 只是渲染缓存。
    以前 CHAT 是唯一存储，切一次 tab 回来就空了。 */
-async function loadChatHistory() {
+async function loadChatHistory(more) {
   try {
-    const j = await api('chat_history', {limit: 80});
+    const off = more ? (STATE.chatLoaded || 0) : 0;
+    const j = await api('chat_history', {limit: 80, offset: off});
     if (!j.ok) return;
-    CHAT = (j.messages || []).map(m => ({role: m.role, content: m.content, ts: m.ts}));
+    const got = (j.messages || []).map(m => ({role: m.role, content: m.content, ts: m.ts}));
+    CHAT = more ? got.concat(CHAT) : got;
+    STATE.chatLoaded = j.offset || CHAT.length;   // 已加载条数，下次翻更早从这继续
+    STATE.chatMore = !!j.has_more;
     STATE.digest = j.digest || null;
     STATE.chatTotal = j.total || CHAT.length;
   } catch (e) { /* 拉不到就沿用内存里的，至少别白屏 */ }
 }
 
+/* 对话页是整页滚动（不是内层容器），进页面和发完消息都要落到最新一条。
+   锚点用底部输入框而不是 body.scrollHeight：后者在布局还没算完时会滚过头，
+   真机上表现为「一进来整屏空白」。 */
+function chatToBottom() {
+  requestAnimationFrame(() => {
+    const box = document.querySelector('.composer');
+    if (box) box.scrollIntoView({block: 'end'});
+  });
+}
+
 async function viewChat() {
-  await loadChatHistory();
+  STATE.chatLoaded = 0;          // 每次进页面都从最新一批重新拉，避免越翻越乱
+  await loadChatHistory(false);
   renderChat();
+  chatToBottom();
 }
 
 function renderChat() {
@@ -652,6 +675,12 @@ function renderChat() {
     e.appendChild(q);
     box.appendChild(e);
   } else {
+    if (STATE.chatMore) {
+      const more = el('button', 'btn more',
+        '加载更早（共 ' + (STATE.chatTotal || 0) + ' 条）');
+      more.onclick = async () => { await loadChatHistory(true); renderChat(); };
+      box.appendChild(more);
+    }
     // 归档过的部分只留一行提示：原文还在服务端，要翻全文走导出，不在气泡里堆
     if (STATE.digest && STATE.digest.text) {
       box.appendChild(el('div', 'msg sys',
@@ -701,6 +730,7 @@ async function send(text) {
   CHAT.push({role: 'assistant', content: j.reply});
   if (j.archived) await loadChatHistory();   // 刚归档过，摘要变了，顺手刷新
   renderChat();
+  chatToBottom();
 }
 
 /* ---------------- 设置 ---------------- */
@@ -976,6 +1006,34 @@ document.querySelectorAll('#aiSeg button').forEach(b => b.onclick = async () => 
   refreshSub();
   $('#setMsg').textContent = on ? 'AI 已开启' : 'AI 已关闭';
 });
+/* 清空历史不可逆，所以两步：第一下只换文案，4 秒内再点才真删。
+   不用 confirm()——WebView 里有的机型根本不弹，点了像没反应。 */
+let clearArm = 0;
+const clearBtn = $('#clearChatBtn');
+if (clearBtn) clearBtn.onclick = async () => {
+  const msg = $('#setMsg');
+  if (Date.now() > clearArm) {
+    clearArm = Date.now() + 4000;
+    clearBtn.textContent = '再点一次确认清空';
+    clearBtn.style.color = '#E06A5F';
+    if (msg) msg.textContent = '清空后聊天记录不可恢复（导出包里的那份还在）';
+    setTimeout(() => {
+      if (Date.now() > clearArm) {
+        clearBtn.textContent = '清空对话历史';
+        clearBtn.style.color = '';
+      }
+    }, 4200);
+    return;
+  }
+  clearArm = 0;
+  clearBtn.textContent = '清空对话历史';
+  clearBtn.style.color = '';
+  const j = await api('chat_clear', {});
+  CHAT = []; STATE.chatLoaded = 0; STATE.chatMore = false; STATE.digest = null;
+  STATE.chatTotal = 0;
+  if (msg) msg.textContent = j.ok ? '已清空对话历史' : ('清空失败：' + (j.error || '未知'));
+  renderChat();
+};
 $('#sheet').onclick = e => { if (e.target.id === 'sheet') closeSheet(); };
 document.querySelectorAll('#modeSeg button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#modeSeg button').forEach(x => x.classList.remove('on'));
