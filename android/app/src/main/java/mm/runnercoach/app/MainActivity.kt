@@ -122,6 +122,9 @@ class MainActivity : Activity() {
     /** 系统「用 RunnerCoach 打开 GPX」传进来的文件；等服务起来后再导入。 */
     private var pendingGpx: Uri? = null
 
+    /** 附件要落到哪一场：按钮上带着 slug，不回落到「下一场」 */
+    private var pendingAttachSlug: String? = null
+
     private val api: PyObject by lazy { Python.getInstance().getModule("garmin_cn.appapi") }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -471,13 +474,21 @@ class MainActivity : Activity() {
                     "bodySource" -> showBodySourcePicker()
                     "planRefresh" -> refreshPlan()
                     "gpx" -> pickGpx()
+                    "attach" -> pickAttachment(null)
                     "amap" -> showAmapDialog()
                     "clips" -> showClips()
                     "update" -> checkUpdate(silent = false)
                     "dbExport" -> doExportData()
                     "dbImport" -> doImportData()
                     "diag" -> showDiag()
-                    else -> toast("未知操作：$name")
+                    // 带参数的动作放最后：`else` 必须是 when 的最后一个分支
+                    else -> if (name.startsWith("attach:")) {
+                        pickAttachment(name.removePrefix("attach:"))
+                    } else if (name.startsWith("openUrl:")) {
+                        openLocalFile(name.removePrefix("openUrl:"))
+                    } else {
+                        toast("未知操作：$name")
+                    }
                 }
             }
         }
@@ -2367,6 +2378,12 @@ class MainActivity : Activity() {
         if (requestCode == REQ_GPX) {
             if (resultCode == android.app.Activity.RESULT_OK) {
                 data?.data?.let { importGpx(it) }
+            }
+            return
+        }
+        if (requestCode == REQ_ATTACH) {
+            if (resultCode == android.app.Activity.RESULT_OK) {
+                data?.data?.let { uploadAttachment(it) }
             }
             return
         }
@@ -4265,6 +4282,122 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------ 小工具
+    /** 系统文件选择器：规程 PDF、报名截图、补充说明都能选。 */
+    private fun pickAttachment(slug: String?) {
+        pendingAttachSlug = slug
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf(
+                "application/pdf", "image/*", "text/*",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+        }
+        try {
+            startActivityForResult(i, REQ_ATTACH)
+        } catch (t: Throwable) {
+            toast("打不开文件选择器：" + (t.message ?: t.javaClass.simpleName))
+        }
+    }
+
+    /**
+     * 把选中的文件传到赛事目录（走本机回环）。
+     *
+     * 文件名用 ContentResolver 查到的显示名：content:// 的 Uri 末段是个随机 id，
+     * 直接拿来当文件名，用户就再也认不出哪份是规程、哪份是参赛号了。
+     */
+    private fun uploadAttachment(uri: Uri) {
+        val name = run {
+            try {
+                contentResolver.query(uri, null, null, null, null)?.use { c ->
+                    val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+                }
+            } catch (t: Throwable) {
+                null
+            }
+        } ?: "附件"
+        toast("正在上传 " + name + "…")
+        thread {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw IllegalStateException("读不到文件内容")
+                if (bytes.isEmpty()) throw IllegalStateException("这个文件是空的")
+                if (bytes.size > 20 * 1024 * 1024)
+                    throw IllegalStateException("文件超过 20 MB")
+                val p = port
+                if (p <= 0) throw IllegalStateException("本地服务还没起来，稍后再试")
+                val q = java.net.URLEncoder.encode(name, "UTF-8")
+                val s = java.net.URLEncoder.encode(pendingAttachSlug ?: "", "UTF-8")
+                val c = java.net.URL(
+                    "http://127.0.0.1:$p/__event/attach?slug=$s&name=$q").openConnection()
+                        as java.net.HttpURLConnection
+                c.requestMethod = "POST"
+                c.doOutput = true
+                c.connectTimeout = 20000
+                c.readTimeout = 60000
+                c.setRequestProperty("Content-Type", "application/octet-stream")
+                c.setFixedLengthStreamingMode(bytes.size)
+                // 不自动跟随 303：目的地带着 ok= 与 at=docs，跟随之后这些就丢了，
+                // 页面刷新出来看不到「已添加附件」那条绿条
+                c.instanceFollowRedirects = false
+                c.outputStream.use { it.write(bytes) }
+                val code = c.responseCode
+                val loc = c.getHeaderField("Location")
+                val txt = (if (code in 200..299) c.inputStream else c.errorStream)
+                    ?.bufferedReader()?.use { it.readText() } ?: ""
+                c.disconnect()
+                ui {
+                    if (code in 200..399 && loc != null) {
+                        if (this::web.isInitialized) {
+                            web.loadUrl("http://127.0.0.1:$p" + loc)
+                        }
+                    } else if (code in 200..399) {
+                        if (this::web.isInitialized) {
+                            web.loadUrl("http://127.0.0.1:$p/event")
+                        }
+                    } else {
+                        val msg = try {
+                            JSONObject(txt).optString("error", "上传失败")
+                        } catch (t: Throwable) {
+                            "上传失败（HTTP " + code + "）"
+                        }
+                        AlertDialog.Builder(this).setTitle("上传失败")
+                            .setMessage(msg).setPositiveButton("好", null).show()
+                    }
+                }
+            } catch (t: Throwable) {
+                ui {
+                    AlertDialog.Builder(this).setTitle("上传失败")
+                        .setMessage(t.message ?: t.javaClass.simpleName)
+                        .setPositiveButton("好", null).show()
+                }
+            }
+        }
+    }
+
+    /**
+     * 用系统应用打开本机服务上的附件（规程 PDF、参赛号截图）。
+     *
+     * 为什么不在 WebView 里直接点链接：Android WebView 没有 PDF 渲染器，
+     * 点了只会白屏；而 127.0.0.1 属于「同源」，shouldOverrideUrlLoading
+     * 也不会触发。交给系统后，浏览器 / PDF 阅读器 / 相册都能读这个地址。
+     */
+    private fun openLocalFile(rel: String) {
+        val p = port
+        if (p <= 0) {
+            toast("本地服务还没起来，稍后再试")
+            return
+        }
+        val path = if (rel.startsWith("/")) rel else "/" + rel
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW,
+                Uri.parse("http://127.0.0.1:" + p + path)))
+        } catch (t: Throwable) {
+            toast("没有能打开它的应用：" + (t.message ?: t.javaClass.simpleName))
+        }
+    }
+
     // ------------------------------------------------------------ GPX 导入
     /**
      * 从 intent 里取 GPX 的 Uri。
@@ -4476,6 +4609,8 @@ class MainActivity : Activity() {
         const val REQ_MEAL_SHOT = 1004
         /** GPX 必须让开 1003/1004（1.0.8 拍照识热量已占用） */
         const val REQ_GPX = 1005
+        /** 赛事资料附件上传（PDF / 图片 / 文本） */
+        const val REQ_ATTACH = 1006
 
         /**
          * 读 HTML 里的导出探针；旧版 Python 没有探针时返回空串，走尺寸兜底。

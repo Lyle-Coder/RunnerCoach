@@ -99,6 +99,34 @@ select.fi{cursor:pointer}
 .prov b{color:var(--fg,#E8F0FB);font-weight:600}
 .prov b.warn{color:#D6A75A}
 
+/* 资料 */
+.dg{font-size:11px;color:var(--muted,#7F8A97);letter-spacing:.04em;
+  margin:12px 0 2px;padding-bottom:4px;border-bottom:1px solid rgba(255,255,255,.06)}
+.dg:first-of-type{margin-top:6px}
+.dr{padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.dr:last-child{border-bottom:0}
+.drt{display:flex;align-items:baseline;gap:8px}
+.drt b{font-size:12.5px;color:var(--fg,#E8F0FB);font-weight:600}
+.dat{margin-left:auto;font-size:10.5px;color:var(--muted,#7F8A97)}
+.dbtn{flex:none;width:24px;height:24px;padding:0;border-radius:7px;cursor:pointer;
+  border:1px solid rgba(224,106,95,.35);background:transparent;color:#E06A5F;
+  font-size:14px;line-height:1}
+.dinline{margin:0}
+.drb{font-size:12px;color:var(--muted,#7F8A97);line-height:1.75;margin-top:3px;
+  word-break:break-word}
+.dlink{color:#8FE3C0;font-size:12px;word-break:break-all}
+.dfl{display:flex;align-items:center;gap:8px;padding:7px 0;
+  border-bottom:1px solid rgba(255,255,255,.04)}
+.dfl:last-child{border-bottom:0}
+.dfn{font-size:12px;color:var(--fg,#E8F0FB);min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.dfs{font-size:10.5px;color:var(--muted,#7F8A97);flex:none}
+.dfb{margin-left:auto;flex:none;padding:4px 12px;border-radius:8px;cursor:pointer;
+  border:1px solid rgba(79,214,166,.45);background:rgba(79,214,166,.1);
+  color:#9FE7C8;font-size:11.5px}
+.hint code{background:rgba(255,255,255,.06);border-radius:4px;padding:0 4px;
+  font-size:11px}
+
 /* 赛后复盘 */
 .rvs{font-size:13px;color:var(--fg,#E8F0FB);font-weight:600;line-height:1.6;
   padding-bottom:8px;margin-bottom:8px;border-bottom:1px solid rgba(255,255,255,.06);
@@ -644,6 +672,80 @@ def render_page(qs: dict | None = None) -> str:
         f'自带胶 <b>{tot["gels"]} 支</b></div>'
         + fuel_form + "".join(fuel_rows) + drop + "</div>")
 
+    # ---- 资料：规则/交通/补给/报名/成绩 + 目录里的附件
+    import urllib.parse as _up
+
+    dcs = E.docs(slug)
+    docs_rows, _idx = [], 0
+    for _k in E.DOC_KINDS:
+        part = [x for x in dcs["items"] if x["kind"] == _k]
+        if not part:
+            continue
+        docs_rows.append(f'<div class="dg">{ui.esc(E.DOC_KINDS[_k])}</div>')
+        for it in part:
+            i_now = None if it.get("locked") else _idx
+            if not it.get("locked"):
+                _idx += 1
+            body = ui.esc(it["body"]).replace("\n", "<br>")
+            link = (f'<a class="dlink" href="{ui.esc(it["url"])}">{ui.esc(it["url"])}</a>'
+                    if it.get("url") else "")
+            del_btn = ("" if it.get("locked") else
+                       '<form class="dinline" method="post" action="/__event/doc" '
+                       'onsubmit="return confirm(&quot;删掉这条资料？&quot;)">'
+                       + HID + f'<input type="hidden" name="act" value="del">'
+                       f'<input type="hidden" name="idx" value="{i_now}">'
+                       '<button class="dbtn" type="submit" aria-label="删除">×</button></form>')
+            docs_rows.append(
+                f'<div class="dr"><div class="drt"><b>{ui.esc(it["title"])}</b>'
+                + (f'<span class="dat">{ui.esc(it["at"])}</span>' if it.get("at") else "")
+                + del_btn + "</div>"
+                + (f'<div class="drb">{body}</div>' if body else "")
+                + (f'<div class="drb">{link}</div>' if link else "")
+                + "</div>")
+
+    files_html = ""
+    if dcs["files"]:
+        rows_f = []
+        for f in dcs["files"]:
+            size = E.human_size(f["size"])
+            url = "/event-file/%s/%s" % (slug, _up.quote(f["name"]))
+            rows_f.append(
+                f'<div class="dfl"><span class="dfn">{ui.esc(f["name"])}</span>'
+                f'<span class="dfs">{size}</span>'
+                f'<button class="dfb" data-act="openUrl:{url}" type="button">打开</button>'
+                "</div>")
+        files_html = ('<div class="dg">附件 · 点「打开」用系统应用看</div>'
+                      + "".join(rows_f))
+
+    doc_form = (
+        '<details class="fold"><summary>添一条资料（规则、领物、官网链接…）</summary>'
+        '<form class="frm" method="post" action="/__event/doc">'
+        + HID + '<input type="hidden" name="act" value="add">'
+        '<div class="frow"><label>分类<select class="fi" name="kind">'
+        + "".join(f'<option value="{k}">{ui.esc(v)}</option>'
+                  for k, v in E.DOC_KINDS.items())
+        + '</select></label><label>标题<input class="fi" name="title" '
+        'placeholder="例：关门与罚则"></label></div>'
+        '<div class="frow"><label>正文（可留空）<textarea class="ta" name="body" '
+        'rows="3" placeholder="例：各 CP 关门见余量表；超时 1 分钟即退赛"></textarea>'
+        '</label></div>'
+        '<div class="frow"><label>链接（可留空）<input class="fi" name="url" '
+        'placeholder="https://"></label></div>'
+        '<div class="fbtns"><button class="btn primary" type="submit">加进资料</button>'
+        '<span class="fhint">正文与链接至少填一个；链接只认 http/https</span></div>'
+        "</form></details>")
+
+    docs_card = (
+        '<p class="hint">赛前要翻的东西都放这里：规则、交通住宿、领物、报名凭证、成绩。'
+        + "规程 PDF、参赛号截图可以点右上「传附件」直接选文件。</p>"
+        + '<div class="pager" style="margin:10px 0 2px">'
+          f'<div class="btn primary" data-act="attach:{slug}">传附件</div>'
+          '<span class="fhint" style="margin-left:10px">PDF / 图片 / 文本，单个 ≤ 20 MB</span>'
+          "</div>"
+        + ("".join(docs_rows) if docs_rows else
+           '<div class="sub2">还没有文字资料，下面加一条。</div>')
+        + files_html + doc_form)
+
     # ---- 调整（目标 / 状态 / CP 表）：折叠，平时不占屏
     status_opts = "".join(
         f'<option value="{k}"{" selected" if ev.get("status") == k else ""}>{ui.esc(v)}</option>'
@@ -818,6 +920,7 @@ def render_page(qs: dict | None = None) -> str:
             + review_sec
             + ui.sec("补给与换装", _bar("fuel") + fuel_card, anchor="fuel")
             + ui.sec("强制装备", _bar("gear") + gears, anchor="gear")
+            + ui.sec("资料", _bar("docs") + docs_card, anchor="docs")
             + ui.sec("调整", _bar("adjust") + edit_card, anchor="adjust")
             + ui.sec("新建与导入", _bar("import") + import_card, anchor="import"))
 

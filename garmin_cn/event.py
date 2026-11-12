@@ -696,6 +696,125 @@ def set_cps(slug: str | None, changes: dict) -> dict:
     return course
 
 
+# ---------------------------------------------------------------- 资料条目
+
+# 设计稿 §3.2 的六类，对应六种真实需求；gear 不在这里——装备有专门的 gear.md
+# （要逐项勾选状态，用 Markdown checklist 更合适）。
+DOC_KINDS = {
+    "rule": "规则 / 关门 / 罚则",
+    "logistics": "交通 / 住宿 / 领物",
+    "aid": "补给站与换装",
+    "entry": "报名 / 参赛号",
+    "result": "成绩 / 证书",
+    "misc": "其它",
+}
+
+# 附件白名单：只认这些扩展名，别的（比如 .exe）连列都不列
+ATTACH_EXT = (".pdf", ".png", ".jpg", ".jpeg", ".txt", ".md", ".csv",
+              ".gpx", ".ics", ".xlsx", ".docx")
+# 赛事目录里的系统文件，不算「用户资料」
+RESERVED_FILES = {"event.json", "course.json", "gear.md", "race.json",
+                  "track.gpx", "track_stats.json", "docs.json"}
+
+
+def human_size(n: float) -> str:
+    """字节 → 8 B / 12 KB / 1.2 MB。小文件不要显示成 0 KB。"""
+    n = float(n or 0)
+    if n < 1024:
+        return "%d B" % n
+    if n < 1024 * 1024:
+        return "%.0f KB" % (n / 1024)
+    return "%.1f MB" % (n / 1048576)
+
+
+def docs(slug: str | None = None) -> dict:
+    """资料条目 + 目录里的附件。
+
+    附件不登记在 docs.json 里：把 PDF 拖进 `data/events/<slug>/` 就算数，
+    少一步「先登记再能看」的操作——这是设计稿 §6 里定的方式，照做。
+    """
+    slug = active_slug(slug)
+    data = _read(slug, "docs.json") or {}
+    items = []
+    for it in data.get("items") or []:
+        if not isinstance(it, dict) or not it.get("title"):
+            continue
+        items.append({
+            "kind": it.get("kind") or "misc",
+            "kind_cn": DOC_KINDS.get(it.get("kind") or "misc", "其它"),
+            "title": it.get("title"),
+            "body": it.get("body") or "",
+            "url": it.get("url") or "",
+            "at": it.get("at") or "",
+            "locked": False,
+        })
+    # notes.md 当成一条只读资料：桌面端直接编辑它比在手机上敲长文舒服
+    np = _dir(slug) / "notes.md"
+    if np.exists():
+        try:
+            items.append({"kind": "misc", "kind_cn": DOC_KINDS["misc"],
+                          "title": "备注（notes.md）", "locked": True, "url": "",
+                          "body": io.open(np, encoding="utf-8").read().strip(),
+                          "at": dt.date.fromtimestamp(np.stat().st_mtime).isoformat()})
+        except OSError:
+            pass
+
+    files = []
+    d = _dir(slug)
+    if d.exists():
+        for p in sorted(d.iterdir()):
+            if not p.is_file() or p.name in RESERVED_FILES:
+                continue
+            if p.suffix.lower() not in ATTACH_EXT:
+                continue
+            files.append({
+                "name": p.name,
+                "ext": p.suffix.lower().lstrip("."),
+                "size": p.stat().st_size,
+                "at": dt.date.fromtimestamp(p.stat().st_mtime).isoformat(),
+            })
+    return {"items": items, "files": files}
+
+
+def add_doc(slug: str | None, kind: str, title: str, body: str | None = None,
+            url: str | None = None) -> dict:
+    """加一条资料。标题必填；链接只认 http(s)——`javascript:` 这类一律拒绝。"""
+    slug = active_slug(slug)
+    if kind not in DOC_KINDS:
+        raise ValueError("资料分类不认识：%s" % kind)
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("标题不能为空")
+    if len(title) > 80:
+        raise ValueError("标题太长了（上限 80 字）")
+    body = (body or "").strip()
+    if len(body) > 4000:
+        raise ValueError("正文太长了（上限 4000 字）")
+    url = (url or "").strip()
+    if url and not re.match(r"^https?://", url):
+        raise ValueError("链接要以 http:// 或 https:// 开头")
+    if not body and not url:
+        raise ValueError("正文和链接至少填一个")
+    data = _read(slug, "docs.json") or {}
+    items = data.get("items") or []
+    items.append({"kind": kind, "title": title, "body": body, "url": url,
+                  "at": dt.date.today().isoformat()})
+    _write(slug, "docs.json", {"items": items})
+    return {"items": len(items)}
+
+
+def del_doc(slug: str | None, idx: int) -> bool:
+    """删一条。idx 是 docs.json 里的下标（页面按同一顺序渲染，能对上号）。"""
+    slug = active_slug(slug)
+    data = _read(slug, "docs.json") or {}
+    items = data.get("items") or []
+    if idx < 0 or idx >= len(items):
+        return False
+    items.pop(idx)
+    _write(slug, "docs.json", {"items": items})
+    return True
+
+
 # ---------------------------------------------------------------- 赛中状态
 
 # 赛中不写 event.json：比赛当天数据要能一键清空重来，单独一个文件更干净。
