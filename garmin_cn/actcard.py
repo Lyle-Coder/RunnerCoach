@@ -100,6 +100,9 @@ ZONE_COLORS = ["#5FA8E0", "#4FD6A6", "#E8C547", "#E8843A", "#E06A5F"]
 # 曲线与坐标轴同色：主指标线跟随运动主题色（跑步青/骑行橙…），心率恒为橙，
 # 不用读图例也知道哪条对应哪根轴
 AXIS_HR = "#EE9A55"
+# 海拔带用中性灰蓝：它是第三条泳道，但不是第三条主角线。
+# 用主色会和配速混成一种颜色，用橙色又跟心率撞，灰色最不容易误读。
+AXIS_ELE = "#8FA3B8"
 # Z1–Z5 的中文副名统一走 hrzones：时长是佳明按账号里的心率区间算的，
 # 名称也必须用佳明 Connect 那一套（config.json 的 hr_zone_names 可覆盖）。
 # 旧版这里写死 E/M/I/T/R 训练强度名「恢复/有氧/节奏/阈值/无氧」，与 Z1–Z5
@@ -443,6 +446,23 @@ def track_svg(track: list, w: int, h: int, photo: str | None = None,
 
 
 # ------------------------------------------------------------------ 曲线
+def ele_span(points: list) -> tuple[float, float] | None:
+    """海拔起伏的 (最低, 最高)；不够显著就返回 None。
+
+    判据是「跨度 ≥ 12 m」：平路跑的海拔序列只会在几米内飘，画出来是一条直线，
+    白占一条泳道的高度；越野/爬楼这种反复升降跨度轻松过 10 m，
+    画出来是锯齿，层数一眼能数。
+    图例与泳道必须用同一个判据，否则会出现「有图例没图」或反过来。
+    """
+    ev = [p.get("ele") for p in points if p.get("ele") is not None]
+    if len(ev) < 8:
+        return None
+    lo, hi = min(ev), max(ev)
+    if hi - lo < 12:
+        return None
+    return lo, hi
+
+
 def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
     th = theme or theme_for(None)
     # 纵向刻度口径跟着运动走：跑步标配速，骑行/划船标时速
@@ -460,6 +480,11 @@ def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
     paces = (_median_filter([1000 / p["spd"] if p.get("spd") else None for p in run], 3)
              if run[0].get("source") == "coros" else _median_filter(_pace_series(run, win=8), 3))
     hrs = _smooth([p.get("hr") for p in run], 11)
+    # 海拔带：只在起伏够大时启用（判据与图例共用 ele_span）
+    esp = ele_span(run)
+    use_ele = esp is not None
+    e_lo, e_hi = esp if esp else (0.0, 0.0)
+    eles = [p.get("ele") for p in run]
     valid_p = [p for p in paces if p]
     if not valid_p:
         return f'<div class="empty" style="width:{w}px;height:{h}px">无配速数据</div>'
@@ -491,12 +516,24 @@ def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
     ax_l, ax_r = 62, 12
     x0 = ax_l
     pw = w - ax_l - ax_r
-    # 上下两条泳道：上配速、下心率。叠在一张图里双轴会互相干扰，分开读更清楚。
-    p_top, p_h = top_pad, plot_h * 0.54
-    # 心率泳道整体上提一点：最低那档刻度别和底部时间轴挤在一起
-    h_top, h_h = top_pad + plot_h * 0.64, plot_h * 0.32
-    xs, ys, hy = [], [], []
-    for p, pc, hr in zip(run, paces, hrs):
+    # 上下泳道：上配速、下心率。叠在一张图里双轴会互相干扰，分开读更清楚。
+    # 有海拔且起伏显著时再切出第三条窄带（40% / 24% / 26%），
+    # 否则保持原来的两泳道比例——平路跑不该为一条直线让出高度。
+    if use_ele:
+        # 三条泳道。心率带压到 18%：它本来就只有两三档刻度，占太多高度没用；
+        # 让出来给海拔带（30%），锯齿的层数才数得清。
+        # 关键是心率带底和海拔带顶要留出 ~22px，否则两边的刻度文字会叠在一起
+        # （实测差 9px 时「106」和「428m」直接糊成一团）。
+        p_top, p_h = top_pad, plot_h * 0.38
+        h_top, h_h = top_pad + plot_h * 0.42, plot_h * 0.18
+        e_top, e_h = top_pad + plot_h * 0.70, plot_h * 0.30
+    else:
+        p_top, p_h = top_pad, plot_h * 0.54
+        # 心率泳道整体上提一点：最低那档刻度别和底部时间轴挤在一起
+        h_top, h_h = top_pad + plot_h * 0.64, plot_h * 0.32
+        e_top = e_h = 0.0
+    xs, ys, hy, ey = [], [], [], []
+    for p, pc, hr, el in zip(run, paces, hrs, eles):
         x = x0 + (p["t"] - t0) / span * pw
         xs.append(x)
         # 配速数字越小越快，所以快在上、慢在下。超出分位范围的视为停顿，断开。
@@ -510,10 +547,17 @@ def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
             hy.append(h_top + k * h_h)
         else:
             hy.append(None)
+        if use_ele and el is not None:
+            k = (e_hi - el) / ((e_hi - e_lo) or 1)
+            ey.append(e_top + k * e_h)
+        else:
+            ey.append(None)
 
     seg_p = _path(xs, ys)
     seg_h = _path(xs, hy)
     area = _area(xs, ys, p_top + p_h)
+    seg_e = _path(xs, ey) if use_ele else ""
+    area_e = _area(xs, ey, e_top + e_h) if use_ele else ""
     ticks = []
     for frac in (0, 0.25, 0.5, 0.75, 1.0):
         lbl = dur_txt(span * frac, "0:00")
@@ -533,12 +577,32 @@ def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
         guides.append(f'<text x="{x0 - 12:.0f}" y="{y + 5:.1f}" class="axl" text-anchor="end" '
                       f'fill="{th["acc"]}">{vlab(pace)}</text>')
     if hr_valid:
-        for val in (hr_hi, (hr_hi + hr_lo) / 2, hr_lo):
+        # 有海拔带时心率只标两档：三档在 40px 的带里会跟海拔刻度撞
+        hr_ticks = (hr_hi, hr_lo) if use_ele else (hr_hi, (hr_hi + hr_lo) / 2, hr_lo)
+        for val in hr_ticks:
             y = h_top + (hr_hi - val) / (hr_hi - hr_lo or 1) * h_h
             guides.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0 + pw}" y2="{y:.1f}" '
                           f'stroke="{LINE}" stroke-width="1" stroke-dasharray="2 6"/>')
             guides.append(f'<text x="{x0 - 12:.0f}" y="{y + 5:.1f}" class="axl" '
                           f'text-anchor="end" fill="{AXIS_HR}">{val:.0f}</text>')
+    if use_ele:
+        # 海拔只标最高/最低两档：这条带只有 50 px 高，三档刻度会跟心率挤在一起
+        for val in (e_hi, e_lo):
+            y = e_top + (e_hi - val) / ((e_hi - e_lo) or 1) * e_h
+            guides.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0 + pw}" y2="{y:.1f}" '
+                          f'stroke="{LINE}" stroke-width="1" stroke-dasharray="2 6"/>')
+            guides.append(f'<text x="{x0 - 12:.0f}" y="{y + 5:.1f}" class="axl" '
+                          f'text-anchor="end" fill="{AXIS_ELE}">{val:.0f}m</text>')
+    # 泳道分界：配速/心率之间一定有一条，有海拔时再加一条
+    seps = [h_top - 3] + ([e_top - 3] if use_ele else [])
+    ele_layer = ""
+    if use_ele:
+        # 海拔带用中性灰蓝：不跟配速（主色）和心率（橙）抢眼，
+        # 它的任务是「让锯齿和台阶形状可读」，不是当第三条主角线。
+        ele_layer = (
+            f'<path d="{area_e}" fill="{AXIS_ELE}" fill-opacity="0.13"/>'
+            f'<path d="{seg_e}" fill="none" stroke="{AXIS_ELE}" stroke-width="1.6" '
+            f'stroke-linejoin="round"/>')
     return f"""
 <svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">
   <defs>
@@ -550,13 +614,13 @@ def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
   </defs>
   {''.join(guides)}
   {''.join(ticks)}
-  <line x1="{x0}" y1="{top_pad + plot_h * 0.60:.1f}" x2="{x0 + pw}" y2="{top_pad + plot_h * 0.60:.1f}"
-        stroke="{LINE}" stroke-width="1"/>
+  {''.join(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0 + pw}" y2="{y:.1f}" stroke="{LINE}" stroke-width="1"/>' for y in seps)}
   <g clip-path="url(#plotclip)">
   <path d="{area}" fill="url(#pfill)"/>
   <path d="{seg_p}" fill="none" stroke="{th['acc']}" stroke-width="2.2" stroke-linejoin="round"/>
   <path d="{seg_h}" fill="none" stroke="#E8843A" stroke-width="1.9" stroke-linejoin="round"
         opacity="0.95"/>
+  {ele_layer}
   </g>
 </svg>"""
 
@@ -862,6 +926,10 @@ def interval_bands(iv: dict, theme: dict | None = None,
     bands = iv.get("bands") or []
     order = iv.get("order") or []
     reps = _reps_of(order)
+    # 爬楼/楼梯机：配速和距离全是 GPS 虚数（上行的位移被下行抵消），
+    # 这张卡改看「爬升 / 时长 / 心率」。不切的话会显示 17'34"/km 这种
+    # 根本不存在的配速，柱高也没有意义。
+    climb = any((b.get("name") == "爬升") for b in bands)
 
     def main(pace: float | None) -> str:
         if not pace:
@@ -881,6 +949,13 @@ def interval_bands(iv: dict, theme: dict | None = None,
         k = 0.55 if span < 1e-6 else (spd - lo) / span
         return 26 + k * 74           # 26%~100%，快的柱更高
 
+    # 爬升模式下柱高按单组爬升量算
+    gains = [(r["seg"].get("ele_gain") or 0) for r in reps if r.get("seg")]
+    g_max = max(gains) if gains else 0.0
+
+    def gain_h(g: float) -> float:
+        return 40 + (g / g_max) * 60 if g_max > 0 else 60
+
     labeled = 1 < len(reps) <= MAX_LABEL_COLS
     if labeled:
         cols: list[str] = []
@@ -894,12 +969,17 @@ def interval_bands(iv: dict, theme: dict | None = None,
                          BAND_COLORS[min(seg.get("band") or 0,
                                          len(BAND_COLORS) - 1)])
                 wi += 1
-                h = bar_h(seg["spd"])
+                h = gain_h(seg.get("ele_gain") or 0) if climb else bar_h(seg["spd"])
                 body = (f'<i class="ivbar" style="height:{h:.0f}%;'
                         f'background:{color}"></i>')
-                lab = (f'<b>{main(seg.get("pace_s"))}</b>'
-                       f'<span>{dur_txt(seg.get("dur_s"))}</span>'
-                       f'<em>{dist_txt(seg.get("dist_m"))}</em>')
+                if climb:
+                    lab = (f'<b>+{seg.get("ele_gain") or 0:.0f} m</b>'
+                           f'<span>{dur_txt(seg.get("dur_s"))}</span>'
+                           f'<em>HR {seg.get("hr_avg") or 0:.0f}</em>')
+                else:
+                    lab = (f'<b>{main(seg.get("pace_s"))}</b>'
+                           f'<span>{dur_txt(seg.get("dur_s"))}</span>'
+                           f'<em>{dist_txt(seg.get("dist_m"))}</em>')
             else:
                 body, lab = "", ('<b>—</b><span>—</span><em>—</em>')
             if rest:
@@ -943,15 +1023,25 @@ def interval_bands(iv: dict, theme: dict | None = None,
             else:
                 val, val_lab = dur_txt(b.get("recover_s")), "平均恢复"
         else:
-            val = main(b.get("pace_s"))
-            val_lab = "平均速度" if speed else "平均配速"
+            if climb and b.get("gain_m") is not None:
+                val = f'+{b["gain_m"]:.0f} m'
+                val_lab = "累计爬升"
+            else:
+                val = main(b.get("pace_s"))
+                val_lab = "平均速度" if speed else "平均配速"
         hr = f'{b["hr_avg"]:.0f}' if b.get("hr_avg") else "—"
-        per = (b["dist_m"] / max(1, b["sets"])) if b.get("dist_m") else 0
+        if climb and not b.get("rest"):
+            # 爬升组的「组距」是 GPS 虚数，改说每组爬升多少
+            per_txt = (f'{b["sets"]} 组 · 每组 '
+                       f'+{(b.get("gain_m") or 0) / max(1, b["sets"]):.0f} m')
+        else:
+            per = (b["dist_m"] / max(1, b["sets"])) if b.get("dist_m") else 0
+            per_txt = f'{b["sets"]} 组 · {per:.0f} m'
         rows.append(
             '<div class="ivbr">'
             f'<i style="background:{color}"></i>'
             f'<b>{b["label"]}</b>'
-            f'<span>{b["sets"]} 组 · {per:.0f} m</span>'
+            f'<span>{per_txt}</span>'
             f'<em>{val}<u>{val_lab}</u></em>'
             f'<em>{hr}<u>心率</u></em>'
             '</div>')
@@ -989,6 +1079,8 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     w = detail.get("weather") or {}
     laps = detail.get("laps") or []
     points = ((detail.get("series") or {}).get("points")) or []
+    # 图例跟着泳道走：没有海拔带就别挂「海拔」两个字
+    ele_lg = '　<em class="lg ele"></em>海拔' if ele_span(points) else ""
     # 脱敏在组装 HTML 之前做完：底图（含真实坐标）和照片（可能带位置）也一律不叠。
     # 出完 PNG 再打码是没用的——原始折线仍会留在 output/*.html 里。
     track, mask_info = PV.mask_track(detail.get("track") or [], mode)
@@ -1064,7 +1156,11 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
         bands = iv.get("bands") or []
         lap_html = interval_bands(iv, th, egg=egg)
         sets_total = sum(b["sets"] for b in bands if not b.get("rest"))
-        if len(bands) > 2:
+        work_b0 = next((b for b in bands if not b.get("rest")), {})
+        if work_b0.get("name") == "爬升":
+            # 爬楼课：按「组数 + 累计爬升」讲，距离和配速在这类课上没有意义
+            lap_sub = (f'{sets_total} 组爬升 · 累计 +{work_b0.get("gain_m") or 0:.0f} m')
+        elif len(bands) > 2:
             lap_sub = f'{len(bands)} 档强度 · {sets_total} 组'
         elif any(b.get("rest") for b in bands):
             per = next((b["dist_m"] / max(1, b["sets"]) for b in bands
@@ -1226,7 +1322,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
   </div>
 
   <div class="card ch">
-    <div class="ctitle">{esc(chart_title)}<span><em class="lg pace"></em>{esc(chart_lg)}　<em class="lg hr"></em>心率</span></div>
+    <div class="ctitle">{esc(chart_title)}<span><em class="lg pace"></em>{esc(chart_lg)}　<em class="lg hr"></em>心率{ele_lg}</span></div>
     {chart_svg(points, CH_CW, 262, th)}
   </div>
 
@@ -1440,6 +1536,7 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
   vertical-align:middle}
 .lg.pace{background:var(--acc)}
 .lg.hr{background:#E8843A}
+.lg.ele{background:#8FA3B8}
 /* 间歇结构：柱 = 一组（间歇 + 组间恢复），柱下三行标注配速/时间/距离。
    组数是「间歇组数」：15×400 m 是 15 根柱，恢复画成柱底细灰条。 */
 .ivband{background:#10161C;border:1px solid #23364A;border-radius:14px;padding:14px 16px}
