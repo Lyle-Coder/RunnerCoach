@@ -99,6 +99,18 @@ select.fi{cursor:pointer}
 .prov b{color:var(--fg,#E8F0FB);font-weight:600}
 .prov b.warn{color:#D6A75A}
 
+/* 赛后复盘 */
+.rvs{font-size:13px;color:var(--fg,#E8F0FB);font-weight:600;line-height:1.6;
+  padding-bottom:8px;margin-bottom:8px;border-bottom:1px solid rgba(255,255,255,.06);
+  font-variant-numeric:tabular-nums}
+.rvl{font-size:12px;color:var(--muted,#7F8A97);line-height:1.7;margin-bottom:2px}
+.rvlist{margin-top:10px}
+.rvr{padding:7px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+.rvr:last-child{border-bottom:0}
+.rv1{display:flex;align-items:baseline;gap:6px}
+.rv1 .cpm{margin-left:auto;font-weight:600}
+.rv2{font-size:11.5px;color:var(--muted,#7F8A97);line-height:1.6;margin-top:1px}
+
 /* 调整 */
 .fold{border-top:1px solid rgba(255,255,255,.06);padding:10px 0}
 .fold:first-child{border-top:0;padding-top:0}
@@ -174,6 +186,16 @@ select.fi{cursor:pointer}
 .errbar{margin:0 0 12px;padding:9px 12px;border-radius:9px;font-size:12px;
   background:rgba(224,106,95,.12);border:1px solid rgba(224,106,95,.38);color:#F0A9A1}
 </style>"""
+
+
+def _day_hm(t, ref) -> str:
+    """实际时刻：和计划同一天只写 HH:MM，跨日才写「27日07:38」。
+
+    105K 这种跨零点的比赛里，一半的行会跨日，混着写看起来像两套格式。
+    """
+    if not t:
+        return "—"
+    return t.strftime("%H:%M") if t.date() == ref.date() else t.strftime("%d日%H:%M")
 
 
 def _hm(sec: float) -> str:
@@ -694,6 +716,49 @@ def render_page(qs: dict | None = None) -> str:
     # 没有指明区块（例如从别处带参数进来）时，退回顶部显示
     _ = None
 
+    # ---- 赛后复盘：把计划余量和实际分段对上（只在比赛日过后出现）
+    review_sec = ""
+    if cd["days"] < 0:
+        from . import review as R
+
+        rep = R.auto(ev)
+        if not rep.get("ok"):
+            rv_body = ('<div class="card"><div class="empty"><b>还没有可复盘的数据</b><br>'
+                       + ui.esc(rep.get("reason") or "未知原因") + "</div></div>")
+        else:
+            lines = [x for x in (rep.get("text") or "").splitlines() if x]
+            rows_rv = []
+            _is_cp = cd["has_course"]
+            for x in rep["rows"]:
+                dlt = x.get("leg_delta_s")
+                if dlt is None:
+                    cls, dtxt = "", "未到达"
+                else:
+                    cls = "bad" if dlt > 300 else ("ok" if dlt < -300 else "")
+                    dtxt = ("慢 " + R._hm(dlt)) if dlt > 0 else (
+                        "快 " + R._hm(-dlt) if dlt < 0 else "按计划")
+                rows_rv.append(
+                    '<div class="rvr">'
+                    f'<div class="rv1">'
+                    + (f'<span class="cpn">CP{x["idx"]}</span>' if _is_cp else "")
+                    + f'<span class="cpl">{ui.esc(x["name"])}</span>'
+                    f'<b class="cpm {cls}">{dtxt}</b></div>'
+                    f'<div class="rv2">计划 {x["planned"].strftime("%H:%M")} · '
+                    f'实际 {_day_hm(x["actual"], x["planned"])}'
+                    + (f' · 段 {R._hm(x["leg_s"])}（计划 {R._hm(x["plan_leg_s"])}）'
+                       if x.get("leg_s") else "")
+                    + (f' · 余量 {"+" if x["margin_s"] >= 0 else "-"}{R._hm(x["margin_s"])}'
+                       if x.get("margin_s") is not None else "")
+                    + "</div></div>")
+            rv_body = ('<div class="card">'
+                       f'<div class="rvs">{ui.esc(lines[0] if lines else "")}</div>'
+                       + ("".join(f'<div class="rvl">· {ui.esc(x)}</div>' for x in lines[1:]))
+                       + '<div class="rvlist">' + "".join(rows_rv) + "</div>"
+                       + '<div class="sub2">实际到达按活动记录插值到各 CP 里程；'
+                         "「段」指的是相邻两个 CP 之间，比累计差值更能看出哪一段出了问题。</div>"
+                       "</div>")
+        review_sec = ui.sec("赛后复盘", _bar("review") + rv_body, anchor="review")
+
     # ---- 导入 / 新建：手机上从零建一场、或把规程里的 CP 表贴进来
     others = [e for e in E.list_events() if e["slug"] != slug]
     prev_opts = "".join(
@@ -750,6 +815,7 @@ def render_page(qs: dict | None = None) -> str:
             + ui.sec("赛道轨迹", _bar("track") + track, anchor="track")
             + ui.sec("赛况与余量" if cd["has_course"] else "赛况",
                      _bar("race") + cps, anchor="race")
+            + review_sec
             + ui.sec("补给与换装", _bar("fuel") + fuel_card, anchor="fuel")
             + ui.sec("强制装备", _bar("gear") + gears, anchor="gear")
             + ui.sec("调整", _bar("adjust") + edit_card, anchor="adjust")
@@ -816,6 +882,27 @@ def cmd(args) -> int:
         print(f"√ 目标完赛 {args.goal} h（{ev['name']}）")
         print()
         print(E.margins_report(slug, goal_s))
+        return 0
+
+    if getattr(args, "review", False):
+        from garmin_cn import review as R
+
+        ev = E.load_event(slug)
+        rep = R.auto(ev)
+        if not rep.get("ok"):
+            print("× 还不能复盘：%s" % rep.get("reason"))
+            return 2
+        print("%s · 赛后复盘" % ev["name"])
+        print(rep["text"])
+        print()
+        print("%-4s %-10s %8s %10s %8s %8s" % ("CP", "地点", "计划", "实际", "段", "余量"))
+        for x in rep["rows"]:
+            print("%-4s %-10s %8s %10s %8s %8s" % (
+                "CP%d" % x["idx"] if len(rep["rows"]) > 1 else "全程",
+                x["name"], x["planned"].strftime("%H:%M"),
+                x["actual"].strftime("%d日%H:%M") if x["actual"] else "—",
+                R._hm(x["leg_s"]) if x.get("leg_s") else "—",
+                R._signed(x["margin_s"]) if x.get("margin_s") is not None else "—"))
         return 0
 
     if getattr(args, "check", False) or getattr(args, "import_file", None) \
@@ -891,6 +978,8 @@ def add_parser(sub):
     q = sub.add_parser("event", help="赛事档案：关门余量表 / 目标 / 装备 / GPX")
     q.add_argument("slug", nargs="?", help="赛事目录名（默认取「下一场」）")
     q.add_argument("--list", action="store_true", help="列出所有赛事与倒计时")
+    q.add_argument("--review", action="store_true",
+                   help="赛后复盘：计划余量 vs 实际分段（需要活动明细）")
     q.add_argument("--check", action="store_true",
                    help="校验当前赛道的内部一致性与可行性（不改数据）")
     q.add_argument("--import", dest="import_file", metavar="文件",

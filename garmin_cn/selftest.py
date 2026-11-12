@@ -4411,6 +4411,67 @@ def run() -> int:
     except ImportError:
         pass
 
+    # ---- 赛后复盘：插值、段级偏差、未完赛判定 ----
+    try:
+        from garmin_cn import review as _RV
+
+        # 插值：0–10 km 匀速 6:00/km，5.5 km 处应落在 33 分钟
+        _cd_ = [i * 1000.0 for i in range(11)]
+        _ct_ = [i * 360.0 for i in range(11)]
+        assert abs(_RV.at_km(_cd_, _ct_, 5.5) - 1980) < 1, "CP 到达插值不准"
+        assert _RV.at_km(_cd_, _ct_, 12) is None, "超出总距离应当返回 None（没跑到）"
+
+        # 找活动：同日优先于次日，且太短的不算
+        _acts = [
+            {"activity_id": "a", "date": "2027-03-28", "distance_m": 103000},
+            {"activity_id": "b", "date": "2027-03-27", "distance_m": 103000},
+            {"activity_id": "c", "date": "2027-03-27", "distance_m": 5000},
+        ]
+        assert _RV.find_activity(_acts, {"date": "2027-03-27", "distance_km": 103})["activity_id"] == "b"
+
+        # 复盘：前半程正好按计划、后半程每公里多 60 s
+        if _EV._read(_EV.SEED_EVENT["slug"], "event.json"):
+            _P = _EV.SEED_EVENT["slug"]
+            _ev = _EV.load_event(_P)
+            _rows = _EV.plan_and_margin(_P)
+            _tot = 103300.0
+            _dd, _tt, _v = [], [], 1.9
+            for _i in range(0, 103400, 100):
+                _dd.append(float(_i))
+                _tt.append(_tt[-1] + 100 / _v if _tt else 0.0)
+            _act = {"activity_id": "t", "date": _ev["date"],
+                    "start_ts": _ev["date"] + " 06:00:00",
+                    "duration_s": _tt[-1], "distance_m": _dd[-1]}
+            _rep = _RV.review(_ev, _rows, _act, {"route": {"d": _dd, "t": _tt}})
+            assert _rep["ok"] and _rep["stats"]["reached"] == len(_rows), "全部跑完却漏判 CP"
+            assert _rep["stats"]["half_ratio"] and abs(_rep["stats"]["half_ratio"] - 1) < 0.05, \
+                "匀速跑竟然算出前后半程不一致"
+            # 段级偏差必须等于「实际段用时 − 计划段用时」；匀速跑与按地形分配的计划
+            # 本身就会差很多，所以这里只校验口径自洽，不假设速度与计划一致
+            for _x in _rep["rows"]:
+                if _x["done"]:
+                    assert abs(_x["leg_delta_s"] - (_x["leg_s"] - _x["plan_leg_s"])) < 1, \
+                        f"CP{_x['idx']} 段偏差口径不一致"
+            _acc = 0.0
+            for _x in _rep["rows"]:
+                _acc += _x["plan_leg_s"]
+                assert abs(_acc - (_x["planned"] - _rep["rows"][0]["planned"]).total_seconds()
+                           - _rep["rows"][0]["plan_leg_s"]) < 2, \
+                    f"CP{_x['idx']} 的计划段用时累加对不上"
+
+            # 未完赛：只跑到 40 km
+            _short = {k: v for k, v in _act.items()}
+            _short["distance_m"] = 40000
+            _rep2 = _RV.review(_ev, _rows, _short,
+                               {"route": {"d": _dd[:401], "t": _tt[:401]}})
+            _done2 = [x for x in _rep2["rows"] if x["done"]]
+            assert len(_done2) < len(_rows), "没跑完却把所有 CP 都算成已到达"
+            assert _rep2["stats"]["dnf_km"], "未完赛没有记录停在多少公里"
+            assert all(x["actual"] is None for x in _rep2["rows"][len(_done2):]), \
+                "未到达的 CP 不该有实际时刻"
+    except ImportError:
+        pass
+
     # ---- 多赛事：档案不能串、默认必须是「下一场」、没有 CP 表就不编余量 ----
     try:
         from garmin_cn import event as _EV
