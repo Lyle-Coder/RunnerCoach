@@ -626,6 +626,34 @@ class _Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _event_delete(self, u) -> None:
+        """删除整场赛事（目录连同附件一起）。
+
+        不可逆，页面那侧有两步确认；这里只做服务端校验——确认是 UI 的礼貌，
+        真正的安全边界在这：非本机、slug 不合法、目录不在 EVENTS 下一层、
+        没有 event.json，全部拒绝。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 4096:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+        slug = (qs.get("slug") or [""])[0].strip()
+        from . import event as E
+
+        try:
+            gone = E.delete_event(slug)
+        except ValueError as e:
+            return self._back(slug or None, err=str(e))
+        rest = E.list_events()
+        # 删完跳到剩下的最近一场；一场不剩就回 /event，那边会渲染「建第一场」
+        return self._back(rest[0]["slug"] if rest else None,
+                          ok="已删除「%s」" % gone["short"])
+
     def _event_ingest(self, u) -> None:
         """新建赛事 / 粘贴规程导入 CP 表 / 沿用上一届。
 
@@ -818,6 +846,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._event_race(u)
         if u.path in ("/__event/new", "/__event/import", "/__event/prev"):
             return self._event_ingest(u)
+        if u.path == "/__event/delete":
+            return self._event_delete(u)
         if u.path == "/__event/doc":
             return self._event_doc(u)
         if u.path == "/__event/attach":

@@ -26,6 +26,7 @@ import json
 import math
 import os
 import re
+import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -429,6 +430,29 @@ def new_event(name: str, date: str, distance_km: float,
     _write(slug, "event.json", ev)
     seed_gear(slug)
     return ev
+
+
+def delete_event(slug: str) -> dict:
+    """删除整场赛事：目录连同 CP 表、装备、资料、附件一起。
+
+    不可逆，所以只接受「EVENTS 下某一层、且确实有 event.json」的目录：
+    空目录不删（多半是误建），上层目录不删（防 `../` 穿越），
+    陌生 slug 不删（`load_event` 那句「读不到就按种子生成」的教训）。
+    """
+    s = (slug or "").strip()
+    if not s or s in (".", "..") or "/" in s or "\\" in s:
+        raise ValueError("赛事标识不合法")
+    d = _dir(s)
+    try:
+        if d.parent.resolve() != EVENTS.resolve():
+            raise ValueError("只能删赛事目录下的子目录")
+    except OSError:
+        raise ValueError("赛事目录不可用") from None
+    if not (d / "event.json").is_file():
+        raise ValueError("没有这个赛事：%s" % s)
+    ev = _read(s, "event.json") or {}
+    shutil.rmtree(d)
+    return {"slug": s, "short": ev.get("short") or ev.get("name") or s}
 
 
 def _synthetic_course(ev: dict) -> dict:

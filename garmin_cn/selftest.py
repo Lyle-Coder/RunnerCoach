@@ -4698,6 +4698,19 @@ def run() -> int:
         assert _needle in (ROOT / _f).read_text(encoding="utf-8"), \
             f"{_what} 没有入口：页面能渲染，但用户点不进去"
 
+    # ---- 删除赛事：只认 EVENTS 下一层、且确实有 event.json ----
+    # 删除是不可逆的，服务端这几个拒绝条件不能只靠 UI 那层两步确认。
+    try:
+        from . import event as _EVD
+        for _bad in ("..", "a/b", "", "a\\b", "."):
+            try:
+                _EVD.delete_event(_bad)
+                raise AssertionError(f"delete_event 没拦住 {_bad!r}")
+            except ValueError:
+                pass
+    except ImportError:
+        pass
+
     # ---- 姿态评估：模板自洽 + 模型输出收敛 ----
     try:
         from . import posture as _PO
