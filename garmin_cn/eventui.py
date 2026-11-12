@@ -127,9 +127,17 @@ select.fi{appearance:none}
 .rbtn2{padding:5px 11px;border-radius:8px;border:1px solid rgba(127,138,151,.35);
   background:transparent;color:var(--muted,#7F8A97);font-size:11.5px;cursor:pointer}
 .rlist{margin-top:2px}
-.rrow{padding:8px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+/* 左滑完成：动作层压在下面，前面板整体位移露出提示 */
+.rrow{position:relative;overflow:hidden;border-bottom:1px solid rgba(255,255,255,.05)}
 .rrow:last-child{border-bottom:0}
 .rrow.done{opacity:.5}
+.rbg{position:absolute;inset:0;display:flex;align-items:center;justify-content:flex-end;
+  padding-right:22px;font-size:12.5px;font-weight:600;letter-spacing:.08em}
+.rbg.pass{background:rgba(79,214,166,.22);color:#9FE7C8}
+.rbg.unpass{background:rgba(224,106,95,.2);color:#F0A9A1}
+.rface{position:relative;padding:8px 0;background:#111a26;
+  transition:transform .18s ease;will-change:transform;touch-action:pan-y;
+  -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
 .rline1{display:flex;align-items:center;gap:6px}
 .rline1 .rbtn,.rline1 .rbtn2{margin-left:auto;flex:none}
 .rline2{font-size:11.5px;color:var(--muted,#7F8A97);line-height:1.6;margin-top:1px}
@@ -228,6 +236,75 @@ def _relief(rows: list) -> str:
         "绿/黄/红对应该方案的关门余量。</div>")
 
 
+SWIPE_JS = """<script>
+(function(){
+  var TH = 54, MAX = 96;
+  function send(act, idx){
+    var f = document.createElement('form');
+    f.method = 'post'; f.action = '/__event/race';
+    [['act', act], ['idx', idx]].forEach(function(kv){
+      var i = document.createElement('input');
+      i.type = 'hidden'; i.name = kv[0]; i.value = kv[1];
+      f.appendChild(i);
+    });
+    document.body.appendChild(f); f.submit();
+  }
+  var rows = document.querySelectorAll('.rrow[data-act]');
+  Array.prototype.forEach.call(rows, function(row){
+    var face = row.querySelector('.rface');
+    if (!face) return;
+    var sx = 0, sy = 0, dx = 0, axis = null, active = false;
+    function start(x, y){ sx = x; sy = y; dx = 0; axis = null; active = true; }
+    function move(x, y, e){
+      if (!active) return;
+      var ddx = x - sx, ddy = y - sy;
+      if (!axis){
+        if (Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
+        axis = Math.abs(ddx) > Math.abs(ddy) ? 'x' : 'y';
+        if (axis === 'y'){ active = false; return; }   /* 竖滑交给页面滚动 */
+      }
+      if (e && e.cancelable) e.preventDefault();
+      dx = Math.max(-MAX, Math.min(0, ddx));
+      face.style.transition = 'none';
+      face.style.transform = 'translateX(' + dx + 'px)';
+    }
+    function end(){
+      if (!active) return;
+      active = false;
+      if (dx <= -TH){
+        face.style.transition = 'transform .14s ease';
+        face.style.transform = 'translateX(' + (-MAX) + 'px)';
+        setTimeout(function(){ send(row.dataset.act, row.dataset.idx); }, 120);
+      } else {
+        face.style.transition = 'transform .16s ease';
+        face.style.transform = 'translateX(0)';
+      }
+    }
+    row.addEventListener('touchstart', function(e){
+      var t = e.touches[0]; start(t.clientX, t.clientY);
+    }, {passive: true});
+    row.addEventListener('touchmove', function(e){
+      var t = e.touches[0]; move(t.clientX, t.clientY, e);
+    }, {passive: false});
+    row.addEventListener('touchend', end);
+    row.addEventListener('touchcancel', end);
+    row.addEventListener('mousedown', function(e){
+      if (e.button !== 0) return;
+      start(e.clientX, e.clientY);
+      function mm(ev){ move(ev.clientX, ev.clientY, ev); }
+      function mu(){
+        document.removeEventListener('mousemove', mm);
+        document.removeEventListener('mouseup', mu);
+        end();
+      }
+      document.addEventListener('mousemove', mm);
+      document.addEventListener('mouseup', mu);
+    });
+  });
+})();
+</script>"""
+
+
 def render_page(qs: dict | None = None) -> str:
     ev = E.load_event()
     course = E.load_course(ev["slug"])
@@ -311,7 +388,7 @@ def render_page(qs: dict | None = None) -> str:
     st = race["state"]
     if st == "pre":
         bar = ('<div class="rbar pre"><div class="rbtxt">还没开始。起跑时点「开始」，'
-               '到 CP 点「到达」，后面会自动重算。</div>'
+               '之后每到一个 CP，<b>把那一行向左滑</b>，时间自动记下、后面全部重算。</div>'
                '<form method="post" action="/__event/race" class="rinline">'
                '<input type="hidden" name="act" value="start">'
                '<button class="btn primary rbtn" type="submit">开始比赛</button></form></div>')
@@ -361,10 +438,7 @@ def render_page(qs: dict | None = None) -> str:
             second = (f'计划 {r["planned"].strftime("%H:%M")} · {dtag} · '
                       f'关门 {r["cutoff"].strftime("%d日%H:%M")} · '
                       f'余量 <b class="cpm {mcls}">{mtxt}</b>')
-            act = ('<form method="post" action="/__event/race" class="rinline">'
-                   f'<input type="hidden" name="act" value="unpass">'
-                   f'<input type="hidden" name="idx" value="{r["idx"]}">'
-                   '<button class="rbtn2" type="submit">撤销</button></form>')
+            act, hint = "unpass", "撤销"
         else:
             first = (f'<span class="cpn">CP{r["idx"]}</span>'
                      f'<span class="cpl">{ui.esc(r["name"])}'
@@ -373,19 +447,18 @@ def render_page(qs: dict | None = None) -> str:
             second = (f'计划 {r["planned"].strftime("%H:%M")} · 预测 {proj} · '
                       f'关门 {r["cutoff"].strftime("%d日%H:%M")} · '
                       f'余量 <b class="cpm {mcls}">{mtxt}</b>')
-            act = ('<form method="post" action="/__event/race" class="rinline">'
-                   '<input type="hidden" name="act" value="pass">'
-                   f'<input type="hidden" name="idx" value="{r["idx"]}">'
-                   '<button class="rbtn" type="submit">到达</button></form>')
+            act, hint = "pass", "完成"
+        # 左滑完成：行本身就是按钮，不再占一条 44px 高的按钮
         cps_rows.append(
-            f'<div class="rrow{" done" if done else ""}">'
-            f'<div class="rline1">{first}{act}</div>'
-            f'<div class="rline2">{second}</div></div>')
+            f'<div class="rrow{" done" if done else ""}" data-act="{act}" data-idx="{r["idx"]}">'
+            f'<div class="rbg {act}">{hint}</div>'
+            f'<div class="rface"><div class="rline1">{first}</div>'
+            f'<div class="rline2">{second}</div></div></div>')
 
     cps = ('<div class="card">' + bar
            + '<div class="rlist">' + "".join(cps_rows) + "</div>"
-           + '<div class="sub2">点「到达」记录当前时间；已过的点会变灰，'
-             "预测列按最后一个已过 CP 的落后量整体平移。点错随时「撤销」。</div></div>")
+           + '<div class="sub2">到 CP 时<b>向左滑动</b>该行即记为已到达（记当前时间），'
+             "已过的行变灰；再左滑一次可撤销。预测列按最后一个已过 CP 的落后量平移。</div></div>")
 
     # ---- 装备：每条是一个表单，点了直接回写 gear.md（PRG 回跳，不依赖 JS）
     pct = int(gear["done"] / max(gear["total"], 1) * 100)
@@ -516,7 +589,7 @@ def render_page(qs: dict | None = None) -> str:
 
     return ui.page("EVENT · 赛事", "熊猫蜀道山 105K",
                    "赛前理解赛道：关门余量、轨迹剖面、装备进度",
-                   body, chips=chips, back=("返回今日", "/"))
+                   body + SWIPE_JS, chips=chips, back=("返回今日", "/"))
 
 
 # ---------------------------------------------------------------- CLI
