@@ -405,7 +405,8 @@ def _event_bar(cur: str) -> str:
             f'<a class="ev{on}" href="/event?slug={e["slug"]}">'
             f'<b>{ui.esc(e["short"])}</b>'
             f'<span>{dtxt}{(" · " + tag) if tag else ""}</span></a>')
-    items.append('<a class="ev add" href="#import"><b>＋</b><span>新建 / 导入</span></a>')
+    # 新建/导入是独立流程，不塞在赛事详情页底部：这里跳出去，详情页只讲「这一场」
+    items.append('<a class="ev add" href="/event?new=1"><b>＋</b><span>新建 / 导入</span></a>')
     return '<div class="evbar">' + "".join(items) + "</div>"
 
 
@@ -921,6 +922,14 @@ def render_page(qs: dict | None = None) -> str:
         + prev_block + "</details>")
 
     top_bar = "" if at else (err_bar or ok_bar)
+    # 新建 / 导入是独立视图：赛事详情页只回答「这一场怎么样」，
+    # 建新赛事不该垫在已有赛事的一堆区块下面（2026-11-12 用户反馈）。
+    if _q("new"):
+        return ui.page("EVENT · 新建", "新建赛事 / 导入赛道",
+                       "从零建一场，或者把规程里的 CP 表贴进来。",
+                       import_card,
+                       back=("返回赛事", "/event?slug=" + slug))
+
     body = (CSS + _event_bar(slug) + top_bar + ui.sec("赛事", overview)
             + ui.sec("赛道轨迹", _bar("track") + track, anchor="track")
             + ui.sec("赛况与余量" if cd["has_course"] else "赛况",
@@ -929,8 +938,7 @@ def render_page(qs: dict | None = None) -> str:
             + ui.sec("补给与换装", _bar("fuel") + fuel_card, anchor="fuel")
             + ui.sec("强制装备", _bar("gear") + gears, anchor="gear")
             + ui.sec("资料", _bar("docs") + docs_card, anchor="docs")
-            + ui.sec("调整", _bar("adjust") + edit_card, anchor="adjust")
-            + ui.sec("新建与导入", _bar("import") + import_card, anchor="import"))
+            + ui.sec("调整", _bar("adjust") + edit_card, anchor="adjust"))
 
     subtitle = ev.get("short") or ev.get("name") or "赛事"
     sub3 = ("看余量 · 赛中打点 · 勾装备 · 每一块都能改"
