@@ -301,7 +301,10 @@ def list_events(today: dt.date | None = None) -> list[dict]:
     today 可传：教练上下文要按「那一天」算倒计时，不能用跑批当天的日期，
     否则回看历史某天时所有赛事的剩余天数都是错的。
     """
-    ensure_seeds()
+    # 不再自动播种。EVENT_SEEDS 里那 4 场是作者自己的比赛（含真实 CP 表、
+    # 关门时间和装备清单），跟着安装包走会让**每个用户**打开就看到别人的赛事
+    # （2026-11-12 用户反馈）。种子只在显式调用 ensure_seeds() 时生成，
+    # 例如开发环境或 `event --seed`。老设备上已经建好的目录不动，删不删由用户决定。
     today = today or dt.date.today()
     out = []
     if EVENTS.exists():
@@ -360,14 +363,21 @@ def active_slug(slug: str | None = None) -> str:
     if ev:
         return ev["slug"]
     allv = list_events()
-    return allv[-1]["slug"] if allv else SEED_EVENT["slug"]
+    if allv:
+        return allv[-1]["slug"]
+    # 一场都没有就抛出去：以前这里回落到 SEED_EVENT，配上 load_event 的
+    # 「读不到就按种子生成」，等于谁打开一次就凭空多出作者的那场比赛
+    raise ValueError("还没有任何赛事")
 
 
 def load_event(slug: str | None = None) -> dict:
     slug = active_slug(slug)
     ev = _read(slug, "event.json")
     if not ev:
-        ev = dict(EVENT_SEEDS[slug])
+        seed = EVENT_SEEDS.get(slug)
+        if not seed:
+            raise ValueError("没有这个赛事：%s" % slug)
+        ev = dict(seed)
         ev["slug"] = slug
         _write(slug, "event.json", ev)
         seed_gear(slug)
@@ -377,7 +387,7 @@ def load_event(slug: str | None = None) -> dict:
 def new_event(name: str, date: str, distance_km: float,
               ascent_m: int | None = None, start_time: str = "08:00",
               duration_h: float | None = None, priority: str = "C",
-              goal_s: int | None = None) -> dict:
+              goal_s: int | None = None, kind: str = "trail") -> dict:
     """从零建一场赛事。只要求名字 + 日期 + 距离，其余能推就推。
 
     slug 用日期生成（race-2027-05-01），同一天再建就加 -2：
@@ -410,7 +420,10 @@ def new_event(name: str, date: str, distance_km: float,
         "descent_m": int(ascent_m or 0),
         "venue": "", "priority": priority or "C",
         "role": {"A": "主赛", "B": "B 级目标赛"}.get(priority, "训练赛"),
-        "goal_s": int(goal_s or (float(distance_km) * 0.16 * 3600)),
+        # 目标时间的初值按类型给：路跑约 6:00/km，越野约 9:36/km（含爬升）
+        "goal_s": int(goal_s or (float(distance_km)
+                                 * (0.10 if kind == "road" else 0.16) * 3600)),
+        "kind": "road" if kind == "road" else "trail",
         "gear_due_days": 3, "source": "manual",
     }
     _write(slug, "event.json", ev)
@@ -463,14 +476,52 @@ def save_course(slug: str, course: dict) -> Path:
     return _write(slug, "course.json", course)
 
 
+GEAR_ROAD = """# 装备清单（路跑）
+
+> 路跑补给站密，不用背太多水；先看官方是否有强制装备，没有就按这份来。
+
+- [ ] 号码布 + 计时芯片
+- [ ] 路跑鞋（磨合过的，别穿新鞋）
+- [ ] 能量胶（按分段补给计划，约每 40 分钟 1 支）
+- [ ] 盐丸（热天每 10 km 一组）
+- [ ] 软水壶 / 腰包水壶 ≥ 500 ml
+- [ ] 防风皮肤衣（山区风大或早晚温差大时）
+- [ ] 手机
+"""
+
+GEAR_TRAIL = """# 装备清单（越野）
+
+> 越野先对照官方强制装备清单，这里按「短赛也要能自救」配；官方要求更高的以官方为准。
+
+- [ ] 号码布 + 计时芯片
+- [ ] 越野鞋（磨合过的战靴，别穿新鞋）
+- [ ] 水袋 / 软水壶 ≥ 1 L
+- [ ] 能量胶 / 固体补给（按分段计划）
+- [ ] 盐丸 / 电解质
+- [ ] 保温毯（多数赛事强制）
+- [ ] 急救包（绷带、创可贴）
+- [ ] 防风防水外套
+- [ ] 头灯 + 备用电池（天黑前回不来就要）
+- [ ] 手机 + 充电宝
+- [ ] 换装包（有换装点的赛事）
+"""
+
+
 def seed_gear(slug: str | None = None) -> Path:
     slug = active_slug(slug)
     p = _dir(slug) / "gear.md"
     if not p.exists():
         _dir(slug).mkdir(parents=True, exist_ok=True)
-        io.open(p, "w", encoding="utf-8").write(
-            SEED_GEAR if slug == SEED_EVENT["slug"]
-            else SEED_GEAR_OTHERS.get(slug, "# 装备清单\n\n- [ ] 待补充\n"))
+        # 新建的赛事按类型给模板：路跑和越野的清单根本不是一回事，
+        # 给路跑塞「头灯 + 保温毯」只会让人以为要背一堆没用的东西。
+        if slug == SEED_EVENT["slug"]:
+            text = SEED_GEAR
+        elif slug in SEED_GEAR_OTHERS:
+            text = SEED_GEAR_OTHERS[slug]
+        else:
+            ev = _read(slug, "event.json") or {}
+            text = GEAR_ROAD if (ev.get("kind") or "trail") == "road" else GEAR_TRAIL
+        io.open(p, "w", encoding="utf-8").write(text)
     return p
 
 
