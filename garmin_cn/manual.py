@@ -15,9 +15,31 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os as _os
 from pathlib import Path
 
-PATH = Path(__file__).resolve().parent.parent / "data" / "manual.json"
+# 同 nutrition：数据必须落在 GARMIN_HOME（APK 的 filesDir）。写死在包目录
+# 的话，Android 上那是 Chaquopy 解压源码的临时目录，App 一更新就被覆盖，
+# 「补录的小睡/睡眠」会凭空消失。
+_HOME_ENV = (_os.environ.get("GARMIN_HOME") or "").strip()
+_HOME = Path(_HOME_ENV).expanduser() if _HOME_ENV else Path(__file__).resolve().parent.parent
+PATH = _HOME / "data" / "manual.json"
+_LEGACY = Path(__file__).resolve().parent.parent / "data" / "manual.json"
+_migrated = False
+
+
+def _ensure_migrated() -> None:
+    global _migrated
+    if _migrated:
+        return
+    _migrated = True
+    if PATH == _LEGACY or PATH.is_file() or not _LEGACY.is_file():
+        return
+    try:
+        PATH.parent.mkdir(parents=True, exist_ok=True)
+        PATH.write_bytes(_LEGACY.read_bytes())
+    except OSError:
+        pass
 
 
 def _num(v, default=0.0) -> float:
@@ -30,6 +52,7 @@ def _num(v, default=0.0) -> float:
 
 
 def _load() -> dict:
+    _ensure_migrated()
     try:
         data = json.loads(PATH.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}

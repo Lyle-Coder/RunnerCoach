@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os as _os
 import re
 from pathlib import Path
 
@@ -36,13 +37,48 @@ GOALS = {
     "gain": {"label": "增重", "gap": -250, "protein": 1.8, "note": "小幅盈余，优先长肌肉"},
 }
 
-CONF = Path(__file__).resolve().parent.parent / "config.json"
+# 数据根：桌面/Termux 是代码目录，APK 里由 GARMIN_HOME 指到 filesDir。
+# 这里**必须**跟着环境变量走：早期写死 `Path(__file__).parent.parent`，
+# 在 Android 上那是 Chaquopy 解压源码的临时目录，App 一更新就被重新解压覆盖，
+# 于是「中午记的饭，晚上打开没了」。其它模块（appapi/llm/manual）早就按
+# GARMIN_HOME 走了，只有这里漏了。
+_HOME_ENV = (_os.environ.get("GARMIN_HOME") or "").strip()
+HOME = Path(_HOME_ENV).expanduser() if _HOME_ENV else Path(__file__).resolve().parent.parent
+_LEGACY_HOME = Path(__file__).resolve().parent.parent
+
+CONF = HOME / "config.json"
 # 饮食记录是可选的一层：有就拿来对账，没有就只显示目标，不强制记账。
-MEALS = Path(__file__).resolve().parent.parent / "data" / "meals.json"
+MEALS = HOME / "data" / "meals.json"
+
+
+def _migrate_file(legacy: Path, dest: Path) -> bool:
+    """把旧版本写在包目录里的文件搬到 GARMIN_HOME。成功搬迁返回 True。"""
+    if dest == legacy or dest.is_file() or not legacy.is_file():
+        return False
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(legacy.read_bytes())
+        return True
+    except OSError:
+        return False
+
+
+_migrated = False
+
+
+def _ensure_migrated() -> None:
+    """只跑一次：把历史位置的数据接过来，避免升级后看起来「数据丢了」。"""
+    global _migrated
+    if _migrated:
+        return
+    _migrated = True
+    _migrate_file(_LEGACY_HOME / "data" / "meals.json", MEALS)
+    _migrate_file(_LEGACY_HOME / "config.json", CONF)
 
 
 def load_meals() -> dict:
     """读 data/meals.json（{日期: [餐次...]}），坏文件当空处理。"""
+    _ensure_migrated()
     try:
         data = json.loads(MEALS.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
@@ -234,6 +270,7 @@ def intake(date: str) -> dict:
 
 def default_goal() -> str:
     """目标写在 config.json 的 body_goal，缺省按减脂算。"""
+    _ensure_migrated()
     try:
         data = json.loads(CONF.read_text(encoding="utf-8"))
         g = str(data.get("body_goal") or "").strip().lower()
