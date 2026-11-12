@@ -938,7 +938,7 @@ def render_page(qs: dict | None = None) -> str:
             "本场没有 CP 表：只看总用时、补给与装备（可粘贴规程补上）")
     return ui.page("EVENT · 赛事", subtitle,
                    sub3,
-                   body + SWIPE_JS, chips=chips, back=("返回今日", "/"))
+                   body + SWIPE_JS, chips=chips, back=("AI 教练", "/ai"))
 
 
 # ---------------------------------------------------------------- CLI
