@@ -80,7 +80,8 @@ def dispatch(action: str, payload: dict | None = None) -> dict:
                 days = max(14, min(365, int(p.get("days") or 60)))
             except Exception:
                 days = 60
-            return aicoach.weight_review(days=days)
+            return aicoach.weight_review(
+                days=days, force=_truthy(p.get("force")))
         if action == "activity":
             # id 可空：空表示「最近一次训练」，界面上的快捷按钮就走这条
             return aicoach.activity_review(str(p.get("id") or "").strip())

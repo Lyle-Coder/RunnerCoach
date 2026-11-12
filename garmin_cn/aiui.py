@@ -439,7 +439,8 @@ async function viewToday(force) {
   const mealCard = el('div', 'card');
   mealCard.appendChild(el('h3', null, '今天吃了什么'));
   mealCard.appendChild(el('div', 'focus',
-    '拍照让教练估热量和三大营养素。照片只用于这一次识别、不留存；记完一图流与看板同步更新。'));
+    '拍照让教练估热量和三大营养素，可以补一句描述（主食多少、几个菜）会更准。' +
+    '照片只用于这一次识别、不留存；记完一图流与看板同步更新。'));
   const mtxt = el('div', 'note', '正在读取今日记录…');
   mtxt.style.marginTop = '10px';
   mealCard.appendChild(mtxt);
@@ -526,7 +527,7 @@ async function viewWeight(force) {
   v.replaceChildren(el('div', 'card', ''));
   v.firstChild.appendChild(skeletons(4));
 
-  const j = await api('weight', {days: 60});
+  const j = await api('weight', {days: 60, force: !!force});
   if (!j.ok) {
     const box = el('div');
     box.appendChild(errBox(j, () => viewWeight(false)));
@@ -593,7 +594,8 @@ async function viewWeight(force) {
   }
 
   const meta = el('div', 'meta');
-  meta.appendChild(el('span', null, esc(j.model || '') + (j.elapsed ? ' · ' + j.elapsed + 's' : '')));
+  meta.appendChild(el('span', null,
+    (j.cached ? '缓存 · ' : '') + esc(j.model || '') + (j.elapsed ? ' · ' + j.elapsed + 's' : '')));
   const b = el('button', 'btn', '重新分析');
   b.onclick = () => viewWeight(true);
   meta.appendChild(b);
@@ -805,7 +807,8 @@ async function test() {
   await api('config.set', collect());       // 先存再测，否则测的是旧配置
   const j = await api('test', {});
   if (j.ok) {
-    msg.textContent = '连接正常 · ' + j.model + ' · ' + j.elapsed + 's → ' + (j.reply || '');
+    msg.textContent = '连接正常 · ' + j.model + ' · ' + j.elapsed + 's' +
+      (j.reply ? ' → ' + j.reply : '');
     const c = await api('config.get', {});
     if (c.ok) { STATE.config = c; fillSheet(c); }
   } else {

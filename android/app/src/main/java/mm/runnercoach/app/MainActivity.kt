@@ -1302,7 +1302,32 @@ class MainActivity : Activity() {
         }
     }
 
+    /** 先问一句描述再识别：照片看不清份量时，一句话比让模型瞎猜准得多。 */
     private fun doMealEstimate(uri: Uri) {
+        val input = android.widget.EditText(this).apply {
+            hint = "可留空。例如：一碗牛肉面，汤没喝完；两块炸鸡"
+            setTextSize(14f)
+            minLines = 2
+            gravity = android.view.Gravity.TOP
+        }
+        val pad = dp(16)
+        val wrap = android.widget.FrameLayout(this).apply {
+            setPadding(pad, dp(8), pad, 0)
+            addView(input, android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT, dp(96)))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("补充一句（可选）")
+            .setMessage("照片看不清份量时写一句更准：主食多少、有没有喝汤、几个鸡蛋。")
+            .setView(wrap)
+            .setPositiveButton("识别") { _, _ ->
+                doMealEstimate(uri, input.text.toString().trim())
+            }
+            .setNegativeButton("直接识别") { _, _ -> doMealEstimate(uri, "") }
+            .show()
+    }
+
+    private fun doMealEstimate(uri: Uri, note: String) {
         val card = showLoginCard("正在识别", "让模型看看这餐有多少热量…")
         thread {
             val pair = mealImageBase64(uri)
@@ -1310,22 +1335,24 @@ class MainActivity : Activity() {
                 ui { card.dismiss(); toast("读不出这张照片") }
                 return@thread
             }
-            val r = apiCall("meal_estimate", pair.first, pair.second)
+            val r = apiCall("meal_estimate", pair.first, pair.second, note)
             ui {
                 card.dismiss()
                 if (!r.optBoolean("ok")) {
                     toast("识别失败：${r.optString("error")}")
                     return@ui
                 }
-                showMealResult(r)
+                showMealResult(r, note)
             }
         }
     }
 
-    private fun showMealResult(j: JSONObject) {
+    private fun showMealResult(j: JSONObject, note: String = "") {
         val items = j.optJSONArray("items") ?: JSONArray()
         if (items.length() == 0) {
-            toast("没认出食物，换个角度再拍一张")
+            toast(if (note.isBlank())
+                "没认出食物。点「拍照记饮食」再加一句描述（主食多少、几个菜）会更准"
+            else "还是没认出食物，换个角度再拍一张")
             return
         }
         val total = j.optJSONObject("total") ?: JSONObject()
