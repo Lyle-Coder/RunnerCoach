@@ -410,6 +410,43 @@ def _event_bar(cur: str) -> str:
     return '<div class="evbar">' + "".join(items) + "</div>"
 
 
+def _first_run() -> str:
+    """一条赛事都没有时的首屏。
+
+    种子赛事不再随安装包生成（2026-11-12 用户反馈：所有用户都能看到作者的
+    4 场比赛），所以新用户第一次进来就是空库。这里不摆 7 个只有「—」的区块，
+    只回答一个问题：先建一场。
+    """
+    body = (
+        CSS
+        + '<p class="hint">还没有赛事。建一场之后，这里会算出每个 CP 的关门余量、'
+          '分段补给计划和装备清单。</p>'
+        + '<div class="card"><form class="frm" method="post" action="/__event/new">'
+        '<div class="frow"><label>赛事名<input class="fi" name="name" '
+        'placeholder="例：2027 崇礼 168 · 70K"></label></div>'
+        '<div class="frow"><label>日期<input class="fi" name="date" '
+        'placeholder="2027-07-10" inputmode="numeric"></label>'
+        '<label>距离 km<input class="fi" name="distance_km" type="number" '
+        'step="0.1" min="1" max="400" placeholder="70"></label></div>'
+        '<div class="frow"><label>爬升 m<input class="fi" name="ascent_m" type="number" '
+        'step="10" min="0" placeholder="3200"></label>'
+        '<label>起跑<input class="fi" name="start_time" value="08:00"></label></div>'
+        '<div class="frow"><label>类型<select class="fi" name="kind">'
+        '<option value="trail" selected>越野</option>'
+        '<option value="road">路跑</option></select></label>'
+        '<label>级别<select class="fi" name="priority">'
+        '<option value="A">A · 主赛</option><option value="B">B · 有成绩要求</option>'
+        '<option value="C" selected>C · 训练赛</option></select></label></div>'
+        '<div class="fbtns"><button class="btn primary" type="submit">建好这一场</button>'
+        '<span class="fhint">目标时间按距离与类型先给个初值，之后能改</span></div>'
+        '</form></div>'
+        + '<p class="sub2">建好之后，把规程里的 CP 表贴进「新建 / 导入」，余量表就活了。'
+          '路线有官方 GPX 的话，在赛事页点「导入轨迹」即可。</p>')
+    return ui.page("EVENT · 赛事", "建第一场赛事",
+                   "只要名字、日期、距离，其它能推就推", body,
+                   back=("AI 教练", "/ai"))
+
+
 def render_page(qs: dict | None = None) -> str:
     qs = qs or {}
 
@@ -420,6 +457,9 @@ def render_page(qs: dict | None = None) -> str:
     try:
         ev = E.load_event(_q("slug"))
     except ValueError:
+        # slug 无效就回落到「下一场」；真的一个赛事都没有才走首建页
+        if not E.list_events():
+            return _first_run()
         ev = E.load_event()
     slug = ev["slug"]
     course = E.load_course(slug)
@@ -903,6 +943,11 @@ def render_page(qs: dict | None = None) -> str:
         'value="08:00"></label><label>级别<select class="fi" name="priority">'
         '<option value="A">A · 主赛</option><option value="B">B · 有成绩要求</option>'
         '<option value="C" selected>C · 训练赛</option></select></label></div>'
+        # 类型决定默认装备清单和目标配速：路跑给「号码布+鞋+胶+壶」，
+        # 越野给「头灯+保温毯+水袋+换装包」，塞错了等于让人背一堆没用的东西
+        '<div class="frow"><label>类型<select class="fi" name="kind">'
+        '<option value="trail" selected>越野（爬升大、有 CP 与换装）</option>'
+        '<option value="road">路跑（公路 / 城市马）</option></select></label></div>'
         '<div class="fbtns"><button class="btn primary" type="submit">建好这一场</button>'
         '<span class="fhint">目标时间按距离先给个初值，之后能改</span></div></form></details>'
 
