@@ -31,7 +31,7 @@ from functools import partial
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from . import history, ui
 
@@ -341,6 +341,59 @@ class _Handler(SimpleHTTPRequestHandler):
         except BrokenPipeError:
             pass
 
+    def _event_edit(self, u) -> None:
+        """赛事页的编辑表单：目标 / CP 表 / 补给参数。
+
+        统一走「表单 POST + 303 回 /event」，校验失败也用 303 带 err 参数回去——
+        手机上弹 JSON 报错等于没提示，回到页面上用一条黄色横条说清楚更好。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 8192:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+
+        def one(k: str) -> str | None:
+            v = (qs.get(k) or [""])[0].strip()
+            return v or None
+
+        from . import event as E
+        slug = one("slug")
+        err = ""
+        try:
+            if u.path == "/__event/target":
+                E.set_target(slug, goal_h=one("goal_h"), status=one("status"),
+                             start_time=one("start_time"))
+            elif u.path == "/__event/fuel":
+                E.set_fuel(slug, carb_g_h=one("carb_g_h"), fluid_ml_h=one("fluid_ml_h"),
+                           sodium_mg_h=one("sodium_mg_h"), carry_ratio=one("carry_ratio"),
+                           carry_ml=one("carry_ml"), stop_min=one("stop_min"),
+                           dropbag_stop_min=one("dropbag_stop_min"))
+            else:
+                changes = {}
+                for key, val in qs.items():
+                    m = re.fullmatch(r"km_(\d+)", key)
+                    if m:
+                        changes.setdefault(m.group(1), {})["km"] = val[0]
+                    m = re.fullmatch(r"cut_(\d+)", key)
+                    if m:
+                        changes.setdefault(m.group(1), {})["cutoff"] = val[0]
+                E.set_cps(slug, changes)
+        except ValueError as e:
+            err = str(e)
+        except Exception as e:                       # 写盘失败也回到页面说清楚
+            err = "保存失败：%s" % e
+
+        loc = "/event" + (("?err=" + quote(err)) if err else "")
+        self.send_response(303)
+        self.send_header("Location", loc)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _event_gear(self, u) -> None:
         """勾选一条强制装备（页面上的 checkbox 直接 POST 到这里）。
 
@@ -465,6 +518,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._event_gpx(u)
         if u.path == "/__event/gear":
             return self._event_gear(u)
+        if u.path in ("/__event/target", "/__event/course", "/__event/fuel"):
+            return self._event_edit(u)
         if u.path == "/__files/delete":
             # 产物页的批量删除。放在 gate 之前反而更安全：这里自己做本机校验，
             # 不带访问码的局域网访客一律 403。

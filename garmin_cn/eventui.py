@@ -61,6 +61,53 @@ CSS = """<style>
 .gchk.on{background:#4FD6A6;border-color:#4FD6A6;color:#062018}
 .gtx{font-size:12.5px;line-height:1.55;color:var(--fg,#E8F0FB)}
 .gtx.on{color:var(--muted,#7F8A97);text-decoration:line-through}
+/* 补给与换装 */
+.ftot{font-size:12.5px;color:var(--muted,#7F8A97);line-height:1.8;
+  padding-bottom:10px;border-bottom:1px solid rgba(255,255,255,.06)}
+.ftot b{color:var(--fg,#E8F0FB);font-weight:600;font-variant-numeric:tabular-nums}
+.frm{margin:10px 0 0}
+.frow{display:flex;flex-wrap:wrap;gap:8px 10px;margin-bottom:8px}
+.frow label{display:flex;align-items:center;gap:5px;font-size:11.5px;
+  color:var(--muted,#7F8A97);flex:1 1 88px;min-width:0}
+.frow label.fw{flex:1 1 100%}
+.fi{flex:1 1 auto;min-width:0;width:100%;background:rgba(255,255,255,.05);
+  border:1px solid rgba(127,138,151,.28);border-radius:7px;color:var(--fg,#E8F0FB);
+  font-size:12px;padding:5px 7px;font-variant-numeric:tabular-nums}
+.fi:focus{outline:none;border-color:#4FD6A6}
+select.fi{appearance:none}
+.fbtns{display:flex;align-items:center;gap:10px;margin-top:4px}
+.fhint{font-size:11px;color:var(--muted,#7F8A97);line-height:1.4}
+.fl{padding:9px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+.fl:last-of-type{border-bottom:0}
+.flh{display:flex;align-items:baseline;gap:6px}
+.fla{margin-left:auto;font-size:11px;color:var(--muted,#7F8A97);
+  font-variant-numeric:tabular-nums}
+.flb{font-size:11.5px;color:var(--muted,#7F8A97);line-height:1.7;margin-top:2px}
+.flw{font-size:11.5px;color:#D6A75A;line-height:1.6;margin-top:2px}
+.db{font-size:10px;color:#062018;background:#4FD6A6;border-radius:4px;
+  padding:0 4px;font-weight:600}
+.dbox{margin-top:12px;padding:10px 12px;border-radius:10px;
+  background:rgba(79,214,166,.06);border:1px solid rgba(79,214,166,.22)}
+.dbt{font-size:12px;color:#9FE7C8;font-weight:600;margin-bottom:6px}
+.dbl{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:4px}
+.dbl li{font-size:11.5px;color:var(--fg,#E8F0FB);padding-left:12px;position:relative}
+.dbl li:before{content:"";position:absolute;left:0;top:6px;width:5px;height:5px;
+  border-radius:50%;background:#4FD6A6}
+/* 调整 */
+.fold{border-top:1px solid rgba(255,255,255,.06);padding:10px 0}
+.fold:first-child{border-top:0;padding-top:0}
+.fold summary{cursor:pointer;font-size:12.5px;color:var(--fg,#E8F0FB);
+  list-style:none;display:flex;align-items:center;gap:6px}
+.fold summary::-webkit-details-marker{display:none}
+.fold summary:before{content:"▸";color:var(--muted,#7F8A97);font-size:11px}
+.fold[open] summary:before{content:"▾"}
+.cpe{display:grid;grid-template-columns:30px minmax(0,1fr) 62px 62px;gap:5px;
+  align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.cpe.head{color:var(--muted,#7F8A97);font-size:10.5px;border-bottom-color:rgba(255,255,255,.1)}
+.cpe.head span:nth-child(3),.cpe.head span:nth-child(4){text-align:center}
+.fi-km,.fi-cut{text-align:right;font-size:11.5px;padding:4px 5px}
+.errbar{margin:0 0 12px;padding:9px 12px;border-radius:9px;font-size:12px;
+  background:rgba(224,106,95,.12);border:1px solid rgba(224,106,95,.38);color:#F0A9A1}
 </style>"""
 
 
@@ -234,10 +281,10 @@ def render_page(qs: dict | None = None) -> str:
 
     # ---- 装备：每条是一个表单，点了直接回写 gear.md（PRG 回跳，不依赖 JS）
     pct = int(gear["done"] / max(gear["total"], 1) * 100)
-    rows = []
+    gear_rows = []
     for it in E.gear_items(ev["slug"]):
         nxt = "0" if it["done"] else "1"
-        rows.append(
+        gear_rows.append(
             '<form class="grow" method="post" action="/__event/gear">'
             f'<input type="hidden" name="idx" value="{it["idx"]}">'
             f'<input type="hidden" name="done" value="{nxt}">'
@@ -250,15 +297,114 @@ def render_page(qs: dict | None = None) -> str:
         '<div class="card">'
         f'<div class="gw"><div class="gbar"><i style="width:{pct}%"></i></div>'
         f'<span>{gear["done"]}/{gear["total"]} 已备</span></div>'
-        + ('<div class="glist">' + "".join(rows) + "</div>"
-           if rows else '<div class="sub2">清单是空的。</div>')
+        + ('<div class="glist">' + "".join(gear_rows) + "</div>"
+           if gear_rows else '<div class="sub2">清单是空的。</div>')
         + '<div class="sub2">点一下勾选（写回 gear.md）；赛前 7 天没勾满会进看板'
           "「需要注意」。</div></div>")
 
-    body = (CSS + ui.sec("赛事", overview)
+    # ---- 补给与换装（按分段时间算，参数可改）
+    fuel = E.fuel_plan(ev["slug"])
+    cfg = fuel["cfg"]
+    tot = fuel["totals"]
+    fuel_rows = []
+    for r in fuel["rows"]:
+        tag = ' <b class="db">换装</b>' if r["dropbag"] else ""
+        moon = " 🌙" if r["night"] else ""
+        warn = ("".join('<div class="flw">⚠ %s</div>' % ui.esc(w) for w in r["warn"]))
+        fuel_rows.append(
+            '<div class="fl">'
+            f'<div class="flh"><span class="cpn">CP{r["idx"]}</span>'
+            f'<span class="cpl">{ui.esc(r["name"])}{tag}{moon}</span>'
+            f'<span class="fla">{r["arrive"].strftime("%d日%H:%M")}</span></div>'
+            f'<div class="flb">段 {r["leg_h"]:.1f} h｜碳水 {r["carb_g"]} g'
+            f'（胶 {r["gels"]} 支 / 站内 {r["carb_station_g"]} g）｜'
+            f'水 {r["carry_ml"]} ml｜钠 {r["sodium_mg"]} mg｜停 {r["stop_min"]} min</div>'
+            + warn + "</div>")
+
+    dbg = next((r for r in fuel["rows"] if r["dropbag"]), None)
+    drop = ""
+    if dbg:
+        drop = (
+            '<div class="dbox"><div class="dbt">换装点 · CP%d %s（%s 到，停 %d min）</div>'
+            '<ul class="dbl">'
+            "<li>换鞋 + 换袜（干袜一定带）</li>"
+            "<li>换上衣、加保暖层（夜段开始前）</li>"
+            "<li>补电解质 / 盐丸，水袋加满</li>"
+            "<li>头灯换新电池，备用电池塞包里</li>"
+            "<li>丢掉的湿衣物装袋交给志愿者</li>"
+            "</ul></div>" % (dbg["idx"], ui.esc(dbg["name"]),
+                             dbg["arrive"].strftime("%d日%H:%M"), dbg["stop_min"]))
+
+    fuel_form = (
+        '<form class="frm" method="post" action="/__event/fuel">'
+        '<div class="frow"><label>碳水 g/h<input class="fi" name="carb_g_h" '
+        f'type="number" step="5" min="30" max="120" value="{cfg["carb_g_h"]}"></label>'
+        '<label>水 ml/h<input class="fi" name="fluid_ml_h" type="number" step="50" '
+        f'min="200" max="1000" value="{cfg["fluid_ml_h"]}"></label>'
+        '<label>钠 mg/h<input class="fi" name="sodium_mg_h" type="number" step="50" '
+        f'min="200" max="1500" value="{cfg["sodium_mg_h"]}"></label></div>'
+        '<div class="frow"><label>自带比例<input class="fi" name="carry_ratio" '
+        f'type="number" step="0.05" min="0.2" max="1" value="{cfg["carry_ratio"]}"></label>'
+        '<label>携水 ml<input class="fi" name="carry_ml" type="number" step="100" '
+        f'min="500" max="3000" value="{cfg["carry_ml"]}"></label>'
+        '<label>停留 min<input class="fi" name="stop_min" type="number" step="1" '
+        f'min="0" max="30" value="{cfg["stop_min"]}"></label>'
+        '<label>换装停留<input class="fi" name="dropbag_stop_min" type="number" '
+        f'step="1" min="0" max="60" value="{cfg["dropbag_stop_min"]}"></label></div>'
+        '<div class="fbtns"><button class="btn primary" type="submit">保存并重算</button>'
+        '<span class="fhint">碳水含胶与能量棒；总时长按目标配速推</span></div>'
+        "</form>")
+
+    fuel_card = (
+        '<div class="card">'
+        f'<div class="ftot">{tot["hours"]:.1f} h · 碳水 <b>{tot["carb_g"]:,} g</b> · '
+        f'水 <b>{tot["fluid_l"]:.1f} L</b> · 钠 <b>{tot["sodium_mg"]/1000:.1f} g</b> · '
+        f'自带胶 <b>{tot["gels"]} 支</b></div>'
+        + fuel_form + "".join(fuel_rows) + drop + "</div>")
+
+    # ---- 调整（目标 / 状态 / CP 表）：折叠，平时不占屏
+    status_opts = "".join(
+        f'<option value="{k}"{" selected" if ev.get("status") == k else ""}>{ui.esc(v)}</option>'
+        for k, v in E.STATUS_CN.items())
+    cp_rows = []
+    for r in rows:
+        seg = next(x for x in course["segments"] if x["idx"] == r["idx"])
+        cp_rows.append(
+            f'<div class="cpe"><span class="cpn">CP{r["idx"]}</span>'
+            f'<span class="cpl">{ui.esc(r["name"])}</span>'
+            f'<input class="fi fi-km" name="km_{r["idx"]}" value="{seg["km"]:.1f}" '
+            f'inputmode="decimal" aria-label="CP{r["idx"]} 里程">'
+            f'<input class="fi fi-cut" name="cut_{r["idx"]}" value="{seg["cutoff"]}" '
+            f'inputmode="numeric" aria-label="CP{r["idx"]} 关门"></div>')
+
+    edit_card = (
+        '<div class="card">'
+        '<details class="fold"><summary>调整目标、状态与起跑时间</summary>'
+        '<form class="frm" method="post" action="/__event/target">'
+        '<div class="frow"><label>目标完赛<input class="fi" name="goal_h" type="number" '
+        f'step="0.5" min="10" max="34" value="{ev["goal_s"]/3600:g}"></label>'
+        f'<label class="fw">状态<select class="fi" name="status">{status_opts}</select></label>'
+        '<label>起跑<input class="fi" name="start_time" value="'
+        f'{ui.esc(ev["start_time"])}"></label></div>'
+        '<div class="fbtns"><button class="btn primary" type="submit">保存</button>'
+        '<span class="fhint">改目标会立刻重算余量与补给</span></div></form></details>'
+        '<details class="fold"><summary>CP 表（里程 / 关门）</summary>'
+        '<form class="frm" method="post" action="/__event/course">'
+        '<div class="cpe head"><span>CP</span><span>地点</span><span>km</span><span>关门</span></div>'
+        + "".join(cp_rows) +
+        '<div class="fbtns"><button class="btn primary" type="submit">保存 CP 表</button>'
+        '<span class="fhint">里程必须递增，否则整表不保存</span></div></form></details>'
+        "</div>")
+
+    err = (qs or {}).get("err", [""])[0] if qs else ""
+    err_bar = (f'<div class="errbar">保存失败：{ui.esc(err)}</div>' if err else "")
+
+    body = (CSS + err_bar + ui.sec("赛事", overview)
             + ui.sec("赛道轨迹", track)
             + ui.sec("关门余量", cps)
-            + ui.sec("强制装备", gears))
+            + ui.sec("补给与换装", fuel_card)
+            + ui.sec("强制装备", gears)
+            + ui.sec("调整", edit_card))
 
     return ui.page("EVENT · 赛事", "熊猫蜀道山 105K",
                    "赛前理解赛道：关门余量、轨迹剖面、装备进度",

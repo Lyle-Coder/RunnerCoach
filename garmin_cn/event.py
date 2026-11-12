@@ -300,6 +300,184 @@ def set_goal(slug: str | None, goal_s: int) -> Path:
     return _write(slug, "event.json", ev)
 
 
+# ---------------------------------------------------------------- 编辑入口
+
+STATUS_CN = {"announced": "未报名", "registered": "已报名待抽签",
+             "confirmed": "已中签", "done": "已完赛", "cancelled": "已取消"}
+
+
+def set_target(slug: str | None, *, goal_h: float | None = None,
+               status: str | None = None, start_time: str | None = None) -> dict:
+    """改目标完赛 / 赛事状态 / 起跑时间。只接受合法值，非法就抛 ValueError。
+
+    页面表单直接调它——CLI 那条路（run.bat event --goal）现在也走同一个函数，
+    避免两套校验各说各话。
+    """
+    slug = slug or SEED_EVENT["slug"]
+    ev = load_event(slug)
+    if goal_h is not None:
+        if not 10 <= float(goal_h) <= 34:
+            raise ValueError("目标完赛要在 10–34 小时之间")
+        ev["goal_s"] = int(round(float(goal_h) * 3600))
+    if status is not None:
+        if status not in STATUS_CN:
+            raise ValueError("赛事状态不认识：%s" % status)
+        ev["status"] = status
+    if start_time is not None:
+        m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", str(start_time).strip())
+        if not m:
+            raise ValueError("起跑时间要写成 HH:MM")
+        ev["start_time"] = "%02d:%02d" % (int(m.group(1)), int(m.group(2)))
+    _write(slug, "event.json", ev)
+    return ev
+
+
+def set_cps(slug: str | None, changes: dict) -> dict:
+    """批量改 CP 里程与关门时间：{idx: {"km": 10.9, "cutoff": "08:05"}}。
+
+    校验很严：里程必须严格递增、不能超过终点里程，关门时间必须能解析。
+    这是手工校对用的入口，宁可报错也不写进一份自相矛盾的赛道。
+    """
+    slug = slug or SEED_EVENT["slug"]
+    course = load_course(slug)
+    segs = course.get("segments") or []
+    by_idx = {s["idx"]: s for s in segs}
+    for raw_idx, ch in (changes or {}).items():
+        idx = int(raw_idx)
+        if idx not in by_idx:
+            raise ValueError("没有 CP%d" % idx)
+        seg = by_idx[idx]
+        if "km" in ch and ch["km"] is not None:
+            km = float(ch["km"])
+            if not 0 < km < float(course.get("distance_km") or 200):
+                raise ValueError("CP%d 的里程 %.1f 超出赛道范围" % (idx, km))
+            seg["km"] = round(km, 1)
+        if ch.get("cutoff"):
+            m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", str(ch["cutoff"]).strip())
+            if not m:
+                raise ValueError("CP%d 的关门时间要写成 HH:MM" % idx)
+            seg["cutoff"] = "%02d:%02d" % (int(m.group(1)), int(m.group(2)))
+        seg["source"] = "manual"
+
+    prev = 0.0
+    for seg in sorted(segs, key=lambda x: x["idx"]):
+        if seg["km"] <= prev:
+            raise ValueError("CP%d 里程 %.1f 没有比前一个点大，赛道顺序会乱"
+                             % (seg["idx"], seg["km"]))
+        prev = seg["km"]
+    course["segments"] = segs
+    _write(slug, "course.json", course)
+    return course
+
+
+# ---------------------------------------------------------------- 补给计划
+
+# 默认补给参数：碳水按 105K 的实战区间取 75 g/h（训练期 60，比赛日 75–90）；
+# 水与钠按凉爽天气基准，热了在页面上直接调。
+FUEL_DEFAULT = {
+    "carb_g_h": 75,
+    "fluid_ml_h": 500,
+    "sodium_mg_h": 500,
+    "gel_g": 25,            # 一支胶的碳水克数
+    "stop_min": 3,          # 普通 CP 停留
+    "dropbag_stop_min": 12,  # 换装点停留
+    "temp_c": 12,
+    "carry_ratio": 0.5,     # 碳水里自带的比例（其余在 CP 吃热食/粥面）
+    "carry_ml": 1200,       # 水袋 + 软水壶的实际容量
+}
+
+
+def fuel_cfg(slug: str | None = None) -> dict:
+    ev = load_event(slug)
+    cfg = dict(FUEL_DEFAULT)
+    cfg.update(ev.get("fuel") or {})
+    return cfg
+
+
+def set_fuel(slug: str | None, **kw) -> dict:
+    """保存补给参数（页面表单）。范围校验，避免手滑写成 500 g 碳水/小时。"""
+    slug = slug or SEED_EVENT["slug"]
+    ev = load_event(slug)
+    cfg = dict(FUEL_DEFAULT)
+    cfg.update(ev.get("fuel") or {})
+    limits = {"carb_g_h": (30, 120), "fluid_ml_h": (200, 1000),
+              "sodium_mg_h": (200, 1500), "gel_g": (10, 40),
+              "stop_min": (0, 30), "dropbag_stop_min": (0, 60),
+              "temp_c": (-20, 40), "carry_ratio": (0.2, 1.0),
+              "carry_ml": (500, 3000)}
+    for k, (lo, hi) in limits.items():
+        if kw.get(k) is None:
+            continue
+        v = float(kw[k])
+        if not lo <= v <= hi:
+            raise ValueError("%s 要在 %g–%g 之间" % (k, lo, hi))
+        cfg[k] = int(v) if k != "temp_c" else round(v, 1)
+    ev["fuel"] = cfg
+    _write(slug, "event.json", ev)
+    return cfg
+
+
+def fuel_plan(slug: str | None = None, goal_s: int | None = None) -> dict:
+    """按分段时长算每段要吃多少、带多少，以及换装点要做什么。
+
+    假设：每个 CP 都有水和热食，所以「携带量」按段内需要算，到站补满；
+    单段超过 2 h 或水需求 >1 L 会标出来——那种段必须提前确认补给点。
+    """
+    cfg = fuel_cfg(slug)
+    rows = plan_and_margin(slug, goal_s)
+    ev = load_event(slug)
+    start = dt.datetime.combine(dt.date.fromisoformat(ev["date"]),
+                                dt.time(*map(int, ev["start_time"].split(":"))))
+    out, prev = [], start
+    tot_carb = tot_fluid = tot_sodium = 0.0
+    tot_gels = 0
+    for r in rows:
+        leg_h = max(0.0, (r["arrive"] - prev).total_seconds() / 3600.0)
+        prev = r["arrive"]
+        carb = cfg["carb_g_h"] * leg_h
+        fluid = cfg["fluid_ml_h"] * leg_h
+        sodium = cfg["sodium_mg_h"] * leg_h
+        # 碳水一分为二：自带的（胶 + 能量棒）和 CP 上吃热食的部分。
+        # 全按胶算会得出「背 40 支胶」这种没人这么干的结果。
+        carry_g = carb * float(cfg["carry_ratio"])
+        gels = int(-(-carry_g // cfg["gel_g"])) if carry_g > 0 else 0   # 向上取整
+        stop = cfg["dropbag_stop_min"] if r["dropbag"] else cfg["stop_min"]
+        night = r["arrive"].time() >= dt.time(21, 30) or r["arrive"].time() <= dt.time(6, 30)
+        carry_ml = min(fluid, float(cfg["carry_ml"]))
+        warn = []
+        if fluid > float(cfg["carry_ml"]):
+            warn.append("这段要 %d ml 水，超过携带量 %d ml：中途必须补水"
+                        % (round(fluid), round(float(cfg["carry_ml"]))))
+        elif leg_h >= 2.0:
+            warn.append("%.1f h 长段，出发前把水加满并确认中途水源" % leg_h)
+        tot_carb += carb
+        tot_fluid += fluid
+        tot_sodium += sodium
+        tot_gels += gels
+        out.append({
+            "idx": r["idx"], "name": r["name"], "km": r["km"],
+            "arrive": r["arrive"], "leg_h": round(leg_h, 2),
+            "carb_g": int(round(carb)), "carry_g": int(round(carry_g)),
+            "carb_station_g": int(round(carb - carry_g)),
+            "fluid_ml": int(round(fluid)), "carry_ml": int(round(carry_ml)),
+            "sodium_mg": int(round(sodium)), "gels": gels,
+            "stop_min": stop, "dropbag": r["dropbag"], "night": night,
+            "warn": warn,
+        })
+    total_h = max(0.01, (rows[-1]["arrive"] - start).total_seconds() / 3600.0) \
+        if rows else 0.0
+    return {
+        "cfg": cfg, "rows": out,
+        "totals": {
+            "hours": round(total_h, 1),
+            "carb_g": int(round(tot_carb)),
+            "fluid_l": round(tot_fluid / 1000, 1),
+            "sodium_mg": int(round(tot_sodium)),
+            "gels": tot_gels,
+        },
+    }
+
+
 # ---------------------------------------------------------------- 装备
 
 def gear_items(slug: str | None = None) -> list[dict]:
