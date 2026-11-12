@@ -967,6 +967,25 @@ def render_page(qs: dict | None = None) -> str:
         + prev_block + "</details>")
 
     top_bar = "" if at else (err_bar or ok_bar)
+    # 删除整场：压在「调整」区块最底部，和保存类动作隔开一段。
+    # 两步确认（4 秒内再点一次），不用 confirm()——WebView 有的机型不弹窗，
+    # 点了像没反应，这种不可逆操作不能赌弹窗存在。
+    _slug_js = '"' + slug.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    danger_card = (
+        '<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--line)">'
+        '<button class="btn" type="button" id="delEvBtn">删除这一场赛事</button>'
+        '<p class="hint" style="margin-top:8px">会连同 CP 表、补给配置、装备勾选、'
+        "资料附件和轨迹一起删掉，不可恢复。导出数据包里的那份还在。</p></div>"
+        '<script>(function(){var b=document.getElementById("delEvBtn");if(!b)return;'
+        'var arm=0;b.onclick=function(){'
+        'if(Date.now()>arm){arm=Date.now()+4000;b.textContent="再点一次确认删除";'
+        'b.style.color="#E06A5F";setTimeout(function(){if(Date.now()>arm){'
+        'b.textContent="删除这一场赛事";b.style.color="";}},4200);return;}'
+        'var f=document.createElement("form");f.method="post";'
+        'f.action="/__event/delete";var i=document.createElement("input");'
+        'i.type="hidden";i.name="slug";i.value=' + _slug_js + ';'
+        'f.appendChild(i);document.body.appendChild(f);f.submit();};})();</script>')
+
     # 新建 / 导入是独立视图：赛事详情页只回答「这一场怎么样」，
     # 建新赛事不该垫在已有赛事的一堆区块下面（2026-11-12 用户反馈）。
     if _q("new"):
@@ -983,7 +1002,7 @@ def render_page(qs: dict | None = None) -> str:
             + ui.sec("补给与换装", _bar("fuel") + fuel_card, anchor="fuel")
             + ui.sec("强制装备", _bar("gear") + gears, anchor="gear")
             + ui.sec("资料", _bar("docs") + docs_card, anchor="docs")
-            + ui.sec("调整", _bar("adjust") + edit_card, anchor="adjust"))
+            + ui.sec("调整", _bar("adjust") + edit_card + danger_card, anchor="adjust"))
 
     subtitle = ev.get("short") or ev.get("name") or "赛事"
     sub3 = ("看余量 · 赛中打点 · 勾装备 · 每一块都能改"
