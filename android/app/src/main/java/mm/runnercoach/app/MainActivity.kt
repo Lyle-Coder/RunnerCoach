@@ -1847,9 +1847,28 @@ class MainActivity : Activity() {
                     val r = apiCall("clips_remove_many", ids)
                     ui {
                         clipChecked.clear()
-                        toast(if (r.optBoolean("ok"))
-                            "已删除 ${r.optInt("removed")} 个"
-                        else r.optString("error", "删除失败"))
+                        val n = r.optInt("removed")
+                        val fails = r.optJSONArray("failed")
+                        val failN = fails?.length() ?: 0
+                        when {
+                            n > 0 && failN == 0 -> toast("已删除 $n 个")
+                            n > 0 -> toast("已删除 $n 个；$failN 个文件没删掉，仍在列表里")
+                            else -> toast(r.optString("error", "删除失败"))
+                        }
+                        // 删不掉的要说出原因：留在列表里还能重试，别让人反复猜
+                        if (fails != null && failN > 0) {
+                            val sb = StringBuilder()
+                            for (i in 0 until failN) {
+                                val o = fails.optJSONObject(i) ?: continue
+                                sb.append("· ").append(o.optString("name", o.optString("id")))
+                                    .append("：").append(o.optString("error")).append("\n")
+                            }
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("有 $failN 个没删掉")
+                                .setMessage(sb.toString().trim())
+                                .setPositiveButton("知道了", null)
+                                .show()
+                        }
                         showClips()
                     }
                 }
@@ -3488,11 +3507,11 @@ class MainActivity : Activity() {
             val ci = c.optInt("ci", i)
             ui { subtitle.text = "准备素材画面 ${i + 1}/${arr.length()}" }
             val t0 = System.currentTimeMillis()
-            // 画质优先：长边 840 正好等于卡片最大显示尺寸（不再放大），
-            // 帧率让到 8fps、单段上限 72 格（9 秒内素材满帧率，更长的自动降格率）。
-            // 抽帧总量反而比 12fps/150 格少一半，导出更快。
+            // 12fps / 720px / 96 格：8fps 时卡片画面明显一顿一顿，成片 24fps
+            // 只是把它按住 3 帧。提到 12fps 顺很多，分辨率让到 720 换回体积
+            // （12/8 × (720/840)² ≈ 1.10，抽帧总量基本不变）。
             val info = MotionClips.extract(
-                c.optString("file"), java.io.File(root, "c$ci"), 8, 72, 840,
+                c.optString("file"), java.io.File(root, "c$ci"), 12, 96, 720,
                 c.optInt("rotate", 0))
             try {
                 index.put(ci.toString(), org.json.JSONObject()
@@ -4174,6 +4193,7 @@ class MainActivity : Activity() {
         if (!on) {
             bar.visibility = View.GONE
             bar.isIndeterminate = true
+            nudgeHandler.removeCallbacks(nudge)
             return
         }
         bar.visibility = View.VISIBLE
@@ -4182,6 +4202,21 @@ class MainActivity : Activity() {
             bar.progress = pct
         } else {
             bar.isIndeterminate = true
+        }
+        // 生成期间定时戳一下页面：WebView 在空闲/不可见时会节流 JS 定时器，
+        // 用户「不摸屏幕进度就不动」就是这么来的。页面没有 gcTick 时是空操作。
+        nudgeHandler.removeCallbacks(nudge)
+        nudgeHandler.postDelayed(nudge, 1200)
+    }
+
+    private val nudgeHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val nudge = object : Runnable {
+        override fun run() {
+            try {
+                web.evaluateJavascript("window.gcTick&&window.gcTick()", null)
+            } catch (_: Throwable) {
+            }
+            nudgeHandler.postDelayed(this, 1200)
         }
     }
 

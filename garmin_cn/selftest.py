@@ -1098,8 +1098,14 @@ def run() -> int:
     # 视频段：随机 seek 是整条流水线最贵的一步，而旧阈值 0.04 在 24fps
     # （帧间隔 0.0417s）下永远不命中，等于每帧都 seek 一次；另有
     # waitReady(4000) 每帧最多空等 4 秒、11 段视频各存一张全分辨率首帧。
-    assert "const CLIP_FPS = 8" in _msrc and "const VSTEP = new Map()" in _msrc, \
-        "视频卡片没有抽帧网格，导出仍会逐帧 seek"
+    assert "const CLIP_FPS = 12" in _msrc and "const VSTEP = new Map()" in _msrc, \
+        "视频卡片没有抽帧网格，导出仍会逐帧 seek（8fps 时卡顿感明显）"
+    # 页面按 CLIP_FPS 选格子，原生必须按同一个帧率抽帧，否则要么白抽要么一顿一顿
+    _kt_motion = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    _mi = _kt_motion.find("MotionClips.extract(")
+    _mchunk = _kt_motion[_mi:_mi + 320] if _mi >= 0 else ""
+    assert "12, 96, 720" in _mchunk, \
+        f"原生抽帧参数与页面 CLIP_FPS=12 不一致：{_mchunk[:80]}"
     assert "const VDONE = new Map()" in _msrc and "const WAITED = new Set()" in _msrc, \
         "缺「同格只抓一次 / 只等一次就绪」的状态"
     assert "Math.floor(VREL * CLIP_FPS)" in _msrc, \
@@ -1159,13 +1165,13 @@ def run() -> int:
         "if (v.readyState < 2) { VPFAIL.add(clip.src); return; }" in _msrc and \
         "!VPFAIL.has(src)" in _msrc, \
         "预抽失败没有回退路径，视频解不出画面会把导出卡死"
-    # 画质优先：帧率让到 8fps，每帧长边 840 = 卡片显示上限，1:1 不放大；
-    # JPEG 92，导出期统一高质量插值。旧版 480px 放大到 840 才是「糊」的根因。
+    # 帧率优先：12fps / 96 格 / 720px。8fps 时卡片画面明显一顿一顿，
+    # 12/8 × (720/840)² ≈ 1.10，抽帧总量基本不变，只是每帧略小。
     _ck53 = (_kt_dir / "MotionClips.kt").read_text(encoding="utf-8")
     assert "private const val JPEG_QUALITY = 92" in _ck53, \
         "抽帧 JPEG 质量又降回去了，卡片会有块状伪影"
-    assert "java.io.File(root, \"c$ci\"), 8, 72, 840," in _main, \
-        "抽帧参数不是 8fps / 72 格 / 840px，画质或耗时又要失守"
+    assert "java.io.File(root, \"c$ci\"), 12, 96, 720," in _main, \
+        "抽帧参数不是 12fps / 96 格 / 720px，流畅度或体积要失守"
     assert "ctx.imageSmoothingQuality = 'high';" in _msrc and \
         "try { ctx.imageSmoothingQuality = 'high'; } catch (e) {}" in _msrc, \
         "导出期没有开高质量缩放"
@@ -4158,6 +4164,34 @@ def run() -> int:
         "App 没接「打开配置」和「开关」两个动作"
     assert 'id="aiSeg"' in (ROOT / "garmin_cn/aiui.py").read_text(encoding="utf-8"), \
         "配置抽屉里没有 AI 开关"
+
+    # ---- 素材批量删除：删不掉的不能从列表里消失 ----------------------
+    _cdir = Path(tempfile.mkdtemp())
+    (_cdir / "ok.jpg").write_bytes(b"x")
+    _baddir = _cdir / "not_a_file"
+    _baddir.mkdir()
+    with _um3.patch.object(AP, "CLIPS", _cdir / "clips.json"):
+        AP._clips_write([
+            {"id": "c1", "path": str(_cdir / "ok.jpg"), "name": "好删的",
+             "kind": "image", "dur": 3},
+            {"id": "c2", "path": str(_baddir), "name": "删不掉的",
+             "kind": "image", "dur": 3},
+        ])
+        _rm = AP.clips_remove_many(["c1", "c2"])
+    assert _rm["removed"] == 1 and not _rm["ok"] and _rm["failed"], \
+        f"删除结果不诚实（失败也报成功）：{_rm}"
+    assert [x["id"] for x in _rm["items"]] == ["c2"], \
+        "删不掉的条目被从列表里摘掉了——用户会以为删干净了"
+    assert not (_cdir / "ok.jpg").exists(), "该删的文件还在"
+
+    # ---- 产物页进度：只更新 DOM 当数据变化，并给原生一个 gcTick 钩子 ----
+    _files_html = U.files_page(Path(tempfile.mkdtemp()))
+    assert "window.gcTick = tick" in _files_html, \
+        "进度轮询没暴露 gcTick，原生无法在 WebView 节流时戳醒它"
+    assert "if (key === lastKey) return;" in _files_html, \
+        "进度每次轮询都无条件重写 innerHTML，过渡会被反复打断"
+    assert 'window.gcTick&&window.gcTick()' in (KT / "MainActivity.kt").read_text(encoding="utf-8"), \
+        "原生没有在生成期间定时调用 gcTick"
 
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"

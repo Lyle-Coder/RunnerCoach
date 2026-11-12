@@ -2836,16 +2836,40 @@ def clips_remove_many(ids: list) -> dict:
             keep.append(it)
     if not gone:
         return {"ok": False, "error": "选中的素材已经不在列表里"}
-    _clips_write(keep)
+
+    # 先删文件、再决定谁从列表里消失：以前是「先写 JSON 再删文件，删失败
+    # 直接 pass」，结果素材从列表里没了、磁盘上还在，用户以为删干净了。
+    removed, failed = [], []
     for it in gone:
+        bad = []
         for key in ("path", "src"):
+            raw = str(it.get(key) or "").strip()
+            if not raw:
+                continue
+            fp = Path(raw)
             try:
-                fp = Path(str(it.get(key) or ""))
                 if fp.is_file():
                     fp.unlink()
-            except OSError:
-                pass
-    return {"ok": True, "removed": len(gone), "items": keep}
+            except OSError as e:
+                bad.append(f"{key}: {e.strerror or e}")
+                continue
+            if fp.exists():
+                bad.append(f"{key}: 文件仍存在（被占用？）")
+        if bad:
+            failed.append({"id": str(it.get("id") or ""),
+                           "name": str(it.get("name") or ""),
+                           "error": "；".join(bad)})
+        else:
+            removed.append(it)
+
+    # 删不掉的留在列表里，用户还能重试；不要让它「消失但没删」
+    fail_ids = {f["id"] for f in failed}
+    survivors = keep + [it for it in gone if str(it.get("id") or "") in fail_ids]
+    _clips_write(survivors)
+    return {"ok": not failed,
+            "removed": len(removed), "failed": failed,
+            "error": (f"{len(failed)} 个文件删不掉（仍在列表里）" if failed else ""),
+            "items": survivors}
 
 
 def clips_update(clip_id: str, dur: float = 0, w: int = 0, h: int = 0,
