@@ -171,6 +171,7 @@ BODY = """
     <button data-v="today" class="on">今日</button>
     <button data-v="weight">体重</button>
     <button data-v="chat">对话</button>
+    <button data-v="event">备赛</button>
   </div>
 
   <div id="view"></div>
@@ -986,6 +987,9 @@ function refreshSub() {
 }
 
 function switchTab(t) {
+  // 备赛（/event）是独立文档，不在这个页面里，只能整页跳过去。
+  // 以前它没有任何入口，只能在导入 GPX 之后被动跳一次，等于做完没人能进。
+  if (t === 'event') { location.href = '/event'; return; }
   STATE.tab = t;
   if (location.hash !== '#' + t) history.replaceState(null, '', '#' + t);
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === t));
