@@ -932,13 +932,13 @@ def meal_add(items, date: str = "") -> dict:
     return {"ok": True, "date": d, **r}
 
 
-def meal_estimate(image_b64: str, mime: str = "image/jpeg") -> dict:
-    """拍照识热量：图片交给视觉模型，返回食物清单与营养估算（不落库）。"""
+def meal_estimate(image_b64: str, mime: str = "image/jpeg", note: str = "") -> dict:
+    """拍照识热量：图片（+ 可选一句描述）交给视觉模型，返回食物清单（不落库）。"""
     from . import llm
     from . import nutrition as N
 
     try:
-        return {"ok": True, **N.estimate_meal(image_b64, mime or "image/jpeg")}
+        return {"ok": True, **N.estimate_meal(image_b64, mime or "image/jpeg", note)}
     except llm.LLMError as e:
         return {"ok": False, "error": e.message, "code": e.kind}
     except Exception as e:

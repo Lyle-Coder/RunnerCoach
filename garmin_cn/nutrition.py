@@ -97,13 +97,16 @@ def add_meals(date: str, items: list[dict], clock: str | None = None) -> dict:
 
 # ---------------------------------------------------------------- 拍照识热量
 MEAL_PROMPT = """你是运动营养师。看照片识别食物，估算**整份**的份量与营养。
-只返回 JSON，不要解释：
+只返回 JSON 对象本身，不要解释、不要写思考过程、不要英文、不要 markdown 围栏：
 {"items":[{"name":"米饭","grams":200,"kcal":232,"protein_g":4.8,"carb_g":51.6,"fat_g":0.6}],"note":"可选的一句提醒"}
 规则：
 - 按照片里实际可见的份量估，拿不准取常见中位数；
 - 只估照片里有的食物，不要补没看到的菜；
 - kcal / 蛋白 / 碳水 / 脂肪都按整份计，不是每 100 g；
-- 最多 8 项；认不出食物就返回空 items。"""
+- **至少要给出一项**：认不出具体菜名就按可见品类写（如「炒青菜」「红烧肉」），
+  实在看不清份量也要按常见份量估一个，不要轻易返回空 items；
+- 只有照片里确实没有食物（比如拍糊了、拍的是空盘子）才返回空 items；
+- 最多 8 项。"""
 
 
 def _json_obj(text: str) -> dict:
@@ -122,22 +125,7 @@ def _json_obj(text: str) -> dict:
         return {}
 
 
-def estimate_meal(image_b64: str, mime: str = "image/jpeg") -> dict:
-    """图片（base64）→ 食物清单与营养估算。失败抛 llm.LLMError / ValueError。"""
-    from . import llm
-
-    if not image_b64:
-        raise ValueError("没有图片")
-    msg = [
-        {"role": "system", "content": MEAL_PROMPT},
-        {"role": "user", "content": [
-            {"type": "text", "text": "估算这一餐的热量和三大营养素。"},
-            {"type": "image_url", "image_url": {
-                "url": f"data:{mime or 'image/jpeg'};base64,{image_b64}"}},
-        ]},
-    ]
-    r = llm.chat(msg, temperature=0.2, max_tokens=900)
-    obj = _json_obj(r.get("text") or "")
+def _meal_items(obj: dict) -> list[dict]:
     items = []
     for it in (obj.get("items") or [])[:8]:
         if not isinstance(it, dict):
@@ -154,6 +142,53 @@ def estimate_meal(image_b64: str, mime: str = "image/jpeg") -> dict:
             "carb_g": round(num(it.get("carb_g")) or 0, 1),
             "fat_g": round(num(it.get("fat_g")) or 0, 1),
         })
+    return items
+
+
+def estimate_meal(image_b64: str, mime: str = "image/jpeg",
+                  note: str = "") -> dict:
+    """图片（base64）→ 食物清单与营养估算。失败抛 llm.LLMError / ValueError。
+
+    `note` 是用户补的一句话（「一碗牛肉面，汤没喝完」）。有些菜照片根本看不清
+    份量，文字能一次把误差压下来，比让模型瞎猜强。
+    """
+    from . import llm
+
+    if not image_b64:
+        raise ValueError("没有图片")
+    desc = (note or "").strip()[:200]
+    ask = "估算这一餐的热量和三大营养素。"
+    if desc:
+        ask += f"\n用户补充说明：{desc}\n（以这段说明为准，照片看不清的地方按它判断）"
+    msg = [
+        {"role": "system", "content": MEAL_PROMPT},
+        {"role": "user", "content": [
+            {"type": "text", "text": ask},
+            {"type": "image_url", "image_url": {
+                "url": f"data:{mime or 'image/jpeg'};base64,{image_b64}"}},
+        ]},
+    ]
+    r = llm.chat(msg, temperature=0.2, max_tokens=900)
+    obj = _json_obj(r.get("text") or "")
+    items = _meal_items(obj)
+    if not items:
+        # 一次重试：模型常把思考过程写进正文，JSON 被截断就成了「没认出食物」。
+        # 重试时把上一段输出原样带回，明确要求只输出 JSON、按可见品类估。
+        retry = msg + [
+            {"role": "assistant", "content": (r.get("text") or "")[:800]},
+            {"role": "user", "content": (
+                "上面那段不是我要的格式。只输出 JSON 对象，不要解释、不要英文。"
+                "照片里的食物逐项列出；认不出菜名就写可见品类；"
+                "份量拿不准按常见份量估，不要返回空 items。")},
+        ]
+        try:
+            r2 = llm.chat(retry, temperature=0.2, max_tokens=900)
+            obj2 = _json_obj(r2.get("text") or "")
+            if _meal_items(obj2):
+                obj, r = obj2, r2
+        except llm.LLMError:
+            pass
+        items = _meal_items(obj)
     return {
         "items": items,
         "total": {
