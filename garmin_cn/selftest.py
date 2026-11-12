@@ -4236,6 +4236,40 @@ def run() -> int:
             assert abs(_hit["km"] - float(_o.get("km", _hit["km"]))) < 0.1, \
                 f"日内覆盖的里程没写进去：{_iso}"
 
+    # ---- 赛事页的编辑入口与补给计划（有本地赛事数据才跑） ----
+    try:
+        from garmin_cn import event as _EV
+
+        if _EV._read(_EV.SEED_EVENT["slug"], "event.json"):
+            # 补给：总碳水必须等于「时长 × 速率」，胶数按自带比例向上取整
+            _fp = _EV.fuel_plan()
+            _cfgf = _fp["cfg"]
+            _tot = _fp["totals"]
+            _want = _tot["hours"] * _cfgf["carb_g_h"]
+            assert abs(_tot["carb_g"] - _want) <= _tot["hours"] * 3, \
+                f"补给总量对不上分段之和：{_tot['carb_g']} vs {_want:.0f}"
+            for _r in _fp["rows"]:
+                assert _r["gels"] * _cfgf["gel_g"] >= _r["carry_g"] - 1e-6, \
+                    f"CP{_r['idx']} 的胶不够覆盖自带碳水"
+                assert _r["stop_min"] >= 0 and _r["carry_ml"] <= _cfgf["carry_ml"]
+            assert sum(1 for _r in _fp["rows"] if _r["dropbag"]) == 1, \
+                "换装点数量不对（105K 只有一个）"
+
+            # 校验：非法目标 / 非法库存必须抛 ValueError，不能悄悄写坏数据
+            for _bad in ({"status": "zzz"}, {"goal_h": 99}, {"start_time": "25:00"}):
+                try:
+                    _EV.set_target(None, **_bad)
+                    raise AssertionError(f"非法输入被接受了：{_bad}")
+                except ValueError:
+                    pass
+            try:
+                _EV.set_cps(None, {"2": {"km": 1.0}})
+                raise AssertionError("CP 里程倒退没有报错")
+            except ValueError:
+                pass
+    except ImportError:
+        pass
+
     # ---- 教练上下文要带赛事档案（没有本地数据就跳过，CI 上不跑） ----
     try:
         from garmin_cn import event as _EV
