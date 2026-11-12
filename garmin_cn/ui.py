@@ -466,8 +466,10 @@ def page(kicker: str, title: str, lede: str, body: str,
 </div>{BRIDGE_JS}</body></html>"""
 
 
-def sec(title: str, body: str, more: str = "") -> str:
-    return (f'<section class="sec"><div class="sec-head"><h2>{esc(title)}</h2>'
+def sec(title: str, body: str, more: str = "", anchor: str = "") -> str:
+    """一个区块。anchor 给区块加 id，表单 303 回来时可以用 #id 停在原处。"""
+    aid = f' id="{esc(anchor)}"' if anchor else ""
+    return (f'<section class="sec"{aid}><div class="sec-head"><h2>{esc(title)}</h2>'
             f'{_more(more)}</div>{body}</section>')
 
 

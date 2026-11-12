@@ -361,18 +361,27 @@ class _Handler(SimpleHTTPRequestHandler):
             return v or None
 
         from . import event as E
-        err = ""
+        err, okmsg = "", ""
+        act = one("act") or ""
         try:
-            E.set_race(one("slug"), one("act") or "", idx=one("idx"))
+            slug0 = one("slug")
+            st = E.set_race(slug0, act, idx=one("idx"))
+            if act == "pass":
+                t = (st.get("passed") or {}).get(str(int(one("idx") or 0)))
+                okmsg = ("已记录 %s 到达" % (t[11:16] if t else "")) if t else "已记录"
+            elif act == "unpass":
+                okmsg = "已撤销该点"
+            elif act == "start":
+                okmsg = "已开始，每到一个 CP 把那一行向左滑"
+            elif act == "reset":
+                okmsg = "赛况已清空"
+            elif act == "finish":
+                okmsg = "已记录完赛"
         except ValueError as e:
             err = str(e)
         except Exception as e:
             err = "保存失败：%s" % e
-        loc = "/event" + (("?err=" + quote(err)) if err else "")
-        self.send_response(303)
-        self.send_header("Location", loc)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
+        self._back(one("slug"), err=err, ok=okmsg, anchor="race")
 
     def _event_edit(self, u) -> None:
         """赛事页的编辑表单：目标 / CP 表 / 补给参数。
@@ -421,11 +430,95 @@ class _Handler(SimpleHTTPRequestHandler):
         except Exception as e:                       # 写盘失败也回到页面说清楚
             err = "保存失败：%s" % e
 
-        loc = "/event" + (("?err=" + quote(err)) if err else "")
+        # 保存成功要把人放回原来那一块（不然从页面底部提交，回到顶部像是没保存），
+        # 并且给一条绿条确认。错误仍然回同一块，红条就出现在出错的地方。
+        anchor = {"/__event/fuel": "fuel", "/__event/target": "adjust",
+                  "/__event/course": "adjust"}.get(u.path, "")
+        okmsg = ("补给参数已保存，各段用量已重算" if u.path == "/__event/fuel"
+                 else "CP 表已保存，余量已重算" if u.path == "/__event/course"
+                 else "目标已保存，余量与补给已重算")
+        self._back(slug, err=err, ok=okmsg, anchor=anchor)
+
+    def _back(self, slug: str | None, err: str = "", ok: str = "",
+              anchor: str = "") -> None:
+        """统一的 PRG 回跳：把 slug / 结果 / 锚点一次带齐。"""
+        q = []
+        if slug:
+            q.append("slug=" + quote(slug))
+        if err:
+            q.append("err=" + quote(err))
+        elif ok:
+            q.append("ok=" + quote(ok))
+        if anchor:
+            # at= 告诉页面「提示该出现哪一块」：只跳到 #anchor 的话，
+            # 提示条留在页面顶端，用户在底部看不到，等于没反馈
+            q.append("at=" + quote(anchor))
+        loc = "/event" + (("?" + "&".join(q)) if q else "") + (("#" + anchor) if anchor else "")
         self.send_response(303)
         self.send_header("Location", loc)
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def _event_ingest(self, u) -> None:
+        """新建赛事 / 粘贴规程导入 CP 表 / 沿用上一届。
+
+        三者都不弹 JSON：成功回到那一场并提示，失败回到导入区并说明原因——
+        手机上看到一个 JSON 等于没提示。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 64 * 1024:          # 规程整段粘贴，比表单大得多
+            return self._json({"ok": False, "error": "内容为空或过大（上限 64 KB）"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+
+        def one(k: str) -> str | None:
+            v = (qs.get(k) or [""])[0].strip()
+            return v or None
+
+        from . import event as E
+        from . import ingest as I
+
+        slug = one("slug")
+        try:
+            if u.path == "/__event/new":
+                ev = E.new_event(one("name") or "", one("date") or "",
+                                 float(one("distance_km") or 0),
+                                 ascent_m=int(float(one("ascent_m") or 0)),
+                                 start_time=one("start_time") or "08:00",
+                                 priority=one("priority") or "C")
+                return self._back(ev["slug"], anchor="import",
+                                  ok="已建好「%s」，接着可以粘贴 CP 表" % ev["name"])
+            if u.path == "/__event/prev":
+                src = one("from")
+                if not src:
+                    raise ValueError("先选一场要沿用的赛事")
+                ev = E.load_event(slug)
+                draft = I.from_prev(src, ev)
+                r = I.apply(ev, draft, by="user")
+                if not r["ok"]:
+                    raise ValueError(r["error"])
+                return self._back(ev["slug"], anchor="import",
+                                  ok="已沿用 %d 段（记得核对改线）" % r["n_segments"])
+            # /__event/import：粘贴规程文字
+            ev = E.load_event(slug)
+            draft = I.from_text(one("text") or "", ev)
+            if not draft["segments"]:
+                raise ValueError("没认出 CP 表：需要「CPn 地名 里程 关门」这样的行，"
+                                 "整段粘贴规程里的表格最稳")
+            r = I.apply(ev, draft, by="user")
+            if not r["ok"]:
+                bad = "；".join(i["msg"] for i in I.errors(r["issues"])[:2])
+                raise ValueError("数据没通过校验，未写入 —— " + bad)
+            return self._back(ev["slug"], anchor="import",
+                              ok="已导入 %d 个 CP" % r["n_segments"])
+        except ValueError as e:
+            return self._back(slug, err=str(e), anchor="import")
+        except Exception as e:
+            return self._back(slug, err="导入失败：%s" % e, anchor="import")
 
     def _event_gear(self, u) -> None:
         """勾选一条强制装备（页面上的 checkbox 直接 POST 到这里）。
@@ -452,10 +545,8 @@ class _Handler(SimpleHTTPRequestHandler):
         if idx < 0 or not E.set_gear(ev["slug"], idx, done):
             return self._json({"ok": False, "error": "没有这一条"}, 404)
         # 回到赛事页（PRG：Post/Redirect/Get，避免刷新重复提交）
-        self.send_response(303)
-        self.send_header("Location", "/event")
-        self.send_header("Content-Length", "0")
-        self.end_headers()
+        g = E.gear_progress(ev["slug"])
+        self._back(ev["slug"], ok="装备 %d/%d" % (g["done"], g["total"]), anchor="gear")
 
     def _event_gpx(self, u) -> None:
         """接收 App 从系统文件选择器 / 分享进来的 GPX，落到赛事目录并解析。
@@ -555,6 +646,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._event_edit(u)
         if u.path == "/__event/race":
             return self._event_race(u)
+        if u.path in ("/__event/new", "/__event/import", "/__event/prev"):
+            return self._event_ingest(u)
         if u.path == "/__files/delete":
             # 产物页的批量删除。放在 gate 之前反而更安全：这里自己做本机校验，
             # 不带访问码的局域网访客一律 403。
