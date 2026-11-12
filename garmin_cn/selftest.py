@@ -4158,6 +4158,35 @@ def run() -> int:
     except ValueError:
         pass
 
+    # ---- 数据文件必须跟着 GARMIN_HOME 走 -------------------------------
+    # 旧代码把 meals.json / manual.json 写在包目录，Android 上那是 Chaquopy
+    # 解压源码的临时目录，App 一更新就被重新解压覆盖 ——「中午记的饭晚上没了」。
+    import os as _os2
+    import subprocess as _sp
+    import sys as _sys2
+
+    _nhome = Path(tempfile.mkdtemp())
+    _probe = _sp.run(
+        [_sys2.executable, "-c",
+         "from garmin_cn import nutrition as n, manual as m;"
+         "print(n.MEALS); print(m.PATH); print(n.CONF)"],
+        cwd=str(ROOT), capture_output=True, text=True,
+        env={**_os2.environ, "GARMIN_HOME": str(_nhome)})
+    _paths = [x.strip() for x in (_probe.stdout or "").splitlines() if x.strip()]
+    assert len(_paths) == 3, f"探针没跑起来：{_probe.stderr[:200]}"
+    for _p in _paths:
+        assert _p.startswith(str(_nhome)), \
+            f"数据文件没跟着 GARMIN_HOME 走（升级会丢）：{_p}"
+
+    _mg = Path(tempfile.mkdtemp())
+    _legacy = _mg / "pkg" / "data" / "meals.json"
+    _legacy.parent.mkdir(parents=True)
+    _legacy.write_text('{"2026-11-12": []}', encoding="utf-8")
+    _dest = _mg / "home" / "data" / "meals.json"
+    assert _NT._migrate_file(_legacy, _dest) and _dest.is_file(), \
+        "旧位置的 meals.json 没搬到新位置，升级用户看起来像「数据丢了」"
+    assert not _NT._migrate_file(_legacy, _dest), "重复搬会覆盖新数据"
+
     # ---- 「我的 → AI 模型服务」：能点开、带开关、副标题给模型与接口 ----
     from garmin_cn import aiapi as _AIA
 
