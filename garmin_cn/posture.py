@@ -352,6 +352,41 @@ def weak_points(result: dict) -> list[str]:
     return seen
 
 
+SCORE = {"ok": 0, "mild": 1, "clear": 2}
+
+
+def trend(history: list[dict]) -> list[dict]:
+    """判读历史 → 每个薄弱项的时间序列，给「4 周复测」看变化用。
+
+    计分：ok=0 / mild=1 / clear=2，unclear 跳过（没看清不能当 0 分）。
+    同一个弱项由多个观察点指向时取**当次最大值**——两个角度都说有问题，
+    说明这块更硬，不该被平均稀释掉。
+
+    `history` 是 posturestore 的记录（新→旧），这里翻成老→新，方便画折线。
+    """
+    seq: dict[str, list[dict]] = {}
+    for h in reversed(history or []):
+        res = h.get("result") or {}
+        day = (h.get("at") or "")[:10]
+        best: dict[str, tuple[int, str]] = {}
+        for cid, it in (res.get("checks") or {}).items():
+            v = SCORE.get(it.get("state"))
+            if v is None:
+                continue
+            w = (CHECKS.get(cid) or {}).get("weak")
+            if not w:
+                continue
+            if w not in best or v > best[w][0]:
+                best[w] = (v, cid)
+        for w, (v, cid) in best.items():
+            seq.setdefault(w, []).append({"at": day, "score": v, "check": cid})
+    out = [{"id": w, "label": WEAK[w]["label"], "points": pts}
+           for w, pts in seq.items() if w in WEAK]
+    # 问题最重的排前面；同分按名字，保证两次渲染顺序一致
+    out.sort(key=lambda x: (-max(p["score"] for p in x["points"]), x["label"]))
+    return out
+
+
 def plan(results: list[dict], *, per_session: int = 5) -> dict:
     """多张判读 → 一份 4 周方案。
 
