@@ -311,42 +311,60 @@ def brief(res: dict) -> dict:
     }
 
 
-def _event_lines(d: str) -> list[str]:
-    """赛事档案摘要：让模型知道你在备哪一场，而不是只看今天的恢复度。
+def _margin_txt(m: int) -> str:
+    """秒 → +2h05m / -1m。负数先取绝对值再补符号（Python 地板除会把 -83s 算成 -2m）。"""
+    a = abs(int(m))
+    sign = "-" if m < 0 else "+"
+    return ("%s%dh%02dm" % (sign, a // 3600, a % 3600 // 60) if a >= 3600
+            else "%s%dm" % (sign, a // 60))
 
-    只放「会影响训练决策」的几条：倒计时、目标与关门、最紧的 CP 余量、
-    装备缺口、近 7 天的训练赛。不放整张 CP 表——上下文有限，模型也用不上。
+
+def _event_lines(d: str) -> list[str]:
+    """赛事档案摘要：让模型知道你在备哪几场，而不是只看今天的恢复度。
+
+    多赛事之后，「下一场」和「主赛」往往不是同一场（11/29 秦岭 43K 是训练赛，
+    真正在备的是 3 月的 105K）。两条都给，模型才不会把训练赛当主赛来安排。
+    只放会影响决策的几行：倒计时、目标与关门、最紧 CP 余量、装备缺口。
     """
     try:
         from . import event as E
 
         today = dt.date.fromisoformat(str(d)[:10])
-        ev = E.load_event()
-        cd = E.countdown(ev, today=today)
-        days = cd["days"]
-        if days < 0:                       # 已完赛：不再往上下文里塞
+        evs = [e for e in E.list_events(today=today)
+               if e["status"] not in ("done", "cancelled") and e["days"] >= 0]
+        if not evs:
             return []
+        nxt = evs[0]
+        a_race = next((e for e in evs if e["priority"] == "A"), None)
+        picks = [nxt] + ([a_race] if a_race and a_race["slug"] != nxt["slug"] else [])
 
-        rows = E.plan_and_margin(ev["slug"])
-        tight = min(rows, key=lambda r: r["margin_s"])
-        m = int(tight["margin_s"])
-        # 负余量要显示成 -1m 而不是 -2m：Python 对负数用地板除，先取绝对值再补符号
-        _a = abs(m)
-        _sign = "-" if m < 0 else "+"
-        mtxt = ("%s%dh%02dm" % (_sign, _a // 3600, _a % 3600 // 60) if _a >= 3600
-                else "%s%dm" % (_sign, _a // 60))
-        out = ["", "## 备赛赛事（给训练建议时必须与课表一起考虑）",
-               "- %s：%s 起跑，还有 %d 天；目标 %.0f h / 总关门 %d h，%.1f km / +%d m"
-               % (cd["name"], ev["date"], days, cd["goal_h"], ev["duration_h"],
-                  cd["dist"], cd["ascent"]),
-               "- 最紧关门 CP%d %s（%.1f km）：按目标时间推算余量 %s%s"
-               % (tight["idx"], tight["name"], tight["km"], mtxt,
-                  "，负值说明这个配速方案会被关门" if m < 0 else "")]
+        out = ["", "## 备赛赛事（给训练建议时必须与课表一起考虑）"]
+        for e in picks:
+            ev = E.load_event(e["slug"])
+            cd = E.countdown(ev, today=today)
+            tag = "主赛" if e["priority"] == "A" else (e.get("role") or "下一场")
+            dur = ("总关门 %g h" % ev["duration_h"]) if ev.get("duration_h") else "关门未公布"
+            out.append("- 【%s】%s：%s 起跑，还有 %d 天；目标 %g h / %s，%.1f km / +%d m"
+                       % (tag, cd["short"], ev["date"], e["days"],
+                          (ev.get("goal_s") or 0) / 3600, dur,
+                          cd["dist"], cd["ascent"]))
 
-        g = E.gear_progress(ev["slug"])
-        if g["total"] and g["done"] < g["total"]:
-            out.append("- 强制装备 %d/%d，未备：%s"
-                       % (g["done"], g["total"], "、".join(g["missing"][:3])))
+            known = [r for r in E.plan_and_margin(e["slug"])
+                     if r.get("margin_s") is not None]
+            if known:
+                tight = min(known, key=lambda r: r["margin_s"])
+                m = int(tight["margin_s"])
+                out.append("  - 最紧关门 CP%d %s（%.1f km）：按目标时间推算余量 %s%s"
+                           % (tight["idx"], tight["name"], tight["km"],
+                              _margin_txt(m),
+                              "，负值说明这个配速方案会被关门" if m < 0 else ""))
+            elif not e["has_course"]:
+                out.append("  - 无官方 CP 表与关门：只按整段估时，不提供中途余量")
+
+            g = E.gear_progress(e["slug"])
+            if g["total"] and g["done"] < g["total"]:
+                out.append("  - 强制装备 %d/%d，未备：%s"
+                           % (g["done"], g["total"], "、".join(g["missing"][:3])))
 
         # 近 7 天的训练赛（来自 week_overrides 的按日覆盖）
         try:
@@ -367,34 +385,45 @@ def _event_lines(d: str) -> list[str]:
         except Exception:
             pass
 
-        if days <= 21:
-            out.append("- 距比赛 3 周内：不新增质量课；长课按比赛配速的 80–90% 执行，"
-                       "装备与补给的演练优先于配速")
+        if nxt["days"] <= 21:
+            # 用 f-string：这段文案里有字面量 %（80–90%），用 % 格式化会直接抛
+            # ValueError 并被外层 except 吞掉，整块赛事上下文都会静默消失
+            out.append(f"- 距下一场 {nxt['days']} 天（3 周内）：不新增质量课；"
+                       "长课按比赛配速的 80–90% 执行，装备与补给的演练优先于配速")
         return out
     except Exception:
         return []
 
 
 def event_brief(d: str) -> str:
-    """一行赛事摘要，给对话类提示词用（每轮都带，所以只留最关键的三件事）。"""
+    """一行赛事摘要，给对话类提示词用（每轮都带，所以只留最关键的几件事）。"""
     try:
         from . import event as E
 
         today = dt.date.fromisoformat(str(d)[:10])
-        ev = E.load_event()
-        cd = E.countdown(ev, today=today)
-        if cd["days"] < 0:
+        evs = [e for e in E.list_events(today=today)
+               if e["status"] not in ("done", "cancelled") and e["days"] >= 0]
+        if not evs:
             return ""
-        rows = E.plan_and_margin(ev["slug"])
-        tight = min(rows, key=lambda r: r["margin_s"])
-        m = int(tight["margin_s"])
-        a = abs(m)
-        mtxt = ("%s%dh%02dm" % ("-" if m < 0 else "+", a // 3600, a % 3600 // 60)
-                if a >= 3600 else "%s%dm" % ("-" if m < 0 else "+", a // 60))
-        name = cd["name"].split(" · ")[0]
-        return ("%s：还有 %d 天，目标 %.0f h、关门 %d h；最紧 CP%d %s 余量 %s"
-                % (name, cd["days"], cd["goal_h"], ev["duration_h"],
-                   tight["idx"], tight["name"], mtxt))
+        nxt = evs[0]
+        ev = E.load_event(nxt["slug"])
+        cd = E.countdown(ev, today=today)
+        rows = [r for r in E.plan_and_margin(nxt["slug"])
+                if r.get("margin_s") is not None]
+        tail = ""
+        if rows:
+            tight = min(rows, key=lambda r: r["margin_s"])
+            tail = "；最紧 CP%d %s 余量 %s" % (tight["idx"], tight["name"],
+                                            _margin_txt(int(tight["margin_s"])))
+        txt = ("%s：还有 %d 天，目标 %g h、%s；%.1f km / +%d m%s"
+               % (cd["short"], nxt["days"], cd["goal_h"],
+                  ("关门 %g h" % ev["duration_h"]) if ev.get("duration_h") else "关门未公布",
+                  cd["dist"], cd["ascent"], tail))
+        a_race = next((e for e in evs if e["priority"] == "A"
+                       and e["slug"] != nxt["slug"]), None)
+        if a_race:
+            txt += "。主赛 %s 还有 %d 天" % (a_race["short"], a_race["days"])
+        return txt
     except Exception:
         return ""
 

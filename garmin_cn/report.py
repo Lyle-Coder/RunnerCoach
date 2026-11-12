@@ -656,11 +656,16 @@ def race_card(d: dt.date) -> str:
         from . import event as _ev
         _cd = _ev.countdown(today=d)
         _tight = _cd["tightest"]
-        _tm = int(_tight["margin_s"])
-        _t = (f'{_tm // 3600}h{_tm % 3600 // 60:02d}m' if abs(_tm) >= 3600
-              else f'{_tm // 60}m')
-        ev_chip = (f'<a class="chip" href="/event" style="text-decoration:none">'
-                   f'🏔 {_cd["days"]} 天 · CP{_tight["idx"]} 余量 {_t} →</a>')
+        if _tight:
+            _tm = int(_tight["margin_s"])
+            _t = (f'{_tm // 3600}h{_tm % 3600 // 60:02d}m' if abs(_tm) >= 3600
+                  else f'{_tm // 60}m')
+            _tail = f'CP{_tight["idx"]} 余量 {_t}'
+        else:                      # 没有 CP 表：只报倒计时，不编余量
+            _tail = f'{_cd["dist"]:.0f} km / +{_cd["ascent"]:,}'
+        ev_chip = (f'<a class="chip" href="/event?slug={_cd["slug"]}" '
+                   f'style="text-decoration:none">'
+                   f'🏔 {_cd["days"]} 天 · {_tail} →</a>')
     except Exception:
         ev_chip = ""
     head = (f'<span class="chip">105K 备赛 · W{info["week"]} {esc(info["phase"])}期</span>'

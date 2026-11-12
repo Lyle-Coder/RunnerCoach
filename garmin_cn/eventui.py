@@ -106,6 +106,19 @@ select.fi{appearance:none}
 .cpe.head{color:var(--muted,#7F8A97);font-size:10.5px;border-bottom-color:rgba(255,255,255,.1)}
 .cpe.head span:nth-child(3),.cpe.head span:nth-child(4){text-align:center}
 .fi-km,.fi-cut{text-align:right;font-size:11.5px;padding:4px 5px}
+/* 赛事切换条：横滑一行，当前高亮 */
+.evbar{display:flex;gap:8px;overflow-x:auto;padding:2px 0 12px;
+  -webkit-overflow-scrolling:touch;scrollbar-width:none}
+.evbar::-webkit-scrollbar{display:none}
+.ev{flex:none;display:flex;flex-direction:column;gap:1px;text-decoration:none;
+  padding:7px 11px;border-radius:10px;background:rgba(255,255,255,.04);
+  border:1px solid rgba(127,138,151,.22)}
+.ev b{font-size:12.5px;font-weight:600;color:var(--muted,#7F8A97)}
+.ev span{font-size:10.5px;color:var(--muted,#7F8A97);opacity:.8}
+.ev.on{background:rgba(79,214,166,.12);border-color:rgba(79,214,166,.45)}
+.ev.on b{color:#9FE7C8}
+.ev.on span{color:#8FE3C0;opacity:1}
+
 /* 赛中 */
 .rbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
   padding:10px 12px;border-radius:10px;margin-bottom:10px}
@@ -155,8 +168,10 @@ def _hm(sec: float) -> str:
     return f"{h}h{m:02d}m" if h else f"{m}m"
 
 
-def _fmt_margin(s: float) -> tuple[str, str]:
-    """余量 → (文案, 颜色类)。负值红色，1 h 内黄色，其余绿色。"""
+def _fmt_margin(s: float | None) -> tuple[str, str]:
+    """余量 → (文案, 颜色类)。负值红色，1 h 内黄色，其余绿色；无官方关门返回「—」。"""
+    if s is None:
+        return "—", ""
     s = int(s)
     sign = "+" if s >= 0 else "-"
     a = abs(s)
@@ -305,32 +320,70 @@ SWIPE_JS = """<script>
 </script>"""
 
 
-def render_page(qs: dict | None = None) -> str:
-    ev = E.load_event()
-    course = E.load_course(ev["slug"])
-    cd = E.countdown(ev)
-    rows = E.plan_and_margin(ev["slug"])
-    gear = E.gear_progress(ev["slug"])
+def _event_bar(cur: str) -> str:
+    """赛事切换条：横向滚动，一天内可能同时备三场，不让人猜「现在是哪一场」。"""
+    items = []
+    for e in E.list_events():
+        on = " on" if e["slug"] == cur else ""
+        days = e["days"]
+        dtxt = ("%d 天" % days) if days > 0 else ("今天" if days == 0 else "已过")
+        tag = {"A": "主赛", "B": "B 赛"}.get(e.get("priority") or "", "")
+        items.append(
+            f'<a class="ev{on}" href="/event?slug={e["slug"]}">'
+            f'<b>{ui.esc(e["short"])}</b>'
+            f'<span>{dtxt}{(" · " + tag) if tag else ""}</span></a>')
+    return '<div class="evbar">' + "".join(items) + "</div>"
 
+
+def render_page(qs: dict | None = None) -> str:
+    qs = qs or {}
+
+    def _q(k: str) -> str | None:
+        v = (qs.get(k) or [""])[0]
+        return v.strip() or None
+
+    try:
+        ev = E.load_event(_q("slug"))
+    except ValueError:
+        ev = E.load_event()
+    slug = ev["slug"]
+    course = E.load_course(slug)
+    cd = E.countdown(ev)
+    rows = E.plan_and_margin(slug)
+    gear = E.gear_progress(slug)
+    # 所有表单都要带上 slug：页面能切赛事后，任何一个表单少这一行都会改错档案
+    HID = f'<input type="hidden" name="slug" value="{ui.esc(slug)}">'
+
+    goal_h = (ev.get("goal_s") or 0) / 3600
+    dur_txt = ("%gh" % ev["duration_h"]) if ev.get("duration_h") else "—"
     chips = (ui.chip(cd["status_cn"], "ok")
-             + ui.chip(f'倒计时 {cd["days"]} 天')
-             + ui.chip(f'目标 {cd["goal_h"]:.0f}h / 关门 {ev["duration_h"]}h'))
+             + (ui.chip(f'倒计时 {cd["days"]} 天') if cd["days"] >= 0
+                else ui.chip(f'已过 {abs(cd["days"])} 天', "gray"))
+             + ui.chip(f'目标 {goal_h:g}h / 关门 {dur_txt}'
+                       if ev.get("duration_h") else f'目标 {goal_h:g}h'))
 
     # ---- 概览
     overview = (
         '<div class="card"><div class="kv">'
         f'<div><b>{ev["distance_km"]:.1f}<small>km</small></b><span>距离</span></div>'
         f'<div><b>+{ev["ascent_m"]:,}<small>m</small></b><span>累计爬升</span></div>'
-        f'<div><b>{ev["duration_h"]}<small>h</small></b><span>总关门</span></div>'
-        f'<div><b>{len(rows)}</b><span>CP 数</span></div>'
+        f'<div><b>{dur_txt}</b><span>总关门</span></div>'
+        f'<div><b>{len(rows) if cd["has_course"] else "整段"}</b><span>CP 数</span></div>'
         "</div>"
         f'<div class="sub2">{ui.esc(ev["date"])} {ui.esc(ev["start_time"])} 起跑 · '
-        f'{ui.esc(ev["venue"])}</div></div>')
+        f'{ui.esc(ev["venue"])}</div>'
+        + (f'<div class="sub2">{ui.esc(ev["notes"])}</div>' if ev.get("notes") else "")
+        # 提醒挂在「有没有余量」上而不是「有没有 CP 表」：在 CP 表里补了关门
+        # 之后，这条提示应该自动消失
+        + ("" if cd["tightest"] else
+           '<div class="sub2 warnbox">这场还没有关门时间：只按整段算总用时与补给，'
+           "余量留空——不编中途关门。拿到官方关门后可在下方「调整 → CP 表」补上。</div>")
+        + "</div>")
 
     # ---- 轨迹
-    stats = E._read(ev["slug"], "track_stats.json")
+    stats = E._read(slug, "track_stats.json")
     if stats:
-        cmp = E.track_compare(ev["slug"])
+        cmp = E.track_compare(slug) if cd["has_course"] else {"rows": []}
         ref = (course.get("reference") or {}).get("track") or {}
         edition = ref.get("edition") or ""
         d_km = (cmp.get("track_km") or 0) - ev["distance_km"]
@@ -368,10 +421,13 @@ def render_page(qs: dict | None = None) -> str:
             + '<div class="pager"><div class="btn" data-act="gpx">换一条 GPX</div></div></div>')
     else:
         track = (
-            '<div class="card"><div class="empty"><b>还没导入赛道轨迹</b>'
-            "官方 GPX 从「柴古唐斯」小程序下载后，用下面的按钮选中即可，"
-            "会自动算出滤波爬升与海拔剖面（GPX 是 3D 赛道视频的前提）。</div>"
-            + _relief(rows)
+            '<div class="card"><div class="empty"><b>还没导入赛道轨迹</b><br>'
+            + ("官方 GPX 从「柴古唐斯」小程序下载后，用下面的按钮选中即可，"
+               "会自动算出滤波爬升与海拔剖面（GPX 是 3D 赛道视频的前提）。"
+               if cd["has_course"] else
+               "有官方 GPX 的话可以导入，会画出海拔剖面；没有也不影响余量之外的各项计算。")
+            + "</div>"
+            + (_relief(rows) if cd["has_course"] else "")
             + '<div class="pager"><div class="btn primary" data-act="gpx">选择 GPX 文件</div>'
             "</div></div>")
 
@@ -390,6 +446,7 @@ def render_page(qs: dict | None = None) -> str:
         bar = ('<div class="rbar pre"><div class="rbtxt">还没开始。起跑时点「开始」，'
                '之后每到一个 CP，<b>把那一行向左滑</b>，时间自动记下、后面全部重算。</div>'
                '<form method="post" action="/__event/race" class="rinline">'
+               + HID +
                '<input type="hidden" name="act" value="start">'
                '<button class="btn primary rbtn" type="submit">开始比赛</button></form></div>')
     else:
@@ -420,33 +477,33 @@ def render_page(qs: dict | None = None) -> str:
                f'<div class="rbline">{head}{need if not fin else ""}{warn_html}</div>'
                '<form method="post" action="/__event/race" class="rinline" '
                'onsubmit="return confirm(&quot;确定重置赛况？已记录的到达会清空&quot;)">'
-               '<input type="hidden" name="act" value="reset">'
+               + HID + '<input type="hidden" name="act" value="reset">'
                '<button class="rbtn2" type="submit">重置</button></form></div>')
 
     cps_rows = []
+    _is_cp = cd["has_course"]
     for r in race["rows"]:
         done = r["done"]
-        m = int(r["margin_s"])
-        mtxt, mcls = _fmt_margin(m)
+        cpn = (f'<span class="cpn">CP{r["idx"]}</span>' if _is_cp else "")
+        mtxt, mcls = _fmt_margin(r["margin_s"])
+        cut_txt = (r["cutoff"].strftime("%d日%H:%M") if r["cutoff"]
+                   else "未公布")
+        margin_txt = (f' · 余量 <b class="cpm {mcls}">{mtxt}</b>' if r["cutoff"] else "")
         if done:
             delta = int(r["delta_s"])
             dtag = ("慢 %s" % _hm(abs(delta))) if delta > 0 else (
                 "快 %s" % _hm(abs(delta)) if delta < 0 else "准时")
-            first = (f'<span class="cpn">CP{r["idx"]}</span>'
-                     f'<span class="cpl">{ui.esc(r["name"])}</span>'
+            first = (cpn + f'<span class="cpl">{ui.esc(r["name"])}</span>'
                      f'<span class="rpass">已过 {r["actual"].strftime("%H:%M")}</span>')
             second = (f'计划 {r["planned"].strftime("%H:%M")} · {dtag} · '
-                      f'关门 {r["cutoff"].strftime("%d日%H:%M")} · '
-                      f'余量 <b class="cpm {mcls}">{mtxt}</b>')
+                      f'关门 {cut_txt}' + margin_txt)
             act, hint = "unpass", "撤销"
         else:
-            first = (f'<span class="cpn">CP{r["idx"]}</span>'
-                     f'<span class="cpl">{ui.esc(r["name"])}'
+            first = (cpn + f'<span class="cpl">{ui.esc(r["name"])}'
                      + (' <b class="db">换装</b>' if r["dropbag"] else "") + "</span>")
             proj = r["projected"].strftime("%H:%M")
             second = (f'计划 {r["planned"].strftime("%H:%M")} · 预测 {proj} · '
-                      f'关门 {r["cutoff"].strftime("%d日%H:%M")} · '
-                      f'余量 <b class="cpm {mcls}">{mtxt}</b>')
+                      f'关门 {cut_txt}' + margin_txt)
             act, hint = "pass", "完成"
         # 左滑完成：行本身就是按钮，不再占一条 44px 高的按钮
         cps_rows.append(
@@ -467,6 +524,7 @@ def render_page(qs: dict | None = None) -> str:
         nxt = "0" if it["done"] else "1"
         gear_rows.append(
             '<form class="grow" method="post" action="/__event/gear">'
+            + HID +
             f'<input type="hidden" name="idx" value="{it["idx"]}">'
             f'<input type="hidden" name="done" value="{nxt}">'
             f'<button class="gchk{" on" if it["done"] else ""}" type="submit"'
@@ -494,7 +552,8 @@ def render_page(qs: dict | None = None) -> str:
         warn = ("".join('<div class="flw">⚠ %s</div>' % ui.esc(w) for w in r["warn"]))
         fuel_rows.append(
             '<div class="fl">'
-            f'<div class="flh"><span class="cpn">CP{r["idx"]}</span>'
+            f'<div class="flh">' + (f'<span class="cpn">CP{r["idx"]}</span>'
+                                    if cd["has_course"] else "") +
             f'<span class="cpl">{ui.esc(r["name"])}{tag}{moon}</span>'
             f'<span class="fla">{r["arrive"].strftime("%d日%H:%M")}</span></div>'
             f'<div class="flb">段 {r["leg_h"]:.1f} h｜碳水 {r["carb_g"]} g'
@@ -518,6 +577,7 @@ def render_page(qs: dict | None = None) -> str:
 
     fuel_form = (
         '<form class="frm" method="post" action="/__event/fuel">'
+        + HID +
         '<div class="frow"><label>碳水 g/h<input class="fi" name="carb_g_h" '
         f'type="number" step="5" min="30" max="120" value="{cfg["carb_g_h"]}"></label>'
         '<label>水 ml/h<input class="fi" name="fluid_ml_h" type="number" step="50" '
@@ -555,13 +615,14 @@ def render_page(qs: dict | None = None) -> str:
             f'<span class="cpl">{ui.esc(r["name"])}</span>'
             f'<input class="fi fi-km" name="km_{r["idx"]}" value="{seg["km"]:.1f}" '
             f'inputmode="decimal" aria-label="CP{r["idx"]} 里程">'
-            f'<input class="fi fi-cut" name="cut_{r["idx"]}" value="{seg["cutoff"]}" '
+            f'<input class="fi fi-cut" name="cut_{r["idx"]}" value="{seg.get("cutoff") or ""}" '
             f'inputmode="numeric" aria-label="CP{r["idx"]} 关门"></div>')
 
     edit_card = (
         '<div class="card">'
         '<details class="fold"><summary>调整目标、状态与起跑时间</summary>'
         '<form class="frm" method="post" action="/__event/target">'
+        + HID +
         '<div class="frow"><label>目标完赛<input class="fi" name="goal_h" type="number" '
         f'step="0.5" min="10" max="34" value="{ev["goal_s"]/3600:g}"></label>'
         f'<label>状态<select class="fi" name="status">{status_opts}</select></label>'
@@ -571,6 +632,7 @@ def render_page(qs: dict | None = None) -> str:
         '<span class="fhint">改目标会立刻重算余量与补给</span></div></form></details>'
         '<details class="fold"><summary>CP 表（里程 / 关门）</summary>'
         '<form class="frm" method="post" action="/__event/course">'
+        + HID +
         '<div class="cpe head"><span>CP</span><span>地点</span><span>km</span><span>关门</span></div>'
         + "".join(cp_rows) +
         '<div class="fbtns"><button class="btn primary" type="submit">保存 CP 表</button>'
@@ -580,15 +642,18 @@ def render_page(qs: dict | None = None) -> str:
     err = (qs or {}).get("err", [""])[0] if qs else ""
     err_bar = (f'<div class="errbar">保存失败：{ui.esc(err)}</div>' if err else "")
 
-    body = (CSS + err_bar + ui.sec("赛事", overview)
+    body = (CSS + _event_bar(slug) + err_bar + ui.sec("赛事", overview)
             + ui.sec("赛道轨迹", track)
-            + ui.sec("赛况与余量", cps)
+            + ui.sec("赛况与余量" if cd["has_course"] else "赛况", cps)
             + ui.sec("补给与换装", fuel_card)
             + ui.sec("强制装备", gears)
             + ui.sec("调整", edit_card))
 
-    return ui.page("EVENT · 赛事", "熊猫蜀道山 105K",
-                   "赛前理解赛道：关门余量、轨迹剖面、装备进度",
+    subtitle = ev.get("short") or ev.get("name") or "赛事"
+    sub3 = ("赛前理解赛道：关门余量、轨迹剖面、装备进度"
+            if cd["has_course"] else "本场没有 CP 表：只算总用时、补给与装备")
+    return ui.page("EVENT · 赛事", subtitle,
+                   sub3,
                    body + SWIPE_JS, chips=chips, back=("返回今日", "/"))
 
 
@@ -646,6 +711,23 @@ def cmd(args) -> int:
         print(E.margins_report(slug, goal_s))
         return 0
 
+    if getattr(args, "list", False):
+        rows = E.list_events()
+        nxt = E.nearest_upcoming()
+        print("赛事（按日期）")
+        for e in rows:
+            mark = "*" if nxt and e["slug"] == nxt["slug"] else " "
+            d = e["days"]
+            when = ("还有 %d 天" % d) if d > 0 else ("今天" if d == 0 else "已过 %d 天" % -d)
+            print(" %s %-10s %s  %-9s %-4s %6.1f km / +%-5d %s%s"
+                  % (mark, e["short"], e["date"], when, e["priority"],
+                     e["distance_km"], e["ascent_m"],
+                     "有CP表" if e["has_course"] else "整段",
+                     "  [" + E.STATUS_CN.get(e["status"], e["status"]) + "]"
+                     if e["status"] != "confirmed" else ""))
+        print("\n  * = 下一场（页面与看板默认用它）")
+        return 0
+
     # 默认：档案概览 + 关门余量
     ev = E.load_event(slug)
     cd = E.countdown(ev)
@@ -653,9 +735,10 @@ def cmd(args) -> int:
     race = dt.date.fromisoformat(ev["date"])
     print(f"{ev['name']}　[{E.STATUS_CN.get(ev['status'], ev['status'])}]")
     print(f"日期 {ev['date']} {ev['start_time']} 起跑 · {ev['venue']}")
-    print(f"{ev['distance_km']} km / +{ev['ascent_m']:,} m · 总关门 {ev['duration_h']} h"
-          f" · ITRA {ev.get('itra', '—')} · 倒计时 {(race - today).days} 天")
-    print(f"目标 {ev.get('goal_s', 22*3600)/3600:.0f} h · 装备 {cd['gear_done']}/{cd['gear_total']}")
+    dur = ("%g h" % ev["duration_h"]) if ev.get("duration_h") else "未公布"
+    print(f"{ev['distance_km']} km / +{ev['ascent_m']:,} m · 总关门 {dur}"
+          f" · 倒计时 {(race - today).days} 天")
+    print(f"目标 {(ev.get('goal_s') or 0)/3600:g} h · 装备 {cd['gear_done']}/{cd['gear_total']}")
     print()
     print(E.margins_report(slug))
     return 0
@@ -664,7 +747,8 @@ def cmd(args) -> int:
 def add_parser(sub):
     """把 `run.bat event` 的参数注册也收进来，cli.py 只留两行。"""
     q = sub.add_parser("event", help="赛事档案：关门余量表 / 目标 / 装备 / GPX")
-    q.add_argument("slug", nargs="?", help="赛事目录名（默认 panda-105k-2027）")
+    q.add_argument("slug", nargs="?", help="赛事目录名（默认取「下一场」）")
+    q.add_argument("--list", action="store_true", help="列出所有赛事与倒计时")
     q.add_argument("--goal", type=float, metavar="H",
                    help="设置目标完赛小时数并查看余量")
     q.add_argument("--gear", nargs="+", metavar="关键词",

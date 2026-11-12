@@ -38,6 +38,7 @@ EVENTS = HOME / "data" / "events"
 
 SEED_EVENT = {
     "slug": "panda-105k-2027",
+    "short": "熊猫 105K",
     "name": "2027 熊猫蜀道山超级越野赛 · 105K",
     "org": "柴古唐斯 TSAIGU",
     "status": "confirmed",          # announced / registered / confirmed / done
@@ -51,8 +52,86 @@ SEED_EVENT = {
     "venue": "白鹿音乐广场（起点 = 终点，四川成都彭州）",
     "itra": 5,
     "goal_s": 22 * 3600,            # 目标完赛 22 h（可改 20–24 h）
+    "priority": "A",                # A = 主赛，B = 有成绩要求，C = 训练赛/模拟
+    "role": "主赛",
+    "gear_due_days": 7,
     "source": "poster-2027",
 }
+
+# 其余三场：11/29 秦岭 43K（训练赛）、12/27 福州全马（B）、1/16 60K 模拟（自测）。
+# 这三场都没有官方 CP 表与关门时间，所以 course.json 用「单段合成」（见 _synthetic_course），
+# 页面只给总距离/总爬升与补给，不编造中途关门——编出来的余量比没有更危险。
+SEED_OTHERS = [
+    {
+        "slug": "qinling-43k-2026",
+        "short": "秦岭 43K",
+        "name": "2026 秦岭山地马拉松 · 43K",
+        "org": "秦岭",
+        "status": "confirmed",
+        "date": "2026-11-29",
+        "start_time": "08:00",
+        "cutoff_time": None,
+        "duration_h": None,          # 官方关门未公布，不猜
+        "distance_km": 43.0,
+        "ascent_m": 1500,
+        "descent_m": 1500,
+        "venue": "秦岭（起终点见赛事公告）",
+        "priority": "C",
+        "role": "训练赛",
+        "goal_s": int(5.5 * 3600),
+        "gear_due_days": 3,
+        "source": "manual",
+        "notes": "作为 105K 的训练赛：全程 Z2、练补给与下坡，不追成绩。"
+                 "起跑时间与关门时间待官方公布后在「调整」里改。",
+    },
+    {
+        "slug": "fuzhou-marathon-2026",
+        "short": "福州全马",
+        "name": "2026 福州马拉松 · 全马",
+        "org": "福州马拉松",
+        "status": "confirmed",
+        "date": "2026-12-27",
+        "start_time": "07:30",
+        "cutoff_time": None,
+        "duration_h": 6,
+        "distance_km": 42.2,
+        "ascent_m": 120,
+        "descent_m": 120,
+        "venue": "福州",
+        "priority": "B",
+        "role": "B 级目标赛",
+        "goal_s": int(3.75 * 3600),
+        "gear_due_days": 3,
+        "source": "manual",
+        "notes": "路跑全马，爬升可忽略。关门按 6 h 粗算（多数城市马拉松的兜底），"
+                 "以官方为准。",
+    },
+    {
+        "slug": "sim-60k-2027",
+        "short": "60K 模拟",
+        "name": "2027 60K 模拟赛 · 自测",
+        "org": "自组织",
+        "status": "confirmed",
+        "date": "2027-01-16",
+        "start_time": "06:00",
+        "cutoff_time": None,
+        "duration_h": None,
+        "distance_km": 60.0,
+        "ascent_m": 2800,
+        "descent_m": 2800,
+        "venue": "自选环线（与 4 月青泥岭对照）",
+        "priority": "C",
+        "role": "专项自测",
+        "goal_s": int(12 * 3600),
+        "gear_due_days": 3,
+        "source": "manual",
+        "notes": "检验 60 km / +2800 m 的完成度，为 105K 定配速与补给节奏。"
+                 "没有关门，跑完即达标。",
+    },
+]
+
+# slug -> 种子；ensure_seeds() 只按这里的 slug 建目录，不会给陌生 slug 编数据
+EVENT_SEEDS = {e["slug"]: e for e in [SEED_EVENT, *SEED_OTHERS]}
 
 # 2027 官方海报 CP 表（用户 2026-11-11 提供的赛道图海报，逐卡 OCR 校对）
 SEED_SEGMENTS = [
@@ -107,6 +186,51 @@ SEED_GEAR = """# 强制装备清单（105K）
 """
 
 
+SEED_GEAR_OTHERS = {
+    "qinling-43k-2026": """# 强制装备清单（秦岭 43K · 训练赛）
+
+> 5.5 h 的山地赛，11 月底秦岭白天 5–10 ℃、山口有风。按「短赛也要能自救」配。
+
+- [ ] 头灯 + 备用电池（可能天黑前回不来）
+- [ ] 保温毯 / 应急保温层
+- [ ] 急救包（绷带、创可贴、止痛）
+- [ ] 水袋 / 软水壶 ≥ 1 L
+- [ ] 手机 + 充电宝（≥10000 mAh）
+- [ ] 防风外套（硬壳）
+- [ ] 保暖中层（薄抓绒）
+- [ ] 帽子 + 手套
+- [ ] 能量胶 6 支 + 盐丸
+- [ ] 号码布 + 计时芯片
+- [ ] 越野鞋（磨合过的，别穿新鞋）
+""",
+    "fuzhou-marathon-2026": """# 装备清单（福州全马）
+
+- [ ] 比赛鞋（已磨合 ≥ 50 km）
+- [ ] 号码布 + 计时芯片
+- [ ] 能量胶 4 支（10/20/30 km 各一）
+- [ ] 盐丸 / 电解质片
+- [ ] 一次性雨衣（起跑保暖，跑开即丢）
+- [ ] 乳贴 / 防磨膏
+""",
+    "sim-60k-2027": """# 强制装备清单（60K 模拟 · 自测）
+
+> 自组织长距离，没有关门与救援，装备按 105K 的标准打折：能自救、能过夜。
+
+- [ ] 头灯 + 备用电池
+- [ ] 保温毯
+- [ ] 急救包
+- [ ] 水袋 ≥ 1.5 L
+- [ ] 手机 + 充电宝
+- [ ] 硬壳 + 保暖层
+- [ ] 手杖（一对）
+- [ ] 能量胶 / 固体补给（按 12 h 配）
+- [ ] 盐丸
+- [ ] 备用鞋袜（放车上）
+- [ ] 现金 / 交通卡
+""",
+}
+
+
 # ---------------------------------------------------------------- 文件读写
 
 def _dir(slug: str) -> Path:
@@ -129,22 +253,144 @@ def _write(slug: str, name: str, data: dict) -> Path:
     return p
 
 
+def ensure_seeds() -> None:
+    """把种子赛事落成目录（只补缺，不覆盖已有文件）。
+
+    只处理 EVENT_SEEDS 里的 slug：陌生 slug 不会凭空生成一份假档案，
+    否则 `/event?slug=xxx` 一次手误就会写出一堆只有 slug 的空赛事。
+    """
+    for slug, seed in EVENT_SEEDS.items():
+        cur = _read(slug, "event.json")
+        if not cur:
+            ev = dict(seed)
+            ev["slug"] = slug
+            _write(slug, "event.json", ev)
+        else:
+            # 补齐后来新增的字段（short / priority / role …），但绝不覆盖用户改过的值：
+            # event.json 里有他自己的目标、状态、CP 调整，迁移只能「填空」。
+            miss = {k: v for k, v in seed.items() if k not in cur}
+            if miss:
+                cur.update(miss)
+                _write(slug, "event.json", cur)
+        seed_gear(slug)
+
+
+def list_events(today: dt.date | None = None) -> list[dict]:
+    """所有赛事：按日期升序，带上「还有几天 / 是否已过 / 有没有 CP 表」。
+
+    today 可传：教练上下文要按「那一天」算倒计时，不能用跑批当天的日期，
+    否则回看历史某天时所有赛事的剩余天数都是错的。
+    """
+    ensure_seeds()
+    today = today or dt.date.today()
+    out = []
+    if EVENTS.exists():
+        for d in sorted(EVENTS.iterdir()):
+            if not d.is_dir() or d.name.startswith("_"):
+                continue
+            ev = _read(d.name, "event.json")
+            if not ev or not ev.get("date"):
+                continue
+            try:
+                race = dt.date.fromisoformat(ev["date"])
+            except ValueError:
+                continue
+            course = _read(d.name, "course.json")
+            segs = (course or {}).get("segments") or []
+            has_course = bool(course) and len(segs) > 1
+            out.append({
+                "slug": d.name,
+                "short": ev.get("short") or ev.get("name", d.name)[:10],
+                "name": ev.get("name") or d.name,
+                "date": ev["date"], "race": race,
+                "days": (race - today).days,
+                "status": ev.get("status") or "announced",
+                "priority": ev.get("priority") or "C",
+                "role": ev.get("role") or "",
+                "distance_km": ev.get("distance_km") or 0,
+                "ascent_m": ev.get("ascent_m") or 0,
+                "goal_s": ev.get("goal_s") or 0,
+                "duration_h": ev.get("duration_h"),
+                "has_course": has_course,
+                "done": ev.get("status") == "done" or (race - today).days < -1,
+            })
+    out.sort(key=lambda e: e["date"])
+    return out
+
+
+def nearest_upcoming(today: dt.date | None = None) -> dict | None:
+    """下一场：日期未过、状态不是完赛/取消里最近的一场。
+
+    每天用的卡片、教练上下文都按这个走，不做「手动指定当前赛事」——
+    指定了就会在赛后继续显示上一场，反而要人记着去改。
+    """
+    today = today or dt.date.today()
+    cands = [e for e in list_events(today=today)
+             if e["status"] not in ("done", "cancelled") and e["days"] >= 0]
+    return cands[0] if cands else None
+
+
+def active_slug(slug: str | None = None) -> str:
+    """解析「当前赛事」：显式传 slug 就用它，否则取下一场比赛，再否则最近的已完赛。"""
+    if slug:
+        if slug not in EVENT_SEEDS and not (_dir(slug) / "event.json").exists():
+            raise ValueError("没有这个赛事：%s" % slug)
+        return slug
+    ev = nearest_upcoming()
+    if ev:
+        return ev["slug"]
+    allv = list_events()
+    return allv[-1]["slug"] if allv else SEED_EVENT["slug"]
+
+
 def load_event(slug: str | None = None) -> dict:
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     ev = _read(slug, "event.json")
     if not ev:
-        ev = dict(SEED_EVENT)
+        ev = dict(EVENT_SEEDS[slug])
         ev["slug"] = slug
         _write(slug, "event.json", ev)
         seed_gear(slug)
     return ev
 
 
+def _synthetic_course(ev: dict) -> dict:
+    """没有 CP 表时的单段赛道：整场算一段，只用于补给与总用时。
+
+    为什么允许：43K / 全马 / 自测这三场拿不到中途关门时间。硬编一套 CP 与关门
+    会让人按假数据做决策——宁可只给「总距离 + 总爬升 + 目标用时」这一层。
+    """
+    dur = ev.get("duration_h")
+    cutoff, day = None, 1
+    if dur:
+        st = dt.datetime.combine(dt.date.fromisoformat(ev["date"]),
+                                 dt.time(*map(int, ev["start_time"].split(":"))))
+        c = st + dt.timedelta(hours=float(dur))
+        cutoff = c.strftime("%H:%M")
+        day = 1 + (c.date() - dt.date.fromisoformat(ev["date"])).days
+    return {
+        "event": ev["slug"],
+        "distance_km": ev.get("distance_km") or 0,
+        "ascent_m": ev.get("ascent_m") or 0,
+        "start": {"time": ev.get("start_time") or "08:00",
+                  "date": ev.get("date"), "venue": ev.get("venue") or ""},
+        "segments": [dict(
+            idx=1, name="终点",
+            en="", km=ev.get("distance_km") or 0,
+            dplus=ev.get("ascent_m") or 0, dminus=ev.get("descent_m") or 0,
+            cutoff=cutoff, cutoff_day=day, dropbag=False, finish=True,
+            features=[], source="synthetic",
+        )],
+        "note": "没有官方 CP 表：整场按一段计算，只有总距离/爬升与补给。",
+    }
+
+
 def load_course(slug: str | None = None) -> dict:
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     c = _read(slug, "course.json")
     if not c:
-        c = _build_seed_course(slug)
+        c = _build_seed_course(slug) if slug == SEED_EVENT["slug"] \
+            else _synthetic_course(load_event(slug))
         _write(slug, "course.json", c)
     return c
 
@@ -154,11 +400,13 @@ def save_course(slug: str, course: dict) -> Path:
 
 
 def seed_gear(slug: str | None = None) -> Path:
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     p = _dir(slug) / "gear.md"
     if not p.exists():
         _dir(slug).mkdir(parents=True, exist_ok=True)
-        io.open(p, "w", encoding="utf-8").write(SEED_GEAR)
+        io.open(p, "w", encoding="utf-8").write(
+            SEED_GEAR if slug == SEED_EVENT["slug"]
+            else SEED_GEAR_OTHERS.get(slug, "# 装备清单\n\n- [ ] 待补充\n"))
     return p
 
 
@@ -195,8 +443,11 @@ def _build_seed_course(slug: str) -> dict:
 
 # ---------------------------------------------------------------- 余量计算
 
-def _cutoff_dt(ev: dict, seg: dict) -> dt.datetime:
-    d = dt.date.fromisoformat(ev["date"]) + dt.timedelta(days=seg["cutoff_day"] - 1)
+def _cutoff_dt(ev: dict, seg: dict) -> dt.datetime | None:
+    """该 CP 的关门时刻；没有官方关门就返回 None（不猜）。"""
+    if not seg.get("cutoff"):
+        return None
+    d = dt.date.fromisoformat(ev["date"]) + dt.timedelta(days=(seg.get("cutoff_day") or 1) - 1)
     h, m = map(int, seg["cutoff"].split(":"))
     return dt.datetime(d.year, d.month, d.day, h, m)
 
@@ -262,7 +513,8 @@ def plan_and_margin(slug: str | None = None, goal_s: int | None = None) -> list[
             idx=seg["idx"], name=seg["name"], km=seg["km"],
             dplus=seg["dplus"], dminus=seg.get("dminus") or 0,
             cutoff=cutoff, arrive=arrive,
-            margin_s=(cutoff - arrive).total_seconds(),
+            # 没有关门就没有余量：None 比 0 诚实，排版层按「—」显示
+            margin_s=((cutoff - arrive).total_seconds() if cutoff else None),
             dropbag=seg.get("dropbag", False), finish=seg.get("finish", False),
             features=seg.get("features", []),
         ))
@@ -273,20 +525,23 @@ def margins_report(slug: str | None = None, goal_s: int | None = None) -> str:
     rows = plan_and_margin(slug, goal_s)
     ev = load_event(slug)
     lines = [
-        "%s · 关门余量表（目标 %.0f h）" % (ev["name"], (goal_s or ev["goal_s"]) / 3600),
+        "%s · 关门余量表（目标 %g h）" % (ev["name"], (goal_s or ev["goal_s"]) / 3600),
         "%-4s %-10s %7s %8s  %8s  %8s" % ("CP", "地点", "km", "关门", "计划到达", "余量"),
     ]
     warn = []
     for r in rows:
         m = r["margin_s"]
-        sign = "+" if m >= 0 else "-"
-        mm = "%s%dh%02dm" % (sign, abs(m) // 3600, abs(m) % 3600 // 60)
-        if m < 0:
-            warn.append(r["name"])
+        if m is None:
+            mm = "—（无关门）"
+        else:
+            sign = "-" if m < 0 else "+"
+            mm = "%s%dh%02dm" % (sign, abs(m) // 3600, abs(m) % 3600 // 60)
+            if m < 0:
+                warn.append(r["name"])
         extra = " ←换装" if r["dropbag"] else ""
         lines.append("%-4s %-10s %7.1f %8s  %8s  %8s%s" % (
-            "CP%d" % r["idx"], r["name"], r["km"],
-            r["cutoff"].strftime("%d日%H:%M"),
+            "CP%d" % r["idx"] if len(rows) > 1 else "全程", r["name"], r["km"],
+            r["cutoff"].strftime("%d日%H:%M") if r["cutoff"] else "—",
             r["arrive"].strftime("%d日%H:%M"), mm, extra))
     if warn:
         lines.append("!! 余量为负（会被关门）：" + "、".join(warn))
@@ -294,7 +549,7 @@ def margins_report(slug: str | None = None, goal_s: int | None = None) -> str:
 
 
 def set_goal(slug: str | None, goal_s: int) -> Path:
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     ev = load_event(slug)
     ev["goal_s"] = goal_s
     return _write(slug, "event.json", ev)
@@ -313,11 +568,17 @@ def set_target(slug: str | None, *, goal_h: float | None = None,
     页面表单直接调它——CLI 那条路（run.bat event --goal）现在也走同一个函数，
     避免两套校验各说各话。
     """
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     ev = load_event(slug)
     if goal_h is not None:
-        if not 10 <= float(goal_h) <= 34:
-            raise ValueError("目标完赛要在 10–34 小时之间")
+        # 范围随赛事规模走：写死 10–34 h 会把 43K / 全马的目标全都拒掉（真踩过）
+        dist = float(ev.get("distance_km") or 0)
+        lo = max(0.5, dist * 0.045)                  # 约 2.7 min/km，人类下限
+        hi = float(ev.get("duration_h") or max(2.0, dist * 0.5))
+        hi = max(hi, lo * 2)
+        if not lo <= float(goal_h) <= hi:
+            raise ValueError("目标完赛要在 %.1f–%.1f 小时之间（%s %.0f km）"
+                             % (lo, hi, ev.get("short") or ev.get("name", ""), dist))
         ev["goal_s"] = int(round(float(goal_h) * 3600))
     if status is not None:
         if status not in STATUS_CN:
@@ -338,7 +599,7 @@ def set_cps(slug: str | None, changes: dict) -> dict:
     校验很严：里程必须严格递增、不能超过终点里程，关门时间必须能解析。
     这是手工校对用的入口，宁可报错也不写进一份自相矛盾的赛道。
     """
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     course = load_course(slug)
     segs = course.get("segments") or []
     by_idx = {s["idx"]: s for s in segs}
@@ -349,7 +610,8 @@ def set_cps(slug: str | None, changes: dict) -> dict:
         seg = by_idx[idx]
         if "km" in ch and ch["km"] is not None:
             km = float(ch["km"])
-            if not 0 < km < float(course.get("distance_km") or 200):
+            # 终点 CP 的里程本来就等于赛道总长，不能要求「严格小于」
+            if not 0 < km <= float(course.get("distance_km") or 200) + 0.05:
                 raise ValueError("CP%d 的里程 %.1f 超出赛道范围" % (idx, km))
             seg["km"] = round(km, 1)
         if ch.get("cutoff"):
@@ -378,7 +640,7 @@ RACE_ACTIONS = ("start", "pass", "unpass", "reset", "finish")
 
 
 def race_state(slug: str | None = None) -> dict:
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     st = _read(slug, "race.json") or {}
     st.setdefault("start", None)
     st.setdefault("passed", {})
@@ -392,7 +654,7 @@ def set_race(slug: str | None, action: str, idx: int | None = None,
 
     `at` 只在测试里用；正常从手机时钟取 now()。
     """
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     if action not in RACE_ACTIONS:
         raise ValueError("未知的赛中操作：%s" % action)
     st = race_state(slug)
@@ -431,7 +693,7 @@ def race_projection(slug: str | None = None,
     关键：所有比较都换算成**相对起点的用时**再相减，不直接减绝对时刻。
     否则手机是 2026 年、计划是 2027 年时，落后量会被算成几千小时（真踩过）。
     """
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     ev = load_event(slug)
     st = race_state(slug)
     rows = plan_and_margin(slug)
@@ -494,7 +756,9 @@ def race_projection(slug: str | None = None,
             "idx": r["idx"], "name": r["name"], "km": r["km"],
             "cutoff": r["cutoff"], "planned": r["arrive"],
             "actual": actual, "projected": proj,
-            "delta_s": delta, "margin_s": (r["cutoff"] - at).total_seconds(),
+            "delta_s": delta,
+            # 没有官方关门就没有余量，不能拿 0 或 now 硬凑
+            "margin_s": ((r["cutoff"] - at).total_seconds() if r["cutoff"] else None),
             "done": done, "dropbag": r["dropbag"],
         })
 
@@ -538,7 +802,7 @@ def fuel_cfg(slug: str | None = None) -> dict:
 
 def set_fuel(slug: str | None, **kw) -> dict:
     """保存补给参数（页面表单）。范围校验，避免手滑写成 500 g 碳水/小时。"""
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     ev = load_event(slug)
     cfg = dict(FUEL_DEFAULT)
     cfg.update(ev.get("fuel") or {})
@@ -624,7 +888,7 @@ def fuel_plan(slug: str | None = None, goal_s: int | None = None) -> dict:
 
 def gear_items(slug: str | None = None) -> list[dict]:
     """装备清单逐条读出：idx 是「第几个勾选项」（不含说明行），用于页面回写。"""
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     p = _dir(slug) / "gear.md"
     if not p.exists():
         seed_gear(slug)
@@ -641,7 +905,7 @@ def gear_items(slug: str | None = None) -> list[dict]:
 
 def set_gear(slug: str | None, idx: int, done: bool) -> bool:
     """勾选/取消第 idx 项。只改清单行，说明行原样保留。"""
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     p = _dir(slug) / "gear.md"
     if not p.exists():
         seed_gear(slug)
@@ -660,7 +924,7 @@ def set_gear(slug: str | None, idx: int, done: bool) -> bool:
 
 
 def gear_progress(slug: str | None = None) -> dict:
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     p = _dir(slug) / "gear.md"
     if not p.exists():
         seed_gear(slug)
@@ -775,12 +1039,12 @@ def parse_gpx(path: str | Path, slug: str | None = None,
     )
     if save:
         import shutil
-        dst = _dir(slug or SEED_EVENT["slug"]) / "track.gpx"
+        dst = _dir(slug) / "track.gpx"
         dst.parent.mkdir(parents=True, exist_ok=True)
         # 服务端上传时文件已经落在目标位置了，别再 copy 到自己身上
         if Path(path).resolve() != dst.resolve():
             shutil.copy(path, dst)
-        _write(slug or SEED_EVENT["slug"], "track_stats.json", out)
+        _write(slug, "track_stats.json", out)
     return out
 
 
@@ -807,7 +1071,7 @@ def track_compare(slug: str | None = None) -> dict:
     且中段里程整体差 2.5–2.7 km。所以**里程以官方海报为准**，
     轨迹只用来给地形形状和相对爬升做参考。差 >1 km 的 CP 会被标出来。
     """
-    slug = slug or SEED_EVENT["slug"]
+    slug = active_slug(slug)
     stats = _read(slug, "track_stats.json")
     if not stats:
         return {"ok": False, "reason": "没有导入轨迹"}
@@ -860,15 +1124,22 @@ def countdown(ev: dict | None = None, today: dt.date | None = None) -> dict:
     race = dt.date.fromisoformat(ev["date"])
     gear = gear_progress(ev["slug"])
     rows = plan_and_margin(ev["slug"])
-    tightest = min(rows, key=lambda r: r["margin_s"])
+    known = [r for r in rows if r.get("margin_s") is not None]
+    tightest = min(known, key=lambda r: r["margin_s"]) if known else None
+    course = load_course(ev["slug"])
     return dict(
-        name=ev["name"], status=ev["status"],
+        slug=ev["slug"],
+        name=ev["name"], short=ev.get("short") or ev["name"],
+        priority=ev.get("priority") or "C", role=ev.get("role") or "",
+        status=ev["status"],
         status_cn=STATUS_CN.get(ev.get("status"), ev.get("status", "")),
         days=(race - today).days,
         race=race,
         dist=ev["distance_km"], ascent=ev["ascent_m"],
-        goal_h=ev.get("goal_s", 22 * 3600) / 3600,
-        duration_h=ev.get("duration_h", 29),
+        goal_h=(ev.get("goal_s") or 0) / 3600,
+        duration_h=ev.get("duration_h"),
+        has_course=len(course.get("segments") or []) > 1,
+        cps=len(course.get("segments") or []),
         cutoff=ev["cutoff_time"],
         venue=ev["venue"],
         gear_done=gear["done"], gear_total=gear["total"],
