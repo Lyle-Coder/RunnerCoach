@@ -124,6 +124,8 @@ class MainActivity : Activity() {
 
     /** 附件要落到哪一场：按钮上带着 slug，不回落到「下一场」 */
     private var pendingAttachSlug: String? = null
+    // 页面里 <input type=file> 的回调，选完照片要把 Uri 交回去，否则 WebView 一直等
+    private var pendingFileCallback: android.webkit.ValueCallback<Array<Uri>>? = null
 
     private val api: PyObject by lazy { Python.getInstance().getModule("garmin_cn.appapi") }
 
@@ -208,6 +210,31 @@ class MainActivity : Activity() {
             overScrollMode = View.OVER_SCROLL_NEVER
             // 页面里的 data-aid 行点一下就出该活动的图；桥只挂在本机页面上
             addJavascriptInterface(Bridge(), "GC")
+            // 页面里的 <input type=file> 需要这个回调，否则点了毫无反应。
+            // 姿态评估要拍照上传，走的是标准 file input（浏览器和 WebView 同一套代码）。
+            webChromeClient = object : android.webkit.WebChromeClient() {
+                override fun onShowFileChooser(
+                    v: WebView?,
+                    cb: android.webkit.ValueCallback<Array<Uri>>?,
+                    p: FileChooserParams?
+                ): Boolean {
+                    pendingFileCallback?.onReceiveValue(null)
+                    pendingFileCallback = cb
+                    val i = Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "image/*"
+                    }
+                    return try {
+                        startActivityForResult(
+                            Intent.createChooser(i, "选择照片"), REQ_FILE_CHOOSER)
+                        true
+                    } catch (t: Throwable) {
+                        pendingFileCallback = null
+                        toast("打不开相册：" + (t.message ?: t.javaClass.simpleName))
+                        false
+                    }
+                }
+            }
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(v: WebView, u: String) {
                     if (u.startsWith("http://127.0.0.1:$port/")) {
@@ -426,6 +453,7 @@ class MainActivity : Activity() {
                 if (uri?.getQueryParameter("from") == "today") TAB_TODAY else TAB_HISTORY)
             path.startsWith("/plan") -> goTab(TAB_TODAY)   // 训练计划属于今日
             path.startsWith("/event") -> goTab(TAB_COACH)  // 赛事页属于教练（/ai 里的「备赛」）
+            path.startsWith("/posture") -> goTab(TAB_COACH) // 姿态评估也在教练下
             path.startsWith("/files") -> goTab(TAB_ME)     // 产物属于我的
             path.startsWith("/privacy") -> goTab(TAB_ME)   // 隐私说明也挂在我的下面
             activeTab != TAB_TODAY -> goTab(TAB_TODAY)     // 其它 tab 先回今日
@@ -2379,6 +2407,14 @@ class MainActivity : Activity() {
             if (resultCode == android.app.Activity.RESULT_OK) {
                 data?.data?.let { importGpx(it) }
             }
+            return
+        }
+        if (requestCode == REQ_FILE_CHOOSER) {
+            val cb = pendingFileCallback
+            pendingFileCallback = null
+            cb?.onReceiveValue(
+                if (resultCode == RESULT_OK && data?.data != null) arrayOf(data.data!!)
+                else null)
             return
         }
         if (requestCode == REQ_ATTACH) {
@@ -4611,6 +4647,7 @@ class MainActivity : Activity() {
         const val REQ_GPX = 1005
         /** 赛事资料附件上传（PDF / 图片 / 文本） */
         const val REQ_ATTACH = 1006
+        const val REQ_FILE_CHOOSER = 1007
 
         /**
          * 读 HTML 里的导出探针；旧版 Python 没有探针时返回空串，走尺寸兜底。

@@ -138,6 +138,12 @@ class _Handler(SimpleHTTPRequestHandler):
         if u.path in ("/event", "/event.html"):
             from . import eventui
             return self._html(eventui.render_page(parse_qs(u.query)))
+        if u.path in ("/posture", "/posture.html"):
+            # 和 AI 页面同一条闸门：它会把照片发给模型服务商，只许本机打开
+            if not self._is_loopback():
+                return self._json({"ok": False, "error": "姿态评估只允许本机打开"}, 403)
+            from . import postureui
+            return self._html(postureui.render())
         if u.path.startswith("/event-file/"):
             return self._event_file(u.path)
         if u.path.startswith("/basemap/"):
@@ -528,6 +534,42 @@ class _Handler(SimpleHTTPRequestHandler):
                           ok="已添加附件 %s（%s）"
                              % (dst.name, E.human_size(dst.stat().st_size)))
 
+    def _posture_assess(self, u) -> None:
+        """一张照片 + 一个动作 → 判读 + 方案。返回 JSON，由页面自己插进 DOM。
+
+        照片只在内存里过一遍：base64 之后交给 llm，不落盘。姿态照片比附件敏感，
+        留在磁盘上没有任何必要——用户要留证据的话，相册里有原图。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        import base64
+        from . import posture as P, postureui
+
+        qs = parse_qs(u.query)
+        move = (qs.get("move") or [""])[0].strip()
+        if move not in P.MOVES:
+            return self._json({"ok": False, "error": "未知动作"}, 400)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        # 先读掉 body 再校验：提前 return 会让 keep-alive 里残留一段没消费的数据，
+        # 下一次请求直接 IncompleteRead（附件上传踩过同一个坑）
+        data = self.rfile.read(n) if 0 < n <= 12 * 1024 * 1024 else b""
+        if not data:
+            return self._json({"ok": False, "error": "没收到照片，或文件超过 12 MB"}, 400)
+        mime = (self.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
+        if not mime.startswith("image/"):
+            mime = "image/jpeg"
+        try:
+            res = P.assess(base64.b64encode(data).decode(), move, mime=mime)
+        except Exception as e:                    # noqa: BLE001
+            return self._json(
+                {"ok": False,
+                 "error": f"{type(e).__name__}: {e}。模型需要支持图片输入"
+                          "（deepseek-v4.1-flash / mimo-v2.5 / kimi-k3）"}, 502)
+        return self._json({"ok": True, "html": postureui.result_html(res)})
+
     def _event_doc(self, u) -> None:
         """资料条目：加一条 / 删一条。"""
         if not self._is_loopback():
@@ -779,6 +821,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._event_doc(u)
         if u.path == "/__event/attach":
             return self._event_attach(u)
+        if u.path == "/__posture/assess":
+            return self._posture_assess(u)
         if u.path == "/__files/delete":
             # 产物页的批量删除。放在 gate 之前反而更安全：这里自己做本机校验，
             # 不带访问码的局域网访客一律 403。
