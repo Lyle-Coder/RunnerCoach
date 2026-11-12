@@ -507,7 +507,9 @@ def lap_segs(laps: list[dict] | None) -> list[dict]:
         out.append({"fast": False, "t0": float(i), "dist_m": round(dist, 1),
                     "dur_s": round(dur, 1), "spd": spd,
                     "pace_s": round(dur / (dist / 1000)) if dist > 50 else None,
-                    "hr_avg": l.get("hr_avg"), "cad": l.get("cad")})
+                    "hr_avg": l.get("hr_avg"), "cad": l.get("cad"),
+                    # 爬升口径：往复爬楼时速度判据会失效（见 climb_work_rest）
+                    "ele_gain": l.get("ele_gain")})
     return out
 
 
@@ -520,6 +522,56 @@ def manual_laps(laps: list[dict] | None, lap_m: float | None = None) -> bool:
         return False
     km_like = sum(1 for l in laps if abs((l.get("dist_m") or 0) - 1000) <= 60)
     return km_like < len(laps) * 0.6
+
+
+CLIMB_REP_M = 8.0        # 单圈爬升 ≥ 8 m 才算「爬升组」
+CLIMB_MIN_SETS = 3       # 至少 3 组才认，两组的爬坡可能只是起伏
+
+
+def climb_work_rest(segs: list[dict]) -> tuple[list[dict], list[dict]] | None:
+    """爬楼 / 楼梯机：速度判据失效时改用**爬升**判据。
+
+    为什么必须另开一条判据
+    ----------------------
+    往复爬楼的上行位移被下行抵消，工作圈测出来的速度常常**比休息圈还慢**
+    （2026-11-12 操场看台实测：工作圈 0.95 m/s、休息圈 0.88 m/s）。
+    速度法于是把「三组间歇」认成「两段快跑 + 一段慢」——热身和冷身各算一段，
+    真正的三组反而被并成一档，图上只剩两组。
+
+    而每圈的爬升是气压计算的，判别度极高：工作圈 25–29 m，恢复圈 0–3 m。
+    所以这里只看 ele_gain，完全不碰速度。
+    """
+    if len(segs) < 6:
+        return None
+    gains = [s.get("ele_gain") for s in segs]
+    if not any(g is not None for g in gains):
+        return None
+    idx = [i for i, s in enumerate(segs) if (s.get("ele_gain") or 0) >= CLIMB_REP_M]
+    if len(idx) < CLIMB_MIN_SETS:
+        return None
+    # 只取「第一个爬升圈 ~ 最后一个爬升圈」之间：首尾是热身跑到场地、冷身跑回去，
+    # 爬升很小，混进「恢复」会把 5 km 慢跑当成组间休息，汇总直接失真
+    # （实测 10 圈 / 5.2 km 被算成恢复）。
+    i0, i1 = idx[0], idx[-1]
+    core = segs[i0:i1 + 1]
+    work = [s for s in core if (s.get("ele_gain") or 0) >= CLIMB_REP_M]
+    rest = [s for s in core if (s.get("ele_gain") or 0) < CLIMB_REP_M]
+    if not rest:
+        return None
+    rest_ids = {id(s) for s in rest}
+    wb = _pack("爬升", work)
+    wb["name"] = "爬升"
+    # 累计爬升要单独存：这张卡下面不显示「配速」，改显示爬升，
+    # 而 dist_m 是 GPS 位移，在往复路线上没有意义
+    wb["gain_m"] = round(sum(s.get("ele_gain") or 0 for s in work), 1)
+    rb = _pack("恢复", rest, True)
+    rb["name"] = "恢复"
+    bands = [wb, rb]
+    out = []
+    for o in sorted(core, key=lambda s: s.get("t0") or 0):
+        is_rest = id(o) in rest_ids
+        out.append({**o, "rest": is_rest, "band": 1 if is_rest else 0})
+    return bands, out
 
 
 def attach_bands(got: dict | None, detail: dict | None,
@@ -550,6 +602,12 @@ def attach_bands(got: dict | None, detail: dict | None,
     wr = attach_work_rest(ordered)
     if wr:
         got["bands"], got["order"] = wr
+        return got
+    # 速度切不出快慢交替时，再看是不是「靠爬升区分工作/恢复」的往复课
+    # （爬楼、楼梯机、跑楼梯）。这类课的 GPS 速度不可信，只有爬升能用。
+    cw = climb_work_rest(ordered)
+    if cw:
+        got["bands"], got["order"] = cw
         return got
     bs = band_split(segs)
     if bs:
