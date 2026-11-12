@@ -25,8 +25,10 @@ _WRITABLE = ("mode", "provider", "base_url", "model", "api_key",
              "platform_base", "platform_auto", "platform_token",
              "temperature", "auto_advice", "auth_style", "ai_enabled")
 
-# 关掉 AI 后仍要能读/改配置，否则开关本身点不动
-_ALWAYS = ("config.get", "config.set", "test", "status")
+# 关掉 AI 后仍要能读/改配置，否则开关本身点不动。
+# 历史是用户资产：AI 关着也该能翻、能清，所以这两个动作不进闸门。
+_ALWAYS = ("config.get", "config.set", "test", "status",
+           "chat_history", "chat_clear")
 
 
 def _truthy(v) -> bool:
@@ -99,9 +101,30 @@ def dispatch(action: str, payload: dict | None = None) -> dict:
 
         if action == "chat":
             msgs = p.get("messages")
-            if not isinstance(msgs, list) or not msgs:
+            txt = str(p.get("text") or "").strip()
+            if not txt and (not isinstance(msgs, list) or not msgs):
                 return {"ok": False, "kind": "input", "error": "没有要问的内容"}
-            return aicoach.chat(msgs)
+            return aicoach.chat(msgs if isinstance(msgs, list) else None, text=txt)
+
+        if action == "chat_history":
+            # 历史存在服务端，切页面回来还能接着看；只回最近 limit 条，
+            # 全量交给「翻更早」或导出，避免一次性把大文件推给 WebView。
+            from . import chatstore as CS
+
+            try:
+                lim = max(10, min(500, int(p.get("limit") or 80)))
+            except Exception:
+                lim = 80
+            d = CS.load()
+            return {"ok": True, "messages": d["messages"][-lim:],
+                    "digest": d["digest"], "total": len(d["messages"]),
+                    "shown": min(lim, len(d["messages"]))}
+
+        if action == "chat_clear":
+            from . import chatstore as CS
+
+            CS.clear()
+            return {"ok": True}
 
         if action == "balance":
             return llm.balance()
