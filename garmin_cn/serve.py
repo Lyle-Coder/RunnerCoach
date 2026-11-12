@@ -502,7 +502,8 @@ class _Handler(SimpleHTTPRequestHandler):
                 if not r["ok"]:
                     raise ValueError(r["error"])
                 return self._back(ev["slug"], anchor="import",
-                                  ok="已沿用 %d 段（记得核对改线）" % r["n_segments"])
+                                  ok="已沿用 %d 段 —— 核对改线后，在「调整 → CP 表」里改"
+                                     % r["n_segments"])
             # /__event/import：粘贴规程文字
             ev = E.load_event(slug)
             draft = I.from_text(one("text") or "", ev)
@@ -514,7 +515,8 @@ class _Handler(SimpleHTTPRequestHandler):
                 bad = "；".join(i["msg"] for i in I.errors(r["issues"])[:2])
                 raise ValueError("数据没通过校验，未写入 —— " + bad)
             return self._back(ev["slug"], anchor="import",
-                              ok="已导入 %d 个 CP" % r["n_segments"])
+                              ok="已导入 %d 个 CP —— 往下滑核对「赛况与余量」里的余量"
+                                 % r["n_segments"])
         except ValueError as e:
             return self._back(slug, err=str(e), anchor="import")
         except Exception as e:
