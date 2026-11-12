@@ -4733,6 +4733,26 @@ def run() -> int:
     except ImportError:
         pass
 
+    # ---- 趋势：多弱项按时间聚合、按严重度排序 ----
+    try:
+        from . import posture as _PT
+
+        _th = [
+            {"at": "2026-11-13 07:00",
+             "result": {"checks": {"knee_valgus": {"state": "mild"},
+                                   "heel_lift": {"state": "ok"}}}},
+            {"at": "2026-10-16 07:00",
+             "result": {"checks": {"knee_valgus": {"state": "clear"},
+                                   "heel_lift": {"state": "mild"}}}},
+        ]
+        _tr = _PT.trend(_th)
+        _ids = [x["id"] for x in _tr]
+        assert "hip_abduct" in _ids and "ankle_rom" in _ids, "趋势没按弱项聚合"
+        _hip = [x for x in _tr if x["id"] == "hip_abduct"][0]
+        assert [p["score"] for p in _hip["points"]] == [2, 1], "趋势点没按时间升序"
+    except ImportError:
+        pass
+
     # ---- 姿态评估：模板自洽 + 模型输出收敛 ----
     try:
         from . import posture as _PO
