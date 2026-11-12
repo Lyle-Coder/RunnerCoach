@@ -177,6 +177,12 @@ BODY = """
     <h2>模型服务</h2>
     <div class="hint" id="setHint">两种接入方式：填自己的 API Key 直连，或接入平台额度（充值后按量扣）。</div>
 
+    <div class="seg" id="aiSeg">
+      <button data-on="1">AI 开启</button>
+      <button data-on="0">已关闭</button>
+    </div>
+    <div class="note" id="aiSegNote">关闭后不再调用模型：教练建议、看板点评、拍照识热量都会停，配置保留。</div>
+
     <div class="seg" id="modeSeg">
       <button data-m="own">自配 API</button>
       <button data-m="platform">平台额度</button>
@@ -749,6 +755,12 @@ function fillSheet(c) {
         ? '平台额度：已登录，每次问答按用量扣费。'
         : '平台额度：服务地址已内置，邮箱 / 手机号登录即可。')
     : '自配 API：用你自己的 Key 直连模型服务商，数据只发给这一家。';
+  const aiOn = c.ai_enabled !== false;
+  document.querySelectorAll('#aiSeg button').forEach(b =>
+    b.classList.toggle('on', (b.dataset.on === '1') === aiOn));
+  $('#aiSegNote').textContent = aiOn
+    ? '关闭后不再调用模型：教练建议、看板点评、拍照识热量都会停，配置保留。'
+    : '当前已关闭：不会调用模型，配置仍保留；重新打开不用重填 Key。';
 
   const p = (c.providers || []).find(x => x.id === sel.value);
   if (p) $('#provNote').textContent = p.note + (p.key_url ? ' · 申请地址 ' + p.key_url : '');
@@ -909,6 +921,7 @@ function refreshSub() {
   const c = STATE.config;
   const s = $('#sub');
   if (!c) { s.textContent = ''; return; }
+  if (c.ai_enabled === false) { s.textContent = 'AI 已关闭 · 点右上角设置可重新打开'; return; }
   if (!c.configured) { s.textContent = '还没配置模型服务 · 点右上角设置'; return; }
   const mode = c.mode === 'platform' ? '平台额度' : '自配 API';
   s.textContent = mode + ' · ' + (c.model || '') + ' · ' + (c.provider_label || '');
@@ -925,6 +938,16 @@ function switchTab(t) {
 
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => switchTab(b.dataset.v));
 $('#gear').onclick = openSheet;
+document.querySelectorAll('#aiSeg button').forEach(b => b.onclick = async () => {
+  const on = b.dataset.on === '1';
+  if ((STATE.config || {}).ai_enabled === on) return;
+  const j = await api('config.set', {ai_enabled: on});
+  if (!j.ok) { $('#setMsg').textContent = j.error || '保存失败'; return; }
+  STATE.config = j;
+  fillSheet(j);
+  refreshSub();
+  $('#setMsg').textContent = on ? 'AI 已开启' : 'AI 已关闭';
+});
 $('#sheet').onclick = e => { if (e.target.id === 'sheet') closeSheet(); };
 document.querySelectorAll('#modeSeg button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#modeSeg button').forEach(x => x.classList.remove('on'));

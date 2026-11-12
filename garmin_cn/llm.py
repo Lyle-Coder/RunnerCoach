@@ -132,6 +132,9 @@ DEFAULTS = {
     "platform_sync_at": 0,      # 上次尝试下发的时刻（成功失败都记，避免反复等超时）
     "temperature": 0.6,
     "auto_advice": True,        # 打开看板时自动生成今日建议
+    # AI 总开关：关掉后不再调用模型（教练页、看板点评、拍照识热量都停），
+    # 但配置本身保留，重新打开不用重填 key。
+    "ai_enabled": True,
     # 鉴权头：空=自动识别（先 Bearer，401/403 再换 x-api-key）；也可强制
     # bearer / x-api-key / both。OpenAI 兼容只约定了请求体，没约定 key 放哪个头。
     "auth_style": "",
@@ -258,6 +261,7 @@ def public_config() -> dict:
         "temperature": cfg["temperature"],
         "auto_advice": cfg["auto_advice"],
         "configured": is_configured(cfg),
+        "ai_enabled": is_enabled(cfg),
         "providers": [
             {"id": k, "label": v["label"], "base_url": v["base_url"],
              "model": v["model"], "key_url": v["key_url"], "note": v["note"],
@@ -272,6 +276,12 @@ def is_configured(cfg: dict | None = None) -> bool:
     if cfg.get("mode") == "platform":
         return bool(cfg.get("platform_base") and cfg.get("platform_token"))
     return bool(effective_base(cfg) and cfg.get("api_key"))
+
+
+def is_enabled(cfg: dict | None = None) -> bool:
+    """AI 总开关。默认开；只有显式关掉才停（老配置文件没有这个键）。"""
+    cfg = cfg or load_config()
+    return bool(cfg.get("ai_enabled", True))
 
 
 # 用户手填地址时最常见的两种错法：整条接口地址粘进来，或者只填到网关根。

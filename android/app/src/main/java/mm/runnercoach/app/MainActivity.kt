@@ -447,6 +447,8 @@ class MainActivity : Activity() {
                     "login:coros" -> openAccount("coros")
                     "login:keep" -> openAccount("keep")
                     "mealShot" -> askMealPhoto()
+                    "aiSettings" -> openAiSettings()
+                    "aiToggle" -> toggleAi()
                     "corosSleep" -> askCorosSleep()
                     "login" -> showLoginPicker()
                     "mi" -> showMiPanel()
@@ -1253,6 +1255,30 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------ 拍照记饮食
     /** 拍照识热量：图片在原生侧压缩后交给 Python，识别结果确认后才落库。 */
     private var mealPhotoUri: Uri? = null
+
+    /** 「我的 → AI 模型服务」：复用教练页右上角那个设置抽屉（/ai#settings）。 */
+    private fun openAiSettings() {
+        if (port == 0) {
+            toast("还在启动，稍等一下")
+            return
+        }
+        web.loadUrl("http://127.0.0.1:$port/ai#settings")
+    }
+
+    /** 行尾开关：只翻 AI 总开关，不动 provider / key，改完刷新当前页。 */
+    private fun toggleAi() {
+        thread {
+            val r = apiCall("ai_toggle")
+            ui {
+                if (!r.optBoolean("ok")) {
+                    toast("切换失败：${r.optString("error")}")
+                    return@ui
+                }
+                toast(if (r.optBoolean("ai_enabled")) "AI 已开启" else "AI 已关闭")
+                reload()
+            }
+        }
+    }
 
     private fun askMealPhoto() {
         AlertDialog.Builder(this)
