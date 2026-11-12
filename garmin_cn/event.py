@@ -441,7 +441,17 @@ def race_projection(slug: str | None = None,
     now = (now or dt.datetime.now()).replace(microsecond=0)
     goal_s = int(ev.get("goal_s") or 22 * 3600)
 
-    passed = {int(k): dt.datetime.fromisoformat(v) for k, v in (st["passed"] or {}).items()}
+    passed_all = {int(k): dt.datetime.fromisoformat(v)
+                  for k, v in (st["passed"] or {}).items()}
+    # 记录时间晚于「现在」只有两种可能：手机时间被改过，或换机后时钟错乱。
+    # 这种点会让落后量变成垃圾数，直接忽略并提示，不参与任何计算。
+    future = {k: v for k, v in passed_all.items()
+              if v > now + dt.timedelta(minutes=2)}
+    passed = {k: v for k, v in passed_all.items() if k not in future}
+    warn = ""
+    if future:
+        warn = ("有 %d 个 CP 的到达时间晚于当前时间，已忽略：请检查手机时间"
+                % len(future))
     last_idx = max(passed) if passed else 0
     last_actual = passed.get(last_idx)
 
@@ -451,12 +461,11 @@ def race_projection(slug: str | None = None,
 
     # 落后量 = 实际用时 - 计划用时（同一基准，与年份无关）
     delay_s = 0.0
-    warn = ""
     if last_idx and last_actual:
         delay_s = (last_actual - start).total_seconds() - plan_sec(last_idx)
         if abs(delay_s) > 24 * 3600:
             # 超过一天基本只剩一种可能：比赛日期/手机时钟对不上
-            warn = "时间基准异常（落后量超过 24 h），请检查比赛日期与手机时间"
+            warn = warn or "时间基准异常（落后量超过 24 h），请检查比赛日期与手机时间"
             delay_s = 0.0
 
     # 保目标所需倍率：剩余计划用时 / 剩余可用时间
