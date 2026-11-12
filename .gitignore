@@ -59,3 +59,6 @@ android/app/release/
 dist/
 server/relay/index.html
 server/relay/card.png
+
+# 未定稿的调研笔记：只写在工作区，不进仓库
+docs/小程序可行性评估.md
