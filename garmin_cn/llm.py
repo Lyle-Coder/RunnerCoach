@@ -756,14 +756,22 @@ def chat_stream(messages: list[dict], *, temperature: float | None = None,
 
 
 def ping() -> dict:
-    """连通性测试：发一句最短的问候，把耗时和模型名带回去。"""
+    """连通性测试：发一句最短的问候，把耗时和模型名带回去。
+
+    返回的 reply 只用于「连接正常 → …」这句提示，太长就不展示了：
+    推理型模型常在这里把「让我只回复两个字」的思考过程一起吐出来，
+    展示出来反而像出错。
+    """
     t0 = time.time()
     try:
         r = chat([{"role": "user", "content": "只回复两个字：正常"}], max_tokens=16,
                  temperature=0, timeout=45)
     except LLMError as e:
         return e.as_dict()
-    return {"ok": True, "reply": r["text"][:40], "model": r["model"],
+    reply = (r["text"] or "").strip()
+    if len(reply) > 12:
+        reply = ""
+    return {"ok": True, "reply": reply, "model": r["model"],
             "elapsed": round(time.time() - t0, 1)}
 
 
