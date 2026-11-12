@@ -416,7 +416,16 @@ class _Handler(SimpleHTTPRequestHandler):
         err = ""
         try:
             if u.path == "/__event/target":
-                E.set_target(slug, goal_h=one("goal_h"), status=one("status"),
+                # 表单已改成时/分/秒三个框；goal_h 留给旧页面与 CLI
+                _gh = one("goal_h")
+                if not _gh and (one("goal_hh") or one("goal_mm") or one("goal_ss")):
+                    try:
+                        _gh = str(float(one("goal_hh") or 0)
+                                  + float(one("goal_mm") or 0) / 60
+                                  + float(one("goal_ss") or 0) / 3600)
+                    except ValueError:
+                        raise ValueError("目标完赛要填数字") from None
+                E.set_target(slug, goal_h=_gh, status=one("status"),
                              start_time=one("start_time"))
             elif u.path == "/__event/fuel":
                 E.set_fuel(slug, carb_g_h=one("carb_g_h"), fluid_ml_h=one("fluid_ml_h"),
@@ -576,7 +585,22 @@ class _Handler(SimpleHTTPRequestHandler):
         except Exception as e:                    # noqa: BLE001
             return self._json(
                 {"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+        # 判读结果落盘：切出页面再回来要能接着看（照片本身不进磁盘）
+        try:
+            from . import posturestore as _PS
+            _PS.save_result(move, res)
+        except Exception:                          # noqa: BLE001
+            pass                                   # 存历史失败不该让判读白跑
         return self._json({"ok": True, "result": res})
+
+    def _posture_clear(self, u) -> None:
+        """清空本机的判读记录（照片本来就没存）。"""
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        from . import posturestore as PS
+
+        PS.clear()
+        return self._json({"ok": True})
 
     def _posture_plan(self, u) -> None:
         """把已完成的几张判读合成一页：逐项摘要 + 一份统一方案。
@@ -893,6 +917,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._posture_assess(u)
         if u.path == "/__posture/plan":
             return self._posture_plan(u)
+        if u.path == "/__posture/clear":
+            return self._posture_clear(u)
         if u.path == "/__files/delete":
             # 产物页的批量删除。放在 gate 之前反而更安全：这里自己做本机校验，
             # 不带访问码的局域网访客一律 403。
