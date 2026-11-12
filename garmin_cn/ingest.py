@@ -59,77 +59,180 @@ def _dur(s: str) -> int | None:
 
 
 def _norm_digits(s: str) -> str:
-    """全角数字/冒号转半角：规程里混排很常见，转一次省掉后面所有兼容代码。"""
+    """全角转半角（数字、字母、标点、全角空格）。
+
+    规程里「ＣＰ１　１０.９ｋｍ」这种混排很常见，转一次省掉后面所有兼容代码。
+    注意要连字母一起转：只转数字时「ｋｍ」不是「km」，里程单位就认不出来。
+    """
     out = []
     for ch in s:
         o = ord(ch)
-        if 0xFF10 <= o <= 0xFF19:
-            out.append(chr(o - 0xFF10 + ord("0")))
-        elif ch in "．。：" and ch != "。":
-            out.append(":" if ch == "：" else ".")
+        if 0xFF01 <= o <= 0xFF5E:
+            out.append(chr(o - 0xFF01 + 0x21))
+        elif ch == "\u3000":
+            out.append(" ")
         else:
             out.append(ch)
     return "".join(out)
 
 
 # ---------------------------------------------------------------- 从文本导入
+#
+# 不用大模型，但也不能只会认一种排版。规程里的 CP 表至少有四种写法：
+#   CP1 仙山雅宿 10.9km 关门 08:05      （最理想）
+#   CP1  仙山雅宿  10.9  515  08:05  有水（制表符 + 多列，单位全省）
+#   CP1 仙山雅宿 07:30-08:05 关门        （开放 + 关门两个时间）
+#   CP1 山顶 12.5 公里 2小时30分         （时长制）
+# 做法是「先摘数、再摘名」：把时间/时长/里程从行里挖出来，剩下的文字就是地名。
+# 这样比一条大正则可读，也能容纳多出来的列（爬升、补给、备注）。
 
-_CP_PAT = re.compile(
-    r"(?:CP|cp|Cp|检查点|打卡点)\s*0*(\d{1,2})\s*[.、:：\-—]?\s*"
-    r"([^\d\n]{0,24}?)\s*"
-    r"([\d]+(?:\.\d+)?)\s*(?:km|KM|Km|公里|千米)\s*"
-    r"([^\n]{0,14}?)"
-    r"(\d{1,2}[:：.]\d{2}|[\d.]+h\d*|\d{2,4}(?:min|分钟))",
-)
+_STOP_NAMES = ("总距离", "累计", "爬升", "下降", "关门", "起跑", "发枪", "日期",
+               "海拔", "补给", "换装", "号码", "报名", "规程", "组别", "时限",
+               "距离", "里程", "费用", "名额", "人数", "项目", "检查点")
 
-# 没有 CP 前缀的表格行：「仙山雅宿 10.9 08:05」
-_ROW_PAT = re.compile(
-    r"^\s*(?:0*(\d{1,2})\s*[.、]?\s+)?([^\d\n]{2,20}?)\s+"
-    r"([\d]+(?:\.\d+)?)\s*(?:km|KM|公里)?\s+"
-    r"(\d{1,2}[:：.]\d{2}|[\d.]+h\d*)\s*$",
-)
+# 地名后面容易粘上的列值/表头词，遇到就截断
+_NAME_CUT = ("关门", "开放", "截止", "时间", "补给", "有水", "无水", "热食",
+             "饮水", "厕所", "换装", "爬升", "下降", "备注", "累计")
+
+_CLOCK = re.compile(r"(?<!\d)(\d{1,2}):(\d{2})(?!\d)")
+_DUR = re.compile(r"(?<!\d)(\d{1,2})\s*(?:小时|h|H)\s*(?:(\d{1,2})\s*分?)?"
+                  r"|(?<!\d)(\d{2,4})\s*(?:min|分钟)")
+_KM_UNIT = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d{1,2})?)\s*(?:km|KM|Km|公里|千米)")
+# 只删「两边都是分隔符」的数字，避免把「2026年新设站」里的年份删掉
+_LOOSE_NUM = re.compile(r"(?<=[\s\t|,;])\d{1,4}(?:\.\d{1,2})?(?=[\s\t|,;]|$)")
+_IDX = re.compile(r"^\s*(?:CP|cp|Cp|检查点|打卡点|点位)\s*0*(\d{1,3})\b")
+_IDX_TAIL = re.compile(r"(?:CP|cp|检查点|打卡点)\s*0*(\d{1,3})\s*$")
+# 「约 10.5-11.2km」这种区间：统一取上界，且把整段区间从行里抹掉，
+# 否则「约10.5」会被当成地名的一部分（实测出现过「仙山雅宿约105」）
+_RANGE = re.compile(r"(?:约|大约)?\s*\d{1,3}(?:\.\d{1,2})?\s*[-~—至到]\s*"
+                    r"(\d{1,3}(?:\.\d{1,2})?)\s*(?=(?:km|KM|公里|千米))")
+# PDF 双列抽出后常见的「关门单独一行」：只有时间、没有里程
+_BARE_CLOCK = re.compile(r"^\s*(?:关门|关门时间|截止|close)\s*[:：]?\s*"
+                         r"(\d{1,2}):(\d{2})")
+
+
+def _parse_row(line: str) -> dict | None:
+    """把一行解析成 {idx, name, km, cutoff}；不是 CP 行就返回 None。
+
+    宁可返回 None，也不要返回一行猜出来的数据——人行里带个「总距离」这种
+    表头行，如果被当成 CP1，整张余量表就全错。
+    """
+    s0 = _norm_digits(line).replace("\u3000", " ").strip()
+    if not s0 or len(s0) < 4:
+        return None
+
+    # 区间先归一：取上界，并把区间抹成单个数字
+    s0 = _RANGE.sub(lambda mm: mm.group(1), s0)
+
+    idx = None
+    m = _IDX.match(s0)
+    if m:
+        idx = int(m.group(1))
+    else:
+        m = re.match(r"^\s*0*(\d{1,2})\s*[.、)）]\s+", s0)
+        if m:
+            idx = int(m.group(1))
+        else:
+            m = _IDX_TAIL.search(s0)          # 编号写在行尾的表格
+            if m:
+                idx = int(m.group(1))
+
+    # 时间：范围写法取**最后一个**（规程里几乎都是「开放-关门」的顺序；
+    # 取第一个会把开放时间当关门，余量凭空多出半小时以上）
+    clocks = [(int(a), int(b)) for a, b in _CLOCK.findall(s0)]
+    durs = []
+    for mm in _DUR.finditer(s0):
+        if mm.group(1):
+            h, mi = int(mm.group(1)), int(mm.group(2) or 0)
+            if h <= 47 and mi <= 59:
+                durs.append(h * 3600 + mi * 60)
+        elif mm.group(3):
+            durs.append(int(mm.group(3)) * 60)
+
+    if not _KM_UNIT.search(s0) and not re.search(r"(?<![\d.])\d{1,3}(?:\.\d{1,2})?(?![\d.])", _CLOCK.sub(" ", s0)):
+        bc = _BARE_CLOCK.match(s0)
+        if bc:
+            h, mi = int(bc.group(1)), int(bc.group(2))
+            if 0 <= h <= 23 and 0 <= mi <= 59:
+                return {"bare_clock": "%02d:%02d" % (h, mi)}
+
+    rest = _CLOCK.sub(" ", s0)
+    rest = _DUR.sub(" ", rest)
+    # 编号必须先摘掉：否则「CP1」里的 1 会被当成 1 km（实测踩过）
+    rest = _IDX.sub(" ", rest)
+    rest = _IDX_TAIL.sub(" ", rest)
+
+    kms = [float(x) for x in _KM_UNIT.findall(s0)]
+    rest = _KM_UNIT.sub(" ", rest)
+    if not kms:
+        # 没有单位的表格（制表符分隔）：取第一个 0–200 的独立数字当里程
+        for mm in re.finditer(r"(?<![\d.])(\d{1,3}(?:\.\d{1,2})?)(?![\d.])", rest):
+            v = float(mm.group(1))
+            if 0 < v <= 200:
+                kms = [v]
+                rest = rest[:mm.start()] + " " + rest[mm.end():]
+                break
+    rest = _LOOSE_NUM.sub(" ", rest)
+
+    name = re.sub(r"[^A-Za-z0-9\u4e00-\u9fa5·（）()+\-\s]", "", rest).strip()
+    if re.search(r"[\u4e00-\u9fa5]", name):
+        name = re.sub(r"\s+", "", name)      # 中文地名里的空格是无意义的
+    else:
+        name = re.sub(r"\s{2,}", " ", name).strip(" -+()")
+    name = name.strip("·-+()（）")
+    # 多出来的列（「有水」「热食」）和表头词会粘在地名后面，在关键字处截断
+    for w in _NAME_CUT:
+        if w in name:
+            name = name.split(w)[0].strip("·-+()（）")
+            break
+    if not name or len(name) > 24:
+        return None
+    if idx is None and any(w in name for w in _STOP_NAMES):
+        return None                      # 表头行，别当 CP
+    if not kms:
+        return None
+    if idx is None and not (clocks or durs):
+        return None                      # 既没编号也没时间，不像 CP 行
+
+    if durs:
+        d = durs[-1]
+        cutoff = "%dh%02d" % (d // 3600, d % 3600 // 60) if d >= 3600 else "%dm" % (d // 60)
+    elif clocks:
+        h, mi = clocks[-1]
+        if not (0 <= h <= 23 and 0 <= mi <= 59):
+            return None
+        cutoff = "%02d:%02d" % (h, mi)
+    else:
+        cutoff = None
+    return {"idx": idx, "name": name, "km": round(kms[0], 2), "cutoff": cutoff}
 
 
 def from_text(text: str, ev: dict | None = None) -> dict:
     """从一段规程文字里抽赛事与 CP 表。
 
-    只认「CP 序号 + 地名 + 里程 + 关门」这一种结构，认不出来就返回空表——
+    逐行解析，认不出来的行直接跳过；整段认不到 2 个 CP 就返回空表——
     宁可让人手填，也不要猜出一份看起来合理、跑起来要命的赛道。
     """
     ev = ev or {}
     raw = _norm_digits(text or "")
     segs, seen = [], set()
-
-    for m in _CP_PAT.finditer(raw):
-        idx = int(m.group(1))
+    for line in raw.splitlines():
+        row = _parse_row(line)
+        if not row:
+            continue
+        if row.get("bare_clock"):
+            # PDF 抽出后「关门 08:05」常常单独一行：挂到上一个还没关门的 CP 上
+            for prev in reversed(segs):
+                if not prev["cutoff"]:
+                    prev["cutoff"] = row["bare_clock"]
+                    break
+            continue
+        idx = row["idx"] or (len(segs) + 1)
         if idx in seen or idx < 1 or idx > 60:
             continue
-        name = re.sub(r"\s+", "", m.group(2) or "").strip(" .·、-—")
-        km = float(m.group(3))
-        cut = m.group(5)
-        if not (0 < km <= 400) or not name or len(name) > 20:
-            continue
         seen.add(idx)
-        segs.append({"idx": idx, "name": name, "km": round(km, 2),
-                     "cutoff": cut, "cutoff_day": 1, "source": "text"})
-
-    if len(segs) < 2:                       # 退回「无 CP 前缀的表格行」
-        segs, seen = [], set()
-        for line in raw.splitlines():
-            m = _ROW_PAT.match(line)
-            if not m:
-                continue
-            idx = int(m.group(1) or (len(segs) + 1))
-            name = re.sub(r"\s+", "", m.group(2)).strip(" .·、-—")
-            km = float(m.group(3))
-            if not (0 < km <= 400) or not name or km > 400:
-                continue
-            if idx in seen:
-                continue
-            seen.add(idx)
-            segs.append({"idx": idx, "name": name, "km": round(km, 2),
-                         "cutoff": m.group(4), "cutoff_day": 1, "source": "text"})
-
+        segs.append({"idx": idx, "name": row["name"], "km": row["km"],
+                     "cutoff": row["cutoff"], "cutoff_day": 1, "source": "text"})
     segs.sort(key=lambda x: x["idx"])
 
     # 日期：2027-03-27 / 2027年3月27日
