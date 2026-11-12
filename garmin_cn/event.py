@@ -370,6 +370,139 @@ def set_cps(slug: str | None, changes: dict) -> dict:
     return course
 
 
+# ---------------------------------------------------------------- 赛中状态
+
+# 赛中不写 event.json：比赛当天数据要能一键清空重来，单独一个文件更干净。
+# {"start": "2027-03-27T06:00:00", "passed": {"1": "2027-03-27T08:12:00", ...}}
+RACE_ACTIONS = ("start", "pass", "unpass", "reset", "finish")
+
+
+def race_state(slug: str | None = None) -> dict:
+    slug = slug or SEED_EVENT["slug"]
+    st = _read(slug, "race.json") or {}
+    st.setdefault("start", None)
+    st.setdefault("passed", {})
+    st.setdefault("finished", None)
+    return st
+
+
+def set_race(slug: str | None, action: str, idx: int | None = None,
+             at: dt.datetime | None = None) -> dict:
+    """赛中打点：开始 / 到达 / 撤销 / 重置 / 完赛。
+
+    `at` 只在测试里用；正常从手机时钟取 now()。
+    """
+    slug = slug or SEED_EVENT["slug"]
+    if action not in RACE_ACTIONS:
+        raise ValueError("未知的赛中操作：%s" % action)
+    st = race_state(slug)
+    now = at or dt.datetime.now().replace(microsecond=0)
+
+    if action == "reset":
+        st = {"start": None, "passed": {}, "finished": None}
+    elif action == "start":
+        st["start"] = now.isoformat(timespec="seconds")
+        st["passed"] = {}
+        st["finished"] = None
+    else:
+        if not st.get("start"):
+            raise ValueError("还没开始比赛，先点「开始」")
+        if action in ("pass", "unpass") and idx is None:
+            raise ValueError("要点名哪个 CP")
+        if action == "pass":
+            st["passed"][str(int(idx))] = now.isoformat(timespec="seconds")
+            # 点完最后一个 CP 视为完赛
+            last = max(int(k) for k in st["passed"])
+            if last == len(load_course(slug)["segments"]):
+                st["finished"] = now.isoformat(timespec="seconds")
+        elif action == "unpass":
+            st["passed"].pop(str(int(idx)), None)
+            st["finished"] = None
+        elif action == "finish":
+            st["finished"] = now.isoformat(timespec="seconds")
+    _write(slug, "race.json", st)
+    return st
+
+
+def race_projection(slug: str | None = None,
+                    now: dt.datetime | None = None) -> dict:
+    """赛中预测：用实际到达时间重算剩余 CP 的到达与余量。
+
+    关键：所有比较都换算成**相对起点的用时**再相减，不直接减绝对时刻。
+    否则手机是 2026 年、计划是 2027 年时，落后量会被算成几千小时（真踩过）。
+    """
+    slug = slug or SEED_EVENT["slug"]
+    ev = load_event(slug)
+    st = race_state(slug)
+    rows = plan_and_margin(slug)
+    plan_start = dt.datetime.combine(dt.date.fromisoformat(ev["date"]),
+                                     dt.time(*map(int, ev["start_time"].split(":"))))
+    start = dt.datetime.fromisoformat(st["start"]) if st.get("start") else plan_start
+    now = (now or dt.datetime.now()).replace(microsecond=0)
+    goal_s = int(ev.get("goal_s") or 22 * 3600)
+
+    passed = {int(k): dt.datetime.fromisoformat(v) for k, v in (st["passed"] or {}).items()}
+    last_idx = max(passed) if passed else 0
+    last_actual = passed.get(last_idx)
+
+    def plan_sec(idx: int) -> float:
+        r = next((x for x in rows if x["idx"] == idx), None)
+        return (r["arrive"] - plan_start).total_seconds() if r else 0.0
+
+    # 落后量 = 实际用时 - 计划用时（同一基准，与年份无关）
+    delay_s = 0.0
+    warn = ""
+    if last_idx and last_actual:
+        delay_s = (last_actual - start).total_seconds() - plan_sec(last_idx)
+        if abs(delay_s) > 24 * 3600:
+            # 超过一天基本只剩一种可能：比赛日期/手机时钟对不上
+            warn = "时间基准异常（落后量超过 24 h），请检查比赛日期与手机时间"
+            delay_s = 0.0
+
+    # 保目标所需倍率：剩余计划用时 / 剩余可用时间
+    if last_idx:
+        remaining_plan_s = goal_s - plan_sec(last_idx)
+        remaining_budget_s = goal_s - (last_actual - start).total_seconds()
+    else:
+        remaining_plan_s = goal_s
+        remaining_budget_s = goal_s - max(0.0, (now - start).total_seconds())
+    if remaining_budget_s <= 0:
+        req_factor = None
+    elif remaining_plan_s <= 0:
+        req_factor = 1.0
+    else:
+        req_factor = remaining_plan_s / max(1.0, remaining_budget_s)
+
+    out = []
+    for r in rows:
+        done = r["idx"] in passed
+        actual = passed.get(r["idx"])
+        p_sec = (r["arrive"] - plan_start).total_seconds()
+        proj = start + dt.timedelta(seconds=p_sec + delay_s)
+        delta = ((actual - start).total_seconds() - p_sec) if done else delay_s
+        at = actual if done else proj
+        out.append({
+            "idx": r["idx"], "name": r["name"], "km": r["km"],
+            "cutoff": r["cutoff"], "planned": r["arrive"],
+            "actual": actual, "projected": proj,
+            "delta_s": delta, "margin_s": (r["cutoff"] - at).total_seconds(),
+            "done": done, "dropbag": r["dropbag"],
+        })
+
+    return {
+        "state": ("finished" if st.get("finished") else
+                  ("racing" if st.get("start") else "pre")),
+        "start": start, "now": now,
+        "elapsed_s": max(0.0, (now - start).total_seconds()),
+        "last_idx": last_idx, "last_actual": last_actual,
+        "delay_s": delay_s, "warn": warn, "rows": out,
+        "goal_at": start + dt.timedelta(seconds=goal_s),
+        "req_factor": req_factor,
+        "passed_count": len(passed), "total": len(rows),
+        "finished": st.get("finished"),
+    }
+
+
 # ---------------------------------------------------------------- 补给计划
 
 # 默认补给参数：碳水按 105K 的实战区间取 75 g/h（训练期 60，比赛日 75–90）；

@@ -4255,6 +4255,33 @@ def run() -> int:
             assert sum(1 for _r in _fp["rows"] if _r["dropbag"]) == 1, \
                 "换装点数量不对（105K 只有一个）"
 
+            # 赛中预测：用相对用时算落后量，年份不同也不能算出几千小时
+            _slug = _EV.SEED_EVENT["slug"]
+            _orig = _EV._read(_slug, "race.json")
+            _base = dt.datetime(2027, 3, 27, 6, 0)
+            try:
+                _EV.set_race(None, "reset")
+                _EV.set_race(None, "start", at=_base)
+                _EV.set_race(None, "pass", 1, at=_base + dt.timedelta(hours=2, minutes=8))
+                _EV.set_race(None, "pass", 2, at=_base + dt.timedelta(hours=4, minutes=32))
+                _pr = _EV.race_projection(now=_base + dt.timedelta(hours=9, minutes=15))
+                assert _pr["state"] == "racing" and _pr["passed_count"] == 2
+                assert abs(_pr["delay_s"] / 60 - 21) <= 2, \
+                    f"落后量算错了：{_pr['delay_s'] / 60:.0f} min（期望约 21）"
+                assert 0.9 < (_pr["req_factor"] or 0) < 1.2, \
+                    f"保目标倍率不合理：{_pr['req_factor']}"
+                assert _pr["rows"][2]["done"] is False, "没过的 CP 不该标成已完成"
+                _p1 = _pr["rows"][0]
+                assert _p1["done"] and _p1["actual"] is not None, "已过的 CP 没有实际到达时间"
+            finally:
+                if _orig:
+                    _EV._write(_slug, "race.json", _orig)
+                else:
+                    import os as _os
+                    _p = _EV._dir(_slug) / "race.json"
+                    if _p.exists():
+                        _os.remove(_p)
+
             # 校验：非法目标 / 非法库存必须抛 ValueError，不能悄悄写坏数据
             for _bad in ({"status": "zzz"}, {"goal_h": 99}, {"start_time": "25:00"}):
                 try:
