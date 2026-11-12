@@ -143,6 +143,16 @@ def _ctx_fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+# 点评的提示词口径一变就加这个号：指纹里带上它，旧缓存会自然失效。
+# 之前提示词写得太像「正文」，模型把「写 90 到 140 字、引用具体数字、不复述处方」
+# 当成点评内容回显，看板上直接把写作要求摊给用户看了。
+NOTE_PROMPT_VER = 2
+
+
+def _note_fp(ctx: str) -> str:
+    return _ctx_fingerprint(f"note-v{NOTE_PROMPT_VER}|{ctx}")
+
+
 def _cache_path(kind: str, date: str) -> Path:
     return CACHE_DIR / f"{kind}-{date}.json"
 
@@ -252,8 +262,11 @@ def daily_advice(date: str | None = None, force: bool = False) -> dict:
 
 
 # ---------------------------------------------------------------- 教练点评
-NOTE_SYSTEM = """你是 RunnerCoach 的跑步教练。现在要写「教练点评」——
-看板上一段话，用户扫一眼就知道今天该盯什么。只写正文，不写标题、不加序号。"""
+# 提示词越「像要求」，模型越容易把要求当正文抄回来——长规则版实测会让
+# deepseek 把「写 90 到 140 字、引用数字、不复述处方」整段输出到看板上。
+# 现在只留最短的一句任务，其余靠 _looks_like_echo 兜底。
+NOTE_SYSTEM = ("你是 RunnerCoach 的跑步教练。看下面的数据，用中文写两句话："
+               "今天身体状态如何、最该注意什么。要引用具体数字。只输出这两句正文。")
 
 # 同一日期只允许一个后台任务在跑：看板会被反复打开，不挡住就会
 # 同时发好几个请求，白花钱还互相覆盖缓存。
@@ -293,31 +306,102 @@ def _note_ctx(date: str) -> str:
     return context_markdown(derive(_store(), date))
 
 
+# 模型把「写作要求」当正文回显时，正文里会成片出现这些短语。
+# 真实点评不会同时出现两个以上——它只会说数据。英文的「计划稿」也要拦：
+# 实测同一模型会吐出 "Need: 90-140 characters. Cite at least two…" 这种。
+_ECHO_MARKS = ("90 到 140", "90-140", "引用具体数字", "引用两个", "引用两个上下文",
+               "不要复述", "不复述", "最该注意什么", "输出纯文本", "一句长的或两句",
+               "以下是一段点评", "我来写", "字数要求",
+               "characters", "cite at least", "don't repeat", "concrete numbers",
+               "no meta", "say what to watch", "key data:", "need:")
+
+
+def _looks_like_echo(text: str) -> bool:
+    """判断这段「点评」其实是在复述写作要求、或者在拟提纲。"""
+    t = str(text or "")
+    low = t.lower()
+    if sum(1 for m in _ECHO_MARKS if m in t or m in low) >= 2:
+        return True
+    # 中文点评的汉字占比很高；英文提纲或「计划稿」几乎没有汉字。
+    # 用占比而不是绝对字数：模型偶尔只写五六十字，不该因此被丢掉。
+    if len(t) >= 30:
+        cjk = sum(1 for ch in t if "\u4e00" <= ch <= "\u9fff")
+        return cjk / len(t) < 0.4
+    return False
+
+
+def _fallback_note(date: str) -> str:
+    """模型两次都跑偏时的兜底：用规则引擎的数字拼一句。
+
+    宁可给一句「机器味」的话，也不能把提示词摊给用户看，或者干脆空着——
+    看板上「教练点评」那块空掉，用户只会以为功能坏了。
+    """
+    try:
+        res = derive(_store(), date)
+        sess = brief(res).get("session") or {}
+        r = res.get("readiness") or {}
+        load = res.get("load") or {}
+        sl = res.get("sleep") or {}
+        bits = []
+        if r.get("score") is not None:
+            bits.append(f"恢复度 {r['score']}")
+        if load.get("acwr"):
+            bits.append(f"ACWR {load['acwr']}")
+        if sl.get("total_h"):
+            bits.append(f"昨夜睡眠 {sl['total_h']} 小时")
+        head = "、".join(bits) if bits else "今天的数据还不太全"
+        return (f"{head}；今天的安排是「{sess.get('type') or '按处方'}」，"
+                "别在处方之外加量，先把睡眠和蛋白补上。")[:200]
+    except Exception:
+        return ""
+
+
 def _gen_note(date: str, ctx: str, fp: str, timeout: int = 40) -> dict:
-    """真正调模型写点评。失败返回 ready=False + 原因，不抛。"""
-    instr = f"""以下是跑者今天的数据与规则引擎给出的处方。
+    """真正调模型写点评。失败返回 ready=False + 原因，不抛。
 
-{ctx}
-
-请写一段「教练点评」，输出纯文本（不要 JSON、不要 markdown、不要标题）：
-- 90 到 140 字，一到两句话说完，不分段
-- 至少引用两个上下文里的具体数字，别用「状态不错」这种没有依据的话
-- 说清「以今天这个状态，最该注意什么」
-- 不要复述处方里的时长与配速，那块在看板上已经单独写了"""
+    要求写在 system 里，user 只给数据 + 一句「直接写正文」：
+    上一版把「90 到 140 字、引用数字、不复述处方」全塞进 user 消息，
+    模型直接把它们当内容抄了回来，看板上就出现了写作要求。
+    """
+    user = f"今天的上下文：\n\n{ctx}\n\n直接给出点评正文。"
+    # 重试时别再堆「不要复述要求」这类元指令——上一版就是被这些词带偏，
+    # 模型转头把它们抄进正文。只给数据 + 一句最朴素的写法要求。
+    told = {"role": "user",
+            "content": user + "\n\n（先别管字数，直接用中文写两句给跑者看的话。）"}
     try:
         r = llm.chat([{"role": "system", "content": NOTE_SYSTEM},
-                      {"role": "user", "content": instr}],
-                     max_tokens=320, temperature=0.6, timeout=timeout)
+                      {"role": "user", "content": user}],
+                     max_tokens=320, temperature=0.5, timeout=timeout)
     except llm.LLMError as e:
         bad = e.as_dict()
         return {"ready": False, "error": bad.get("error") or "模型调用失败"}
     text = _clean_note(r["text"])
+    if text and _looks_like_echo(text):
+        # 回显了写作要求：降温度、明确点一下再试一次；还不行就当没写成，
+        # 宁可看板上不出现点评，也不能把提示词摊给用户。
+        try:
+            r2 = llm.chat([{"role": "system", "content": NOTE_SYSTEM},
+                           {"role": "user", "content": told}],
+                          max_tokens=320, temperature=0.2, timeout=timeout)
+            alt = _clean_note(r2["text"])
+            text = alt if alt and not _looks_like_echo(alt) else ""
+            if text:
+                r = r2
+        except llm.LLMError:
+            text = ""
     if not text:
-        return {"ready": False, "error": "模型没有返回内容"}
+        # 两次都没写出能用的：退回规则拼句。空着比出错更糟——看板上
+        # 「教练点评」整块消失，用户会以为功能坏了。
+        fb = _fallback_note(date)
+        if not fb:
+            return {"ready": False, "error": "模型这次没写出能用的点评"}
+        text, model = fb, "规则引擎"
+    else:
+        model = r["model"]
     _cache_write("note", date, fp,
-                 {"text": text, "model": r["model"],
+                 {"text": text, "model": model,
                   "at": dt.datetime.now().strftime("%m-%d %H:%M")})
-    return {"ready": True, "text": text, "model": r["model"],
+    return {"ready": True, "text": text, "model": model,
             "at": dt.datetime.now().strftime("%m-%d %H:%M")}
 
 
@@ -367,7 +451,7 @@ def cached_note(date: str | None = None) -> dict | None:
     if not llm.is_enabled():
         return None
     try:
-        fp = _ctx_fingerprint(_note_ctx(d))
+        fp = _note_fp(_note_ctx(d))
     except Exception:
         return None
     hit = _cache_read("note", d, fp)
@@ -398,7 +482,7 @@ def coach_note(date: str | None = None, *, wait: int = 0,
     except Exception as e:
         base.update(ok=False, error=f"读不到这天的数据：{e}")
         return base
-    fp = _ctx_fingerprint(ctx)
+    fp = _note_fp(ctx)
     base["configured"] = llm.is_configured()
 
     if not force:
