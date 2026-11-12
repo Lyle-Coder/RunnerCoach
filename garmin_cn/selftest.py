@@ -3044,8 +3044,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（1.1.7 → 126）。
-    assert 'versionCode = 126' in (
+    # 每次发版要同步改这里（1.1.8 → 127）。
+    assert 'versionCode = 127' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -4708,6 +4708,28 @@ def run() -> int:
                 raise AssertionError(f"delete_event 没拦住 {_bad!r}")
             except ValueError:
                 pass
+    except ImportError:
+        pass
+
+    # ---- 姿态评估历史：落盘、按动作替换、可清空 ----
+    try:
+        from unittest import mock as _umPT
+        from . import posturestore as _PS
+
+        _pd = Path(tempfile.mkdtemp())
+        with _umPT.patch.object(_PS, "PATH", _pd / "posture.json"):
+            _PS.clear()
+            assert _PS.current() == [], "空库不该有当前结果"
+            _PS.save_result("sls_left", {"move": "sls_left", "name": "左", "checks": {}})
+            _PS.save_result("sls_right", {"move": "sls_right", "name": "右", "checks": {}})
+            assert len(_PS.current()) == 2
+            _PS.save_result("sls_left", {"move": "sls_left", "name": "左2", "checks": {}})
+            assert len(_PS.current()) == 2, "同动作重拍应替换，不该叠加"
+            assert _PS.load()["history"][0]["name"] == "左2", "历史没记最新一次"
+            assert len(_PS.load()["history"]) == 3, "历史应该每次都追加"
+            _PS.clear()
+            assert _PS.current() == [], "清空后还有残留"
+        shutil.rmtree(_pd, ignore_errors=True)
     except ImportError:
         pass
 

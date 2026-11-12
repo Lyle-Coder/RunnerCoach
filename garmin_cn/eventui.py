@@ -30,6 +30,8 @@ CSS = """<style>
 .tag{font-size:10.5px;color:#7F8A97;border:1px solid rgba(127,138,151,.4);
   border-radius:5px;padding:1px 5px}
 .warnbox{color:#D6A75A}
+.hms{display:inline-flex;align-items:center;gap:3px}
+.hms input{width:54px;text-align:center;flex:0 0 auto}
 .cmptitle{font-size:11.5px;color:var(--muted,#7F8A97);margin:10px 0 2px}
 .cmphead,.cmp{display:grid;grid-template-columns:30px minmax(0,1fr) 42px 42px 42px;
   gap:4px;align-items:center;font-size:11.5px;padding:5px 0;
@@ -447,6 +449,12 @@ def _first_run() -> str:
                    back=("AI 教练", "/ai"))
 
 
+def _hms(sec) -> str:
+    """秒 → H:MM:SS。目标完赛以前显示成 12.5h 这种小数，不好读也不好核对。"""
+    t = int(round(float(sec or 0)))
+    return "%d:%02d:%02d" % (t // 3600, t % 3600 // 60, t % 60)
+
+
 def render_page(qs: dict | None = None) -> str:
     qs = qs or {}
 
@@ -469,13 +477,12 @@ def render_page(qs: dict | None = None) -> str:
     # 所有表单都要带上 slug：页面能切赛事后，任何一个表单少这一行都会改错档案
     HID = f'<input type="hidden" name="slug" value="{ui.esc(slug)}">'
 
-    goal_h = (ev.get("goal_s") or 0) / 3600
     dur_txt = ("%gh" % ev["duration_h"]) if ev.get("duration_h") else "—"
     chips = (ui.chip(cd["status_cn"], "ok")
              + (ui.chip(f'倒计时 {cd["days"]} 天') if cd["days"] >= 0
                 else ui.chip(f'已过 {abs(cd["days"])} 天', "gray"))
-             + ui.chip(f'目标 {goal_h:g}h / 关门 {dur_txt}'
-                       if ev.get("duration_h") else f'目标 {goal_h:g}h'))
+             + ui.chip(f'目标 {_hms(ev.get("goal_s"))} / 关门 {dur_txt}'
+                       if ev.get("duration_h") else f'目标 {_hms(ev.get("goal_s"))}'))
 
     # ---- 概览
     overview = (
@@ -581,7 +588,7 @@ def render_page(qs: dict | None = None) -> str:
             if rf is None:
                 need = '<span class="cpm bad">目标已保不住，按关门跑</span>'
             elif rf > 1.05:
-                need = (f'<span class="cpm warn">保 {ev["goal_s"]//3600}h 需提速 {int((rf-1)*100)}%</span>')
+                need = (f'<span class="cpm warn">保 {_hms(ev["goal_s"])} 需提速 {int((rf-1)*100)}%</span>')
             else:
                 need = f'<span class="cpm ok">按现节奏可保目标（需 {rf:.2f}× 配速）</span>'
             head = (f'<span class="rt">已用时 {el}</span>'
@@ -832,8 +839,16 @@ def render_page(qs: dict | None = None) -> str:
         '<details class="fold"><summary>调整目标、状态与起跑时间</summary>'
         '<form class="frm" method="post" action="/__event/target">'
         + HID +
-        '<div class="frow"><label>目标完赛<input class="fi" name="goal_h" type="number" '
-        f'step="0.5" min="10" max="34" value="{ev["goal_s"]/3600:g}"></label>'
+        # 目标完赛：时/分/秒三个框。以前是一个小数（12.5），跑者脑子里是
+        # 「12 小时 30 分」，换算成小数既不好填也不好核对。
+        f'<div class="frow"><label>目标完赛（时:分:秒）<span class="hms">'
+        f'<input class="fi" name="goal_hh" type="number" min="0" max="48" '
+        f'value="{_hms(ev["goal_s"]).split(":")[0]}">:'
+        f'<input class="fi" name="goal_mm" type="number" min="0" max="59" '
+        f'value="{_hms(ev["goal_s"]).split(":")[1]}">:'
+        f'<input class="fi" name="goal_ss" type="number" min="0" max="59" '
+        f'value="{_hms(ev["goal_s"]).split(":")[2]}">'
+        '</span></label>'
         f'<label>状态<select class="fi" name="status">{status_opts}</select></label>'
         '<label>起跑<input class="fi" name="start_time" value="'
         f'{ui.esc(ev["start_time"])}"></label></div>'
@@ -1150,7 +1165,7 @@ def cmd(args) -> int:
     dur = ("%g h" % ev["duration_h"]) if ev.get("duration_h") else "未公布"
     print(f"{ev['distance_km']} km / +{ev['ascent_m']:,} m · 总关门 {dur}"
           f" · 倒计时 {(race - today).days} 天")
-    print(f"目标 {(ev.get('goal_s') or 0)/3600:g} h · 装备 {cd['gear_done']}/{cd['gear_total']}")
+    print(f"目标 {_hms(ev.get('goal_s'))} · 装备 {cd['gear_done']}/{cd['gear_total']}")
     print()
     print(E.margins_report(slug))
     return 0
