@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 import re
 
 from . import event as E
@@ -93,6 +94,11 @@ select.fi{appearance:none}
 .dbl li{font-size:11.5px;color:var(--fg,#E8F0FB);padding-left:12px;position:relative}
 .dbl li:before{content:"";position:absolute;left:0;top:6px;width:5px;height:5px;
   border-radius:50%;background:#4FD6A6}
+.prov{font-size:11.5px;color:var(--muted,#7F8A97);line-height:1.7;
+  padding-bottom:9px;margin-bottom:2px;border-bottom:1px solid rgba(255,255,255,.06)}
+.prov b{color:var(--fg,#E8F0FB);font-weight:600}
+.prov b.warn{color:#D6A75A}
+
 /* 调整 */
 .fold{border-top:1px solid rgba(255,255,255,.06);padding:10px 0}
 .fold:first-child{border-top:0;padding-top:0}
@@ -370,8 +376,9 @@ def render_page(qs: dict | None = None) -> str:
         f'<div><b>{dur_txt}</b><span>总关门</span></div>'
         f'<div><b>{len(rows) if cd["has_course"] else "整段"}</b><span>CP 数</span></div>'
         "</div>"
-        f'<div class="sub2">{ui.esc(ev["date"])} {ui.esc(ev["start_time"])} 起跑 · '
-        f'{ui.esc(ev["venue"])}</div>'
+        f'<div class="sub2">{ui.esc(ev.get("date") or "")} '
+        f'{ui.esc(ev.get("start_time") or "")} 起跑'
+        + (f' · {ui.esc(ev["venue"])}' if ev.get("venue") else "") + "</div>"
         + (f'<div class="sub2">{ui.esc(ev["notes"])}</div>' if ev.get("notes") else "")
         # 提醒挂在「有没有余量」上而不是「有没有 CP 表」：在 CP 表里补了关门
         # 之后，这条提示应该自动消失
@@ -618,8 +625,25 @@ def render_page(qs: dict | None = None) -> str:
             f'<input class="fi fi-cut" name="cut_{r["idx"]}" value="{seg.get("cutoff") or ""}" '
             f'inputmode="numeric" aria-label="CP{r["idx"]} 关门"></div>')
 
+    prov = course.get("provenance") or {}
+    src_cn = {"poster-2027": "2027 官方海报", "manual": "手工填写",
+              "text": "从规程文字导入", "gpx": "GPX 解析"}.get(
+                  prov.get("source") or "", prov.get("source") or "")
+    if (prov.get("source") or "").startswith("copy:"):
+        src_cn = "沿用 %s 的赛道" % prov["source"].split(":", 1)[1]
+    prov_html = ""
+    if prov:
+        pend = len(prov.get("checked") or [])
+        prov_html = (f'<div class="prov">赛道数据来源：<b>{ui.esc(src_cn)}</b>'
+                     f' · {ui.esc(prov.get("at") or "")}'
+                     f' · {ui.esc({"user": "本人确认", "ocr": "截图识别",
+                                     "official": "官方页面"}.get(prov.get("by") or "",
+                                                                prov.get("by") or ""))}'
+                     + (f' · <b class="warn">{pend} 项待核对</b>' if pend else " · 无待核对项")
+                     + "</div>")
+
     edit_card = (
-        '<div class="card">'
+        '<div class="card">' + prov_html +
         '<details class="fold"><summary>调整目标、状态与起跑时间</summary>'
         '<form class="frm" method="post" action="/__event/target">'
         + HID +
@@ -711,6 +735,41 @@ def cmd(args) -> int:
         print(E.margins_report(slug, goal_s))
         return 0
 
+    if getattr(args, "check", False) or getattr(args, "import_file", None) \
+            or getattr(args, "from_prev", None):
+        from garmin_cn import ingest as I
+
+        ev = E.load_event(slug)
+        if getattr(args, "check", False):
+            issues = I.validate(ev, E.load_course(ev["slug"]))
+            print("%s · %s" % (ev["name"], I.summary(issues)))
+            print(I.explain(issues))
+            return 1 if I.errors(issues) else 0
+
+        if getattr(args, "from_prev", None):
+            draft = I.from_prev(args.from_prev, ev)
+            print("沿用 %s 的赛道（%d 段）——记得核对改线" % (args.from_prev, len(draft["segments"])))
+        else:
+            try:
+                txt = io.open(args.import_file, encoding="utf-8").read()
+            except OSError as e:
+                print(f"× 读不到文件：{e}")
+                return 2
+            draft = I.from_text(txt, ev)
+            if not draft["segments"]:
+                print("× 没从这段文字里认出 CP 表：需要「CPn 地名 里程 关门」这样的行。"
+                      "宁可手填也不要猜——请把规程里的 CP 表原样贴进来。")
+                return 2
+            print("解析到 %d 个 CP · 总距离 %s km · 爬升 %s"
+                  % (len(draft["segments"]), draft["distance_km"], draft["ascent_m"]))
+        r = I.apply(ev, draft, by="user", force=bool(getattr(args, "force", False)))
+        print(I.explain(r["issues"]))
+        if not r["ok"]:
+            print("× %s。确认无误可加 --force 强制写入" % r["error"])
+            return 1
+        print("√ 已写入 %s（%d 段）" % (ev["slug"], r["n_segments"]))
+        return 0
+
     if getattr(args, "list", False):
         rows = E.list_events()
         nxt = E.nearest_upcoming()
@@ -749,6 +808,13 @@ def add_parser(sub):
     q = sub.add_parser("event", help="赛事档案：关门余量表 / 目标 / 装备 / GPX")
     q.add_argument("slug", nargs="?", help="赛事目录名（默认取「下一场」）")
     q.add_argument("--list", action="store_true", help="列出所有赛事与倒计时")
+    q.add_argument("--check", action="store_true",
+                   help="校验当前赛道的内部一致性与可行性（不改数据）")
+    q.add_argument("--import", dest="import_file", metavar="文件",
+                   help="从一段规程文字导入 CP 表（txt，粘贴即可）")
+    q.add_argument("--from-prev", metavar="SLUG",
+                   help="沿用另一场（通常是上一届）的赛道，标为「需核对」")
+    q.add_argument("--force", action="store_true", help="校验有 error 时仍强制写入")
     q.add_argument("--goal", type=float, metavar="H",
                    help="设置目标完赛小时数并查看余量")
     q.add_argument("--gear", nargs="+", metavar="关键词",
