@@ -291,16 +291,21 @@ def from_prev(src_slug: str, ev: dict | None = None) -> dict:
     """
     from . import event as E
 
+    src_ev = E.load_event(src_slug)
     src = E.load_course(src_slug)
     segs = []
     for s in src.get("segments") or []:
         c = dict(s)
         c["source"] = "copy:%s" % src_slug
         segs.append(c)
+    # 起跑时间与总关门必须一起沿用：CP 表的钟点是「相对起跑」的，
+    # 只抄表不抄起跑时间，08:05 套到 08:00 起跑的赛事上就变成 5 分钟跑 16 km
     return {
         "date": None,
         "distance_km": src.get("distance_km"),
         "ascent_m": src.get("ascent_m"),
+        "start_time": src_ev.get("start_time"),
+        "duration_h": src_ev.get("duration_h"),
         "segments": segs,
         "source": "copy:%s" % src_slug,
     }
@@ -562,6 +567,11 @@ def apply(ev: dict, draft: dict, by: str = "user", force: bool = False) -> dict:
     _walk_days(merged["segments"], merged_ev.get("start_time"))
     estimated = _fill_dplus(merged["segments"], merged_ev.get("ascent_m"))
     issues = validate(merged_ev, merged)
+    if (draft.get("source") or "").startswith("copy:"):
+        issues.append(_issue(
+            "warn", "copied", "segments",
+            "CP 表沿用自 %s（含起跑时间与总关门）：请核对今年是否改线、改关门"
+            % draft["source"].split(":", 1)[1]))
     if estimated:
         issues.append(_issue(
             "warn", "dplus_est", "segments",

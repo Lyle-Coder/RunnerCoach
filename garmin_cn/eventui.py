@@ -70,12 +70,12 @@ CSS = """<style>
 .frow{display:flex;flex-wrap:wrap;gap:8px 10px;margin-bottom:8px}
 /* 标签在上、输入在下：横排时 input 的 width:100% 会把标签挤成一个字一行 */
 .frow label{display:flex;flex-direction:column;align-items:stretch;gap:3px;
-  font-size:11px;color:var(--muted,#7F8A97);flex:1 1 86px;min-width:0}
+  font-size:11px;color:var(--muted,#7F8A97);flex:1 1 0;min-width:0}
 .fi{flex:1 1 auto;min-width:0;width:100%;background:rgba(255,255,255,.05);
   border:1px solid rgba(127,138,151,.28);border-radius:7px;color:var(--fg,#E8F0FB);
   font-size:12px;padding:5px 7px;font-variant-numeric:tabular-nums}
 .fi:focus{outline:none;border-color:#4FD6A6}
-select.fi{appearance:none}
+select.fi{cursor:pointer}
 .fbtns{display:flex;align-items:center;gap:10px;margin-top:4px}
 .fhint{font-size:11px;color:var(--muted,#7F8A97);line-height:1.4}
 .fl{padding:9px 0;border-bottom:1px solid rgba(255,255,255,.05)}
@@ -162,6 +162,15 @@ select.fi{appearance:none}
 .rline2{font-size:11.5px;color:var(--muted,#7F8A97);line-height:1.6;margin-top:1px}
 .rpass{font-size:11.5px;color:#4FD6A6;font-variant-numeric:tabular-nums}
 .rrow.done .rpass{color:var(--muted,#7F8A97)}
+.okbar{margin:0 0 12px;padding:9px 12px;border-radius:9px;font-size:12px;
+  background:rgba(79,214,166,.12);border:1px solid rgba(79,214,166,.4);color:#9FE7C8}
+.hint{font-size:11.5px;color:var(--muted,#7F8A97);line-height:1.75;margin:0 0 10px}
+.ta{width:100%;min-height:118px;background:rgba(255,255,255,.05);border-radius:8px;
+  border:1px solid rgba(127,138,151,.28);color:var(--fg,#E8F0FB);font-size:12px;
+  padding:8px 10px;line-height:1.7;resize:vertical;font-family:ui-monospace,Menlo,monospace}
+.ta:focus{outline:none;border-color:#4FD6A6}
+.ev.add{justify-content:center;border-style:dashed;opacity:.85}
+.ev.add b{font-size:14px}
 .errbar{margin:0 0 12px;padding:9px 12px;border-radius:9px;font-size:12px;
   background:rgba(224,106,95,.12);border:1px solid rgba(224,106,95,.38);color:#F0A9A1}
 </style>"""
@@ -338,6 +347,7 @@ def _event_bar(cur: str) -> str:
             f'<a class="ev{on}" href="/event?slug={e["slug"]}">'
             f'<b>{ui.esc(e["short"])}</b>'
             f'<span>{dtxt}{(" · " + tag) if tag else ""}</span></a>')
+    items.append('<a class="ev add" href="#import"><b>＋</b><span>新建 / 导入</span></a>')
     return '<div class="evbar">' + "".join(items) + "</div>"
 
 
@@ -601,7 +611,9 @@ def render_page(qs: dict | None = None) -> str:
         f'step="1" min="0" max="60" value="{cfg["dropbag_stop_min"]}"></label></div>'
         '<div class="fbtns"><button class="btn primary" type="submit">保存并重算</button>'
         '<span class="fhint">碳水含胶与能量棒；总时长按目标配速推</span></div>'
-        "</form>")
+        "</form>"
+        '<p class="hint">这几个数只影响下面每段的「该吃多少、该背多少水」，'
+        "不会改动余量表。天气热就调高水与钠，长距离前先按实战试一次。</p>")
 
     fuel_card = (
         '<div class="card">'
@@ -654,7 +666,7 @@ def render_page(qs: dict | None = None) -> str:
         f'{ui.esc(ev["start_time"])}"></label></div>'
         '<div class="fbtns"><button class="btn primary" type="submit">保存</button>'
         '<span class="fhint">改目标会立刻重算余量与补给</span></div></form></details>'
-        '<details class="fold"><summary>CP 表（里程 / 关门）</summary>'
+        '<details class="fold"><summary>CP 表 · 里程必须递增，否则整表不保存</summary>'
         '<form class="frm" method="post" action="/__event/course">'
         + HID +
         '<div class="cpe head"><span>CP</span><span>地点</span><span>km</span><span>关门</span></div>'
@@ -664,18 +676,89 @@ def render_page(qs: dict | None = None) -> str:
         "</div>")
 
     err = (qs or {}).get("err", [""])[0] if qs else ""
-    err_bar = (f'<div class="errbar">保存失败：{ui.esc(err)}</div>' if err else "")
+    ok_msg = (qs or {}).get("ok", [""])[0] if qs else ""
+    at = (qs.get("at") or [""])[0] if qs else ""
+    err_bar = (f'<div class="errbar">没成功：{ui.esc(err)}</div>' if err else "")
+    ok_bar = f'<div class="okbar">✓ {ui.esc(ok_msg)}</div>' if ok_msg else ""
 
-    body = (CSS + _event_bar(slug) + err_bar + ui.sec("赛事", overview)
-            + ui.sec("赛道轨迹", track)
-            + ui.sec("赛况与余量" if cd["has_course"] else "赛况", cps)
-            + ui.sec("补给与换装", fuel_card)
-            + ui.sec("强制装备", gears)
-            + ui.sec("调整", edit_card))
+    def _bar(name: str) -> str:
+        """提示条只出现在「用户刚操作的那一块」，而不是页面顶端。
+
+        提交发生在页面底部，303 回到 #fuel 之后顶端那条绿条已经滚出屏幕，
+        用户看不到就等于没有反馈。
+        """
+        if at != name:
+            return ""
+        return err_bar or ok_bar
+
+    # 没有指明区块（例如从别处带参数进来）时，退回顶部显示
+    _ = None
+
+    # ---- 导入 / 新建：手机上从零建一场、或把规程里的 CP 表贴进来
+    others = [e for e in E.list_events() if e["slug"] != slug]
+    prev_opts = "".join(
+        f'<option value="{e["slug"]}">{ui.esc(e["short"])}（{e["date"]}）</option>'
+        for e in others)
+    prev_block = (
+        '<p class="hint">多数比赛每年改线：沿用后请核对 CP 里程，差 1 km 以上会在'
+        "余量表里标红。</p>"
+        '<form class="frm" method="post" action="/__event/prev">'
+        + HID +
+        (f'<div class="frow"><label>沿用哪一场<select class="fi" name="from">'
+         f'{prev_opts}</select></label></div>'
+         '<div class="fbtns"><button class="btn" type="submit">沿用它的 CP 表</button>'
+         '<span class="fhint">会覆盖当前赛道的 CP 与关门</span></div></form>'
+         if others else '<div class="sub2">还没有别的赛事可以沿用。</div>'))
+
+    import_card = (
+        '<p class="hint">三件事按顺序：先建一场 → 再把规程里的 CP 表贴进来 → '
+        "核对一遍。全在手机上完成，不用回电脑。</p>"
+        '<details class="fold"><summary>① 新建一场赛事（只要名字、日期、距离）</summary>'
+        '<form class="frm" method="post" action="/__event/new">'
+        '<div class="frow"><label>赛事名<input class="fi" name="name" '
+        'placeholder="例：2027 崇礼 168 · 70K"></label></div>'
+        '<div class="frow"><label>日期<input class="fi" name="date" '
+        'placeholder="2027-07-10" inputmode="numeric"></label>'
+        '<label>距离 km<input class="fi" name="distance_km" type="number" '
+        'step="0.1" min="1" max="400" placeholder="70"></label>'
+        '<label>爬升 m<input class="fi" name="ascent_m" type="number" step="10" '
+        'min="0" placeholder="3200"></label></div>'
+        '<div class="frow"><label>起跑<input class="fi" name="start_time" '
+        'value="08:00"></label><label>级别<select class="fi" name="priority">'
+        '<option value="A">A · 主赛</option><option value="B">B · 有成绩要求</option>'
+        '<option value="C" selected>C · 训练赛</option></select></label></div>'
+        '<div class="fbtns"><button class="btn primary" type="submit">建好这一场</button>'
+        '<span class="fhint">目标时间按距离先给个初值，之后能改</span></div></form></details>'
+
+        '<details class="fold"><summary>② 粘贴规程里的 CP 表（一次认 11 个 CP）</summary>'
+        '<p class="hint">整段粘贴最稳：每行一个「CPn 地名 里程 关门」，'
+        "制表符、全角、时长制都能认；认不出会直接说没认出来，不会瞎猜。</p>"
+        '<form class="frm" method="post" action="/__event/import">'
+        + HID +
+        '<textarea class="ta" name="text" rows="7" placeholder='
+        '"CP1 仙山雅宿 10.9km 关门 08:05&#10;CP2 冰川瀑布景区 22.3km 关门 10:10">'
+        "</textarea>"
+        '<div class="fbtns"><button class="btn primary" type="submit">解析并写入</button>'
+        '<span class="fhint">写入前会过一遍校验，有错不会覆盖现有数据</span></div></form>'
+        "</details>"
+
+        '<details class="fold"><summary>③ 或者直接沿用上一届的赛道</summary>'
+        + prev_block + "</details>")
+
+    top_bar = "" if at else (err_bar or ok_bar)
+    body = (CSS + _event_bar(slug) + top_bar + ui.sec("赛事", overview)
+            + ui.sec("赛道轨迹", _bar("track") + track, anchor="track")
+            + ui.sec("赛况与余量" if cd["has_course"] else "赛况",
+                     _bar("race") + cps, anchor="race")
+            + ui.sec("补给与换装", _bar("fuel") + fuel_card, anchor="fuel")
+            + ui.sec("强制装备", _bar("gear") + gears, anchor="gear")
+            + ui.sec("调整", _bar("adjust") + edit_card, anchor="adjust")
+            + ui.sec("新建与导入", _bar("import") + import_card, anchor="import"))
 
     subtitle = ev.get("short") or ev.get("name") or "赛事"
-    sub3 = ("赛前理解赛道：关门余量、轨迹剖面、装备进度"
-            if cd["has_course"] else "本场没有 CP 表：只算总用时、补给与装备")
+    sub3 = ("看余量 · 赛中打点 · 勾装备 · 每一块都能改"
+            if cd["has_course"] else
+            "本场没有 CP 表：只看总用时、补给与装备（可粘贴规程补上）")
     return ui.page("EVENT · 赛事", subtitle,
                    sub3,
                    body + SWIPE_JS, chips=chips, back=("返回今日", "/"))

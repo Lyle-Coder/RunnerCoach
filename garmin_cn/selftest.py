@@ -4363,6 +4363,21 @@ def run() -> int:
             # 口语描述没有结构，必须拒绝，不能猜
             assert _IN.from_text("第一个点大概 11 公里，8 点多关门")["segments"] == []
 
+            # 新建 + 沿用上一届：日期容错，且起跑/总关门要一起沿用
+            _ne = _EV.new_event("校验用新赛事", "2027/7/10", 70, 3200)
+            try:
+                assert _ne["date"] == "2027-07-10", f"日期容错失效：{_ne['date']}"
+                _dp = _IN.from_prev(_P, _ne)
+                assert _dp["start_time"] and _dp["duration_h"], \
+                    "沿用上一届时没带上起跑时间/总关门——时间表套上去会变成不可能的速度"
+                _ra = _IN.apply(_ne, _dp)
+                assert _ra["ok"], _IN.explain(_ra["issues"])
+                assert _EV.load_event(_ne["slug"])["start_time"] == _EV.load_event(_P)["start_time"]
+                assert any(i["code"] == "copied" for i in _ra["issues"]), \
+                    "沿用后没有「待核对」提醒"
+            finally:
+                _shutil.rmtree(_EV._dir(_ne["slug"]), ignore_errors=True)
+
             # apply：有 error 必须拒绝写入，且不动现有文件
             _tmp = _EV.EVENTS / "_selftest-ingest"
             try:

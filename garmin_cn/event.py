@@ -374,6 +374,50 @@ def load_event(slug: str | None = None) -> dict:
     return ev
 
 
+def new_event(name: str, date: str, distance_km: float,
+              ascent_m: int | None = None, start_time: str = "08:00",
+              duration_h: float | None = None, priority: str = "C",
+              goal_s: int | None = None) -> dict:
+    """从零建一场赛事。只要求名字 + 日期 + 距离，其余能推就推。
+
+    slug 用日期生成（race-2027-05-01），同一天再建就加 -2：
+    中文名字转拼音得不偿失，日期 slug 既稳定又一眼能看出是哪场。
+    """
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("赛事名不能为空")
+    # 手机上打日期很随意：2027-5-1 / 2027/7/10 / 2027.7.10 / 2027年7月10日 都认
+    m = re.search(r"(20\d{2})\D{0,2}(\d{1,2})\D{0,2}(\d{1,2})", str(date or ""))
+    try:
+        d = dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+    except (TypeError, ValueError):
+        d = None
+    if not d:
+        raise ValueError("日期要写成 2027-05-01")
+    if not 1 <= float(distance_km) <= 400:
+        raise ValueError("距离要在 1–400 km 之间")
+    base = "race-%s" % d.isoformat()
+    slug, n = base, 2
+    while (_dir(slug) / "event.json").exists():
+        slug, n = "%s-%d" % (base, n), n + 1
+    ev = {
+        "slug": slug, "name": name, "short": name[:10],
+        "status": "confirmed", "date": d.isoformat(),
+        "start_time": start_time or "08:00",
+        "cutoff_time": None, "duration_h": duration_h,
+        "distance_km": round(float(distance_km), 1),
+        "ascent_m": int(ascent_m or 0),
+        "descent_m": int(ascent_m or 0),
+        "venue": "", "priority": priority or "C",
+        "role": {"A": "主赛", "B": "B 级目标赛"}.get(priority, "训练赛"),
+        "goal_s": int(goal_s or (float(distance_km) * 0.16 * 3600)),
+        "gear_due_days": 3, "source": "manual",
+    }
+    _write(slug, "event.json", ev)
+    seed_gear(slug)
+    return ev
+
+
 def _synthetic_course(ev: dict) -> dict:
     """没有 CP 表时的单段赛道：整场算一段，只用于补给与总用时。
 
