@@ -3044,8 +3044,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（1.1.3 → 122）。
-    assert 'versionCode = 122' in (
+    # 每次发版要同步改这里（1.1.4 → 123）。
+    assert 'versionCode = 123' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -4697,6 +4697,19 @@ def run() -> int:
     ):
         assert _needle in (ROOT / _f).read_text(encoding="utf-8"), \
             f"{_what} 没有入口：页面能渲染，但用户点不进去"
+
+    # ---- 删除赛事：只认 EVENTS 下一层、且确实有 event.json ----
+    # 删除是不可逆的，服务端这几个拒绝条件不能只靠 UI 那层两步确认。
+    try:
+        from . import event as _EVD
+        for _bad in ("..", "a/b", "", "a\\b", "."):
+            try:
+                _EVD.delete_event(_bad)
+                raise AssertionError(f"delete_event 没拦住 {_bad!r}")
+            except ValueError:
+                pass
+    except ImportError:
+        pass
 
     # ---- 姿态评估：模板自洽 + 模型输出收敛 ----
     try:
