@@ -689,6 +689,39 @@ def build_html(res: dict, sync_at: str | None = None,
         plan_title = f'<b>{esc(plan_name)}</b>' + (f' · {esc(phase)}' if phase else '')
         week_body = _week_cells(plan, res["date"], done_by_day)
 
+    # 教练横带：赛事倒计时 + 关门预警 + 装备进度（缺数据/异常时整行不画）
+    coach_html = ""
+    try:
+        from . import event as _event
+        cd = _event.countdown(today=d)
+        goal_h = cd["goal_h"]
+        tight = cd["tightest"]
+        # 没有 CP 表 / 没有官方关门的赛事（43K、全马）tight 为 None：只给倒计时
+        tight_txt, warn = "", ""
+        if tight:
+            tm = int(tight["margin_s"])
+            t_sign = "+" if tm >= 0 else "-"
+            if abs(tm) >= 3600:
+                t_txt = f"{t_sign}{abs(tm)//3600}h{abs(tm)%3600//60:02d}m"
+            else:
+                t_txt = f"{t_sign}{abs(tm)//60}m"
+            tight_txt = (f'⚠CP{tight["idx"]} {esc(tight["name"])} {t_txt}'
+                         if tm < 6 * 3600 else "")
+            warn = ' class="warn"' if tm < 0 else ""
+        gear_txt = (f'装备 {cd["gear_done"]}/{cd["gear_total"]}'
+                    if cd["gear_total"] else "")
+        dur_txt = f'{cd["duration_h"]}h' if cd["duration_h"] else "—"
+        coach_html = (
+            '<div class="coach">'
+            f'<em>🏔 {esc(cd["short"])}</em>'
+            f'<span class="cd">{esc(cd["status_cn"])} · <b>{cd["days"]}</b> 天</span>'
+            f'<span>{cd["dist"]:.1f} km +{cd["ascent"]:,} · {goal_h:g}h / 关门 {dur_txt}</span>'
+            + (f'<span{warn}>{tight_txt}</span>' if tight_txt else "")
+            + (f'<span class="gear">{gear_txt}</span>' if gear_txt else "")
+            + "</div>")
+    except Exception:
+        coach_html = ""
+
     return f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width={W},initial-scale=1,viewport-fit=cover">
 <style>
@@ -767,6 +800,14 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .flags{{grid-column:2;grid-row:2}}
 .tcard{{grid-column:2;grid-row:3}}
 .plan-card{{margin-top:14px}}
+.coach{{display:flex;align-items:baseline;gap:13px;margin-top:11px;
+  padding:9px 14px;background:#1A2129;border:1px solid #2B3A4E;border-radius:12px;
+  font-size:18px;color:#9AA5B1;white-space:nowrap;overflow:hidden}}
+.coach em{{font-style:normal;color:#EDF1F5;font-weight:600;font-size:19px;flex:none}}
+.coach .cd b{{color:#4FD6A6;font-weight:700;font-size:22px}}
+.coach span.warn{{color:#E0A53A;font-weight:600}}
+.coach .gear{{margin-left:auto;color:#7F8A97;flex:none}}
+.coach span{{flex:none}}
 .plan-title{{font-size:22px;color:#9AA5B1;margin-bottom:10px}}
 .plan-title b{{color:#EDF1F5;font-weight:600}}
 .pt-focus{{font-size:20px;color:#7F8A97;font-weight:400}}
@@ -935,6 +976,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
   {week_body}
   {rp_line}
 </div>
+{coach_html}
 
 <div class="dual">
   <div class="card lcol">

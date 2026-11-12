@@ -3043,7 +3043,9 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 117' in (
+    # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
+    # 每次发版要同步改这里（1.0.13 → 118）。
+    assert 'versionCode = 118' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -4262,6 +4264,400 @@ def run() -> int:
     assert 'window.gcTick&&window.gcTick()' in (KT / "MainActivity.kt").read_text(encoding="utf-8"), \
         "原生没有在生成期间定时调用 gcTick"
 
+    # ---- 训练计划的按日覆盖：比赛日替换后，周量口径必须与 7 天课表相加一致 ----
+    from garmin_cn import raceplan as _RP
+
+    if _RP.available():
+        assert _RP.day_info(dt.date(2027, 6, 1)) is None, "计划区间外的日期不该有课次"
+        _wk = 4
+        _d0 = _RP.span()[0] + dt.timedelta(days=(_wk - 1) * 7)
+        _rows = _RP.week_rows(_d0)
+        _sum_km = sum(r["km"] for r in _rows)
+        _info = _RP.day_info(_d0)
+        assert abs(_sum_km - _info["week_km"]) <= 1.0, \
+            (f"第 {_wk} 周周量口径不一致：7 天合计 {_sum_km:.1f} vs 卡头 {_info['week_km']}")
+        _ov = _RP.overrides().get(str(_wk)) or {}
+        for _iso, _o in (_ov.get("days") or {}).items():
+            _hit = _RP.day_info(dt.date.fromisoformat(_iso))
+            assert _hit and _hit["kind"] == _o.get("kind", _hit["kind"]), \
+                f"日内覆盖没生效：{_iso}"
+            assert abs(_hit["km"] - float(_o.get("km", _hit["km"]))) < 0.1, \
+                f"日内覆盖的里程没写进去：{_iso}"
+
+    # ---- 赛事页的编辑入口与补给计划（有本地赛事数据才跑） ----
+    try:
+        from garmin_cn import event as _EV
+
+        if _EV._read(_EV.SEED_EVENT["slug"], "event.json"):
+            # 多赛事后 load_event() 默认是「下一场」（可能是 43K），
+            # 凡是断言 105K 特征的（CP 表 / 换装点）必须显式传 slug
+            _P = _EV.SEED_EVENT["slug"]
+            # 补给：总碳水必须等于「时长 × 速率」，胶数按自带比例向上取整
+            _fp = _EV.fuel_plan(_P)
+            _cfgf = _fp["cfg"]
+            _tot = _fp["totals"]
+            _want = _tot["hours"] * _cfgf["carb_g_h"]
+            assert abs(_tot["carb_g"] - _want) <= _tot["hours"] * 3, \
+                f"补给总量对不上分段之和：{_tot['carb_g']} vs {_want:.0f}"
+            for _r in _fp["rows"]:
+                assert _r["gels"] * _cfgf["gel_g"] >= _r["carry_g"] - 1e-6, \
+                    f"CP{_r['idx']} 的胶不够覆盖自带碳水"
+                assert _r["stop_min"] >= 0 and _r["carry_ml"] <= _cfgf["carry_ml"]
+            assert sum(1 for _r in _fp["rows"] if _r["dropbag"]) == 1, \
+                "换装点数量不对（105K 只有一个）"
+
+            # 赛中预测：用相对用时算落后量，年份不同也不能算出几千小时
+            _slug = _EV.SEED_EVENT["slug"]
+            _orig = _EV._read(_slug, "race.json")
+            _base = dt.datetime(2027, 3, 27, 6, 0)
+            try:
+                _EV.set_race(_P, "reset")
+                _EV.set_race(_P, "start", at=_base)
+                _EV.set_race(_P, "pass", 1, at=_base + dt.timedelta(hours=2, minutes=8))
+                _EV.set_race(_P, "pass", 2, at=_base + dt.timedelta(hours=4, minutes=32))
+                _pr = _EV.race_projection(_P, now=_base + dt.timedelta(hours=9, minutes=15))
+                assert _pr["state"] == "racing" and _pr["passed_count"] == 2
+                assert abs(_pr["delay_s"] / 60 - 21) <= 2, \
+                    f"落后量算错了：{_pr['delay_s'] / 60:.0f} min（期望约 21）"
+                assert 0.9 < (_pr["req_factor"] or 0) < 1.2, \
+                    f"保目标倍率不合理：{_pr['req_factor']}"
+                assert _pr["rows"][2]["done"] is False, "没过的 CP 不该标成已完成"
+                _p1 = _pr["rows"][0]
+                assert _p1["done"] and _p1["actual"] is not None, "已过的 CP 没有实际到达时间"
+            finally:
+                if _orig:
+                    _EV._write(_slug, "race.json", _orig)
+                else:
+                    import os as _os
+                    _p = _EV._dir(_slug) / "race.json"
+                    if _p.exists():
+                        _os.remove(_p)
+
+            # 校验：非法目标 / 非法库存必须抛 ValueError，不能悄悄写坏数据
+            for _bad in ({"status": "zzz"}, {"goal_h": 99}, {"start_time": "25:00"}):
+                try:
+                    _EV.set_target(_P, **_bad)
+                    raise AssertionError(f"非法输入被接受了：{_bad}")
+                except ValueError:
+                    pass
+            try:
+                _EV.set_cps(_P, {"2": {"km": 1.0}})
+                raise AssertionError("CP 里程倒退没有报错")
+            except ValueError:
+                pass
+    except ImportError:
+        pass
+
+    # ---- 导入与校验：物理红线必须拦住错数据，解析器不许瞎猜 ----
+    try:
+        import copy as _copy
+        import json as _json
+        import shutil as _shutil
+
+        from garmin_cn import ingest as _IN
+
+        if _EV._read(_EV.SEED_EVENT["slug"], "event.json"):
+            _P = _EV.SEED_EVENT["slug"]
+            _ev0, _c0 = _EV.load_event(_P), _EV.load_course(_P)
+            _i0 = _IN.validate(_ev0, _c0)
+            assert not _IN.errors(_i0), "官方 CP 表自己过不了校验：" + _IN.explain(_i0)
+
+            # 里程倒序 / 关门重复 / 末点对不上总距离
+            _bad = _copy.deepcopy(_c0)
+            _bad["segments"][1]["km"] = 5.0
+            assert any(i["code"] == "km_order" for i in _IN.errors(_IN.validate(_ev0, _bad)))
+
+            _bad = _copy.deepcopy(_c0)
+            _bad["segments"][1]["cutoff"] = "08:05"
+            assert any(i["code"] == "cut_order" for i in _IN.errors(_IN.validate(_ev0, _bad)))
+
+            # 钟点漏一小时（10:10 → 00:10）：会被当成跨零点，必须靠「时间/等效占比」抓
+            _bad = _copy.deepcopy(_c0)
+            _bad["segments"][1]["cutoff"] = "00:10"
+            assert any(i["code"] == "share" for i in _IN.errors(_IN.validate(_ev0, _bad))), \
+                "把 10:10 写成 00:10 没被抓到——这是最危险的一类错"
+
+            _bad = _copy.deepcopy(_c0)
+            _bad["segments"][-1]["km"] = 99.5
+            assert any(i["code"] == "km_last" for i in _IN.validate(_ev0, _bad))
+
+            # 解析器：表格能认，认不出就返回空表（不猜）
+            _d = _IN.from_text("CP1 山口 15km 22:30\nCP2 半程 40km 01:30\nCP3 终点 80km 16:00")
+            assert len(_d["segments"]) == 3 and _d["segments"][1]["cutoff"] == "01:30"
+            assert not _IN.from_text("这周末有个比赛，信息还没出")["segments"], \
+                "没有 CP 表却解析出了内容——解析器在猜"
+
+            # 排版矩阵：规程里的 CP 表至少有这七种写法，全都得认
+            _fmt = {
+                "标准": "CP1 仙山雅宿 10.9km 关门 08:05",
+                "制表符多列": "CP1\t仙山雅宿\t10.9\t515\t08:05\t有水",
+                "全角": "ＣＰ１　仙山雅宿　１０.９ｋｍ　０８：０５",
+                "区间": "CP1 仙山雅宿 约10.5-11.2km 08:05",
+                "行尾编号": "仙山雅宿 10.9km 08:05 CP1",
+                "开放+关门": "CP1 仙山雅宿 10.9km 07:30-08:05 关门",
+                "时长制": "CP1 山顶 12.5 公里 2小时30分",
+                "PDF 错行": "CP1 仙山雅宿 10.9\n关门 08:05",
+            }
+            for _k, _t in _fmt.items():
+                _seg = _IN.from_text(_t)["segments"]
+                assert len(_seg) == 1, f"「{_k}」这种排版没解析出来"
+                assert _seg[0]["name"] and "关门" not in _seg[0]["name"], \
+                    f"「{_k}」的地名把列名粘进去了：{_seg[0]['name']}"
+                assert 0 < _seg[0]["km"] <= 200, f"「{_k}」的里程离谱：{_seg[0]['km']}"
+            # 两个时间必须取关门（开放时间会让余量凭空多半小时）
+            assert _IN.from_text(_fmt["开放+关门"])["segments"][0]["cutoff"] == "08:05"
+            assert _IN.from_text(_fmt["时长制"])["segments"][0]["cutoff"] == "2h30"
+            assert _IN.from_text(_fmt["PDF 错行"])["segments"][0]["cutoff"] == "08:05"
+            # 口语描述没有结构，必须拒绝，不能猜
+            assert _IN.from_text("第一个点大概 11 公里，8 点多关门")["segments"] == []
+
+            # 新建 + 沿用上一届：日期容错，且起跑/总关门要一起沿用
+            _ne = _EV.new_event("校验用新赛事", "2027/7/10", 70, 3200)
+            try:
+                assert _ne["date"] == "2027-07-10", f"日期容错失效：{_ne['date']}"
+                _dp = _IN.from_prev(_P, _ne)
+                assert _dp["start_time"] and _dp["duration_h"], \
+                    "沿用上一届时没带上起跑时间/总关门——时间表套上去会变成不可能的速度"
+                _ra = _IN.apply(_ne, _dp)
+                assert _ra["ok"], _IN.explain(_ra["issues"])
+                assert _EV.load_event(_ne["slug"])["start_time"] == _EV.load_event(_P)["start_time"]
+                assert any(i["code"] == "copied" for i in _ra["issues"]), \
+                    "沿用后没有「待核对」提醒"
+            finally:
+                _shutil.rmtree(_EV._dir(_ne["slug"]), ignore_errors=True)
+
+            # apply：有 error 必须拒绝写入，且不动现有文件
+            _tmp = _EV.EVENTS / "_selftest-ingest"
+            try:
+                _tmp.mkdir(parents=True, exist_ok=True)
+                _fx = {"slug": "_selftest-ingest", "name": "校验用假赛事",
+                       "date": "2027-06-05", "start_time": "20:00",
+                       "duration_h": 20, "distance_km": 80.0, "ascent_m": 3000,
+                       "status": "confirmed", "goal_s": 9 * 3600}
+                (_tmp / "event.json").write_text(
+                    _json.dumps(_fx, ensure_ascii=False), encoding="utf-8")
+                _evt = _EV.load_event("_selftest-ingest")
+                _dr = _IN.from_text("夜赛 80K\n2027年6月5日 20:00 起跑\n总距离：80公里\n"
+                                    "累计爬升：3000米 总关门 20小时\n"
+                                    "CP1 山口 15km 22:30\nCP2 半程 40km 01:30\n"
+                                    "CP3 终点 80km 16:00")
+                _r = _IN.apply(_evt, _dr)
+                assert _r["ok"] and _r["n_segments"] == 3, _IN.explain(_r["issues"])
+                _c = _EV.load_course("_selftest-ingest")
+                assert _c["segments"][1]["cutoff_day"] == 2, "跨零点的 cutoff_day 没算对"
+                assert (_c.get("provenance") or {}).get("source") == "text"
+
+                _before = (_tmp / "course.json").read_text(encoding="utf-8")
+                _bad_dr = _copy.deepcopy(_dr)
+                _bad_dr["segments"][1]["km"] = 5.0          # 里程倒序
+                _r2 = _IN.apply(_evt, _bad_dr)
+                assert not _r2["ok"], "有 error 的草稿被写进去了"
+                assert (_tmp / "course.json").read_text(encoding="utf-8") == _before, \
+                    "拒绝写入时居然改了文件"
+            finally:
+                _shutil.rmtree(_tmp, ignore_errors=True)
+    except ImportError:
+        pass
+
+    # ---- 资料条目：增删、校验、附件白名单 ----
+    try:
+        from garmin_cn import event as _EV
+
+        if _EV._read(_EV.SEED_EVENT["slug"], "event.json"):
+            _P = _EV.SEED_EVENT["slug"]
+            _bak = _EV._read(_P, "docs.json")
+            _junk = _EV._dir(_P) / "_selftest.exe"
+            try:
+                _EV._write(_P, "docs.json", {"items": []})
+                _EV.add_doc(_P, "rule", "关门与罚则", body="超时即退赛")
+                _EV.add_doc(_P, "aid", "官方规程", url="https://example.com/a.pdf")
+                _d = _EV.docs(_P)
+                assert len(_d["items"]) == 2, "资料没写进去"
+                assert _d["items"][0]["kind_cn"], "分类没有中文名"
+                assert _d["items"][1]["url"].startswith("https://")
+
+                # 必填与协议校验：坏输入必须抛错，不能悄悄存进档案
+                for _bad in ({"kind": "zzz", "title": "x", "body": "y"},
+                             {"kind": "rule", "title": "", "body": "y"},
+                             {"kind": "rule", "title": "x"},
+                             {"kind": "rule", "title": "x", "url": "javascript:alert(1)"}):
+                    try:
+                        _EV.add_doc(_P, **_bad)
+                        raise AssertionError(f"非法资料被接受了：{_bad}")
+                    except ValueError:
+                        pass
+
+                assert _EV.del_doc(_P, 0) and len(_EV.docs(_P)["items"]) == 1, "删除没生效"
+                assert not _EV.del_doc(_P, 99), "越界删除竟然成功了"
+
+                # 附件白名单：非白名单扩展名不列出来
+                _junk.write_bytes(b"MZ")
+                _names = [f["name"] for f in _EV.docs(_P)["files"]]
+                assert "_selftest.exe" not in _names, "可执行文件被当成附件列出来了"
+                assert all(f["size"] >= 0 for f in _EV.docs(_P)["files"])
+                assert _EV.human_size(8) == "8 B" and _EV.human_size(1048576) == "1.0 MB"
+            finally:
+                _junk.unlink(missing_ok=True)
+                if _bak:
+                    _EV._write(_P, "docs.json", _bak)
+                else:
+                    (_EV._dir(_P) / "docs.json").unlink(missing_ok=True)
+    except ImportError:
+        pass
+
+    # ---- 赛后复盘：插值、段级偏差、未完赛判定 ----
+    try:
+        from garmin_cn import review as _RV
+
+        # 插值：0–10 km 匀速 6:00/km，5.5 km 处应落在 33 分钟
+        _cd_ = [i * 1000.0 for i in range(11)]
+        _ct_ = [i * 360.0 for i in range(11)]
+        assert abs(_RV.at_km(_cd_, _ct_, 5.5) - 1980) < 1, "CP 到达插值不准"
+        assert _RV.at_km(_cd_, _ct_, 12) is None, "超出总距离应当返回 None（没跑到）"
+
+        # 找活动：同日优先于次日，且太短的不算
+        _acts = [
+            {"activity_id": "a", "date": "2027-03-28", "distance_m": 103000},
+            {"activity_id": "b", "date": "2027-03-27", "distance_m": 103000},
+            {"activity_id": "c", "date": "2027-03-27", "distance_m": 5000},
+        ]
+        assert _RV.find_activity(_acts, {"date": "2027-03-27", "distance_km": 103})["activity_id"] == "b"
+
+        # 复盘：前半程正好按计划、后半程每公里多 60 s
+        if _EV._read(_EV.SEED_EVENT["slug"], "event.json"):
+            _P = _EV.SEED_EVENT["slug"]
+            _ev = _EV.load_event(_P)
+            _rows = _EV.plan_and_margin(_P)
+            _tot = 103300.0
+            _dd, _tt, _v = [], [], 1.9
+            for _i in range(0, 103400, 100):
+                _dd.append(float(_i))
+                _tt.append(_tt[-1] + 100 / _v if _tt else 0.0)
+            _act = {"activity_id": "t", "date": _ev["date"],
+                    "start_ts": _ev["date"] + " 06:00:00",
+                    "duration_s": _tt[-1], "distance_m": _dd[-1]}
+            _rep = _RV.review(_ev, _rows, _act, {"route": {"d": _dd, "t": _tt}})
+            assert _rep["ok"] and _rep["stats"]["reached"] == len(_rows), "全部跑完却漏判 CP"
+            assert _rep["stats"]["half_ratio"] and abs(_rep["stats"]["half_ratio"] - 1) < 0.05, \
+                "匀速跑竟然算出前后半程不一致"
+            # 段级偏差必须等于「实际段用时 − 计划段用时」；匀速跑与按地形分配的计划
+            # 本身就会差很多，所以这里只校验口径自洽，不假设速度与计划一致
+            for _x in _rep["rows"]:
+                if _x["done"]:
+                    assert abs(_x["leg_delta_s"] - (_x["leg_s"] - _x["plan_leg_s"])) < 1, \
+                        f"CP{_x['idx']} 段偏差口径不一致"
+            _acc = 0.0
+            for _x in _rep["rows"]:
+                _acc += _x["plan_leg_s"]
+                assert abs(_acc - (_x["planned"] - _rep["rows"][0]["planned"]).total_seconds()
+                           - _rep["rows"][0]["plan_leg_s"]) < 2, \
+                    f"CP{_x['idx']} 的计划段用时累加对不上"
+
+            # 未完赛：只跑到 40 km
+            _short = {k: v for k, v in _act.items()}
+            _short["distance_m"] = 40000
+            _rep2 = _RV.review(_ev, _rows, _short,
+                               {"route": {"d": _dd[:401], "t": _tt[:401]}})
+            _done2 = [x for x in _rep2["rows"] if x["done"]]
+            assert len(_done2) < len(_rows), "没跑完却把所有 CP 都算成已到达"
+            assert _rep2["stats"]["dnf_km"], "未完赛没有记录停在多少公里"
+            assert all(x["actual"] is None for x in _rep2["rows"][len(_done2):]), \
+                "未到达的 CP 不该有实际时刻"
+    except ImportError:
+        pass
+
+    # ---- 多赛事：档案不能串、默认必须是「下一场」、没有 CP 表就不编余量 ----
+    try:
+        from garmin_cn import event as _EV
+
+        if len(_EV.EVENT_SEEDS) >= 2:
+            _evs = _EV.list_events()
+            assert len(_evs) >= 2, "赛事列表少于 2 场，多赛事没生效"
+            _slugs = [e["slug"] for e in _evs]
+            assert len(_slugs) == len(set(_slugs)), "赛事列表里有重复 slug"
+            assert [e["date"] for e in _evs] == sorted(e["date"] for e in _evs), \
+                "赛事列表没按日期排序"
+            # 每场都有自己的名字与装备清单：串档时这里会先是同一个名字
+            _names = {_EV.load_event(_s)["name"] for _s in _slugs}
+            assert len(_names) == len(_slugs), "不同赛事拿到了同一个名字（档案串了）"
+            for _s in _slugs:
+                assert (_EV._dir(_s) / "gear.md").exists(), f"{_s} 没有装备清单"
+                _c = _EV.load_course(_s)
+                assert _c["segments"], f"{_s} 的赛道是空的"
+                _e = _EV.load_event(_s)
+                assert abs(_c["distance_km"] - _e["distance_km"]) < 0.01, \
+                    f"{_s} 的 course 与 event 距离不一致"
+                if not _EV.list_events()[_slugs.index(_s)]["has_course"]:
+                    assert len(_c["segments"]) == 1, f"{_s} 不该有多个 CP"
+                    for _r in _EV.plan_and_margin(_s):
+                        # 没有关闭就没有余量，绝不能凑一个数出来
+                        assert _r["margin_s"] is None or _r["cutoff"], \
+                            f"{_s} 没有关门却算出了余量"
+            _nxt = _EV.nearest_upcoming()
+            assert _nxt and _nxt["days"] >= 0, "下一场取到了已过期的赛事"
+            assert _EV.active_slug() == _nxt["slug"], "默认赛事不是「下一场」"
+            # 陌生 slug 必须报错，不能凭空造一份只有 slug 的空档案
+            try:
+                _EV.load_event("no-such-race-xyz")
+                raise AssertionError("陌生 slug 被当成了合法赛事")
+            except ValueError:
+                pass
+    except ImportError:
+        pass
+
+    # ---- 教练上下文要带赛事档案（没有本地数据就跳过，CI 上不跑） ----
+    try:
+        from garmin_cn import event as _EV
+
+        if _EV._read(_EV.SEED_EVENT["slug"], "event.json"):
+            _ctx = context_markdown(res)
+            assert "## 备赛赛事" in _ctx, "教练上下文没带上赛事，模型会只盯着当天恢复度"
+            assert ("最紧关门" in _ctx) or ("无官方 CP 表" in _ctx), \
+                "上下文里既没有余量预警也没有「无关门」说明"
+            assert "主赛" in _ctx or len(_EV.list_events()) == 1, \
+                "多赛事时上下文没有区分主赛与训练赛"
+    except ImportError:
+        pass
+
+    # ---- 姿态评估：模板自洽 + 模型输出收敛 ----
+    try:
+        from . import posture as _PO
+        from .workout import POWER as _POW
+
+        pool = {m[0] for grp in _POW.values() for m in grp}
+        for mid, mv in _PO.MOVES.items():
+            for cid in mv["checks"]:
+                assert cid in _PO.CHECKS, f"{mid} 引用了未定义的观察点 {cid}"
+            assert mv["shot"] and mv["how"], f"{mid} 缺拍摄或动作说明"
+        for cid, c in _PO.CHECKS.items():
+            assert c["weak"] in _PO.WEAK, f"观察点 {cid} 指向未知弱项 {c['weak']}"
+        for wid, w in _PO.WEAK.items():
+            assert any(n in pool for n, *_ in w["moves"]), \
+                f"弱项 {wid} 的动作全都不在课表动作池里（会和课表打架）"
+
+        # 模型爱自由发挥：别名、非法状态、多编的观察点、缺失的观察点
+        raw = {"checks": {"knee_valgus": {"state": "clear", "evidence": "膝往里塌"},
+                          "pelvis_drop": {"state": "UNKNOWN", "evidence": "被挡住"},
+                          "bogus_item": {"state": "clear", "evidence": "编的"}},
+               "shot_quality": "weird"}
+        n = _PO.normalize(raw, "sls_front")
+        assert n["checks"]["knee_valgus"]["state"] == "clear"
+        assert n["checks"]["pelvis_drop"]["state"] == "unclear", "非法状态没折成 unclear"
+        assert n["checks"]["trunk_lateral"]["state"] == "unclear", "缺失的观察点没兜底"
+        assert "bogus_item" not in n["checks"], "模型多编的观察点没被丢掉"
+        assert n["extra_ignored"] == ["bogus_item"]
+        assert n["shot_quality"] == "usable", "非法照片质量没有兜底"
+        assert _PO.weak_points(n) == ["hip_abduct"], "unclear 不该算作弱项"
+
+        empty = _PO.plan([])
+        assert empty["empty"] and not empty["moves"], "没有判读结果却给出了方案"
+        p = _PO.plan([n])
+        assert p["moves"] and len(p["moves"]) <= 5
+        assert len(p["weeks"]) == 4 and p["weeks"][-1]["sets"] < p["weeks"][2]["sets"], \
+            "第 4 周不是减量复测"
+        assert "髋外展" in _PO.text_report({"results": [n]})
+    except ImportError:
+        pass
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
