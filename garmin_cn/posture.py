@@ -313,7 +313,26 @@ def assess(image_b64: str, move_id: str, note: str = "",
                {"type": "text", "text": ask},
                {"type": "image_url", "image_url": {
                    "url": f"data:{mime or 'image/jpeg'};base64,{image_b64}"}}]}]
-    r = llm.chat(msg, temperature=0.2, max_tokens=1600, json_mode=True)
+    # 两次尝试：第一次带 response_format（约束输出），第二次不带。
+    # 有些服务在多模态 + json_object 一起用时会返回空内容——用户实测同一张图
+    # 之前成功过、这次报「模型没有返回 JSON」，那是上游偶发，不是图的问题。
+    # 第二次退化成「普通文本 + 自己找 JSON」，成功率明显更高。
+    last_err = "未知"
+    for attempt in range(2):
+        r = llm.chat(msg, temperature=0.2, max_tokens=1600,
+                     json_mode=(attempt == 0))
+        text = (r.get("text") or "").strip()
+        if not text:
+            last_err = "模型返回了空内容"
+            continue
+        try:
+            return normalize(_clean_json(text), move_id)
+        except ValueError as e:
+            last_err = str(e)
+            continue
+    raise ValueError(
+        f"模型连着两次都没给出可用结果（{last_err}）。这多半是上游偶发，"
+        "隔一会儿重拍再试；如果一直这样，在设置里换一个支持图片输入的模型")
     return normalize(_clean_json(r.get("text") or ""), move_id)
 
 
