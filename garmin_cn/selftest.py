@@ -4617,6 +4617,46 @@ def run() -> int:
     except ImportError:
         pass
 
+    # ---- 姿态评估：模板自洽 + 模型输出收敛 ----
+    try:
+        from . import posture as _PO
+        from .workout import POWER as _POW
+
+        pool = {m[0] for grp in _POW.values() for m in grp}
+        for mid, mv in _PO.MOVES.items():
+            for cid in mv["checks"]:
+                assert cid in _PO.CHECKS, f"{mid} 引用了未定义的观察点 {cid}"
+            assert mv["shot"] and mv["how"], f"{mid} 缺拍摄或动作说明"
+        for cid, c in _PO.CHECKS.items():
+            assert c["weak"] in _PO.WEAK, f"观察点 {cid} 指向未知弱项 {c['weak']}"
+        for wid, w in _PO.WEAK.items():
+            assert any(n in pool for n, *_ in w["moves"]), \
+                f"弱项 {wid} 的动作全都不在课表动作池里（会和课表打架）"
+
+        # 模型爱自由发挥：别名、非法状态、多编的观察点、缺失的观察点
+        raw = {"checks": {"knee_valgus": {"state": "clear", "evidence": "膝往里塌"},
+                          "pelvis_drop": {"state": "UNKNOWN", "evidence": "被挡住"},
+                          "bogus_item": {"state": "clear", "evidence": "编的"}},
+               "shot_quality": "weird"}
+        n = _PO.normalize(raw, "sls_front")
+        assert n["checks"]["knee_valgus"]["state"] == "clear"
+        assert n["checks"]["pelvis_drop"]["state"] == "unclear", "非法状态没折成 unclear"
+        assert n["checks"]["trunk_lateral"]["state"] == "unclear", "缺失的观察点没兜底"
+        assert "bogus_item" not in n["checks"], "模型多编的观察点没被丢掉"
+        assert n["extra_ignored"] == ["bogus_item"]
+        assert n["shot_quality"] == "usable", "非法照片质量没有兜底"
+        assert _PO.weak_points(n) == ["hip_abduct"], "unclear 不该算作弱项"
+
+        empty = _PO.plan([])
+        assert empty["empty"] and not empty["moves"], "没有判读结果却给出了方案"
+        p = _PO.plan([n])
+        assert p["moves"] and len(p["moves"]) <= 5
+        assert len(p["weeks"]) == 4 and p["weeks"][-1]["sets"] < p["weeks"][2]["sets"], \
+            "第 4 周不是减量复测"
+        assert "髋外展" in _PO.text_report({"results": [n]})
+    except ImportError:
+        pass
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):
