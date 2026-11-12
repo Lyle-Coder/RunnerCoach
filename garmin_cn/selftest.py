@@ -4339,6 +4339,30 @@ def run() -> int:
             assert not _IN.from_text("这周末有个比赛，信息还没出")["segments"], \
                 "没有 CP 表却解析出了内容——解析器在猜"
 
+            # 排版矩阵：规程里的 CP 表至少有这七种写法，全都得认
+            _fmt = {
+                "标准": "CP1 仙山雅宿 10.9km 关门 08:05",
+                "制表符多列": "CP1\t仙山雅宿\t10.9\t515\t08:05\t有水",
+                "全角": "ＣＰ１　仙山雅宿　１０.９ｋｍ　０８：０５",
+                "区间": "CP1 仙山雅宿 约10.5-11.2km 08:05",
+                "行尾编号": "仙山雅宿 10.9km 08:05 CP1",
+                "开放+关门": "CP1 仙山雅宿 10.9km 07:30-08:05 关门",
+                "时长制": "CP1 山顶 12.5 公里 2小时30分",
+                "PDF 错行": "CP1 仙山雅宿 10.9\n关门 08:05",
+            }
+            for _k, _t in _fmt.items():
+                _seg = _IN.from_text(_t)["segments"]
+                assert len(_seg) == 1, f"「{_k}」这种排版没解析出来"
+                assert _seg[0]["name"] and "关门" not in _seg[0]["name"], \
+                    f"「{_k}」的地名把列名粘进去了：{_seg[0]['name']}"
+                assert 0 < _seg[0]["km"] <= 200, f"「{_k}」的里程离谱：{_seg[0]['km']}"
+            # 两个时间必须取关门（开放时间会让余量凭空多半小时）
+            assert _IN.from_text(_fmt["开放+关门"])["segments"][0]["cutoff"] == "08:05"
+            assert _IN.from_text(_fmt["时长制"])["segments"][0]["cutoff"] == "2h30"
+            assert _IN.from_text(_fmt["PDF 错行"])["segments"][0]["cutoff"] == "08:05"
+            # 口语描述没有结构，必须拒绝，不能猜
+            assert _IN.from_text("第一个点大概 11 公里，8 点多关门")["segments"] == []
+
             # apply：有 error 必须拒绝写入，且不动现有文件
             _tmp = _EV.EVENTS / "_selftest-ingest"
             try:
