@@ -362,6 +362,8 @@ def cached_note(date: str | None = None) -> dict | None:
     就去调一次模型（那是按日期计的，翻十几天就是十几次）。
     """
     d = date or dt.date.today().isoformat()
+    if not llm.is_enabled():
+        return None
     try:
         fp = _ctx_fingerprint(_note_ctx(d))
     except Exception:
@@ -386,6 +388,9 @@ def coach_note(date: str | None = None, *, wait: int = 0,
     d = date or dt.date.today().isoformat()
     base: dict = {"ok": True, "date": d, "configured": False,
                   "ready": False, "text": ""}
+    if not llm.is_enabled():
+        base["off"] = True
+        return base
     try:
         ctx = _note_ctx(d)
     except Exception as e:

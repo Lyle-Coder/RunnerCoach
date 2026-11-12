@@ -143,7 +143,7 @@ _API = {
     "motion_html", "motion_status", "motion_cleanup", "motion_audio",
     "clips_list", "clips_add", "clips_remove", "clips_reprobe",
     "clips_remove_many", "clips_update",
-    "set_llm_config", "get_llm_config", "ai",
+    "set_llm_config", "get_llm_config", "ai", "ai_toggle",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
     "hw_status", "hw_import", "hw_login", "hw_probe", "hw_sync", "hw_logout",
@@ -173,6 +173,20 @@ def set_llm_config(base_url: str = "", api_key: str = "", model: str = "") -> di
 
     L.save_config(base_url=base_url.strip(), api_key=api_key.strip(), model=model.strip())
     return {"ok": True, "configured": L.is_configured()}
+
+
+def ai_toggle() -> dict:
+    """「我的」页的 AI 总开关：只翻开关，不动 provider / key / 模型。
+
+    关掉后 aiapi 会拒绝所有要花钱的动作，但配置保留——重新打开不用重填。
+    """
+    from . import llm as L
+
+    cfg = L.load_config()
+    on = not bool(cfg.get("ai_enabled", True))
+    L.save_config(ai_enabled=on)
+    cfg = L.load_config()
+    return {"ok": True, "ai_enabled": on, "configured": L.is_configured(cfg)}
 
 
 def get_llm_config() -> dict:
@@ -937,6 +951,9 @@ def meal_estimate(image_b64: str, mime: str = "image/jpeg", note: str = "") -> d
     from . import llm
     from . import nutrition as N
 
+    if not llm.is_enabled():
+        return {"ok": False, "code": "off",
+                "error": "AI 功能已关闭。在「我的 → AI 模型服务」里打开后再拍。"}
     try:
         return {"ok": True, **N.estimate_meal(image_b64, mime or "image/jpeg", note)}
     except llm.LLMError as e:

@@ -2862,7 +2862,13 @@ def run() -> int:
     assert _me.count('class="row') <= 6, f"我的页还是长列表：{_me.count('class=\"row')} 行"
     assert _me.count('class="acts"') == 2, "常用/数据两组没有排成网格"
     assert "体重数据" in _me and ">小米体重<" not in _me, "体重三行没有合并"
-    assert 'class="act flat"' in _me, "只读卡片（AI 模型）没加 flat，TalkBack 会当成按钮"
+    # AI 模型服务从「只读卡片」升级成可点的行（行尾带开关），所以网格里不该
+    # 再出现只读卡片；顺手守住「每张卡片都必须真的能点」，避免又出假按钮。
+    assert 'class="act flat"' not in _me, "网格里还有只读卡片，点下去没反应"
+    for _seg in _me.split('class="act"')[1:]:
+        _head = _seg.split(">", 1)[0]
+        assert "data-act=" in _head or "href=" in _head, \
+            f"网格卡片没有动作：{_head[:60]}"
     assert 'data-act=""' not in _me, "出现了空 action 的假按钮"
     _ktme = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert "登录体重秤账号" in _ktme, "体重来源选择器里没有登录账号入口"
@@ -2886,8 +2892,9 @@ def run() -> int:
     assert re.search(r"\.me \.grid\.three \.card\{[^}]*height:88px", _ucss, re.S), \
         "三张数值卡没固定高度"
     _ads = re.findall(r'<span class="ad">([^<]*)</span>', _me)
-    assert len(_ads) == 8 and all(len(a) <= 14 for a in _ads), \
-        f"网格卡说明太长会换行/省略：{_ads}"
+    # AI 模型服务已经挪到账号行（带开关），网格从 8 张变 7 张
+    assert len(_ads) == 7 and all(len(a) <= 14 for a in _ads), \
+        f"网格卡数量或说明长度不对：{_ads}"
 
     # ---- 0.6.6：品牌图标统一到开屏 / 角标 / 三张出图 / 完整看板 ------------
     from garmin_cn import brand as _BR
@@ -4086,6 +4093,36 @@ def run() -> int:
     assert len(_mreq) == 2, "认出空 items 后没有自动重试一次"
     assert _meal["items"] and _meal["items"][0]["name"] == "米饭", \
         "重试后仍没解析出食物"
+
+    # ---- 「我的 → AI 模型服务」：能点开、带开关、副标题给模型与接口 ----
+    from garmin_cn import aiapi as _AIA
+
+    _ihome = Path(tempfile.mkdtemp())
+    with _um3.patch.object(_LG, "CONFIG_PATH", _ihome / "llm.json"):
+        _LG.save_config(mode="own", provider="opencode_go", api_key="oc_sk_demo",
+                        model="deepseek-v4.1-flash")
+        assert _LG.is_enabled() is True, "AI 总开关默认应该是开的"
+        assert _AIA.dispatch("config.set", {"ai_enabled": False}).get("ai_enabled") is False
+        _gated = _AIA.dispatch("daily", {})
+        assert _gated.get("kind") == "off", f"关了 AI 还在调模型：{_gated}"
+        assert _AIA.dispatch("config.get", {}).get("ok"), \
+            "关了 AI 连配置都读不到，开关会点不动"
+        assert AP.meal_estimate("AAAA").get("code") == "off", \
+            "关了 AI 还能拍照识热量（那是要花钱的）"
+        _AIA.dispatch("config.set", {"ai_enabled": True})
+
+        _me_html = U.me_page()
+        assert 'data-act="aiSettings"' in _me_html, \
+            "「我的」页的 AI 行没有动作，点了没反应"
+        assert 'data-act="aiToggle"' in _me_html, "AI 行没有开关"
+        assert "deepseek-v4.1-flash" in _me_html and "opencode.ai" in _me_html, \
+            "AI 行没显示模型名与接口地址"
+
+    _kt7 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert '"aiSettings" -> openAiSettings()' in _kt7 and '"aiToggle" -> toggleAi()' in _kt7, \
+        "App 没接「打开配置」和「开关」两个动作"
+    assert 'id="aiSeg"' in (ROOT / "garmin_cn/aiui.py").read_text(encoding="utf-8"), \
+        "配置抽屉里没有 AI 开关"
 
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"

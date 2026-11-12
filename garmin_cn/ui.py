@@ -190,6 +190,18 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
   overflow:hidden;word-break:break-word}
 .row .d{font-size:11.5px;color:var(--muted);margin-top:2px;font-variant-numeric:tabular-nums}
 .row .go{margin-left:auto;color:var(--faint);font-size:17px;flex:0 0 auto}
+/* 行尾开关：和数据源那种「当前用哪个」不同，它表示服务开不开。
+   视觉上只有 38×22，但**命中区做到 44×44**——22px 高的可点元素手指按不准，
+   audit 也会判「矮可点」。轨道用 ::before 画，滑块仍由 <i> 表示。
+   点击命中开关自己，事件委托从 e.target 往上找，不会连带触发整行动作。 */
+.row .sw{position:relative;flex:0 0 auto;margin-left:auto;width:44px;height:44px;
+  cursor:pointer}
+.row .sw::before{content:"";position:absolute;left:3px;top:11px;width:38px;height:22px;
+  border-radius:11px;background:rgba(148,163,184,.26);transition:background .18s}
+.row .sw i{position:absolute;left:5px;top:13px;width:18px;height:18px;border-radius:50%;
+  background:#E8EEF7;transition:transform .18s,background .18s}
+.row .sw.on::before{background:rgba(79,214,166,.85)}
+.row .sw.on i{transform:translateX(16px);background:#06121C}
 .acts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 /* 「我的」页 2 列网格：图标在左，标题 + 一行说明在右，整卡固定 68px，
    与账号行（67px）同一节奏。旧版是竖排「图标 / 标题 / 最多两行说明」，
@@ -508,12 +520,15 @@ def stat(label: str, value, note: str = "", unit: str = "") -> str:
 
 def row(icon: str, title: str, desc: str, *, act: str = "", href: str = "",
         aid: str = "", tone: str = "", go: bool = True,
-        on: bool = False, nopush: bool = False) -> str:
+        on: bool = False, nopush: bool = False,
+        switch: str = "", sw_act: str = "") -> str:
     """列表行。
 
     `on=True` 表示「当前选中的那一条」，左侧加一道蓝条；
     `nopush=True` 走 `location.replace`，同页切参数不往历史栈里堆条目
     （否则连点五个月份，返回键要按五次才出得去）。
+    `switch="on"/"off"` 在行尾放一个开关；它自己带 `data-act`，点击时
+    事件委托从 e.target 往上找，先命中的是开关，不会误触整行的动作。
     """
     tag = "a" if href else "div"
     attr = f' href="{esc(href)}"' if href else ""
@@ -524,6 +539,12 @@ def row(icon: str, title: str, desc: str, *, act: str = "", href: str = "",
     if aid:
         attr += f' data-aid="{esc(aid)}"'
     arrow = '<span class="go" aria-hidden="true">›</span>' if go else ""
+    sw = ""
+    if switch in ("on", "off"):
+        sw = (f'<span class="sw {switch}"'
+              + (f' data-act="{esc(sw_act)}"' if sw_act else "")
+              + f' role="switch" aria-checked="{"true" if switch == "on" else "false"}"'
+              + ' aria-label="开关"><i></i></span>')
     cls = "row on" if on else "row"
     # 可点元素要么是 <a>（天然可访问），要么补上 role/tabindex/aria-label
     a11y = ("" if href else
@@ -531,7 +552,7 @@ def row(icon: str, title: str, desc: str, *, act: str = "", href: str = "",
     return (f'<{tag} class="{cls}"{attr}{a11y}>'
             f'<span class="ic {esc(tone)}" aria-hidden="true">{esc(icon)}</span>'
             f'<span class="tx"><span class="t">{esc(title)}</span>'
-            f'<span class="d">{esc(desc)}</span></span>{arrow}</{tag}>')
+            f'<span class="d">{esc(desc)}</span></span>{sw}{arrow}</{tag}>')
 
 
 def act(icon: str, title: str, desc: str, action: str = "", href: str = "") -> str:
@@ -1327,6 +1348,26 @@ def me_page() -> str:
     pref_label = bs.get("labels", {}).get(pref, pref)
     chips = (chip("本机数据", "ok") + chip(f"v{VER}") + chip("零第三方依赖"))
 
+    # AI 模型服务：和数据源并列——这两类都在回答「这台机器现在连着什么服务」。
+    # 副标题要能一眼看出「开没开 / 用哪个模型 / 打到哪个域名」，
+    # 具体的 Key 与供应商仍然点进去改（抽屉在教练页，这里用 aiSettings 直接拉起来）。
+    try:
+        from . import aiapi as AIAPI
+
+        ai = AIAPI.dispatch("config.get", {}) or {}
+    except Exception:
+        ai = {}
+    ai_on = bool(ai.get("ai_enabled", True))
+    if not ai_on:
+        ai_sub = "已关闭 · 点这里重新打开"
+    elif not ai.get("configured"):
+        ai_sub = "未配置 · 点这里填 API Key"
+    else:
+        _base = str(ai.get("base_url") or "")
+        _host = _base.split("//")[-1].split("/")[0] if _base else "本地"
+        ai_sub = (("平台额度" if ai.get("mode") == "platform" else "自配 API")
+                  + f" · {ai.get('model') or '未指定模型'} · {_host}")
+
     # 账号与数据源：只有这一组继续用竖排行——每行都要说清「登没登、设备是谁」，
     # 网格卡片塞不下这些信息。已登录点进去是账号卡片（查看/更换/退出），
     # 没登录才进登录框。
@@ -1341,21 +1382,10 @@ def me_page() -> str:
                # 少两行，语义反而更清楚（都在说「体重数据从哪来」）。
                row("W", "体重数据",
                    f"小米 {m_ok} · 华为 {h_ok} · 当前用 {esc(pref_label)}",
-                   act="bodySource", tone="a"))
-
-    # AI 设置只在教练页齿轮里改；这里只读展示，避免同一抽屉出现第二个入口
-    try:
-        from . import aiapi as AIAPI
-
-        ai = AIAPI.dispatch("config.get", {}) or {}
-    except Exception:
-        ai = {}
-    # 网格卡的说明只有一行：模式名放得下，模型名放不下，塞进去只会变成半个
-    # 被省略号吃掉的名字。具体模型在「教练」页齿轮里看。
-    if ai.get("configured"):
-        ai_txt = ("平台额度" if ai.get("mode") == "platform" else "自配 API") + " · 已配置"
-    else:
-        ai_txt = "未配置"
+                   act="bodySource", tone="a") +
+               # 开关自己带 data-act，点它不会顺带打开设置；点行的其它地方才进配置
+               row("◍", "AI 模型服务", ai_sub, act="aiSettings", tone="b", go=False,
+                   switch=("on" if ai_on else "off"), sw_act="aiToggle"))
 
     # 「补全历史」已经完全没有按钮了：它由 App 在每次刷新后**后台**由近到远
     # 自动往前挪，进度写在标题栏小字。这里只做只读展示，不提供点击 ——
@@ -1368,8 +1398,6 @@ def me_page() -> str:
         act("⌖", "地图底图",
             "已配置 · 带底图" if _map_on() else "未配置 · 矢量轨迹",
             action="amap"),
-        # AI 只在这里展示：设置入口在「教练」页右上角，避免同一个开关两处出现
-        act("◍", "AI 模型服务", ai_txt),
     ])
     # 数据与备份：导出/导入是「换手机保命」的两个动作，放同一排最显眼
     data_tiles = acts_grid([
