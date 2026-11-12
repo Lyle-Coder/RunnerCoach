@@ -341,6 +341,39 @@ class _Handler(SimpleHTTPRequestHandler):
         except BrokenPipeError:
             pass
 
+    def _event_race(self, u) -> None:
+        """赛中打点：开始 / 到达 / 撤销 / 重置。
+
+        比赛当天最怕点错，所以「撤销」必须顺手；重置要二次确认（前端用 JS 拦一道）。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 2048:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+
+        def one(k: str) -> str | None:
+            v = (qs.get(k) or [""])[0].strip()
+            return v or None
+
+        from . import event as E
+        err = ""
+        try:
+            E.set_race(one("slug"), one("act") or "", idx=one("idx"))
+        except ValueError as e:
+            err = str(e)
+        except Exception as e:
+            err = "保存失败：%s" % e
+        loc = "/event" + (("?err=" + quote(err)) if err else "")
+        self.send_response(303)
+        self.send_header("Location", loc)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _event_edit(self, u) -> None:
         """赛事页的编辑表单：目标 / CP 表 / 补给参数。
 
@@ -520,6 +553,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._event_gear(u)
         if u.path in ("/__event/target", "/__event/course", "/__event/fuel"):
             return self._event_edit(u)
+        if u.path == "/__event/race":
+            return self._event_race(u)
         if u.path == "/__files/delete":
             # 产物页的批量删除。放在 gate 之前反而更安全：这里自己做本机校验，
             # 不带访问码的局域网访客一律 403。

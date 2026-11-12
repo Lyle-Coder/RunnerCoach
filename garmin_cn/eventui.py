@@ -106,9 +106,45 @@ select.fi{appearance:none}
 .cpe.head{color:var(--muted,#7F8A97);font-size:10.5px;border-bottom-color:rgba(255,255,255,.1)}
 .cpe.head span:nth-child(3),.cpe.head span:nth-child(4){text-align:center}
 .fi-km,.fi-cut{text-align:right;font-size:11.5px;padding:4px 5px}
+/* 赛中 */
+.rbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:10px 12px;border-radius:10px;margin-bottom:10px}
+.rbar.pre{background:rgba(96,165,250,.08);border:1px solid rgba(96,165,250,.24)}
+.rbar.live{background:rgba(79,214,166,.07);border:1px solid rgba(79,214,166,.24)}
+.rbtxt{font-size:12px;color:var(--muted,#7F8A97);line-height:1.6;flex:1 1 100%}
+.rbline{flex:1 1 100%;display:flex;flex-direction:column;gap:2px}
+.rt{font-size:17px;font-weight:600;color:var(--fg,#E8F0FB);letter-spacing:-.3px;
+  font-variant-numeric:tabular-nums}
+.rd{font-size:11.5px;color:var(--muted,#7F8A97);font-variant-numeric:tabular-nums}
+.rd b{font-weight:600}
+.rd b.bad{color:#E06A5F}.rd b.ok{color:#4FD6A6}
+.rinline{display:inline;margin:0}
+.rbar .rinline{margin-left:auto}
+.rbtn{padding:7px 16px;border-radius:9px;border:1px solid rgba(79,214,166,.55);
+  background:rgba(79,214,166,.14);color:#9FE7C8;font-size:13px;font-weight:600;
+  min-height:38px;cursor:pointer}
+.rbtn:active{opacity:.8}
+.rbtn2{padding:5px 11px;border-radius:8px;border:1px solid rgba(127,138,151,.35);
+  background:transparent;color:var(--muted,#7F8A97);font-size:11.5px;cursor:pointer}
+.rlist{margin-top:2px}
+.rrow{padding:8px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+.rrow:last-child{border-bottom:0}
+.rrow.done{opacity:.5}
+.rline1{display:flex;align-items:center;gap:6px}
+.rline1 .rbtn,.rline1 .rbtn2{margin-left:auto;flex:none}
+.rline2{font-size:11.5px;color:var(--muted,#7F8A97);line-height:1.6;margin-top:1px}
+.rpass{font-size:11.5px;color:#4FD6A6;font-variant-numeric:tabular-nums}
+.rrow.done .rpass{color:var(--muted,#7F8A97)}
 .errbar{margin:0 0 12px;padding:9px 12px;border-radius:9px;font-size:12px;
   background:rgba(224,106,95,.12);border:1px solid rgba(224,106,95,.38);color:#F0A9A1}
 </style>"""
+
+
+def _hm(sec: float) -> str:
+    """秒 → 4h12m / 52m。赛中看用时，不需要秒。"""
+    sec = int(abs(sec))
+    h, m = divmod(sec // 60, 60)
+    return f"{h}h{m:02d}m" if h else f"{m}m"
 
 
 def _fmt_margin(s: float) -> tuple[str, str]:
@@ -262,22 +298,94 @@ def render_page(qs: dict | None = None) -> str:
             + '<div class="pager"><div class="btn primary" data-act="gpx">选择 GPX 文件</div>'
             "</div></div>")
 
-    # ---- 余量表
-    body_rows = []
-    for r in rows:
-        txt, cls = _fmt_margin(r["margin_s"])
-        tag = " · 换装" if r["dropbag"] else ""
-        body_rows.append(
-            f'<div class="cp"><span class="cpn">CP{r["idx"]}</span>'
-            f'<span class="cpl">{ui.esc(r["name"])}{tag}</span>'
-            f'<span class="cpk">{r["km"]:.1f}</span>'
-            f'<span class="cpc">{r["cutoff"].strftime("%d日%H:%M")}</span>'
-            f'<span class="cpm {cls}">{txt}</span></div>')
-    cps = ('<div class="card"><div class="cph"><span>CP</span><span>地点</span>'
-           "<span>km</span><span>关门</span><span>余量</span></div>"
-           + "".join(body_rows)
-           + '<div class="sub2">余量按目标完赛时间分摊（前段抢速、夜段放慢），'
-             "红色 = 这个方案会被关门。</div></div>")
+    # ---- 赛中：点一下已过 CP，后面全部按实际时间重算
+    # ?now=2027-03-27T15:00 只在调试/预览时用，不写任何状态
+    _now = None
+    try:
+        _raw = (qs or {}).get("now", [""])[0]
+        if _raw:
+            _now = dt.datetime.fromisoformat(_raw)
+    except Exception:
+        _now = None
+    race = E.race_projection(ev["slug"], now=_now)
+    st = race["state"]
+    if st == "pre":
+        bar = ('<div class="rbar pre"><div class="rbtxt">还没开始。起跑时点「开始」，'
+               '到 CP 点「到达」，后面会自动重算。</div>'
+               '<form method="post" action="/__event/race" class="rinline">'
+               '<input type="hidden" name="act" value="start">'
+               '<button class="btn primary rbtn" type="submit">开始比赛</button></form></div>')
+    else:
+        el = _hm(race["elapsed_s"])
+        d = int(race["delay_s"])
+        d_txt = ("落后 %s" % _hm(abs(d))) if d > 0 else ("领先 %s" % _hm(abs(d)) if d < 0 else "与计划持平")
+        d_cls = "bad" if d > 0 else ("ok" if d < 0 else "")
+        fin = race.get("finished")
+        if fin:
+            total = (dt.datetime.fromisoformat(fin) - race["start"]).total_seconds()
+            head = (f'<span class="rt">已完赛 {_hm(total)}</span>'
+                    f'<span class="rd">起点 {race["start"].strftime("%d日%H:%M")} · 终点 '
+                    f'{dt.datetime.fromisoformat(fin).strftime("%d日%H:%M")}</span>')
+        else:
+            rf = race["req_factor"]
+            if rf is None:
+                need = '<span class="cpm bad">目标已保不住，按关门跑</span>'
+            elif rf > 1.05:
+                need = (f'<span class="cpm warn">保 {ev["goal_s"]//3600}h 需提速 {int((rf-1)*100)}%</span>')
+            else:
+                need = f'<span class="cpm ok">按现节奏可保目标（需 {rf:.2f}× 配速）</span>'
+            head = (f'<span class="rt">已用时 {el}</span>'
+                    f'<span class="rd">已过 {race["passed_count"]}/{race["total"]} · '
+                    f'<b class="{d_cls}">{d_txt}</b></span>')
+        warn_html = (f'<div class="flw">⚠ {ui.esc(race["warn"])}</div>'
+                     if race.get("warn") else "")
+        bar = ('<div class="rbar live">'
+               f'<div class="rbline">{head}{need if not fin else ""}{warn_html}</div>'
+               '<form method="post" action="/__event/race" class="rinline" '
+               'onsubmit="return confirm(&quot;确定重置赛况？已记录的到达会清空&quot;)">'
+               '<input type="hidden" name="act" value="reset">'
+               '<button class="rbtn2" type="submit">重置</button></form></div>')
+
+    cps_rows = []
+    for r in race["rows"]:
+        done = r["done"]
+        m = int(r["margin_s"])
+        mtxt, mcls = _fmt_margin(m)
+        if done:
+            delta = int(r["delta_s"])
+            dtag = ("慢 %s" % _hm(abs(delta))) if delta > 0 else (
+                "快 %s" % _hm(abs(delta)) if delta < 0 else "准时")
+            first = (f'<span class="cpn">CP{r["idx"]}</span>'
+                     f'<span class="cpl">{ui.esc(r["name"])}</span>'
+                     f'<span class="rpass">已过 {r["actual"].strftime("%H:%M")}</span>')
+            second = (f'计划 {r["planned"].strftime("%H:%M")} · {dtag} · '
+                      f'关门 {r["cutoff"].strftime("%d日%H:%M")} · '
+                      f'余量 <b class="cpm {mcls}">{mtxt}</b>')
+            act = ('<form method="post" action="/__event/race" class="rinline">'
+                   f'<input type="hidden" name="act" value="unpass">'
+                   f'<input type="hidden" name="idx" value="{r["idx"]}">'
+                   '<button class="rbtn2" type="submit">撤销</button></form>')
+        else:
+            first = (f'<span class="cpn">CP{r["idx"]}</span>'
+                     f'<span class="cpl">{ui.esc(r["name"])}'
+                     + (' <b class="db">换装</b>' if r["dropbag"] else "") + "</span>")
+            proj = r["projected"].strftime("%H:%M")
+            second = (f'计划 {r["planned"].strftime("%H:%M")} · 预测 {proj} · '
+                      f'关门 {r["cutoff"].strftime("%d日%H:%M")} · '
+                      f'余量 <b class="cpm {mcls}">{mtxt}</b>')
+            act = ('<form method="post" action="/__event/race" class="rinline">'
+                   '<input type="hidden" name="act" value="pass">'
+                   f'<input type="hidden" name="idx" value="{r["idx"]}">'
+                   '<button class="rbtn" type="submit">到达</button></form>')
+        cps_rows.append(
+            f'<div class="rrow{" done" if done else ""}">'
+            f'<div class="rline1">{first}{act}</div>'
+            f'<div class="rline2">{second}</div></div>')
+
+    cps = ('<div class="card">' + bar
+           + '<div class="rlist">' + "".join(cps_rows) + "</div>"
+           + '<div class="sub2">点「到达」记录当前时间；已过的点会变灰，'
+             "预测列按最后一个已过 CP 的落后量整体平移。点错随时「撤销」。</div></div>")
 
     # ---- 装备：每条是一个表单，点了直接回写 gear.md（PRG 回跳，不依赖 JS）
     pct = int(gear["done"] / max(gear["total"], 1) * 100)
@@ -401,7 +509,7 @@ def render_page(qs: dict | None = None) -> str:
 
     body = (CSS + err_bar + ui.sec("赛事", overview)
             + ui.sec("赛道轨迹", track)
-            + ui.sec("关门余量", cps)
+            + ui.sec("赛况与余量", cps)
             + ui.sec("补给与换装", fuel_card)
             + ui.sec("强制装备", gears)
             + ui.sec("调整", edit_card))
