@@ -84,8 +84,13 @@ class Store:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.path))
+        # timeout=20：同步在后台线程写、看板/计划同时在读，5 秒默认值不够。
+        # 真机日志里成片的 `OperationalError: database is locked` 就是这个问题
+        # （coros_sync 与 plan:local 抢同一把写锁）。SQLite 会自己重试，
+        # 不用上 WAL——WAL 会在主库旁多出 -wal/-shm，导出数据包时容易漏。
+        self.conn = sqlite3.connect(str(self.path), timeout=20)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA busy_timeout = 20000")
         self.conn.executescript(SCHEMA)
         self._migrate()
 

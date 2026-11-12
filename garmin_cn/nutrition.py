@@ -147,38 +147,51 @@ def _meal_items(obj: dict) -> list[dict]:
 
 def estimate_meal(image_b64: str, mime: str = "image/jpeg",
                   note: str = "") -> dict:
-    """图片（base64）→ 食物清单与营养估算。失败抛 llm.LLMError / ValueError。
+    """图片（base64）或一句文字描述 → 食物清单与营养估算。
 
-    `note` 是用户补的一句话（「一碗牛肉面，汤没喝完」）。有些菜照片根本看不清
-    份量，文字能一次把误差压下来，比让模型瞎猜强。
+    - `image_b64` 为空、只给 `note`：吃完了才想起来没拍照的场景，纯文字估。
+    - 都有：文字作为补充（份量、有没有喝汤），比只看照片准。
+    失败抛 llm.LLMError / ValueError。
     """
     from . import llm
 
-    if not image_b64:
-        raise ValueError("没有图片")
-    desc = (note or "").strip()[:200]
-    ask = "估算这一餐的热量和三大营养素。"
-    if desc:
-        ask += f"\n用户补充说明：{desc}\n（以这段说明为准，照片看不清的地方按它判断）"
-    msg = [
-        {"role": "system", "content": MEAL_PROMPT},
-        {"role": "user", "content": [
+    desc = (note or "").strip()[:400]
+    if not image_b64 and not desc:
+        raise ValueError("没有图片，也没有描述")
+
+    if image_b64:
+        ask = "估算这一餐的热量和三大营养素。"
+        if desc:
+            ask += f"\n用户补充说明：{desc}\n（以这段说明为准，照片看不清的地方按它判断）"
+        content = [
             {"type": "text", "text": ask},
             {"type": "image_url", "image_url": {
                 "url": f"data:{mime or 'image/jpeg'};base64,{image_b64}"}},
-        ]},
+        ]
+        system = MEAL_PROMPT
+    else:
+        ask = (f"用户没拍照，只描述了这一餐：{desc}\n"
+               "按这段描述估算份量与营养。份量没说清就按常见中位数估，不要反问。")
+        content = [{"type": "text", "text": ask}]
+        system = MEAL_PROMPT + (
+            "\n注意：这次没有照片，只有文字描述。"
+            "按描述里的食物逐项估，不要因为没图就返回空 items，也不要要求用户补图。")
+
+    msg = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": content},
     ]
     r = llm.chat(msg, temperature=0.2, max_tokens=900)
     obj = _json_obj(r.get("text") or "")
     items = _meal_items(obj)
     if not items:
         # 一次重试：模型常把思考过程写进正文，JSON 被截断就成了「没认出食物」。
-        # 重试时把上一段输出原样带回，明确要求只输出 JSON、按可见品类估。
+        # 重试时把上一段输出原样带回，明确要求只输出 JSON、按可见/可知的逐项列。
         retry = msg + [
             {"role": "assistant", "content": (r.get("text") or "")[:800]},
             {"role": "user", "content": (
                 "上面那段不是我要的格式。只输出 JSON 对象，不要解释、不要英文。"
-                "照片里的食物逐项列出；认不出菜名就写可见品类；"
+                "把这一餐的食物逐项列出；认不出具体菜名就写可见/提到的品类；"
                 "份量拿不准按常见份量估，不要返回空 items。")},
         ]
         try:
