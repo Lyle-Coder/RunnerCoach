@@ -1654,7 +1654,7 @@ body.has-pick{{padding-bottom:74px}}
 <script>(function(){
   var box = document.getElementById('gc-jobs');
   if (!box) return;
-  var last = 0;
+  var lastKey = '', lastCount = 0, timer = null, busy = false;
   function box_html(j){
     return '<div class="card" style="margin-bottom:10px">' +
       '<div class="lab">正在生成 · ' + j.name + '</div>' +
@@ -1665,25 +1665,41 @@ body.has-pick{{padding-bottom:74px}}
       '<div class="note" style="margin-top:8px">' + j.stage + ' ' + j.pct +
       '% · 可以先切走，生成完这里会自动出现</div></div>';
   }
+  function render(jobs){
+    // 没变化就别碰 DOM：原来每 2 秒无条件重写 innerHTML，等于把进度条的
+    // transition 反复打断，还白刷一帧。
+    var key = jobs.map(function(j){ return j.name + '|' + j.pct + '|' + j.stage; }).join(';');
+    if (key === lastKey) return;
+    lastKey = key;
+    if (!jobs.length) {
+      box.innerHTML = '';
+      if (lastCount > 0) { location.reload(); return; }
+    } else {
+      box.innerHTML = '<section class="sec"><div class="sec-head">' +
+        '<h2>正在生成</h2></div>' + jobs.map(box_html).join('') + '</section>';
+    }
+    lastCount = jobs.length;
+  }
   function tick(){
+    if (busy) return;              // 上一次还没回来就别叠请求
+    busy = true;
     fetch('/__progress', {cache:'no-store'})
       .then(function(r){ return r.json(); })
-      .then(function(d){
-        var jobs = d.jobs || [];
-        if (!jobs.length) {
-          box.innerHTML = '';
-          // 上一轮还有任务、这一轮没了：刚生成完，刷一次让新文件进列表
-          if (last > 0) { location.reload(); return; }
-        } else {
-          box.innerHTML = '<section class="sec"><div class="sec-head">' +
-            '<h2>正在生成</h2></div>' + jobs.map(box_html).join('') + '</section>';
-        }
-        last = jobs.length;
-      })
-      .catch(function(){});
+      .then(function(d){ render(d.jobs || []); })
+      .catch(function(){})
+      .then(function(){
+        busy = false;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(tick, 1500);
+      });
   }
+  // 原生侧在生成期间会定时戳一下：WebView 空闲时可能把定时器节流，
+  // 用户「不摸屏幕就不刷新」多半就是它。暴露成全局函数供 evaluateJavascript 调用。
+  window.gcTick = tick;
+  document.addEventListener('visibilitychange', function(){
+    if (!document.hidden) tick();
+  });
   tick();
-  setInterval(tick, 2000);
 })();</script>
 """
     manage_btn = ('<button class="btn manage-btn" id="pickmode" type="button">'
