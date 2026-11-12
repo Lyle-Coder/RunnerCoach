@@ -561,13 +561,21 @@ class _Handler(SimpleHTTPRequestHandler):
         mime = (self.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
         if not mime.startswith("image/"):
             mime = "image/jpeg"
+        from . import llm as _llm
+
         try:
             res = P.assess(base64.b64encode(data).decode(), move, mime=mime)
+        except ValueError as e:
+            # 判读内容的问题（JSON 被截断、照片没传等）：原样给，别扯模型能力
+            return self._json({"ok": False, "error": str(e)}, 502)
+        except _llm.LLMError as e:
+            d = e.as_dict()
+            d["error"] = (d.get("error") or "模型调用失败") + \
+                "。确认这个模型支持图片输入（deepseek-v4.1-flash / mimo-v2.5 / kimi-k3）"
+            return self._json(d, 502)
         except Exception as e:                    # noqa: BLE001
             return self._json(
-                {"ok": False,
-                 "error": f"{type(e).__name__}: {e}。模型需要支持图片输入"
-                          "（deepseek-v4.1-flash / mimo-v2.5 / kimi-k3）"}, 502)
+                {"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
         return self._json({"ok": True, "html": postureui.result_html(res)})
 
     def _event_doc(self, u) -> None:
