@@ -107,18 +107,23 @@ def dispatch(action: str, payload: dict | None = None) -> dict:
             return aicoach.chat(msgs if isinstance(msgs, list) else None, text=txt)
 
         if action == "chat_history":
-            # 历史存在服务端，切页面回来还能接着看；只回最近 limit 条，
-            # 全量交给「翻更早」或导出，避免一次性把大文件推给 WebView。
+            # 历史存在服务端，切页面回来还能接着看。
+            # offset = 从最新往回跳过多少条（前端「加载更早」传上一次的 offset），
+            # 所以这批拿到的是 [total-offset-limit, total-offset)。
             from . import chatstore as CS
 
             try:
                 lim = max(10, min(500, int(p.get("limit") or 80)))
+                off = max(0, int(p.get("offset") or 0))
             except Exception:
-                lim = 80
+                lim, off = 80, 0
             d = CS.load()
-            return {"ok": True, "messages": d["messages"][-lim:],
-                    "digest": d["digest"], "total": len(d["messages"]),
-                    "shown": min(lim, len(d["messages"]))}
+            allm = d["messages"]
+            end = max(0, len(allm) - off)
+            start = max(0, end - lim)
+            return {"ok": True, "messages": allm[start:end], "digest": d["digest"],
+                    "total": len(allm), "offset": off + (end - start),
+                    "has_more": start > 0, "from": start}
 
         if action == "chat_clear":
             from . import chatstore as CS
