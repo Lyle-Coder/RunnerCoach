@@ -311,6 +311,94 @@ def brief(res: dict) -> dict:
     }
 
 
+def _event_lines(d: str) -> list[str]:
+    """赛事档案摘要：让模型知道你在备哪一场，而不是只看今天的恢复度。
+
+    只放「会影响训练决策」的几条：倒计时、目标与关门、最紧的 CP 余量、
+    装备缺口、近 7 天的训练赛。不放整张 CP 表——上下文有限，模型也用不上。
+    """
+    try:
+        from . import event as E
+
+        today = dt.date.fromisoformat(str(d)[:10])
+        ev = E.load_event()
+        cd = E.countdown(ev, today=today)
+        days = cd["days"]
+        if days < 0:                       # 已完赛：不再往上下文里塞
+            return []
+
+        rows = E.plan_and_margin(ev["slug"])
+        tight = min(rows, key=lambda r: r["margin_s"])
+        m = int(tight["margin_s"])
+        # 负余量要显示成 -1m 而不是 -2m：Python 对负数用地板除，先取绝对值再补符号
+        _a = abs(m)
+        _sign = "-" if m < 0 else "+"
+        mtxt = ("%s%dh%02dm" % (_sign, _a // 3600, _a % 3600 // 60) if _a >= 3600
+                else "%s%dm" % (_sign, _a // 60))
+        out = ["", "## 备赛赛事（给训练建议时必须与课表一起考虑）",
+               "- %s：%s 起跑，还有 %d 天；目标 %.0f h / 总关门 %d h，%.1f km / +%d m"
+               % (cd["name"], ev["date"], days, cd["goal_h"], ev["duration_h"],
+                  cd["dist"], cd["ascent"]),
+               "- 最紧关门 CP%d %s（%.1f km）：按目标时间推算余量 %s%s"
+               % (tight["idx"], tight["name"], tight["km"], mtxt,
+                  "，负值说明这个配速方案会被关门" if m < 0 else "")]
+
+        g = E.gear_progress(ev["slug"])
+        if g["total"] and g["done"] < g["total"]:
+            out.append("- 强制装备 %d/%d，未备：%s"
+                       % (g["done"], g["total"], "、".join(g["missing"][:3])))
+
+        # 近 7 天的训练赛（来自 week_overrides 的按日覆盖）
+        try:
+            from . import raceplan as RP
+
+            ov = RP.overrides()
+            for k in range(8):
+                dd = today + dt.timedelta(days=k)
+                w, i = RP.week_of(dd)
+                if w is None:
+                    continue
+                o = ((ov.get(str(w["no"])) or {}).get("days") or {}).get(dd.isoformat())
+                if o and o.get("kind") == "race":
+                    out.append("- %s（%s）有训练赛：%s %s；按训练赛执行，不追成绩、"
+                               "以补给与装备演练为目标，赛后一周降级"
+                               % (dd.strftime("%m-%d"), RP._mp().DOW[i],
+                                  o.get("abbr") or o.get("title"), o.get("sub") or ""))
+        except Exception:
+            pass
+
+        if days <= 21:
+            out.append("- 距比赛 3 周内：不新增质量课；长课按比赛配速的 80–90% 执行，"
+                       "装备与补给的演练优先于配速")
+        return out
+    except Exception:
+        return []
+
+
+def event_brief(d: str) -> str:
+    """一行赛事摘要，给对话类提示词用（每轮都带，所以只留最关键的三件事）。"""
+    try:
+        from . import event as E
+
+        today = dt.date.fromisoformat(str(d)[:10])
+        ev = E.load_event()
+        cd = E.countdown(ev, today=today)
+        if cd["days"] < 0:
+            return ""
+        rows = E.plan_and_margin(ev["slug"])
+        tight = min(rows, key=lambda r: r["margin_s"])
+        m = int(tight["margin_s"])
+        a = abs(m)
+        mtxt = ("%s%dh%02dm" % ("-" if m < 0 else "+", a // 3600, a % 3600 // 60)
+                if a >= 3600 else "%s%dm" % ("-" if m < 0 else "+", a // 60))
+        name = cd["name"].split(" · ")[0]
+        return ("%s：还有 %d 天，目标 %.0f h、关门 %d h；最紧 CP%d %s 余量 %s"
+                % (name, cd["days"], cd["goal_h"], ev["duration_h"],
+                   tight["idx"], tight["name"], mtxt))
+    except Exception:
+        return ""
+
+
 def context_markdown(res: dict) -> str:
     """给模型看的紧凑上下文。写点评时优先引用这里的数字，不要自己编。"""
     d = res["date"]
@@ -410,6 +498,8 @@ def context_markdown(res: dict) -> str:
         for r in _rp.week_rows(dt.date.fromisoformat(res["date"][:10])):
             lines.append(f"- {r['date']} {r['dow']}：{r['main']}"
                          + (f" · {r['sub']}" if r.get("sub") else ""))
+
+    lines += _event_lines(res["date"])
 
     plan = res.get("plan")
     if plan and plan.get("available"):
