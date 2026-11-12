@@ -4411,6 +4411,52 @@ def run() -> int:
     except ImportError:
         pass
 
+    # ---- 资料条目：增删、校验、附件白名单 ----
+    try:
+        from garmin_cn import event as _EV
+
+        if _EV._read(_EV.SEED_EVENT["slug"], "event.json"):
+            _P = _EV.SEED_EVENT["slug"]
+            _bak = _EV._read(_P, "docs.json")
+            _junk = _EV._dir(_P) / "_selftest.exe"
+            try:
+                _EV._write(_P, "docs.json", {"items": []})
+                _EV.add_doc(_P, "rule", "关门与罚则", body="超时即退赛")
+                _EV.add_doc(_P, "aid", "官方规程", url="https://example.com/a.pdf")
+                _d = _EV.docs(_P)
+                assert len(_d["items"]) == 2, "资料没写进去"
+                assert _d["items"][0]["kind_cn"], "分类没有中文名"
+                assert _d["items"][1]["url"].startswith("https://")
+
+                # 必填与协议校验：坏输入必须抛错，不能悄悄存进档案
+                for _bad in ({"kind": "zzz", "title": "x", "body": "y"},
+                             {"kind": "rule", "title": "", "body": "y"},
+                             {"kind": "rule", "title": "x"},
+                             {"kind": "rule", "title": "x", "url": "javascript:alert(1)"}):
+                    try:
+                        _EV.add_doc(_P, **_bad)
+                        raise AssertionError(f"非法资料被接受了：{_bad}")
+                    except ValueError:
+                        pass
+
+                assert _EV.del_doc(_P, 0) and len(_EV.docs(_P)["items"]) == 1, "删除没生效"
+                assert not _EV.del_doc(_P, 99), "越界删除竟然成功了"
+
+                # 附件白名单：非白名单扩展名不列出来
+                _junk.write_bytes(b"MZ")
+                _names = [f["name"] for f in _EV.docs(_P)["files"]]
+                assert "_selftest.exe" not in _names, "可执行文件被当成附件列出来了"
+                assert all(f["size"] >= 0 for f in _EV.docs(_P)["files"])
+                assert _EV.human_size(8) == "8 B" and _EV.human_size(1048576) == "1.0 MB"
+            finally:
+                _junk.unlink(missing_ok=True)
+                if _bak:
+                    _EV._write(_P, "docs.json", _bak)
+                else:
+                    (_EV._dir(_P) / "docs.json").unlink(missing_ok=True)
+    except ImportError:
+        pass
+
     # ---- 赛后复盘：插值、段级偏差、未完赛判定 ----
     try:
         from garmin_cn import review as _RV

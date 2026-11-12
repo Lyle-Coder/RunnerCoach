@@ -138,6 +138,8 @@ class _Handler(SimpleHTTPRequestHandler):
         if u.path in ("/event", "/event.html"):
             from . import eventui
             return self._html(eventui.render_page(parse_qs(u.query)))
+        if u.path.startswith("/event-file/"):
+            return self._event_file(u.path)
         if u.path.startswith("/basemap/"):
             return self._basemap(u.path)
         if u.path.startswith("/media/"):
@@ -439,6 +441,129 @@ class _Handler(SimpleHTTPRequestHandler):
                  else "目标已保存，余量与补给已重算")
         self._back(slug, err=err, ok=okmsg, anchor=anchor)
 
+    def _event_file(self, path: str) -> None:
+        """赛事目录里的附件（规程 PDF、海报、参赛号截图）。
+
+        单独一条路由而不是放开 `/data/`：`data/` 下有 session.json 与数据库，
+        白名单只放 `events/<slug>/` 这一层，扩展名再卡一遍。
+        """
+        from urllib.parse import unquote
+        from . import event as E
+
+        rel = unquote(path[len("/event-file/"):])
+        if "/" not in rel:
+            return self._json({"ok": False, "error": "路径不合法"}, 404)
+        slug, fn = rel.split("/", 1)
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,60}", slug):
+            return self._json({"ok": False, "error": "路径不合法"}, 404)
+        if not re.fullmatch(r"[^/\\<>:*?\"|]{1,120}\.(pdf|png|jpe?g|txt|md|csv|gpx|ics|xlsx|docx)",
+                            fn, re.I):
+            return self._json({"ok": False, "error": "不允许读取"}, 404)
+        base = E._dir(slug).resolve()
+        try:
+            p = (base / fn).resolve()
+            p.relative_to(base)
+        except (ValueError, OSError):
+            return self._json({"ok": False, "error": "不存在"}, 404)
+        if not p.is_file():
+            return self._json({"ok": False, "error": "不存在"}, 404)
+        ext = p.suffix.lower()
+        ctype = {".pdf": "application/pdf", ".png": "image/png",
+                 ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                 ".txt": "text/plain; charset=utf-8",
+                 ".md": "text/plain; charset=utf-8",
+                 ".csv": "text/csv; charset=utf-8",
+                 ".gpx": "application/gpx+xml", ".ics": "text/calendar",
+                 ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                 ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                 }.get(ext, "application/octet-stream")
+        return self._send_file(p.read_bytes(), ctype, cache="no-store")
+
+    def _event_attach(self, u) -> None:
+        """把手机里选中的文件（规程 PDF、参赛号截图）存进赛事目录。
+
+        文件名只保留 basename 并按白名单卡扩展名：这个目录会通过
+        `/event-file/` 对外提供下载，放进来什么就得保证能被安全地读走。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机上传"}, 403)
+        from urllib.parse import unquote
+        from . import event as E
+
+        qs = parse_qs(u.query)
+        name = unquote((qs.get("name") or [""])[0]).strip()
+        slug = (qs.get("slug") or [""])[0].strip()
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        # 请求体先读掉再校验：提前 return 而不读 body，会让 keep-alive 连接里
+        # 残留一段未消费的数据，客户端读响应时会拿到 IncompleteRead（实测踩过）
+        data = self.rfile.read(n) if 0 < n <= 20 * 1024 * 1024 else b""
+        if not name or not data:
+            return self._json({"ok": False, "error": "文件为空或超过 20 MB"}, 400)
+        if not slug:
+            # 不能回落到「下一场」：用户在看 105K 时「下一场」可能是 43K，
+            # 静默写错档案比报错难查得多
+            return self._json({"ok": False, "error": "缺少赛事参数"}, 400)
+
+        ev = E.load_event(slug)
+        base = os.path.basename(name.replace("\\", "/"))
+        base = re.sub(r"[^\w.\-\u4e00-\u9fa5 ]+", "_", base).strip() or "附件"
+        ext = os.path.splitext(base)[1].lower()
+        if ext not in E.ATTACH_EXT:
+            return self._json({"ok": False, "error": "不收这种文件：%s" % (ext or "无扩展名")}, 400)
+        stem = os.path.splitext(base)[0]
+        dst = E._dir(ev["slug"]) / base
+        k = 2
+        while dst.exists():                      # 重名不覆盖，加序号
+            dst = E._dir(ev["slug"]) / ("%s (%d)%s" % (stem, k, ext))
+            k += 1
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(data)
+        except OSError as e:
+            return self._json({"ok": False, "error": "写入失败：%s" % e}, 500)
+        return self._back(ev["slug"], anchor="docs",
+                          ok="已添加附件 %s（%s）"
+                             % (dst.name, E.human_size(dst.stat().st_size)))
+
+    def _event_doc(self, u) -> None:
+        """资料条目：加一条 / 删一条。"""
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 16 * 1024:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+
+        def one(k: str) -> str | None:
+            v = (qs.get(k) or [""])[0].strip()
+            return v or None
+
+        from . import event as E
+
+        slug = one("slug")
+        err, okmsg = "", ""
+        try:
+            if (one("act") or "add") == "del":
+                idx = int(one("idx") or -1)
+                if not E.del_doc(slug, idx):
+                    raise ValueError("这条资料已经不存在了")
+                okmsg = "已删除"
+            else:
+                kind = one("kind") or "misc"
+                E.add_doc(slug, kind, one("title") or "", one("body"), one("url"))
+                okmsg = "已加进资料"
+        except ValueError as e:
+            err = str(e)
+        except Exception as e:
+            err = "保存失败：%s" % e
+        self._back(slug, err=err, ok=okmsg, anchor="docs")
+
     def _back(self, slug: str | None, err: str = "", ok: str = "",
               anchor: str = "") -> None:
         """统一的 PRG 回跳：把 slug / 结果 / 锚点一次带齐。"""
@@ -650,6 +775,10 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._event_race(u)
         if u.path in ("/__event/new", "/__event/import", "/__event/prev"):
             return self._event_ingest(u)
+        if u.path == "/__event/doc":
+            return self._event_doc(u)
+        if u.path == "/__event/attach":
+            return self._event_attach(u)
         if u.path == "/__files/delete":
             # 产物页的批量删除。放在 gate 之前反而更安全：这里自己做本机校验，
             # 不带访问码的局域网访客一律 403。
