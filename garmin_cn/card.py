@@ -646,6 +646,17 @@ def build_html(res: dict, sync_at: str | None = None,
     _bb = bb_state(t)
     bb_val, bb_sub, bb_head = _bb["val"], _bb["sub"], _bb["head"]
 
+    # 楼层：floorsAscended 是气压计按 3 m 阈值累加的全天值，下楼不倒扣，
+    # 楼梯课/爬坡日会明显跳起来，而活动详情里根本没有这个字段——
+    # 所以它是「爬楼课到底爬了多少」唯一能拿到手的数据。
+    # 注意底噪：城市平路日也有 3–8 层（天桥、桥洞、气压漂移），绝对数别当净值看。
+    _fl = num(t.get("floors"))
+    floors_txt = ""
+    if _fl and _fl > 0:
+        # 包 nowrap：这行本来就贴着右边，断在「楼层」和数字中间很难看
+        floors_txt = (' · <span style="white-space:nowrap">楼层 '
+                      + str(round(_fl)) + '</span>')
+
     # 图表：睡眠 7 天柱状 + 身体电量当日曲线 + HRV / 静息心率 14 天折线
     sleep_need_h = (num(t.get("sleep_need_min")) or 0) / 60 or 7.5
     nap_rows = {d_: v for d_, v in (res["series"].get("nap_h") or [])}
@@ -984,7 +995,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
       {hrv_spark}
       {rhr_spark}
       <div class="last" style="border-top:1px solid #223349">
-        睡眠债 {_f(sl.get("debt_h"), " h", 1)}{debt_nap} · 压力 {_f(t.get("avg_stress"))} · 步数 {_f(t.get("steps"))}
+        睡眠债 {_f(sl.get("debt_h"), " h", 1)}{debt_nap} · 压力 {_f(t.get("avg_stress"))} · 步数 {_f(t.get("steps"))}{floors_txt}
         {("　最近一次：" + last) if last else ""}
       </div>
   </div>
