@@ -143,7 +143,7 @@ _API = {
     "motion_html", "motion_status", "motion_cleanup", "motion_audio",
     "clips_list", "clips_add", "clips_remove", "clips_reprobe",
     "clips_remove_many", "clips_update",
-    "set_llm_config", "get_llm_config", "ai",
+    "set_llm_config", "get_llm_config", "ai", "ai_toggle",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
     "hw_status", "hw_import", "hw_login", "hw_probe", "hw_sync", "hw_logout",
@@ -173,6 +173,20 @@ def set_llm_config(base_url: str = "", api_key: str = "", model: str = "") -> di
 
     L.save_config(base_url=base_url.strip(), api_key=api_key.strip(), model=model.strip())
     return {"ok": True, "configured": L.is_configured()}
+
+
+def ai_toggle() -> dict:
+    """「我的」页的 AI 总开关：只翻开关，不动 provider / key / 模型。
+
+    关掉后 aiapi 会拒绝所有要花钱的动作，但配置保留——重新打开不用重填。
+    """
+    from . import llm as L
+
+    cfg = L.load_config()
+    on = not bool(cfg.get("ai_enabled", True))
+    L.save_config(ai_enabled=on)
+    cfg = L.load_config()
+    return {"ok": True, "ai_enabled": on, "configured": L.is_configured(cfg)}
 
 
 def get_llm_config() -> dict:
@@ -937,8 +951,13 @@ def meal_estimate(image_b64: str, mime: str = "image/jpeg", note: str = "") -> d
     from . import llm
     from . import nutrition as N
 
+    if not llm.is_enabled():
+        return {"ok": False, "code": "off",
+                "error": "AI 功能已关闭。在「我的 → AI 模型服务」里打开后再拍。"}
     try:
         return {"ok": True, **N.estimate_meal(image_b64, mime or "image/jpeg", note)}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
     except llm.LLMError as e:
         return {"ok": False, "error": e.message, "code": e.kind}
     except Exception as e:
@@ -2819,16 +2838,40 @@ def clips_remove_many(ids: list) -> dict:
             keep.append(it)
     if not gone:
         return {"ok": False, "error": "选中的素材已经不在列表里"}
-    _clips_write(keep)
+
+    # 先删文件、再决定谁从列表里消失：以前是「先写 JSON 再删文件，删失败
+    # 直接 pass」，结果素材从列表里没了、磁盘上还在，用户以为删干净了。
+    removed, failed = [], []
     for it in gone:
+        bad = []
         for key in ("path", "src"):
+            raw = str(it.get(key) or "").strip()
+            if not raw:
+                continue
+            fp = Path(raw)
             try:
-                fp = Path(str(it.get(key) or ""))
                 if fp.is_file():
                     fp.unlink()
-            except OSError:
-                pass
-    return {"ok": True, "removed": len(gone), "items": keep}
+            except OSError as e:
+                bad.append(f"{key}: {e.strerror or e}")
+                continue
+            if fp.exists():
+                bad.append(f"{key}: 文件仍存在（被占用？）")
+        if bad:
+            failed.append({"id": str(it.get("id") or ""),
+                           "name": str(it.get("name") or ""),
+                           "error": "；".join(bad)})
+        else:
+            removed.append(it)
+
+    # 删不掉的留在列表里，用户还能重试；不要让它「消失但没删」
+    fail_ids = {f["id"] for f in failed}
+    survivors = keep + [it for it in gone if str(it.get("id") or "") in fail_ids]
+    _clips_write(survivors)
+    return {"ok": not failed,
+            "removed": len(removed), "failed": failed,
+            "error": (f"{len(failed)} 个文件删不掉（仍在列表里）" if failed else ""),
+            "items": survivors}
 
 
 def clips_update(clip_id: str, dur: float = 0, w: int = 0, h: int = 0,

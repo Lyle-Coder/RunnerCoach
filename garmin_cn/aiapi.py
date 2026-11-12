@@ -23,7 +23,10 @@ from . import aicoach, llm
 # 界面能改的配置字段（白名单）。故意不含 updated_at 之类内部字段。
 _WRITABLE = ("mode", "provider", "base_url", "model", "api_key",
              "platform_base", "platform_auto", "platform_token",
-             "temperature", "auto_advice", "auth_style")
+             "temperature", "auto_advice", "auth_style", "ai_enabled")
+
+# 关掉 AI 后仍要能读/改配置，否则开关本身点不动
+_ALWAYS = ("config.get", "config.set", "test", "status")
 
 
 def _truthy(v) -> bool:
@@ -34,6 +37,12 @@ def dispatch(action: str, payload: dict | None = None) -> dict:
     """执行一个 AI 动作。任何异常都转成 ok=false，调用方不用 try。"""
     p = payload or {}
     try:
+        # 总开关：关掉后任何会花钱的动作都直接拒绝，文案说清去哪打开，
+        # 否则界面只会转圈或者报一串看不懂的上游错误。
+        if action not in _ALWAYS and not llm.is_enabled():
+            return {"ok": False, "kind": "off", "off": True,
+                    "error": "AI 功能已关闭。在「我的 → AI 模型服务」里打开后再用。"}
+
         if action == "status":
             return aicoach.status()
 
@@ -49,6 +58,8 @@ def dispatch(action: str, payload: dict | None = None) -> dict:
                     patch.pop("temperature")
             if "auto_advice" in patch:
                 patch["auto_advice"] = _truthy(patch["auto_advice"])
+            if "ai_enabled" in patch:
+                patch["ai_enabled"] = _truthy(patch["ai_enabled"])
             if "platform_auto" in patch:
                 patch["platform_auto"] = _truthy(patch["platform_auto"])
             # 切换供应商时清掉手填的地址/模型，否则会继续用上一家的

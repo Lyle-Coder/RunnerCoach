@@ -447,6 +447,8 @@ class MainActivity : Activity() {
                     "login:coros" -> openAccount("coros")
                     "login:keep" -> openAccount("keep")
                     "mealShot" -> askMealPhoto()
+                    "aiSettings" -> openAiSettings()
+                    "aiToggle" -> toggleAi()
                     "corosSleep" -> askCorosSleep()
                     "login" -> showLoginPicker()
                     "mi" -> showMiPanel()
@@ -1254,14 +1256,88 @@ class MainActivity : Activity() {
     /** 拍照识热量：图片在原生侧压缩后交给 Python，识别结果确认后才落库。 */
     private var mealPhotoUri: Uri? = null
 
+    /** 「我的 → AI 模型服务」：复用教练页右上角那个设置抽屉（/ai#settings）。 */
+    private fun openAiSettings() {
+        if (port == 0) {
+            toast("还在启动，稍等一下")
+            return
+        }
+        web.loadUrl("http://127.0.0.1:$port/ai#settings")
+    }
+
+    /** 行尾开关：只翻 AI 总开关，不动 provider / key，改完刷新当前页。 */
+    private fun toggleAi() {
+        thread {
+            val r = apiCall("ai_toggle")
+            ui {
+                if (!r.optBoolean("ok")) {
+                    toast("切换失败：${r.optString("error")}")
+                    return@ui
+                }
+                toast(if (r.optBoolean("ai_enabled")) "AI 已开启" else "AI 已关闭")
+                reload()
+            }
+        }
+    }
+
     private fun askMealPhoto() {
         AlertDialog.Builder(this)
-            .setTitle("拍照记饮食")
-            .setItems(arrayOf("拍照", "从相册选")) { _, which ->
-                if (which == 0) takeMealPhoto() else pickMealPhoto()
+            .setTitle("记饮食")
+            .setItems(arrayOf("拍照", "从相册选", "直接描述（吃完了没拍）")) { _, which ->
+                when (which) {
+                    0 -> takeMealPhoto()
+                    1 -> pickMealPhoto()
+                    else -> askMealText()
+                }
             }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    /** 吃完了才想起来没拍照：用文字描述同一套估算，字段和拍照完全一致。 */
+    private fun askMealText() {
+        val input = android.widget.EditText(this).apply {
+            hint = "例如：一碗牛肉面，两个鸡蛋，一杯无糖豆浆"
+            setTextSize(14f)
+            minLines = 3
+            gravity = android.view.Gravity.TOP
+        }
+        val pad = dp(16)
+        val wrap = android.widget.FrameLayout(this).apply {
+            setPadding(pad, dp(8), pad, 0)
+            addView(input, android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT, dp(120)))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("直接描述这一餐")
+            .setMessage("写清吃了什么、大概多少；份量说得越具体，估得越准。")
+            .setView(wrap)
+            .setPositiveButton("估算") { _, _ ->
+                val desc = input.text.toString().trim()
+                if (desc.isBlank()) {
+                    toast("先写一句吃了什么")
+                } else {
+                    doMealEstimateText(desc)
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun doMealEstimateText(desc: String) {
+        val card = showLoginCard("正在估算", "让模型按描述估一下热量…")
+        thread {
+            // 图片参数留空：后端看到「没图但有描述」就走纯文字估算
+            val r = apiCall("meal_estimate", "", "image/jpeg", desc)
+            ui {
+                card.dismiss()
+                if (!r.optBoolean("ok")) {
+                    toast("估算失败：${r.optString("error")}")
+                    return@ui
+                }
+                showMealResult(r, desc)
+            }
+        }
     }
 
     private fun takeMealPhoto() {
@@ -1821,9 +1897,28 @@ class MainActivity : Activity() {
                     val r = apiCall("clips_remove_many", ids)
                     ui {
                         clipChecked.clear()
-                        toast(if (r.optBoolean("ok"))
-                            "已删除 ${r.optInt("removed")} 个"
-                        else r.optString("error", "删除失败"))
+                        val n = r.optInt("removed")
+                        val fails = r.optJSONArray("failed")
+                        val failN = fails?.length() ?: 0
+                        when {
+                            n > 0 && failN == 0 -> toast("已删除 $n 个")
+                            n > 0 -> toast("已删除 $n 个；$failN 个文件没删掉，仍在列表里")
+                            else -> toast(r.optString("error", "删除失败"))
+                        }
+                        // 删不掉的要说出原因：留在列表里还能重试，别让人反复猜
+                        if (fails != null && failN > 0) {
+                            val sb = StringBuilder()
+                            for (i in 0 until failN) {
+                                val o = fails.optJSONObject(i) ?: continue
+                                sb.append("· ").append(o.optString("name", o.optString("id")))
+                                    .append("：").append(o.optString("error")).append("\n")
+                            }
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("有 $failN 个没删掉")
+                                .setMessage(sb.toString().trim())
+                                .setPositiveButton("知道了", null)
+                                .show()
+                        }
                         showClips()
                     }
                 }
@@ -3462,11 +3557,11 @@ class MainActivity : Activity() {
             val ci = c.optInt("ci", i)
             ui { subtitle.text = "准备素材画面 ${i + 1}/${arr.length()}" }
             val t0 = System.currentTimeMillis()
-            // 画质优先：长边 840 正好等于卡片最大显示尺寸（不再放大），
-            // 帧率让到 8fps、单段上限 72 格（9 秒内素材满帧率，更长的自动降格率）。
-            // 抽帧总量反而比 12fps/150 格少一半，导出更快。
+            // 12fps / 720px / 96 格：8fps 时卡片画面明显一顿一顿，成片 24fps
+            // 只是把它按住 3 帧。提到 12fps 顺很多，分辨率让到 720 换回体积
+            // （12/8 × (720/840)² ≈ 1.10，抽帧总量基本不变）。
             val info = MotionClips.extract(
-                c.optString("file"), java.io.File(root, "c$ci"), 8, 72, 840,
+                c.optString("file"), java.io.File(root, "c$ci"), 12, 96, 720,
                 c.optInt("rotate", 0))
             try {
                 index.put(ci.toString(), org.json.JSONObject()
@@ -4148,6 +4243,7 @@ class MainActivity : Activity() {
         if (!on) {
             bar.visibility = View.GONE
             bar.isIndeterminate = true
+            nudgeHandler.removeCallbacks(nudge)
             return
         }
         bar.visibility = View.VISIBLE
@@ -4156,6 +4252,21 @@ class MainActivity : Activity() {
             bar.progress = pct
         } else {
             bar.isIndeterminate = true
+        }
+        // 生成期间定时戳一下页面：WebView 在空闲/不可见时会节流 JS 定时器，
+        // 用户「不摸屏幕进度就不动」就是这么来的。页面没有 gcTick 时是空操作。
+        nudgeHandler.removeCallbacks(nudge)
+        nudgeHandler.postDelayed(nudge, 1200)
+    }
+
+    private val nudgeHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val nudge = object : Runnable {
+        override fun run() {
+            try {
+                web.evaluateJavascript("window.gcTick&&window.gcTick()", null)
+            } catch (_: Throwable) {
+            }
+            nudgeHandler.postDelayed(this, 1200)
         }
     }
 

@@ -1098,8 +1098,14 @@ def run() -> int:
     # 视频段：随机 seek 是整条流水线最贵的一步，而旧阈值 0.04 在 24fps
     # （帧间隔 0.0417s）下永远不命中，等于每帧都 seek 一次；另有
     # waitReady(4000) 每帧最多空等 4 秒、11 段视频各存一张全分辨率首帧。
-    assert "const CLIP_FPS = 8" in _msrc and "const VSTEP = new Map()" in _msrc, \
-        "视频卡片没有抽帧网格，导出仍会逐帧 seek"
+    assert "const CLIP_FPS = 12" in _msrc and "const VSTEP = new Map()" in _msrc, \
+        "视频卡片没有抽帧网格，导出仍会逐帧 seek（8fps 时卡顿感明显）"
+    # 页面按 CLIP_FPS 选格子，原生必须按同一个帧率抽帧，否则要么白抽要么一顿一顿
+    _kt_motion = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    _mi = _kt_motion.find("MotionClips.extract(")
+    _mchunk = _kt_motion[_mi:_mi + 320] if _mi >= 0 else ""
+    assert "12, 96, 720" in _mchunk, \
+        f"原生抽帧参数与页面 CLIP_FPS=12 不一致：{_mchunk[:80]}"
     assert "const VDONE = new Map()" in _msrc and "const WAITED = new Set()" in _msrc, \
         "缺「同格只抓一次 / 只等一次就绪」的状态"
     assert "Math.floor(VREL * CLIP_FPS)" in _msrc, \
@@ -1159,13 +1165,13 @@ def run() -> int:
         "if (v.readyState < 2) { VPFAIL.add(clip.src); return; }" in _msrc and \
         "!VPFAIL.has(src)" in _msrc, \
         "预抽失败没有回退路径，视频解不出画面会把导出卡死"
-    # 画质优先：帧率让到 8fps，每帧长边 840 = 卡片显示上限，1:1 不放大；
-    # JPEG 92，导出期统一高质量插值。旧版 480px 放大到 840 才是「糊」的根因。
+    # 帧率优先：12fps / 96 格 / 720px。8fps 时卡片画面明显一顿一顿，
+    # 12/8 × (720/840)² ≈ 1.10，抽帧总量基本不变，只是每帧略小。
     _ck53 = (_kt_dir / "MotionClips.kt").read_text(encoding="utf-8")
     assert "private const val JPEG_QUALITY = 92" in _ck53, \
         "抽帧 JPEG 质量又降回去了，卡片会有块状伪影"
-    assert "java.io.File(root, \"c$ci\"), 8, 72, 840," in _main, \
-        "抽帧参数不是 8fps / 72 格 / 840px，画质或耗时又要失守"
+    assert "java.io.File(root, \"c$ci\"), 12, 96, 720," in _main, \
+        "抽帧参数不是 12fps / 96 格 / 720px，流畅度或体积要失守"
     assert "ctx.imageSmoothingQuality = 'high';" in _msrc and \
         "try { ctx.imageSmoothingQuality = 'high'; } catch (e) {}" in _msrc, \
         "导出期没有开高质量缩放"
@@ -2862,7 +2868,13 @@ def run() -> int:
     assert _me.count('class="row') <= 6, f"我的页还是长列表：{_me.count('class=\"row')} 行"
     assert _me.count('class="acts"') == 2, "常用/数据两组没有排成网格"
     assert "体重数据" in _me and ">小米体重<" not in _me, "体重三行没有合并"
-    assert 'class="act flat"' in _me, "只读卡片（AI 模型）没加 flat，TalkBack 会当成按钮"
+    # AI 模型服务从「只读卡片」升级成可点的行（行尾带开关），所以网格里不该
+    # 再出现只读卡片；顺手守住「每张卡片都必须真的能点」，避免又出假按钮。
+    assert 'class="act flat"' not in _me, "网格里还有只读卡片，点下去没反应"
+    for _seg in _me.split('class="act"')[1:]:
+        _head = _seg.split(">", 1)[0]
+        assert "data-act=" in _head or "href=" in _head, \
+            f"网格卡片没有动作：{_head[:60]}"
     assert 'data-act=""' not in _me, "出现了空 action 的假按钮"
     _ktme = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert "登录体重秤账号" in _ktme, "体重来源选择器里没有登录账号入口"
@@ -2886,8 +2898,9 @@ def run() -> int:
     assert re.search(r"\.me \.grid\.three \.card\{[^}]*height:88px", _ucss, re.S), \
         "三张数值卡没固定高度"
     _ads = re.findall(r'<span class="ad">([^<]*)</span>', _me)
-    assert len(_ads) == 8 and all(len(a) <= 14 for a in _ads), \
-        f"网格卡说明太长会换行/省略：{_ads}"
+    # AI 模型服务已经挪到账号行（带开关），网格从 8 张变 7 张
+    assert len(_ads) == 7 and all(len(a) <= 14 for a in _ads), \
+        f"网格卡数量或说明长度不对：{_ads}"
 
     # ---- 0.6.6：品牌图标统一到开屏 / 角标 / 三张出图 / 完整看板 ------------
     from garmin_cn import brand as _BR
@@ -3030,7 +3043,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 115' in (
+    assert 'versionCode = 116' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -4068,6 +4081,41 @@ def run() -> int:
         assert len(_acalls) == 4 and not _w3.get("cached"), \
             "force=True 没有绕过缓存（「重新分析」按钮会点不动）"
 
+        # 单次训练解读：步频与分圈必须进上下文。
+        # 用户反馈模型说「没有最大心率和步频数据」——步频只存在 activity_detail，
+        # activities 表根本没这一列，旧上下文里它永远是 None。
+        _astore.upsert_activity({
+            "activity_id": "A1", "date": _aday, "start_ts": _aday + " 07:00",
+            "type": "running", "name": "晨跑", "duration_s": 2640,
+            "distance_m": 8410, "avg_hr": 157, "max_hr": 181,
+            "calories": 412, "pace_s_km": 317, "source": "garmin"})
+        _astore.conn.execute(
+            "INSERT OR REPLACE INTO activity_detail "
+            "(activity_id, fetched_at, cad_avg, cad_max, payload) VALUES (?,?,?,?,?)",
+            ("A1", _aday, 188.0, 196.0, json.dumps({"laps": [
+                {"dist_m": 1000, "dur_s": 317, "pace_s": 317, "hr_avg": 150, "cad": 188},
+                {"dist_m": 410, "dur_s": 140, "pace_s": 341, "hr_avg": 168, "cad": 183},
+            ]})))
+        _astore.conn.commit()
+        _act_msgs: list = []
+
+        def _fake_act(messages, **kw):
+            _act_msgs.append(messages)
+            return {"text": '{"title":"晨跑","summary":"节奏偏快","good":[],'
+                            '"improve":[],"next":""}',
+                    "model": "m", "elapsed": 0.2}
+
+        with _um3.patch("garmin_cn.llm.chat", side_effect=_fake_act):
+            _rev = _AC.activity_review("A1", _aday)
+        assert _rev.get("ok"), f"训练解读失败：{_rev}"
+        # 断言看用户消息原文：整包 json.dumps 会把引号转义成 \"，搜不到字段名
+        _ctx_txt = str(_act_msgs[0][1]["content"])
+        assert '"max_cadence": 196' in _ctx_txt, \
+            "最大步频没进上下文，模型只能瞎猜"
+        assert '"avg_cadence": 188' in _ctx_txt, "平均步频没进上下文"
+        assert '"splits"' in _ctx_txt and '"km": 1.0' in _ctx_txt, \
+            "每公里分圈没进上下文，判断不了后程掉速"
+
     # ---- 拍照识热量：文字描述要一起进请求；空 items 要自动重试一次 --------
     _mreq: list = []
     _mseq = [{"text": "Sorry, I can't see food here.", "model": "m", "elapsed": 0.5},
@@ -4086,6 +4134,87 @@ def run() -> int:
     assert len(_mreq) == 2, "认出空 items 后没有自动重试一次"
     assert _meal["items"] and _meal["items"][0]["name"] == "米饭", \
         "重试后仍没解析出食物"
+
+    # 吃完才想起没拍照：纯文字描述也要能估出食物（走同一套字段）
+    _tmsgs: list = []
+
+    def _fake_text_meal(messages, **kw):
+        _tmsgs.append(messages)
+        return {"text": '{"items":[{"name":"牛肉面","grams":500,"kcal":650,'
+                        '"protein_g":32,"carb_g":88,"fat_g":18}]}',
+                "model": "m", "elapsed": 0.3}
+
+    with _um3.patch("garmin_cn.llm.chat", side_effect=_fake_text_meal):
+        _tmeal = _NT.estimate_meal("", "image/jpeg", "一碗牛肉面，两个鸡蛋")
+    assert _tmeal["items"] and _tmeal["items"][0]["name"] == "牛肉面", \
+        "纯文字描述没估出食物"
+    assert "没有照片" in str(_tmsgs[0][0].get("content") or ""), \
+        "纯文字时提示词没说「这次没有照片」，模型可能要求补图"
+    assert "一碗牛肉面" in str(_tmsgs[0][1].get("content") or ""), \
+        "描述没进请求"
+    try:
+        _NT.estimate_meal("", "image/jpeg", "")
+        raise AssertionError("既没图也没描述还去请求模型，白花钱")
+    except ValueError:
+        pass
+
+    # ---- 「我的 → AI 模型服务」：能点开、带开关、副标题给模型与接口 ----
+    from garmin_cn import aiapi as _AIA
+
+    _ihome = Path(tempfile.mkdtemp())
+    with _um3.patch.object(_LG, "CONFIG_PATH", _ihome / "llm.json"):
+        _LG.save_config(mode="own", provider="opencode_go", api_key="oc_sk_demo",
+                        model="deepseek-v4.1-flash")
+        assert _LG.is_enabled() is True, "AI 总开关默认应该是开的"
+        assert _AIA.dispatch("config.set", {"ai_enabled": False}).get("ai_enabled") is False
+        _gated = _AIA.dispatch("daily", {})
+        assert _gated.get("kind") == "off", f"关了 AI 还在调模型：{_gated}"
+        assert _AIA.dispatch("config.get", {}).get("ok"), \
+            "关了 AI 连配置都读不到，开关会点不动"
+        assert AP.meal_estimate("AAAA").get("code") == "off", \
+            "关了 AI 还能拍照识热量（那是要花钱的）"
+        _AIA.dispatch("config.set", {"ai_enabled": True})
+
+        _me_html = U.me_page()
+        assert 'data-act="aiSettings"' in _me_html, \
+            "「我的」页的 AI 行没有动作，点了没反应"
+        assert 'data-act="aiToggle"' in _me_html, "AI 行没有开关"
+        assert "deepseek-v4.1-flash" in _me_html and "opencode.ai" in _me_html, \
+            "AI 行没显示模型名与接口地址"
+
+    _kt7 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert '"aiSettings" -> openAiSettings()' in _kt7 and '"aiToggle" -> toggleAi()' in _kt7, \
+        "App 没接「打开配置」和「开关」两个动作"
+    assert 'id="aiSeg"' in (ROOT / "garmin_cn/aiui.py").read_text(encoding="utf-8"), \
+        "配置抽屉里没有 AI 开关"
+
+    # ---- 素材批量删除：删不掉的不能从列表里消失 ----------------------
+    _cdir = Path(tempfile.mkdtemp())
+    (_cdir / "ok.jpg").write_bytes(b"x")
+    _baddir = _cdir / "not_a_file"
+    _baddir.mkdir()
+    with _um3.patch.object(AP, "CLIPS", _cdir / "clips.json"):
+        AP._clips_write([
+            {"id": "c1", "path": str(_cdir / "ok.jpg"), "name": "好删的",
+             "kind": "image", "dur": 3},
+            {"id": "c2", "path": str(_baddir), "name": "删不掉的",
+             "kind": "image", "dur": 3},
+        ])
+        _rm = AP.clips_remove_many(["c1", "c2"])
+    assert _rm["removed"] == 1 and not _rm["ok"] and _rm["failed"], \
+        f"删除结果不诚实（失败也报成功）：{_rm}"
+    assert [x["id"] for x in _rm["items"]] == ["c2"], \
+        "删不掉的条目被从列表里摘掉了——用户会以为删干净了"
+    assert not (_cdir / "ok.jpg").exists(), "该删的文件还在"
+
+    # ---- 产物页进度：只更新 DOM 当数据变化，并给原生一个 gcTick 钩子 ----
+    _files_html = U.files_page(Path(tempfile.mkdtemp()))
+    assert "window.gcTick = tick" in _files_html, \
+        "进度轮询没暴露 gcTick，原生无法在 WebView 节流时戳醒它"
+    assert "if (key === lastKey) return;" in _files_html, \
+        "进度每次轮询都无条件重写 innerHTML，过渡会被反复打断"
+    assert 'window.gcTick&&window.gcTick()' in (KT / "MainActivity.kt").read_text(encoding="utf-8"), \
+        "原生没有在生成期间定时调用 gcTick"
 
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
