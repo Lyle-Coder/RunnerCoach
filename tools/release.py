@@ -450,6 +450,21 @@ def gitee_upload(owner: str, repo: str, release_id: str, path: Path, token: str)
     print(f"√ 已上传 {path.name}（{human(path.stat().st_size)}）")
 
 
+def gitee_asset_names(owner: str, repo: str, release_id: str, token: str) -> set[str]:
+    """已挂在 release 上的附件名。
+
+    Gitee 的附件是「追加」语义：重复上传同名文件不会覆盖，而是再挂一份。
+    上次 1.0.10 就因为上传中断后重跑，把三个附件传成了两份，白占配额。
+    """
+    q = urllib.parse.quote(token, safe="")
+    raw = http(f"{API}/repos/{owner}/{repo}/releases/{release_id}?access_token={q}",
+               token=token)
+    try:
+        return {a.get("name") for a in (json.loads(raw).get("assets") or [])}
+    except Exception:
+        return set()
+
+
 # ── 子命令 ──────────────────────────────────────────────────────────────
 
 
@@ -564,9 +579,13 @@ def cmd_upload(args: argparse.Namespace) -> int:
         raise ReleaseError(
             f"{remote} 远端还没有 {tag}，先跑：git push {remote} {tag}")
     release_id = gitee_ensure_release(owner, repo, tag, notes_path.read_text(encoding="utf-8"), token)
+    have = gitee_asset_names(owner, repo, release_id, token)
     for p in assets:
         if p.stat().st_size > MAX_ASSET:
             print(f"! 跳过 {p.name}：超过 Gitee 附件上限 {human(MAX_ASSET)}")
+            continue
+        if p.name in have:
+            print(f"· {p.name} 已在 release 上，跳过（避免重复占配额）")
             continue
         gitee_upload(owner, repo, release_id, p, token)
     print(f"√ 发布完成：{RELEASE_PAGE}")
