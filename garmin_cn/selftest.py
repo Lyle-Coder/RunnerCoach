@@ -4241,8 +4241,11 @@ def run() -> int:
         from garmin_cn import event as _EV
 
         if _EV._read(_EV.SEED_EVENT["slug"], "event.json"):
+            # 多赛事后 load_event() 默认是「下一场」（可能是 43K），
+            # 凡是断言 105K 特征的（CP 表 / 换装点）必须显式传 slug
+            _P = _EV.SEED_EVENT["slug"]
             # 补给：总碳水必须等于「时长 × 速率」，胶数按自带比例向上取整
-            _fp = _EV.fuel_plan()
+            _fp = _EV.fuel_plan(_P)
             _cfgf = _fp["cfg"]
             _tot = _fp["totals"]
             _want = _tot["hours"] * _cfgf["carb_g_h"]
@@ -4260,11 +4263,11 @@ def run() -> int:
             _orig = _EV._read(_slug, "race.json")
             _base = dt.datetime(2027, 3, 27, 6, 0)
             try:
-                _EV.set_race(None, "reset")
-                _EV.set_race(None, "start", at=_base)
-                _EV.set_race(None, "pass", 1, at=_base + dt.timedelta(hours=2, minutes=8))
-                _EV.set_race(None, "pass", 2, at=_base + dt.timedelta(hours=4, minutes=32))
-                _pr = _EV.race_projection(now=_base + dt.timedelta(hours=9, minutes=15))
+                _EV.set_race(_P, "reset")
+                _EV.set_race(_P, "start", at=_base)
+                _EV.set_race(_P, "pass", 1, at=_base + dt.timedelta(hours=2, minutes=8))
+                _EV.set_race(_P, "pass", 2, at=_base + dt.timedelta(hours=4, minutes=32))
+                _pr = _EV.race_projection(_P, now=_base + dt.timedelta(hours=9, minutes=15))
                 assert _pr["state"] == "racing" and _pr["passed_count"] == 2
                 assert abs(_pr["delay_s"] / 60 - 21) <= 2, \
                     f"落后量算错了：{_pr['delay_s'] / 60:.0f} min（期望约 21）"
@@ -4285,13 +4288,52 @@ def run() -> int:
             # 校验：非法目标 / 非法库存必须抛 ValueError，不能悄悄写坏数据
             for _bad in ({"status": "zzz"}, {"goal_h": 99}, {"start_time": "25:00"}):
                 try:
-                    _EV.set_target(None, **_bad)
+                    _EV.set_target(_P, **_bad)
                     raise AssertionError(f"非法输入被接受了：{_bad}")
                 except ValueError:
                     pass
             try:
-                _EV.set_cps(None, {"2": {"km": 1.0}})
+                _EV.set_cps(_P, {"2": {"km": 1.0}})
                 raise AssertionError("CP 里程倒退没有报错")
+            except ValueError:
+                pass
+    except ImportError:
+        pass
+
+    # ---- 多赛事：档案不能串、默认必须是「下一场」、没有 CP 表就不编余量 ----
+    try:
+        from garmin_cn import event as _EV
+
+        if len(_EV.EVENT_SEEDS) >= 2:
+            _evs = _EV.list_events()
+            assert len(_evs) >= 2, "赛事列表少于 2 场，多赛事没生效"
+            _slugs = [e["slug"] for e in _evs]
+            assert len(_slugs) == len(set(_slugs)), "赛事列表里有重复 slug"
+            assert [e["date"] for e in _evs] == sorted(e["date"] for e in _evs), \
+                "赛事列表没按日期排序"
+            # 每场都有自己的名字与装备清单：串档时这里会先是同一个名字
+            _names = {_EV.load_event(_s)["name"] for _s in _slugs}
+            assert len(_names) == len(_slugs), "不同赛事拿到了同一个名字（档案串了）"
+            for _s in _slugs:
+                assert (_EV._dir(_s) / "gear.md").exists(), f"{_s} 没有装备清单"
+                _c = _EV.load_course(_s)
+                assert _c["segments"], f"{_s} 的赛道是空的"
+                _e = _EV.load_event(_s)
+                assert abs(_c["distance_km"] - _e["distance_km"]) < 0.01, \
+                    f"{_s} 的 course 与 event 距离不一致"
+                if not _EV.list_events()[_slugs.index(_s)]["has_course"]:
+                    assert len(_c["segments"]) == 1, f"{_s} 不该有多个 CP"
+                    for _r in _EV.plan_and_margin(_s):
+                        # 没有关闭就没有余量，绝不能凑一个数出来
+                        assert _r["margin_s"] is None or _r["cutoff"], \
+                            f"{_s} 没有关门却算出了余量"
+            _nxt = _EV.nearest_upcoming()
+            assert _nxt and _nxt["days"] >= 0, "下一场取到了已过期的赛事"
+            assert _EV.active_slug() == _nxt["slug"], "默认赛事不是「下一场」"
+            # 陌生 slug 必须报错，不能凭空造一份只有 slug 的空档案
+            try:
+                _EV.load_event("no-such-race-xyz")
+                raise AssertionError("陌生 slug 被当成了合法赛事")
             except ValueError:
                 pass
     except ImportError:
@@ -4304,7 +4346,10 @@ def run() -> int:
         if _EV._read(_EV.SEED_EVENT["slug"], "event.json"):
             _ctx = context_markdown(res)
             assert "## 备赛赛事" in _ctx, "教练上下文没带上赛事，模型会只盯着当天恢复度"
-            assert "最紧关门" in _ctx, "上下文里没有余量预警"
+            assert ("最紧关门" in _ctx) or ("无官方 CP 表" in _ctx), \
+                "上下文里既没有余量预警也没有「无关门」说明"
+            assert "主赛" in _ctx or len(_EV.list_events()) == 1, \
+                "多赛事时上下文没有区分主赛与训练赛"
     except ImportError:
         pass
 

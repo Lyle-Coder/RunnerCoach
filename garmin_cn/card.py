@@ -685,24 +685,29 @@ def build_html(res: dict, sync_at: str | None = None,
         cd = _event.countdown(today=d)
         goal_h = cd["goal_h"]
         tight = cd["tightest"]
-        tm = int(tight["margin_s"])
-        t_sign = "+" if tm >= 0 else "-"
-        if abs(tm) >= 3600:
-            t_txt = f"{t_sign}{abs(tm)//3600}h{abs(tm)%3600//60:02d}m"
-        else:
-            t_txt = f"{t_sign}{abs(tm)//60}m"
-        tight_txt = (f'⚠CP{tight["idx"]} {esc(tight["name"])} {t_txt}'
-                     if tm < 6 * 3600 else "")
-        gear_txt = f'装备 {cd["gear_done"]}/{cd["gear_total"]}'
-        warn = ' class="warn"' if tm < 0 else ""
+        # 没有 CP 表 / 没有官方关门的赛事（43K、全马）tight 为 None：只给倒计时
+        tight_txt, warn = "", ""
+        if tight:
+            tm = int(tight["margin_s"])
+            t_sign = "+" if tm >= 0 else "-"
+            if abs(tm) >= 3600:
+                t_txt = f"{t_sign}{abs(tm)//3600}h{abs(tm)%3600//60:02d}m"
+            else:
+                t_txt = f"{t_sign}{abs(tm)//60}m"
+            tight_txt = (f'⚠CP{tight["idx"]} {esc(tight["name"])} {t_txt}'
+                         if tm < 6 * 3600 else "")
+            warn = ' class="warn"' if tm < 0 else ""
+        gear_txt = (f'装备 {cd["gear_done"]}/{cd["gear_total"]}'
+                    if cd["gear_total"] else "")
+        dur_txt = f'{cd["duration_h"]}h' if cd["duration_h"] else "—"
         coach_html = (
             '<div class="coach">'
-            f'<em>🏔 {esc(cd["name"].split(" · ")[0].replace("超级越野赛", ""))}</em>'
+            f'<em>🏔 {esc(cd["short"])}</em>'
             f'<span class="cd">{esc(cd["status_cn"])} · <b>{cd["days"]}</b> 天</span>'
-            f'<span>{cd["dist"]:.1f} km +{cd["ascent"]:,} · {goal_h:.0f}h / 关门 {cd["duration_h"]}h</span>'
+            f'<span>{cd["dist"]:.1f} km +{cd["ascent"]:,} · {goal_h:g}h / 关门 {dur_txt}</span>'
             + (f'<span{warn}>{tight_txt}</span>' if tight_txt else "")
-            + f'<span class="gear">{gear_txt}</span>'
-            "</div>")
+            + (f'<span class="gear">{gear_txt}</span>' if gear_txt else "")
+            + "</div>")
     except Exception:
         coach_html = ""
 
