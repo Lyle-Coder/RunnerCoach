@@ -3043,7 +3043,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 115' in (
+    assert 'versionCode = 116' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -4134,6 +4134,29 @@ def run() -> int:
     assert len(_mreq) == 2, "认出空 items 后没有自动重试一次"
     assert _meal["items"] and _meal["items"][0]["name"] == "米饭", \
         "重试后仍没解析出食物"
+
+    # 吃完才想起没拍照：纯文字描述也要能估出食物（走同一套字段）
+    _tmsgs: list = []
+
+    def _fake_text_meal(messages, **kw):
+        _tmsgs.append(messages)
+        return {"text": '{"items":[{"name":"牛肉面","grams":500,"kcal":650,'
+                        '"protein_g":32,"carb_g":88,"fat_g":18}]}',
+                "model": "m", "elapsed": 0.3}
+
+    with _um3.patch("garmin_cn.llm.chat", side_effect=_fake_text_meal):
+        _tmeal = _NT.estimate_meal("", "image/jpeg", "一碗牛肉面，两个鸡蛋")
+    assert _tmeal["items"] and _tmeal["items"][0]["name"] == "牛肉面", \
+        "纯文字描述没估出食物"
+    assert "没有照片" in str(_tmsgs[0][0].get("content") or ""), \
+        "纯文字时提示词没说「这次没有照片」，模型可能要求补图"
+    assert "一碗牛肉面" in str(_tmsgs[0][1].get("content") or ""), \
+        "描述没进请求"
+    try:
+        _NT.estimate_meal("", "image/jpeg", "")
+        raise AssertionError("既没图也没描述还去请求模型，白花钱")
+    except ValueError:
+        pass
 
     # ---- 「我的 → AI 模型服务」：能点开、带开关、副标题给模型与接口 ----
     from garmin_cn import aiapi as _AIA
