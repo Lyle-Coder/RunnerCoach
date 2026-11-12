@@ -41,11 +41,20 @@ MOVES: dict[str, dict] = {
         "shot": "手机放膝盖高度、正侧方 2–3 米，拍到整个人（含头顶和脚）。",
         "checks": ["torso_lean", "depth", "heel_lift", "lumbar_arch"],
     },
-    "sls_front": {
-        "name": "单腿蹲 · 正面（支撑腿）",
-        "how": "双手前平举，抬起一条腿伸直；支撑腿慢慢蹲到大腿接近水平，停 1 秒再站起。",
-        "shot": "正前方 2–3 米，膝盖高度；左右各拍一张，分别评。",
-        "checks": ["knee_valgus", "pelvis_drop", "trunk_lateral", "heel_lift"],
+    # 单腿蹲拆成左右两条：一张照片只能判一条支撑腿，合成一条却写
+    # 「左右各拍一张」会让用户以为能传多张（2026-11-12 用户反馈）。
+    # 骨盆侧倾要左右两张对比才有意义，单张判不出来，所以不在这两条的观察点里。
+    "sls_left": {
+        "name": "单腿蹲 · 左腿支撑",
+        "how": "双手前平举，抬起右腿伸直；左腿慢慢蹲到大腿接近水平，停 1 秒再站起。",
+        "shot": "正前方 2–3 米，膝盖高度；这一张只拍左腿支撑那一次。",
+        "checks": ["knee_valgus", "trunk_lateral", "heel_lift"],
+    },
+    "sls_right": {
+        "name": "单腿蹲 · 右腿支撑",
+        "how": "双手前平举，抬起左腿伸直；右腿慢慢蹲到大腿接近水平，停 1 秒再站起。",
+        "shot": "正前方 2–3 米，膝盖高度；这一张只拍右腿支撑那一次。",
+        "checks": ["knee_valgus", "trunk_lateral", "heel_lift"],
     },
 }
 
@@ -183,16 +192,66 @@ SYSTEM = """你是跑步力量教练，正在看一张「静态动作筛查」�
 
 
 def _clean_json(text: str) -> dict:
-    """模型偶尔会套 ```json 围栏或前后加话，这里只取第一个 JSON 对象。"""
+    """模型偶尔会套 ```json 围栏或前后加话，这里只取第一个 JSON 对象。
+
+    输出被 max_tokens 截断时（实测 900 tokens 就够呛），`raw_decode` 会抛
+    「Unterminated string」——整页报错太亏，前面判完的观察点是有效信息。
+    所以先正常解析，失败就按括号栈补齐再试一次。
+    """
     t = (text or "").strip()
     t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t, flags=re.M)
     i = t.find("{")
     if i < 0:
-        raise ValueError("模型没有返回 JSON")
-    obj, _ = json.JSONDecoder().raw_decode(t[i:])
+        raise ValueError("模型没有返回 JSON，换一张再试")
+    body = t[i:]
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(body)
+    except json.JSONDecodeError:
+        obj = _repair_truncated(body)
+        if obj is None:
+            raise ValueError(
+                "模型返回的 JSON 不完整（输出被截断）。换一张小一点的照片再试，"
+                "或在设置里换一个支持图片输入的模型") from None
     if not isinstance(obj, dict):
         raise ValueError("模型返回的不是对象")
     return obj
+
+
+def _repair_truncated(t: str) -> dict | None:
+    """把被截断的 JSON 补齐：闭合未结束的字符串，再按栈补括号。
+
+    只在 `_clean_json` 的异常路径里用。补出来的 evidence 可能少半句，
+    但 state 通常是完整的；normalize 会丢掉不合法的值，不会把半句话写进方案。
+    """
+    depth: list[str] = []
+    in_str = esc = False
+    end = 0
+    for i, ch in enumerate(t):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            end = i + 1
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            depth.append(ch)
+        elif ch in "}]":
+            if depth:
+                depth.pop()
+        end = i + 1
+    fixed = t[:end] + ('"' if in_str else "")
+    for op in reversed(depth):
+        fixed += "}" if op == "{" else "]"
+    try:
+        obj = json.loads(fixed)
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def normalize(raw: dict, move_id: str) -> dict:
@@ -254,7 +313,7 @@ def assess(image_b64: str, move_id: str, note: str = "",
                {"type": "text", "text": ask},
                {"type": "image_url", "image_url": {
                    "url": f"data:{mime or 'image/jpeg'};base64,{image_b64}"}}]}]
-    r = llm.chat(msg, temperature=0.2, max_tokens=900, json_mode=True)
+    r = llm.chat(msg, temperature=0.2, max_tokens=1600, json_mode=True)
     return normalize(_clean_json(r.get("text") or ""), move_id)
 
 
@@ -342,9 +401,8 @@ def _list_text() -> str:
 
 def _demo() -> None:
     """不调模型，用一份假判读跑通「薄弱项 → 方案」这段。"""
-    fake = {"move": "sls_front", "name": MOVES["sls_front"]["name"],
+    fake = {"move": "sls_left", "name": MOVES["sls_left"]["name"],
             "checks": {"knee_valgus": {"state": "clear", "evidence": "支撑膝明显向内塌"},
-                       "pelvis_drop": {"state": "mild", "evidence": "对侧髋略下沉"},
                        "trunk_lateral": {"state": "ok", "evidence": "躯干基本竖直"},
                        "heel_lift": {"state": "unclear", "evidence": "脚被裤脚挡住"}},
             "shot_quality": "usable", "note": ""}

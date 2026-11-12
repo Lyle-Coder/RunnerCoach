@@ -4729,12 +4729,12 @@ def run() -> int:
 
         # 模型爱自由发挥：别名、非法状态、多编的观察点、缺失的观察点
         raw = {"checks": {"knee_valgus": {"state": "clear", "evidence": "膝往里塌"},
-                          "pelvis_drop": {"state": "UNKNOWN", "evidence": "被挡住"},
+                          "heel_lift": {"state": "UNKNOWN", "evidence": "被挡住"},
                           "bogus_item": {"state": "clear", "evidence": "编的"}},
                "shot_quality": "weird"}
-        n = _PO.normalize(raw, "sls_front")
+        n = _PO.normalize(raw, "sls_left")
         assert n["checks"]["knee_valgus"]["state"] == "clear"
-        assert n["checks"]["pelvis_drop"]["state"] == "unclear", "非法状态没折成 unclear"
+        assert n["checks"]["heel_lift"]["state"] == "unclear", "非法状态没折成 unclear"
         assert n["checks"]["trunk_lateral"]["state"] == "unclear", "缺失的观察点没兜底"
         assert "bogus_item" not in n["checks"], "模型多编的观察点没被丢掉"
         assert n["extra_ignored"] == ["bogus_item"]
