@@ -425,7 +425,7 @@ class MainActivity : Activity() {
             path.startsWith("/view") -> goTab(
                 if (uri?.getQueryParameter("from") == "today") TAB_TODAY else TAB_HISTORY)
             path.startsWith("/plan") -> goTab(TAB_TODAY)   // 训练计划属于今日
-            path.startsWith("/event") -> goTab(TAB_TODAY)  // 赛事页也挂在今日下面
+            path.startsWith("/event") -> goTab(TAB_COACH)  // 赛事页属于教练（/ai 里的「备赛」）
             path.startsWith("/files") -> goTab(TAB_ME)     // 产物属于我的
             path.startsWith("/privacy") -> goTab(TAB_ME)   // 隐私说明也挂在我的下面
             activeTab != TAB_TODAY -> goTab(TAB_TODAY)     // 其它 tab 先回今日
