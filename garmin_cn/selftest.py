@@ -2692,7 +2692,7 @@ def run() -> int:
     try:
         _today = dt.date.today().isoformat()
         assert _AC.cached_note(_today) is None, "缓存里没有却报「已生成」"
-        _fp = _AC._ctx_fingerprint(_AC._note_ctx(_today))
+        _fp = _AC._note_fp(_AC._note_ctx(_today))
         _AC._cache_write("note", _today, _fp,
                          {"text": "测试点评", "model": "fake", "at": "01-01 09:00"})
         _hit = _AC.cached_note(_today) or {}
@@ -3043,7 +3043,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 116' in (
+    assert 'versionCode = 117' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -4116,6 +4116,23 @@ def run() -> int:
         assert '"splits"' in _ctx_txt and '"km": 1.0' in _ctx_txt, \
             "每公里分圈没进上下文，判断不了后程掉速"
 
+    # ---- 教练点评不能把「写作要求」当正文回显 --------------------------
+    # 用户实测：看板上的点评直接显示「写90-140字，引用具体数字，不复述处方…」
+    _echo = ("写90-140字，一到两句话，引用具体数字，说清最该注意什么。"
+             "不复述处方时长配速。重点：ACWR 1.54 负荷激增是最大风险")
+    assert _AC._looks_like_echo(_echo), "回显写作要求的点评没被识别出来"
+    _real = ("恢复度 79 但身体电量只剩 32，TSB -35、ACWR 1.54 说明负荷涨得太快，"
+             "今天别加量，先把睡眠债补回来。")
+    assert not _AC._looks_like_echo(_real), "正常点评被误判成回显"
+    # 同一模型还会吐出英文「计划稿」，这种也要拦
+    _en = ("Need: 90-140 characters (Chinese). Cite at least two concrete numbers. "
+           "Say what to watch today. No meta.")
+    assert _AC._looks_like_echo(_en), "英文提纲式输出没被拦住"
+    assert "两句话" in _AC.NOTE_SYSTEM and "具体数字" in _AC.NOTE_SYSTEM, \
+        "点评系统提示被写成大段规则——实测越像要求，模型越会照抄"
+    assert _AC._note_fp("x") != _AC._ctx_fingerprint("x"), \
+        "点评缓存指纹没带版本号，旧的「提示词正文」还会被读出来"
+
     # ---- 拍照识热量：文字描述要一起进请求；空 items 要自动重试一次 --------
     _mreq: list = []
     _mseq = [{"text": "Sorry, I can't see food here.", "model": "m", "elapsed": 0.5},
@@ -4157,6 +4174,35 @@ def run() -> int:
         raise AssertionError("既没图也没描述还去请求模型，白花钱")
     except ValueError:
         pass
+
+    # ---- 数据文件必须跟着 GARMIN_HOME 走 -------------------------------
+    # 旧代码把 meals.json / manual.json 写在包目录，Android 上那是 Chaquopy
+    # 解压源码的临时目录，App 一更新就被重新解压覆盖 ——「中午记的饭晚上没了」。
+    import os as _os2
+    import subprocess as _sp
+    import sys as _sys2
+
+    _nhome = Path(tempfile.mkdtemp())
+    _probe = _sp.run(
+        [_sys2.executable, "-c",
+         "from garmin_cn import nutrition as n, manual as m;"
+         "print(n.MEALS); print(m.PATH); print(n.CONF)"],
+        cwd=str(ROOT), capture_output=True, text=True,
+        env={**_os2.environ, "GARMIN_HOME": str(_nhome)})
+    _paths = [x.strip() for x in (_probe.stdout or "").splitlines() if x.strip()]
+    assert len(_paths) == 3, f"探针没跑起来：{_probe.stderr[:200]}"
+    for _p in _paths:
+        assert _p.startswith(str(_nhome)), \
+            f"数据文件没跟着 GARMIN_HOME 走（升级会丢）：{_p}"
+
+    _mg = Path(tempfile.mkdtemp())
+    _legacy = _mg / "pkg" / "data" / "meals.json"
+    _legacy.parent.mkdir(parents=True)
+    _legacy.write_text('{"2026-11-12": []}', encoding="utf-8")
+    _dest = _mg / "home" / "data" / "meals.json"
+    assert _NT._migrate_file(_legacy, _dest) and _dest.is_file(), \
+        "旧位置的 meals.json 没搬到新位置，升级用户看起来像「数据丢了」"
+    assert not _NT._migrate_file(_legacy, _dest), "重复搬会覆盖新数据"
 
     # ---- 「我的 → AI 模型服务」：能点开、带开关、副标题给模型与接口 ----
     from garmin_cn import aiapi as _AIA
