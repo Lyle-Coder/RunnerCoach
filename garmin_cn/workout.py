@@ -261,18 +261,19 @@ def build_all(info: dict) -> list[dict]:
     elif kind == "hill":
         m = STAIR_RE.search(info.get("abbr") or "")
         n = int(m.group(1)) if m else 2
-        road = max(2.0, min(5.0, km if km > 0 else 3.0))
-        warm = round(road / 2.0, 1)
-        cool = round(road - warm, 1)
-        steps.append(_step(1, "warmup", "distance", warm * 1000, ("hr", WARM_HR),
-                           f"慢跑 {warm} km 到楼下 · 心率不超 150"))
+        # 热身/冷身都按 lap 结束，不写死距离：从家到楼梯/操场的距离经常变
+        # （2 km 也可能 3 km、也可能就在楼下），写死距离会在半路「叮」一声
+        # 把人推进主课，或者到了场地还在热身段里耗着。按 lap 由人来决定何时开始。
+        steps.append(_step(1, "warmup", "lap", 1, ("hr", WARM_HR),
+                           "慢跑到场地 · 到了按 lap 进主课 · 心率不超 150"))
         steps.append(_repeat(
             2, n,
-            [_step(0, "interval", "time", 240, ("hr", STAIR_HR), "上楼跑 / 快走"),
+            [_step(0, "interval", "time", 240, ("hr", STAIR_HR),
+                   "往上跑 / 快走 · 4 分钟约 12 趟 · 下楼一定走"),
              _step(0, "recovery", "time", 120, ("hr", WARM_HR),
-                   "下楼走 + 楼下走动")]))
-        steps.append(_step(3, "cooldown", "distance", cool * 1000, ("hr", WARM_HR),
-                           f"冷身慢跑 {cool} km 回程"))
+                   "走下来 + 平台走动 · 心率回到 140 再上")]))
+        steps.append(_step(3, "cooldown", "lap", 1, ("hr", WARM_HR),
+                           "慢跑回程 · 到了按 lap 结束"))
 
     elif kind == "long":
         steps.append(_step(1, "other", "time", minutes * 60, ("hr", LONG_HR),
@@ -307,7 +308,9 @@ def build_all(info: dict) -> list[dict]:
 
     if not steps:
         return []
-    desc = " ｜ ".join(b for b in desc_bits if b).strip(" ｜")
+    # 去重：tip 和 note 拿到同一句话时（日覆盖只写了 tip 就会这样），
+    # 描述里会出现两遍相同文案。dict.fromkeys 保序去重。
+    desc = " ｜ ".join(dict.fromkeys(b for b in desc_bits if b)).strip(" ｜")
     return [_workout(f"{name0} {info['abbr']}", desc + tail, SPORT_RUN,
                      [_seg(SPORT_RUN, steps)])]
 
