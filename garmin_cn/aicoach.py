@@ -78,6 +78,44 @@ def _parse_json(text: str) -> dict:
     return {}
 
 
+# 有的模型（deepseek 系）会把思考过程写进正文再来 JSON，一旦被 max_tokens
+# 截断就永远解析不出对象——界面上就出现「中英混排的内心独白」。统一在提示词
+# 里禁掉，解析失败再补一次「只做格式转换」的请求，比让用户点重新生成可控。
+_JSON_RULES = ("\n\n输出要求（必须遵守）：只输出 JSON 对象本身。不要写思考过程、"
+               "不要解释、不要英文、不要 markdown 围栏；第一个字符必须是 {。")
+
+# 格式转换用的字段清单（第二次调用时告诉模型要哪些键，免得转出一堆自创字段）
+SCHEMA_DAILY = ('{"headline":"18字以内","focus":"25字以内","dos":["2-4条"],'
+                '"donts":["1-3条"],"watch":"30字以内","why":"80-140字"}')
+SCHEMA_WEIGHT = ('{"summary":"25字以内","trend":"down|up|flat","rate_verdict":"40字以内",'
+                 '"actions":["2-4条"],"cautions":["1-3条"],"nutrition":"50字以内"}')
+SCHEMA_ACT = ('{"title":"20字以内","summary":"80字以内","good":["1-3条"],'
+              '"improve":["1-3条"],"next":"60字以内"}')
+
+
+def _json_chat(messages: list[dict], *, schema: str = "", max_tokens: int = 1600,
+               temperature: float = 0.4) -> tuple[dict, dict]:
+    """要求 JSON；拿不到就再要一次（第二次只做格式转换，不重新分析）。"""
+    r = llm.chat(messages, max_tokens=max_tokens, json_mode=True,
+                 temperature=temperature)
+    obj = _parse_json(r.get("text") or "")
+    if obj:
+        return obj, r
+    fix = [
+        {"role": "system",
+         "content": "你是格式转换器。把用户给的内容改写成合法 JSON 对象，"
+                    "只输出 JSON，不要解释、不要英文、不要 markdown。"},
+        {"role": "user",
+         "content": f"JSON 字段要求：\n{schema}\n\n待转换内容：\n"
+                    f"{(r.get('text') or '')[:3000]}"},
+    ]
+    try:
+        r2 = llm.chat(fix, max_tokens=max_tokens, json_mode=True, temperature=0)
+    except llm.LLMError:
+        return {}, r
+    return _parse_json(r2.get("text") or ""), r2
+
+
 def _slist(v, limit: int = 6) -> list[str]:
     """把模型给的「列表」洗成干净的字符串数组。
 
@@ -180,18 +218,23 @@ def daily_advice(date: str | None = None, force: bool = False) -> dict:
 - 如果风险标记里有 alert/warn，watch 必须对应到其中最严重的一条。"""
 
     try:
-        r = llm.chat([{"role": "system", "content": SYSTEM},
-                      {"role": "user", "content": instruction}],
-                     max_tokens=900, json_mode=True, temperature=0.5)
+        obj, r = _json_chat([{"role": "system", "content": SYSTEM},
+                             {"role": "user", "content": instruction + _JSON_RULES}],
+                            schema=SCHEMA_DAILY, max_tokens=1600, temperature=0.5)
     except llm.LLMError as e:
         return e.as_dict()
 
-    obj = _parse_json(r["text"])
     if not obj:
-        return {"ok": True, "date": d, "headline": "今日建议",
-                "focus": "", "dos": [], "donts": [], "watch": "",
-                "why": r["text"][:800], "raw": True, "model": r["model"],
-                "elapsed": r["elapsed"]}
+        # 解析不出来也要缓存：否则每次切 tab 都会重新请求，白花钱还慢。
+        # 真正的「内心独白」不往卡片里塞，用户要看就点重新生成。
+        out = {"ok": True, "date": d, "headline": "今日建议",
+               "focus": "这次没拿到结构化建议", "dos": [], "donts": [], "watch": "",
+               "why": "模型这次没按格式返回（多数是思考过程太长被截断）。"
+                      "点下面的「重新生成」再试一次；反复这样就在「模型服务」里换个模型。",
+               "fail": True, "model": r.get("model"), "elapsed": r.get("elapsed")}
+        _cache_write("daily", d, fp, out)
+        out["cached"] = False
+        return out
 
     out = {"ok": True, "date": d,
            "headline": str(obj.get("headline") or "今日建议")[:40],
@@ -385,7 +428,8 @@ def coach_note(date: str | None = None, *, wait: int = 0,
 
 
 # ---------------------------------------------------------------- 体重复盘
-def weight_review(days: int = 60, date: str | None = None) -> dict:
+def weight_review(days: int = 60, date: str | None = None,
+                  force: bool = False) -> dict:
     """体重与体成分复盘：趋势、速率是否合理、和训练负荷是否匹配。
 
     数据来自本地 body 表，按用户的体重来源偏好逐日筛选。秤不一定在佳明云里，
@@ -467,8 +511,16 @@ def weight_review(days: int = 60, date: str | None = None) -> dict:
         ],
     }
 
-    instruction = f"""以下是这位跑者最近 {span_days} 天的体重与体成分记录，以及训练负荷。
+    # 同一天、同一份上下文只算一次：App 切 tab 会整页重载，前端缓存靠不住，
+    # 必须落盘缓存，否则每次切过来都重新问一遍模型。
+    fp = _ctx_fingerprint(json.dumps(ctx, ensure_ascii=False, sort_keys=True))
+    if not force:
+        hit = _cache_read("weight", d, fp)
+        if hit:
+            hit["cached"] = True
+            return hit
 
+    instruction = f"""以下是这位跑者最近 {span_days} 天的体重与体成分记录，以及训练负荷。
 {json.dumps(ctx, ensure_ascii=False, indent=1)}
 
 请输出 JSON（全部中文，不要 markdown）：
@@ -489,27 +541,34 @@ def weight_review(days: int = 60, date: str | None = None) -> dict:
 - 不做医疗诊断。出现连续快速下降（周降幅超过体重 1%）只提醒，不下结论。"""
 
     try:
-        r = llm.chat([{"role": "system", "content": SYSTEM},
-                      {"role": "user", "content": instruction}],
-                     max_tokens=800, json_mode=True, temperature=0.4)
+        obj, r = _json_chat([{"role": "system", "content": SYSTEM},
+                             {"role": "user", "content": instruction + _JSON_RULES}],
+                            schema=SCHEMA_WEIGHT, max_tokens=1600, temperature=0.4)
     except llm.LLMError as e:
         return e.as_dict()
 
-    obj = _parse_json(r["text"])
-    return {"ok": True, "date": d, "days": span_days,
-            "points": pts[-60:],
-            "fat_points": [{"date": k, "fat": round(sum(v) / len(v), 1)}
-                           for k, v in sorted(fat.items())][-60:],
-            "delta_total": delta, "delta_per_week": per_week,
-            "summary": str(obj.get("summary") or "")[:60],
-            "trend": str(obj.get("trend") or "flat")[:10],
-            "rate_verdict": str(obj.get("rate_verdict") or "")[:120],
-            "actions": _slist(obj.get("actions")),
-            "cautions": _slist(obj.get("cautions")),
-            "nutrition": str(obj.get("nutrition") or "")[:160],
-            "target": {k: nt.get(k) for k in
-                       ("target_kcal", "protein_g", "carb_g", "fat_g", "goal_label")},
-            "model": r["model"], "elapsed": r["elapsed"]}
+    out = {"ok": True, "date": d, "days": span_days,
+           "points": pts[-60:],
+           "fat_points": [{"date": k, "fat": round(sum(v) / len(v), 1)}
+                          for k, v in sorted(fat.items())][-60:],
+           "delta_total": delta, "delta_per_week": per_week,
+           "summary": str(obj.get("summary") or "")[:60],
+           "trend": str(obj.get("trend") or "flat")[:10],
+           "rate_verdict": str(obj.get("rate_verdict") or "")[:120],
+           "actions": _slist(obj.get("actions")),
+           "cautions": _slist(obj.get("cautions")),
+           "nutrition": str(obj.get("nutrition") or "")[:160],
+           "target": {k: nt.get(k) for k in
+                      ("target_kcal", "protein_g", "carb_g", "fat_g", "goal_label")},
+           "model": r.get("model"), "elapsed": r.get("elapsed")}
+    if not obj:
+        # 解析失败时也别留一张空卡：明确告诉用户是格式问题，而不是「没建议」
+        out["summary"] = out["summary"] or "趋势如下，这次没生成解读"
+        out["actions"] = ["模型这次没按格式返回，点「重新分析」再试一次"]
+        out["fail"] = True
+    _cache_write("weight", d, fp, out)
+    out["cached"] = False
+    return out
 
 
 # ---------------------------------------------------------------- 活动解读
@@ -601,20 +660,23 @@ def activity_review(activity_id: str, date: str | None = None) -> dict:
 - 别把正常的长距离掉速说成问题，也别把明显的过速说成「状态好」。"""
 
     try:
-        r = llm.chat([{"role": "system", "content": SYSTEM},
-                      {"role": "user", "content": instruction}],
-                     max_tokens=800, json_mode=True, temperature=0.5)
+        obj, r = _json_chat([{"role": "system", "content": SYSTEM},
+                             {"role": "user", "content": instruction + _JSON_RULES}],
+                            schema=SCHEMA_ACT, max_tokens=1600, temperature=0.5)
     except llm.LLMError as e:
         return e.as_dict()
 
-    obj = _parse_json(r["text"])
-    return {"ok": True, "activity_id": activity_id, "ctx": ctx,
-            "title": str(obj.get("title") or "训练解读")[:30],
-            "summary": str(obj.get("summary") or "")[:200],
-            "good": _slist(obj.get("good")),
-            "improve": _slist(obj.get("improve")),
-            "next": str(obj.get("next") or "")[:120],
-            "model": r["model"], "elapsed": r["elapsed"]}
+    out = {"ok": True, "activity_id": activity_id, "ctx": ctx,
+           "title": str(obj.get("title") or "训练解读")[:30],
+           "summary": str(obj.get("summary") or "")[:200],
+           "good": _slist(obj.get("good")),
+           "improve": _slist(obj.get("improve")),
+           "next": str(obj.get("next") or "")[:120],
+           "model": r.get("model"), "elapsed": r.get("elapsed")}
+    if not obj:
+        out["summary"] = "这次没拿到结构化解读，点上面的按钮再试一次。"
+        out["fail"] = True
+    return out
 
 
 # ---------------------------------------------------------------- 对话

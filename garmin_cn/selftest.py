@@ -3030,7 +3030,7 @@ def run() -> int:
 
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
-    assert 'versionCode = 114' in (
+    assert 'versionCode = 115' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -4022,6 +4022,71 @@ def run() -> int:
         f"Cloudflare 1010 被归成了 {_cf.kind}，用户会被误导去换 key"
     assert "x-api-key" in (ROOT / "garmin_cn/aiui.py").read_text(encoding="utf-8"), \
         "「模型服务」里没有鉴权方式选择，用户没法手工兜底"
+
+    # ---- 建议类接口：主动禁止「内心独白」，并且失败也要落盘缓存 --------
+    from garmin_cn import aicoach as _AC
+    from garmin_cn import body as _BD2
+
+    _ahome = Path(tempfile.mkdtemp())
+    _astore = _Store3(_ahome / "ai.db")
+    _BD2.ensure(_astore)
+    _aday = dt.date.today().isoformat()
+    _astore.upsert_daily({"date": _aday, "resting_hr": 50, "sleep_total_min": 420,
+                          "sleep_score": 70, "hrv_night": 60})
+    _astore.conn.execute(
+        "INSERT INTO body (date,ts,weight_kg,source) VALUES (?,?,?,?)",
+        (_aday, _aday + " 07:00", 65.0, "mi"))
+    _astore.conn.commit()
+
+    _acalls: list[int] = []
+
+    def _fake_cot(messages, **kw):
+        # 模拟 deepseek-v4.1-flash 的真实毛病：正文写内心独白、不给 JSON
+        _acalls.append(1)
+        return {"text": "Let me produce the JSON.\nHmm, 40 分钟轻松跑…",
+                "model": "m", "elapsed": 1.0}
+
+    with _um3.patch.object(_AC, "_store", lambda: _astore), \
+            _um3.patch.object(_AC, "CACHE_DIR", _ahome / "cache"), \
+            _um3.patch("garmin_cn.llm.chat", side_effect=_fake_cot):
+        _d1 = _AC.daily_advice(_aday)
+        assert _d1.get("fail") is True, "模型没按格式返回时没标 fail"
+        assert "Let me" not in (_d1.get("why") or ""), \
+            "把模型的内心独白（中英混排）贴进卡片了"
+        _d2 = _AC.daily_advice(_aday)
+        assert _d2.get("cached") is True, \
+            "同一天第二次没命中缓存——App 切 tab 会整页重载，前端缓存靠不住"
+        assert len(_acalls) == 2, f"一次建议应只打 1 次主调用 + 1 次格式修复，实际 {len(_acalls)}"
+
+        _acalls.clear()
+        _w1 = _AC.weight_review(30, _aday)
+        assert _w1.get("actions"), "体重复盘解析失败时没给任何兜底说明"
+        _w2 = _AC.weight_review(30, _aday)
+        assert _w2.get("cached") is True, "体重复盘同一天第二次仍在请求模型"
+        assert len(_acalls) == 2, f"体重复盘请求次数不对：{len(_acalls)}"
+        _w3 = _AC.weight_review(30, _aday, force=True)
+        assert len(_acalls) == 4 and not _w3.get("cached"), \
+            "force=True 没有绕过缓存（「重新分析」按钮会点不动）"
+
+    # ---- 拍照识热量：文字描述要一起进请求；空 items 要自动重试一次 --------
+    _mreq: list = []
+    _mseq = [{"text": "Sorry, I can't see food here.", "model": "m", "elapsed": 0.5},
+             {"text": '{"items":[{"name":"米饭","grams":200,"kcal":232,'
+                      '"protein_g":4.8,"carb_g":51.6,"fat_g":0.6}]}',
+              "model": "m", "elapsed": 0.6}]
+
+    def _fake_meal(messages, **kw):
+        _mreq.append(messages)
+        return _mseq[min(len(_mreq) - 1, 1)]
+
+    with _um3.patch("garmin_cn.llm.chat", side_effect=_fake_meal):
+        _meal = _NT.estimate_meal("AAAA", "image/jpeg", "一碗牛肉面，汤没喝完")
+    assert "牛肉面" in _mreq[0][1]["content"][0]["text"], \
+        "用户补的文字没进模型请求，等于白填"
+    assert len(_mreq) == 2, "认出空 items 后没有自动重试一次"
+    assert _meal["items"] and _meal["items"][0]["name"] == "米饭", \
+        "重试后仍没解析出食物"
+
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
