@@ -3044,8 +3044,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（1.1.8 → 127）。
-    assert 'versionCode = 127' in (
+    # 每次发版要同步改这里（1.1.9 → 128）。
+    assert 'versionCode = 128' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -4730,6 +4730,26 @@ def run() -> int:
             _PS.clear()
             assert _PS.current() == [], "清空后还有残留"
         shutil.rmtree(_pd, ignore_errors=True)
+    except ImportError:
+        pass
+
+    # ---- 趋势：多弱项按时间聚合、按严重度排序 ----
+    try:
+        from . import posture as _PT
+
+        _th = [
+            {"at": "2026-11-13 07:00",
+             "result": {"checks": {"knee_valgus": {"state": "mild"},
+                                   "heel_lift": {"state": "ok"}}}},
+            {"at": "2026-10-16 07:00",
+             "result": {"checks": {"knee_valgus": {"state": "clear"},
+                                   "heel_lift": {"state": "mild"}}}},
+        ]
+        _tr = _PT.trend(_th)
+        _ids = [x["id"] for x in _tr]
+        assert "hip_abduct" in _ids and "ankle_rom" in _ids, "趋势没按弱项聚合"
+        _hip = [x for x in _tr if x["id"] == "hip_abduct"][0]
+        assert [p["score"] for p in _hip["points"]] == [2, 1], "趋势点没按时间升序"
     except ImportError:
         pass
 

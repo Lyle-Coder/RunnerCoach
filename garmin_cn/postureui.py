@@ -38,6 +38,12 @@ CSS = """<style>
 .pt-tb td.s-clear{color:#E06A5F}.pt-tb td.s-unclear{color:var(--muted,#7F8A97)}
 .pt-h{font-size:13px;margin:16px 0 8px;color:var(--ink-2,#C6D2DE)}
 .pt-why{font-size:11.5px;color:var(--muted,#7F8A97);line-height:1.55}
+.tr-row{display:flex;align-items:center;gap:10px;padding:7px 0;
+  border-bottom:1px solid var(--line,#22303F)}
+.tr-row:last-child{border-bottom:0}
+.tr-name{flex:1;font-size:12.5px;line-height:1.4}
+.tr-val{font-size:11.5px;min-width:88px;text-align:right}
+.spark{flex:0 0 auto}
 .fold2{border:1px solid var(--line,#22303F);border-radius:10px;padding:8px 10px;margin:8px 0}
 .fold2 summary{font-size:12px;color:var(--muted,#7F8A97);cursor:pointer}
 .fold2[open]{padding-bottom:12px}
@@ -212,6 +218,63 @@ def summary_html(results: list[dict]) -> str:
             + detail + '</details>')
 
 
+def _spark(points: list[dict]) -> str:
+    """迷你折线：横轴是评估次序，纵轴 0/1/2（越上越好）。
+
+    用 SVG 手画而不是引图表库：一条十几行的折线，为它加 200 KB 依赖不值。
+    """
+    n = len(points)
+    W, H, PAD = 180, 36, 6
+    span = H - 2 * PAD
+    if n == 1:
+        y = PAD + (2 - points[0]["score"]) * span / 2
+        return (f'<svg class="spark" viewBox="0 0 {W} {H}" width="{W}" height="{H}">'
+                f'<circle cx="{W // 2}" cy="{y:.0f}" r="3" fill="#3B82F6"/></svg>')
+    step = (W - 2 * PAD) / (n - 1)
+    xy = [(PAD + i * step, PAD + (2 - p["score"]) * span / 2)
+          for i, p in enumerate(points)]
+    poly = " ".join(f"{x:.0f},{y:.0f}" for x, y in xy)
+    dots = "".join(f'<circle cx="{x:.0f}" cy="{y:.0f}" r="2.6" fill="#3B82F6"/>'
+                   for x, y in xy)
+    return (f'<svg class="spark" viewBox="0 0 {W} {H}" width="{W}" height="{H}">'
+            f'<polyline points="{poly}" fill="none" stroke="#3B82F6" stroke-width="1.8" '
+            f'stroke-linejoin="round" stroke-linecap="round"/>{dots}</svg>')
+
+
+def trend_html() -> str:
+    """4 周复测：每个薄弱项的严重度随时间变化。
+
+    只在有记录时出现。复测的意义是「同一个动作、隔四周、再拍一次」，
+    所以横轴是评估次序而不是日历——中间隔了多久，看日期列更准。
+    """
+    from . import posturestore as PS
+
+    tr = P.trend(PS.load()["history"])
+    if not tr:
+        return ""
+    rows = []
+    for t in tr:
+        pts = t["points"]
+        first, last = pts[0]["score"], pts[-1]["score"]
+        if last < first:
+            tag, cls = "改善", "s-ok"
+        elif last > first:
+            tag, cls = "变差", "s-clear"
+        else:
+            tag, cls = "持平", "s-unclear"
+        rows.append('<div class="tr-row">'
+                    f'<div class="tr-name">{t["label"]}</div>'
+                    + _spark(pts)
+                    + f'<div class="tr-val {cls}">{last} / 2 · {tag}</div></div>')
+    return ('<details class="fold2"><summary>4 周复测 · 薄弱项趋势（'
+            + str(len(tr)) + ' 项）</summary>'
+            '<p class="pt-why">每点是当次的严重度：0 正常、1 轻度、2 明显，越上越好。'
+            '同一天多次评估会各算一个点。</p>'
+            + "".join(rows)
+            + '<p class="pt-why">建议每 4 周复测：方案 W4 那周拍同样几个动作，'
+            '看这条线有没有往下走。</p></details>')
+
+
 def _history_html() -> str:
     """历史记录：每次判读的时间、动作、结论。
 
@@ -255,7 +318,7 @@ def render() -> str:
             + _cards()
             + '<div id="pt-err"></div>'
             + f'<div class="pt-res" id="pt-res">{init_html}</div>'
-            + js + _history_html())
+            + js + trend_html() + _history_html())
     return ui.page("COACH · 力量", "姿态评估",
                    "拍一张 → 找薄弱项 → 4 周方案",
                    body,
