@@ -4300,6 +4300,78 @@ def run() -> int:
     except ImportError:
         pass
 
+    # ---- 导入与校验：物理红线必须拦住错数据，解析器不许瞎猜 ----
+    try:
+        import copy as _copy
+        import json as _json
+        import shutil as _shutil
+
+        from garmin_cn import ingest as _IN
+
+        if _EV._read(_EV.SEED_EVENT["slug"], "event.json"):
+            _P = _EV.SEED_EVENT["slug"]
+            _ev0, _c0 = _EV.load_event(_P), _EV.load_course(_P)
+            _i0 = _IN.validate(_ev0, _c0)
+            assert not _IN.errors(_i0), "官方 CP 表自己过不了校验：" + _IN.explain(_i0)
+
+            # 里程倒序 / 关门重复 / 末点对不上总距离
+            _bad = _copy.deepcopy(_c0)
+            _bad["segments"][1]["km"] = 5.0
+            assert any(i["code"] == "km_order" for i in _IN.errors(_IN.validate(_ev0, _bad)))
+
+            _bad = _copy.deepcopy(_c0)
+            _bad["segments"][1]["cutoff"] = "08:05"
+            assert any(i["code"] == "cut_order" for i in _IN.errors(_IN.validate(_ev0, _bad)))
+
+            # 钟点漏一小时（10:10 → 00:10）：会被当成跨零点，必须靠「时间/等效占比」抓
+            _bad = _copy.deepcopy(_c0)
+            _bad["segments"][1]["cutoff"] = "00:10"
+            assert any(i["code"] == "share" for i in _IN.errors(_IN.validate(_ev0, _bad))), \
+                "把 10:10 写成 00:10 没被抓到——这是最危险的一类错"
+
+            _bad = _copy.deepcopy(_c0)
+            _bad["segments"][-1]["km"] = 99.5
+            assert any(i["code"] == "km_last" for i in _IN.validate(_ev0, _bad))
+
+            # 解析器：表格能认，认不出就返回空表（不猜）
+            _d = _IN.from_text("CP1 山口 15km 22:30\nCP2 半程 40km 01:30\nCP3 终点 80km 16:00")
+            assert len(_d["segments"]) == 3 and _d["segments"][1]["cutoff"] == "01:30"
+            assert not _IN.from_text("这周末有个比赛，信息还没出")["segments"], \
+                "没有 CP 表却解析出了内容——解析器在猜"
+
+            # apply：有 error 必须拒绝写入，且不动现有文件
+            _tmp = _EV.EVENTS / "_selftest-ingest"
+            try:
+                _tmp.mkdir(parents=True, exist_ok=True)
+                _fx = {"slug": "_selftest-ingest", "name": "校验用假赛事",
+                       "date": "2027-06-05", "start_time": "20:00",
+                       "duration_h": 20, "distance_km": 80.0, "ascent_m": 3000,
+                       "status": "confirmed", "goal_s": 9 * 3600}
+                (_tmp / "event.json").write_text(
+                    _json.dumps(_fx, ensure_ascii=False), encoding="utf-8")
+                _evt = _EV.load_event("_selftest-ingest")
+                _dr = _IN.from_text("夜赛 80K\n2027年6月5日 20:00 起跑\n总距离：80公里\n"
+                                    "累计爬升：3000米 总关门 20小时\n"
+                                    "CP1 山口 15km 22:30\nCP2 半程 40km 01:30\n"
+                                    "CP3 终点 80km 16:00")
+                _r = _IN.apply(_evt, _dr)
+                assert _r["ok"] and _r["n_segments"] == 3, _IN.explain(_r["issues"])
+                _c = _EV.load_course("_selftest-ingest")
+                assert _c["segments"][1]["cutoff_day"] == 2, "跨零点的 cutoff_day 没算对"
+                assert (_c.get("provenance") or {}).get("source") == "text"
+
+                _before = (_tmp / "course.json").read_text(encoding="utf-8")
+                _bad_dr = _copy.deepcopy(_dr)
+                _bad_dr["segments"][1]["km"] = 5.0          # 里程倒序
+                _r2 = _IN.apply(_evt, _bad_dr)
+                assert not _r2["ok"], "有 error 的草稿被写进去了"
+                assert (_tmp / "course.json").read_text(encoding="utf-8") == _before, \
+                    "拒绝写入时居然改了文件"
+            finally:
+                _shutil.rmtree(_tmp, ignore_errors=True)
+    except ImportError:
+        pass
+
     # ---- 多赛事：档案不能串、默认必须是「下一场」、没有 CP 表就不编余量 ----
     try:
         from garmin_cn import event as _EV

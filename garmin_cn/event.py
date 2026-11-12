@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import collections
 import datetime as dt
 import io
 import json
@@ -273,6 +274,25 @@ def ensure_seeds() -> None:
                 cur.update(miss)
                 _write(slug, "event.json", cur)
         seed_gear(slug)
+        # 老档案（这一版之前建的）没有 provenance，补一份：来源取第一段的 source，
+        # 时间取文件写入日期。只补一次，之后以实际导入记录为准。
+        cp = _dir(slug) / "course.json"
+        if cp.exists():
+            try:
+                cc = json.loads(io.open(cp, encoding="utf-8").read())
+                if cc.get("segments") and not cc.get("provenance"):
+                    # 取「多数段」的来源：手改过一两个 CP 不代表整份赛道是手填的
+                    _src = collections.Counter(
+                        (x.get("source") or "manual") for x in cc["segments"])
+                    cc["provenance"] = {
+                        "source": _src.most_common(1)[0][0],
+                        "by": "user",
+                        "at": dt.date.fromtimestamp(cp.stat().st_mtime).isoformat(),
+                        "checked": [],
+                    }
+                    _write(slug, "course.json", cc)
+            except (ValueError, OSError):
+                pass
 
 
 def list_events(today: dt.date | None = None) -> list[dict]:
@@ -511,7 +531,7 @@ def plan_and_margin(slug: str | None = None, goal_s: int | None = None) -> list[
         cutoff = _cutoff_dt(ev, seg)
         out.append(dict(
             idx=seg["idx"], name=seg["name"], km=seg["km"],
-            dplus=seg["dplus"], dminus=seg.get("dminus") or 0,
+            dplus=seg.get("dplus") or 0, dminus=seg.get("dminus") or 0,
             cutoff=cutoff, arrive=arrive,
             # 没有关门就没有余量：None 比 0 诚实，排版层按「—」显示
             margin_s=((cutoff - arrive).total_seconds() if cutoff else None),
@@ -1140,8 +1160,9 @@ def countdown(ev: dict | None = None, today: dt.date | None = None) -> dict:
         duration_h=ev.get("duration_h"),
         has_course=len(course.get("segments") or []) > 1,
         cps=len(course.get("segments") or []),
-        cutoff=ev["cutoff_time"],
-        venue=ev["venue"],
+        # 手工建的赛事可能只填了名字和日期，不能因为缺字段就炸整页
+        cutoff=ev.get("cutoff_time"),
+        venue=ev.get("venue") or "",
         gear_done=gear["done"], gear_total=gear["total"],
         gear_missing=gear["missing"],
         tightest=tightest,
