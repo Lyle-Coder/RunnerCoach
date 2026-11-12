@@ -2917,7 +2917,7 @@ def clips_update(clip_id: str, dur: float = 0, w: int = 0, h: int = 0,
 BUNDLE_KIND = "runnercoach-data"
 BUNDLE_VER = 1
 BUNDLE_EXTRAS = ("plan.json", "manual.json", "meals.json", "clips.json",
-                 "ai_chat.json")
+                 "ai_chat.json", "posture.json")
 BUNDLE_TABLES = ("daily", "activities", "activity_detail", "body",
                  "race_results", "coach_notes")
 
@@ -2928,7 +2928,7 @@ _BUNDLE_README = """RunnerCoach 数据包
 
 包含：
   garmin.db      日汇总、活动、活动明细、体成分、赛事成绩、教练点评
-  extras/        计划快照、手工补录、饮食记录、素材清单、AI 对话历史（有就带）
+  extras/        计划快照、手工补录、饮食记录、素材清单、AI 对话与姿态评估记录（有就带）
   manifest.json  导出时间、版本与各表条数
 
 不包含（故意的）：

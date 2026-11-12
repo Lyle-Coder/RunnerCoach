@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import json
+
 from . import posture as P
 
 CSS = """<style>
@@ -48,8 +50,8 @@ JS = """<script>
      现在按动作存，任何一张成功都只是更新自己那一格，失败只落错误提示。 */
   const box = document.getElementById('pt-res');
   const err = document.getElementById('pt-err');
-  const RES = {};
-  const ORDER = [];
+  const RES = __INIT_RES__;
+  const ORDER = __INIT_ORDER__;
 
   async function refresh() {
     const list = ORDER.map(k => RES[k]).filter(Boolean);
@@ -101,6 +103,24 @@ JS = """<script>
       }
     });
   });
+
+  const clr = document.getElementById('ptClear');
+  if (clr) {
+    let arm = 0;
+    clr.addEventListener('click', async function(){
+      if (Date.now() > arm) {
+        arm = Date.now() + 4000;
+        clr.textContent = '再点一次确认清空';
+        clr.style.color = '#E06A5F';
+        setTimeout(function(){
+          if (Date.now() > arm) { clr.textContent = '清空全部记录'; clr.style.color = ''; }
+        }, 4200);
+        return;
+      }
+      try { await fetch('/__posture/clear', {method:'POST'}); } catch (e) {}
+      location.reload();
+    });
+  }
 })();
 </script>"""
 
@@ -149,10 +169,11 @@ def _plan_html(results: list[dict]) -> str:
         + weeks + '</table>')
 
 
-def _summary_row(r: dict) -> str:
-    """一张判读压成一行：动作 + 主要问题。细节折进下面的 details。"""
-    bad = [(c, it) for c, it in r["checks"].items() if it["state"] in ("mild", "clear")]
-    un = [c for c, it in r["checks"].items() if it["state"] == "unclear"]
+def _brief(r: dict) -> tuple[str, str]:
+    """一张判读压成一句话 + 颜色类。摘要行和历史列表都复用它。"""
+    checks = r.get("checks") or {}
+    bad = [(c, it) for c, it in checks.items() if it.get("state") in ("mild", "clear")]
+    un = [c for c, it in checks.items() if it.get("state") == "unclear"]
     if bad:
         txt = "、".join(f'{P.CHECKS[c]["label"]}{P.STATES[it["state"]]}' for c, it in bad)
         cls = "s-clear" if any(it["state"] == "clear" for _, it in bad) else "s-mild"
@@ -162,7 +183,13 @@ def _summary_row(r: dict) -> str:
     else:
         txt = "未发现明显代偿"
         cls = "s-ok"
-    return f'<tr><td>{r["name"]}</td><td class="{cls}">{txt}</td></tr>'
+    return txt, cls
+
+
+def _summary_row(r: dict) -> str:
+    """一行：动作 + 主要问题。细节折进下面的 details。"""
+    txt, cls = _brief(r)
+    return f'<tr><td>{r.get("name") or r.get("move")}</td><td class="{cls}">{txt}</td></tr>'
 
 
 def summary_html(results: list[dict]) -> str:
@@ -185,17 +212,55 @@ def summary_html(results: list[dict]) -> str:
             + detail + '</details>')
 
 
+def _history_html() -> str:
+    """历史记录：每次判读的时间、动作、结论。
+
+    只留 current 是回答不了「我上个月拍的是什么样」的，所以每次评估都追加。
+    默认折叠，不占版面。
+    """
+    from . import posturestore as PS
+
+    hist = PS.load()["history"][:12]
+    if not hist:
+        return ""
+    rows = "".join(
+        f'<tr><td>{h.get("at") or ""}</td><td>{h.get("name") or h.get("move") or ""}</td>'
+        f'<td class="{_brief(h.get("result") or {})[1]}">'
+        f'{_brief(h.get("result") or {})[0]}</td></tr>' for h in hist)
+    return ('<details class="fold2"><summary>历史记录（最近 '
+            + str(len(hist)) + ' 次）</summary>'
+            '<table class="pt-tb"><tr><th>时间</th><th>动作</th><th>判读</th></tr>'
+            + rows + '</table>'
+            '<div style="margin-top:12px"><button class="btn" type="button" id="ptClear">'
+            '清空全部记录</button></div>'
+            '<p class="pt-why" style="margin-top:6px">清空只删本机的判读记录，'
+            '照片本来就没有存下来。</p></details>')
+
+
 def render() -> str:
-    from . import ui
+    from . import ui, posturestore as PS
+
+    # 当前这一轮直接渲染进页面：切出去再回来（WebView 重建）不用重拍，
+    # 汇总方案也在。以前结果只活在前端 RES 里，一离开就没了。
+    cur = PS.current()
+    order = [r.get("move") for r in cur if r.get("move")]
+    init_html = summary_html(cur) if cur else ""
+    js = (JS.replace("__INIT_RES__",
+                     json.dumps({r["move"]: r for r in cur if r.get("move")},
+                                ensure_ascii=False))
+            .replace("__INIT_ORDER__", json.dumps(order, ensure_ascii=False)))
 
     body = (CSS + '<p class="pt-lead">按提示做动作、拍一张全身照。'
                   '一张照片只评一个动作，正面和侧面分开拍。</p>'
-            + _cards() + '<div id="pt-err"></div><div class="pt-res" id="pt-res"></div>' + JS)
+            + _cards()
+            + '<div id="pt-err"></div>'
+            + f'<div class="pt-res" id="pt-res">{init_html}</div>'
+            + js + _history_html())
     return ui.page("COACH · 力量", "姿态评估",
                    "拍一张 → 找薄弱项 → 4 周方案",
                    body,
                    # 这句必须改：默认文案是「数据只保存在本机，不上传任何第三方」，
                    # 但判读要把照片发给用户自己配的模型服务商。页面不能骗人。
                    foot="照片会发给你自己配置的模型服务商做判读（不经过 RunnerCoach "
-                        "的服务器），本机不留副本。不放心就跳过这页。",
+                        "的服务器），照片本机不落盘；判读结果保存在本机，方便回看。",
                    back=("AI 教练", "/ai"))
