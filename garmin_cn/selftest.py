@@ -4619,6 +4619,22 @@ def run() -> int:
     except ImportError:
         pass
 
+    # ---- 有分段但关门未公布：海拔剖面不能崩 ----
+    # 真机踩过：路跑赛事按补给站建了分段、官方关门还没公布，margin_s 全是 None，
+    # _relief 里拿 None 和 0 比大小直接 TypeError，整页 500。
+    try:
+        from . import eventui as _EUI2
+        _rel = [{"idx": 1, "km": 10, "name": "补给 10 km", "margin_s": None,
+                 "cutoff": None, "dplus": 300, "dminus": 200},
+                {"idx": 2, "km": 20, "name": "终点", "margin_s": None,
+                 "cutoff": None, "dplus": 200, "dminus": 300}]
+        _svg = _EUI2._relief(_rel)
+        assert "<svg" in _svg and "灰点" in _svg, "无关门的 CP 没有灰点图例"
+        _rel[0]["margin_s"], _rel[1]["margin_s"] = 600, -60
+        assert "灰点" not in _EUI2._relief(_rel), "全是有关门的点却挂了灰点图例"
+    except (ImportError, AttributeError):
+        pass
+
     # ---- 姿态评估：模板自洽 + 模型输出收敛 ----
     try:
         from . import posture as _PO

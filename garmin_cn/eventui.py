@@ -299,9 +299,17 @@ def _relief(rows: list) -> str:
     line = " ".join(f"{X(x):.1f},{Y(y):.1f}" for x, y in zip(xs, ys))
     area = f"{X(xs[0]):.1f},{H - pad:.1f} " + line + f" {X(xs[-1]):.1f},{H - pad:.1f}"
     marks = []
+    # 只有真存在「无关门」的点才挂灰点图例，否则全绿黄的 105K 也会多一句废话
+    none_leg = ("，<b>灰点＝关门未公布</b>"
+                if any(r.get("margin_s") is None for r in rows) else "")
     for r, y in zip(rows, ys[1:]):
-        cls = "bad" if r["margin_s"] < 0 else ("warn" if r["margin_s"] < 3600 else "ok")
-        color = {"bad": "#E06A5F", "warn": "#D6A75A", "ok": "#4FD6A6"}[cls]
+        # 没有官方关门的 CP 用灰点：直接比较 None 会 TypeError，
+        # 而在「有分段但关门没公布」的赛事上（路跑补给站常见）这条一定会炸。
+        m = r.get("margin_s")
+        cls = ("none" if m is None else
+               "bad" if m < 0 else ("warn" if m < 3600 else "ok"))
+        color = {"bad": "#E06A5F", "warn": "#D6A75A", "ok": "#4FD6A6",
+                 "none": "#6B7A8C"}[cls]
         marks.append(
             f'<circle cx="{X(r["km"]):.1f}" cy="{Y(y):.1f}" r="3.2" fill="{color}"/>'
             f'<text x="{X(r["km"]):.1f}" y="{Y(y) - 6:.1f}" fill="#7F8A97" '
@@ -313,7 +321,7 @@ def _relief(rows: list) -> str:
         f'stroke-linejoin="round"/>' + "".join(marks) + "</svg>"
         f'<div class="sub2">相对高度（起点 = 0，纵轴 ±{int(span)} m）· '
         "形状来自官方分段 D+/D-，<b>不是实测地形</b>；圆点是各 CP，"
-        "绿/黄/红对应该方案的关门余量。</div>")
+        f"绿/黄/红对应该方案的关门余量{none_leg}。</div>")
 
 
 SWIPE_JS = """<script>
