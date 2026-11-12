@@ -650,8 +650,27 @@ def race_card(d: dt.date) -> str:
             f'<span style="margin-left:6px;color:#6E7F97">{esc(label)}</span></td>'
             f'<td>{body}</td></tr>'
         )
+    # 赛事页入口：倒计时 + 最紧 CP 的门票，点进 /event 看完整余量表与路线
+    ev_chip = ""
+    try:
+        from . import event as _ev
+        _cd = _ev.countdown(today=d)
+        _tight = _cd["tightest"]
+        if _tight:
+            _tm = int(_tight["margin_s"])
+            _t = (f'{_tm // 3600}h{_tm % 3600 // 60:02d}m' if abs(_tm) >= 3600
+                  else f'{_tm // 60}m')
+            _tail = f'CP{_tight["idx"]} 余量 {_t}'
+        else:                      # 没有 CP 表：只报倒计时，不编余量
+            _tail = f'{_cd["dist"]:.0f} km / +{_cd["ascent"]:,}'
+        ev_chip = (f'<a class="chip" href="/event?slug={_cd["slug"]}" '
+                   f'style="text-decoration:none">'
+                   f'🏔 {_cd["days"]} 天 · {_tail} →</a>')
+    except Exception:
+        ev_chip = ""
     head = (f'<span class="chip">105K 备赛 · W{info["week"]} {esc(info["phase"])}期</span>'
-            f'<span class="chip gray" style="font-size:11px">本周 {info["week_km"]} km / +{info["week_vert"]:,} m</span>')
+            f'<span class="chip gray" style="font-size:11px">本周 {info["week_km"]} km / +{info["week_vert"]:,} m</span>'
+            + ev_chip)
     today_txt = (f'{info["abbr"]}' + (f' · {info["sub"]}' if info["sub"] else "")
                  + (f' · {info["tip"]}' if info["tip"] else ""))
     return (

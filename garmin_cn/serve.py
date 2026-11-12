@@ -31,7 +31,7 @@ from functools import partial
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from . import history, ui
 
@@ -135,6 +135,11 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._html(ui.files_page(root))
         if u.path in ("/privacy", "/privacy.html"):
             return self._html(ui.privacy_page())
+        if u.path in ("/event", "/event.html"):
+            from . import eventui
+            return self._html(eventui.render_page(parse_qs(u.query)))
+        if u.path.startswith("/event-file/"):
+            return self._event_file(u.path)
         if u.path.startswith("/basemap/"):
             return self._basemap(u.path)
         if u.path.startswith("/media/"):
@@ -338,6 +343,377 @@ class _Handler(SimpleHTTPRequestHandler):
         except BrokenPipeError:
             pass
 
+    def _event_race(self, u) -> None:
+        """赛中打点：开始 / 到达 / 撤销 / 重置。
+
+        比赛当天最怕点错，所以「撤销」必须顺手；重置要二次确认（前端用 JS 拦一道）。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 2048:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+
+        def one(k: str) -> str | None:
+            v = (qs.get(k) or [""])[0].strip()
+            return v or None
+
+        from . import event as E
+        err, okmsg = "", ""
+        act = one("act") or ""
+        try:
+            slug0 = one("slug")
+            st = E.set_race(slug0, act, idx=one("idx"))
+            if act == "pass":
+                t = (st.get("passed") or {}).get(str(int(one("idx") or 0)))
+                okmsg = ("已记录 %s 到达" % (t[11:16] if t else "")) if t else "已记录"
+            elif act == "unpass":
+                okmsg = "已撤销该点"
+            elif act == "start":
+                okmsg = "已开始，每到一个 CP 把那一行向左滑"
+            elif act == "reset":
+                okmsg = "赛况已清空"
+            elif act == "finish":
+                okmsg = "已记录完赛"
+        except ValueError as e:
+            err = str(e)
+        except Exception as e:
+            err = "保存失败：%s" % e
+        self._back(one("slug"), err=err, ok=okmsg, anchor="race")
+
+    def _event_edit(self, u) -> None:
+        """赛事页的编辑表单：目标 / CP 表 / 补给参数。
+
+        统一走「表单 POST + 303 回 /event」，校验失败也用 303 带 err 参数回去——
+        手机上弹 JSON 报错等于没提示，回到页面上用一条黄色横条说清楚更好。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 8192:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+
+        def one(k: str) -> str | None:
+            v = (qs.get(k) or [""])[0].strip()
+            return v or None
+
+        from . import event as E
+        slug = one("slug")
+        err = ""
+        try:
+            if u.path == "/__event/target":
+                E.set_target(slug, goal_h=one("goal_h"), status=one("status"),
+                             start_time=one("start_time"))
+            elif u.path == "/__event/fuel":
+                E.set_fuel(slug, carb_g_h=one("carb_g_h"), fluid_ml_h=one("fluid_ml_h"),
+                           sodium_mg_h=one("sodium_mg_h"), carry_ratio=one("carry_ratio"),
+                           carry_ml=one("carry_ml"), stop_min=one("stop_min"),
+                           dropbag_stop_min=one("dropbag_stop_min"))
+            else:
+                changes = {}
+                for key, val in qs.items():
+                    m = re.fullmatch(r"km_(\d+)", key)
+                    if m:
+                        changes.setdefault(m.group(1), {})["km"] = val[0]
+                    m = re.fullmatch(r"cut_(\d+)", key)
+                    if m:
+                        changes.setdefault(m.group(1), {})["cutoff"] = val[0]
+                E.set_cps(slug, changes)
+        except ValueError as e:
+            err = str(e)
+        except Exception as e:                       # 写盘失败也回到页面说清楚
+            err = "保存失败：%s" % e
+
+        # 保存成功要把人放回原来那一块（不然从页面底部提交，回到顶部像是没保存），
+        # 并且给一条绿条确认。错误仍然回同一块，红条就出现在出错的地方。
+        anchor = {"/__event/fuel": "fuel", "/__event/target": "adjust",
+                  "/__event/course": "adjust"}.get(u.path, "")
+        okmsg = ("补给参数已保存，各段用量已重算" if u.path == "/__event/fuel"
+                 else "CP 表已保存，余量已重算" if u.path == "/__event/course"
+                 else "目标已保存，余量与补给已重算")
+        self._back(slug, err=err, ok=okmsg, anchor=anchor)
+
+    def _event_file(self, path: str) -> None:
+        """赛事目录里的附件（规程 PDF、海报、参赛号截图）。
+
+        单独一条路由而不是放开 `/data/`：`data/` 下有 session.json 与数据库，
+        白名单只放 `events/<slug>/` 这一层，扩展名再卡一遍。
+        """
+        from urllib.parse import unquote
+        from . import event as E
+
+        rel = unquote(path[len("/event-file/"):])
+        if "/" not in rel:
+            return self._json({"ok": False, "error": "路径不合法"}, 404)
+        slug, fn = rel.split("/", 1)
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,60}", slug):
+            return self._json({"ok": False, "error": "路径不合法"}, 404)
+        if not re.fullmatch(r"[^/\\<>:*?\"|]{1,120}\.(pdf|png|jpe?g|txt|md|csv|gpx|ics|xlsx|docx)",
+                            fn, re.I):
+            return self._json({"ok": False, "error": "不允许读取"}, 404)
+        base = E._dir(slug).resolve()
+        try:
+            p = (base / fn).resolve()
+            p.relative_to(base)
+        except (ValueError, OSError):
+            return self._json({"ok": False, "error": "不存在"}, 404)
+        if not p.is_file():
+            return self._json({"ok": False, "error": "不存在"}, 404)
+        ext = p.suffix.lower()
+        ctype = {".pdf": "application/pdf", ".png": "image/png",
+                 ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                 ".txt": "text/plain; charset=utf-8",
+                 ".md": "text/plain; charset=utf-8",
+                 ".csv": "text/csv; charset=utf-8",
+                 ".gpx": "application/gpx+xml", ".ics": "text/calendar",
+                 ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                 ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                 }.get(ext, "application/octet-stream")
+        return self._send_file(p.read_bytes(), ctype, cache="no-store")
+
+    def _event_attach(self, u) -> None:
+        """把手机里选中的文件（规程 PDF、参赛号截图）存进赛事目录。
+
+        文件名只保留 basename 并按白名单卡扩展名：这个目录会通过
+        `/event-file/` 对外提供下载，放进来什么就得保证能被安全地读走。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机上传"}, 403)
+        from urllib.parse import unquote
+        from . import event as E
+
+        qs = parse_qs(u.query)
+        name = unquote((qs.get("name") or [""])[0]).strip()
+        slug = (qs.get("slug") or [""])[0].strip()
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        # 请求体先读掉再校验：提前 return 而不读 body，会让 keep-alive 连接里
+        # 残留一段未消费的数据，客户端读响应时会拿到 IncompleteRead（实测踩过）
+        data = self.rfile.read(n) if 0 < n <= 20 * 1024 * 1024 else b""
+        if not name or not data:
+            return self._json({"ok": False, "error": "文件为空或超过 20 MB"}, 400)
+        if not slug:
+            # 不能回落到「下一场」：用户在看 105K 时「下一场」可能是 43K，
+            # 静默写错档案比报错难查得多
+            return self._json({"ok": False, "error": "缺少赛事参数"}, 400)
+
+        ev = E.load_event(slug)
+        base = os.path.basename(name.replace("\\", "/"))
+        base = re.sub(r"[^\w.\-\u4e00-\u9fa5 ]+", "_", base).strip() or "附件"
+        ext = os.path.splitext(base)[1].lower()
+        if ext not in E.ATTACH_EXT:
+            return self._json({"ok": False, "error": "不收这种文件：%s" % (ext or "无扩展名")}, 400)
+        stem = os.path.splitext(base)[0]
+        dst = E._dir(ev["slug"]) / base
+        k = 2
+        while dst.exists():                      # 重名不覆盖，加序号
+            dst = E._dir(ev["slug"]) / ("%s (%d)%s" % (stem, k, ext))
+            k += 1
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(data)
+        except OSError as e:
+            return self._json({"ok": False, "error": "写入失败：%s" % e}, 500)
+        return self._back(ev["slug"], anchor="docs",
+                          ok="已添加附件 %s（%s）"
+                             % (dst.name, E.human_size(dst.stat().st_size)))
+
+    def _event_doc(self, u) -> None:
+        """资料条目：加一条 / 删一条。"""
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 16 * 1024:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+
+        def one(k: str) -> str | None:
+            v = (qs.get(k) or [""])[0].strip()
+            return v or None
+
+        from . import event as E
+
+        slug = one("slug")
+        err, okmsg = "", ""
+        try:
+            if (one("act") or "add") == "del":
+                idx = int(one("idx") or -1)
+                if not E.del_doc(slug, idx):
+                    raise ValueError("这条资料已经不存在了")
+                okmsg = "已删除"
+            else:
+                kind = one("kind") or "misc"
+                E.add_doc(slug, kind, one("title") or "", one("body"), one("url"))
+                okmsg = "已加进资料"
+        except ValueError as e:
+            err = str(e)
+        except Exception as e:
+            err = "保存失败：%s" % e
+        self._back(slug, err=err, ok=okmsg, anchor="docs")
+
+    def _back(self, slug: str | None, err: str = "", ok: str = "",
+              anchor: str = "") -> None:
+        """统一的 PRG 回跳：把 slug / 结果 / 锚点一次带齐。"""
+        q = []
+        if slug:
+            q.append("slug=" + quote(slug))
+        if err:
+            q.append("err=" + quote(err))
+        elif ok:
+            q.append("ok=" + quote(ok))
+        if anchor:
+            # at= 告诉页面「提示该出现哪一块」：只跳到 #anchor 的话，
+            # 提示条留在页面顶端，用户在底部看不到，等于没反馈
+            q.append("at=" + quote(anchor))
+        loc = "/event" + (("?" + "&".join(q)) if q else "") + (("#" + anchor) if anchor else "")
+        self.send_response(303)
+        self.send_header("Location", loc)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _event_ingest(self, u) -> None:
+        """新建赛事 / 粘贴规程导入 CP 表 / 沿用上一届。
+
+        三者都不弹 JSON：成功回到那一场并提示，失败回到导入区并说明原因——
+        手机上看到一个 JSON 等于没提示。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 64 * 1024:          # 规程整段粘贴，比表单大得多
+            return self._json({"ok": False, "error": "内容为空或过大（上限 64 KB）"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+
+        def one(k: str) -> str | None:
+            v = (qs.get(k) or [""])[0].strip()
+            return v or None
+
+        from . import event as E
+        from . import ingest as I
+
+        slug = one("slug")
+        try:
+            if u.path == "/__event/new":
+                ev = E.new_event(one("name") or "", one("date") or "",
+                                 float(one("distance_km") or 0),
+                                 ascent_m=int(float(one("ascent_m") or 0)),
+                                 start_time=one("start_time") or "08:00",
+                                 priority=one("priority") or "C")
+                return self._back(ev["slug"], anchor="import",
+                                  ok="已建好「%s」，接着可以粘贴 CP 表" % ev["name"])
+            if u.path == "/__event/prev":
+                src = one("from")
+                if not src:
+                    raise ValueError("先选一场要沿用的赛事")
+                ev = E.load_event(slug)
+                draft = I.from_prev(src, ev)
+                r = I.apply(ev, draft, by="user")
+                if not r["ok"]:
+                    raise ValueError(r["error"])
+                return self._back(ev["slug"], anchor="import",
+                                  ok="已沿用 %d 段 —— 核对改线后，在「调整 → CP 表」里改"
+                                     % r["n_segments"])
+            # /__event/import：粘贴规程文字
+            ev = E.load_event(slug)
+            draft = I.from_text(one("text") or "", ev)
+            if not draft["segments"]:
+                raise ValueError("没认出 CP 表：需要「CPn 地名 里程 关门」这样的行，"
+                                 "整段粘贴规程里的表格最稳")
+            r = I.apply(ev, draft, by="user")
+            if not r["ok"]:
+                bad = "；".join(i["msg"] for i in I.errors(r["issues"])[:2])
+                raise ValueError("数据没通过校验，未写入 —— " + bad)
+            return self._back(ev["slug"], anchor="import",
+                              ok="已导入 %d 个 CP —— 往下滑核对「赛况与余量」里的余量"
+                                 % r["n_segments"])
+        except ValueError as e:
+            return self._back(slug, err=str(e), anchor="import")
+        except Exception as e:
+            return self._back(slug, err="导入失败：%s" % e, anchor="import")
+
+    def _event_gear(self, u) -> None:
+        """勾选一条强制装备（页面上的 checkbox 直接 POST 到这里）。
+
+        用表单 POST + 303 回跳，不写 JS：WebView 里少一层异步，
+        断网、脚本被拦也能用。body 只有 idx / done 两个字段。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 4096:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+        try:
+            idx = int((qs.get("idx") or ["-1"])[0])
+        except ValueError:
+            idx = -1
+        done = (qs.get("done") or ["1"])[0] in ("1", "on", "true")
+        from . import event as E
+        ev = E.load_event((qs.get("slug") or [None])[0])
+        if idx < 0 or not E.set_gear(ev["slug"], idx, done):
+            return self._json({"ok": False, "error": "没有这一条"}, 404)
+        # 回到赛事页（PRG：Post/Redirect/Get，避免刷新重复提交）
+        g = E.gear_progress(ev["slug"])
+        self._back(ev["slug"], ok="装备 %d/%d" % (g["done"], g["total"]), anchor="gear")
+
+    def _event_gpx(self, u) -> None:
+        """接收 App 从系统文件选择器 / 分享进来的 GPX，落到赛事目录并解析。
+
+        走本机回环 + 大小上限：GPX 是几十 KB 到几 MB 的文本，给 40 MB 足够，
+        再大就当异常请求拒掉（避免有人从局域网灌文件）。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机导入"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0:
+            return self._json({"ok": False, "error": "空文件"}, 400)
+        if n > 40 * 1024 * 1024:
+            return self._json({"ok": False, "error": "文件过大（上限 40 MB）"}, 413)
+        raw = self.rfile.read(n)
+        from . import event as E
+        ev = E.load_event(parse_qs(u.query).get("slug", [None])[0])
+        d = E._dir(ev["slug"])
+        d.mkdir(parents=True, exist_ok=True)
+        dst = d / "track.gpx"
+        dst.write_bytes(raw)
+        try:
+            r = E.parse_gpx(dst, slug=ev["slug"])
+        except Exception as e:
+            try:
+                dst.unlink()
+            except OSError:
+                pass
+            return self._json({"ok": False, "error": "解析失败：%s" % e}, 400)
+        off = abs(r["ascent_m"] - ev["ascent_m"]) > ev["ascent_m"] * 0.1
+        return self._json({
+            "ok": True, "slug": ev["slug"], "km": r["total_km"],
+            "ascent": r["ascent_m"], "descent": r["descent_m"],
+            "points": r["points"], "profile": len(r["profile"]),
+            "official_ascent": ev["ascent_m"], "ascent_off": off,
+        })
+
     def _files_delete(self) -> None:
         """批量删除产物。只允许本机，且只认 output 一层的产物后缀。
 
@@ -389,6 +765,20 @@ class _Handler(SimpleHTTPRequestHandler):
         # 回放视频：动画页 `?export=1` 会自己逐帧 POST 上来，这里只负责收。
         if u.path.startswith(("/__frame", "/__done", "/__timeline", "/__diag")):
             return self._frame_post(u)
+        if u.path == "/__event/gpx":
+            return self._event_gpx(u)
+        if u.path == "/__event/gear":
+            return self._event_gear(u)
+        if u.path in ("/__event/target", "/__event/course", "/__event/fuel"):
+            return self._event_edit(u)
+        if u.path == "/__event/race":
+            return self._event_race(u)
+        if u.path in ("/__event/new", "/__event/import", "/__event/prev"):
+            return self._event_ingest(u)
+        if u.path == "/__event/doc":
+            return self._event_doc(u)
+        if u.path == "/__event/attach":
+            return self._event_attach(u)
         if u.path == "/__files/delete":
             # 产物页的批量删除。放在 gate 之前反而更安全：这里自己做本机校验，
             # 不带访问码的局域网访客一律 403。

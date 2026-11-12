@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 from . import llm
-from .coach import brief, context_markdown
+from .coach import brief, context_markdown, event_brief
 from .metrics import derive, num
 
 ROOT = llm.HOME
@@ -48,7 +48,9 @@ SYSTEM = """你是 RunnerCoach 的私人跑步教练，服务一位正在备战 
    不是推翻它。若数据明显矛盾（如处方强度跑但恢复度 30），指出来并建议降级执行。
 5. **第二人称**，像教练当面说话。不用"您"，不用敬语堆砌，不喊口号。
 6. 中文，短句。不用 markdown 记号（**、#、-），这些字段会被渲染成卡片。
-7. 拿不准就说不确定，不要为了显得专业而编造因果关系。"""
+7. 拿不准就说不确定，不要为了显得专业而编造因果关系。
+8. 上下文出现「备赛赛事」时，训练建议要与它对齐：余量为负先提醒风险，
+   距比赛 3 周内不加量；不要在比赛中期建议"再上一次强度课"。"""
 
 
 # ---------------------------------------------------------------- 工具
@@ -821,6 +823,9 @@ def chat(messages: list[dict], date: str | None = None) -> dict:
             f"体重 {bd.get('latest') or '无记录'} kg。"
             f"风险：{'；'.join(f['text'] for f in (b.get('flags') or [])[:3]) or '无'}。"
         )
+        _eb = event_brief(d)
+        if _eb:
+            brief_txt += " 备赛：" + _eb + "。"
     except Exception:
         brief_txt = f"今天是 {d}。（数据读取失败，只做通用建议）"
 

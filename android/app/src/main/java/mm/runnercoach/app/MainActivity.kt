@@ -119,11 +119,20 @@ class MainActivity : Activity() {
     private var splashAt = 0L
     private var splashGone = false
 
+    /** 系统「用 RunnerCoach 打开 GPX」传进来的文件；等服务起来后再导入。 */
+    private var pendingGpx: Uri? = null
+
+    /** 附件要落到哪一场：按钮上带着 slug，不回落到「下一场」 */
+    private var pendingAttachSlug: String? = null
+
     private val api: PyObject by lazy { Python.getInstance().getModule("garmin_cn.appapi") }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         secrets = Secrets(this)
+        // 从文件管理器 / 微信「其他应用打开」进来时，intent 已经带着 GPX 了；
+        // 本地服务还没起，先记下来，bootServer 完成后再导入。
+        pendingGpx = gpxFrom(intent)
 
         // Python 侧的数据目录：APK 里的代码在只读 assets，必须指到 filesDir。
         // 一定要在 Python.start() 之前设好，所以放在最前面。
@@ -269,6 +278,13 @@ class MainActivity : Activity() {
         thread { bootServer() }
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val u = gpxFrom(intent) ?: return
+        if (port > 0) importGpx(u) else pendingGpx = u
+    }
+
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         applyChromeForOrientation()
@@ -406,11 +422,13 @@ class MainActivity : Activity() {
         val path = uri?.path ?: "/"
         when {
             // 看板默认回历史；从今日页进来的（from=today）回今日
-            path.startsWith("/view") -> goTab(if (uri?.getQueryParameter("from") == "today") 0 else 1)
-            path.startsWith("/plan") -> goTab(0)     // 训练计划属于今日
-            path.startsWith("/files") -> goTab(3)    // 产物属于我的
-            path.startsWith("/privacy") -> goTab(3)  // 隐私说明也挂在我的下面
-            activeTab != 0 -> goTab(0)               // 其它 tab 先回今日
+            path.startsWith("/view") -> goTab(
+                if (uri?.getQueryParameter("from") == "today") TAB_TODAY else TAB_HISTORY)
+            path.startsWith("/plan") -> goTab(TAB_TODAY)   // 训练计划属于今日
+            path.startsWith("/event") -> goTab(TAB_TODAY)  // 赛事页也挂在今日下面
+            path.startsWith("/files") -> goTab(TAB_ME)     // 产物属于我的
+            path.startsWith("/privacy") -> goTab(TAB_ME)   // 隐私说明也挂在我的下面
+            activeTab != TAB_TODAY -> goTab(TAB_TODAY)     // 其它 tab 先回今日
             else -> finish()                         // 已在今日根页面，退出
         }
     }
@@ -455,24 +473,40 @@ class MainActivity : Activity() {
                     "hw" -> showHwPanel()
                     "bodySource" -> showBodySourcePicker()
                     "planRefresh" -> refreshPlan()
+                    "gpx" -> pickGpx()
+                    "attach" -> pickAttachment(null)
                     "amap" -> showAmapDialog()
                     "clips" -> showClips()
                     "update" -> checkUpdate(silent = false)
                     "dbExport" -> doExportData()
                     "dbImport" -> doImportData()
                     "diag" -> showDiag()
-                    else -> toast("未知操作：$name")
+                    // 带参数的动作放最后：`else` 必须是 when 的最后一个分支
+                    else -> if (name.startsWith("attach:")) {
+                        pickAttachment(name.removePrefix("attach:"))
+                    } else if (name.startsWith("openUrl:")) {
+                        openLocalFile(name.removePrefix("openUrl:"))
+                    } else {
+                        toast("未知操作：$name")
+                    }
                 }
             }
         }
     }
 
     // ------------------------------------------------------------ 底部导航
-    private val TAB_NAMES = arrayOf("今日", "历史", "教练", "我的")
-    private val TAB_URLS = arrayOf("/", "/history", "/ai", "/me")
+    // 教练排第二位：它是每天要点的东西，不该比「历史」还靠后。
+    private val TAB_NAMES = arrayOf("今日", "教练", "历史", "我的")
+    private val TAB_URLS = arrayOf("/", "/ai", "/history", "/me")
     private val TAB_ICONS = intArrayOf(
-        R.drawable.ic_tab_today, R.drawable.ic_tab_history,
-        R.drawable.ic_tab_coach, R.drawable.ic_tab_me)
+        R.drawable.ic_tab_today, R.drawable.ic_tab_coach,
+        R.drawable.ic_tab_history, R.drawable.ic_tab_me)
+
+    // 语义化索引：顺序调过一次（教练 3→2），别再往逻辑里写裸数字
+    private val TAB_TODAY = 0
+    private val TAB_COACH = 1
+    private val TAB_HISTORY = 2
+    private val TAB_ME = 3
 
     private fun buildTabBar(): LinearLayout {
         val nav = LinearLayout(this).apply {
@@ -544,11 +578,11 @@ class MainActivity : Activity() {
     private fun syncTabByUrl(url: String) {
         val path = url.substringAfter(":$port", url)
         val t = when {
-            path.startsWith("/ai") -> 2
+            path.startsWith("/ai") -> TAB_COACH
             path.startsWith("/me") || path.startsWith("/files") ||
-                path.startsWith("/privacy") -> 3
-            path.startsWith("/history") || path.startsWith("/view") -> 1
-            else -> 0
+                path.startsWith("/privacy") -> TAB_ME
+            path.startsWith("/history") || path.startsWith("/view") -> TAB_HISTORY
+            else -> TAB_TODAY
         }
         if (t != activeTab) {
             activeTab = t
@@ -601,7 +635,7 @@ class MainActivity : Activity() {
                         subtitle.text = "补齐历史 第 $seg 段：$a ~ $b（新拉 ${r.optInt("fetched")} 天）"
                         // 一段要跑一分多钟：停在「历史」页时每补完一段就刷一次，
                         // 否则用户盯着的是几分钟前的列表，以为没拉到东西。
-                        if (activeTab == 1) web.reload()
+                        if (activeTab == TAB_HISTORY) web.reload()
                     }
                 }
             }
@@ -655,6 +689,11 @@ class MainActivity : Activity() {
         }
         port = r.optInt("port")
         ui { goTab(0) }
+        // 冷启动阶段接到的 GPX：服务已就绪，这里补一次导入
+        pendingGpx?.let { u ->
+            pendingGpx = null
+            importGpx(u)
+        }
 
         // 首次装完是空库，直接把登录框弹出来，别让人对着一页「还没有东西」猜
         val s = apiCall("status")
@@ -2334,6 +2373,18 @@ class MainActivity : Activity() {
         }
         if (requestCode == REQ_BUNDLE && resultCode == android.app.Activity.RESULT_OK) {
             data?.data?.let { askImportBundle(it) }
+            return
+        }
+        if (requestCode == REQ_GPX) {
+            if (resultCode == android.app.Activity.RESULT_OK) {
+                data?.data?.let { importGpx(it) }
+            }
+            return
+        }
+        if (requestCode == REQ_ATTACH) {
+            if (resultCode == android.app.Activity.RESULT_OK) {
+                data?.data?.let { uploadAttachment(it) }
+            }
             return
         }
         if (requestCode == REQ_VIDEO && resultCode == android.app.Activity.RESULT_OK) {
@@ -4231,6 +4282,218 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------ 小工具
+    /** 系统文件选择器：规程 PDF、报名截图、补充说明都能选。 */
+    private fun pickAttachment(slug: String?) {
+        pendingAttachSlug = slug
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf(
+                "application/pdf", "image/*", "text/*",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+        }
+        try {
+            startActivityForResult(i, REQ_ATTACH)
+        } catch (t: Throwable) {
+            toast("打不开文件选择器：" + (t.message ?: t.javaClass.simpleName))
+        }
+    }
+
+    /**
+     * 把选中的文件传到赛事目录（走本机回环）。
+     *
+     * 文件名用 ContentResolver 查到的显示名：content:// 的 Uri 末段是个随机 id，
+     * 直接拿来当文件名，用户就再也认不出哪份是规程、哪份是参赛号了。
+     */
+    private fun uploadAttachment(uri: Uri) {
+        val name = run {
+            try {
+                contentResolver.query(uri, null, null, null, null)?.use { c ->
+                    val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+                }
+            } catch (t: Throwable) {
+                null
+            }
+        } ?: "附件"
+        toast("正在上传 " + name + "…")
+        thread {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw IllegalStateException("读不到文件内容")
+                if (bytes.isEmpty()) throw IllegalStateException("这个文件是空的")
+                if (bytes.size > 20 * 1024 * 1024)
+                    throw IllegalStateException("文件超过 20 MB")
+                val p = port
+                if (p <= 0) throw IllegalStateException("本地服务还没起来，稍后再试")
+                val q = java.net.URLEncoder.encode(name, "UTF-8")
+                val s = java.net.URLEncoder.encode(pendingAttachSlug ?: "", "UTF-8")
+                val c = java.net.URL(
+                    "http://127.0.0.1:$p/__event/attach?slug=$s&name=$q").openConnection()
+                        as java.net.HttpURLConnection
+                c.requestMethod = "POST"
+                c.doOutput = true
+                c.connectTimeout = 20000
+                c.readTimeout = 60000
+                c.setRequestProperty("Content-Type", "application/octet-stream")
+                c.setFixedLengthStreamingMode(bytes.size)
+                // 不自动跟随 303：目的地带着 ok= 与 at=docs，跟随之后这些就丢了，
+                // 页面刷新出来看不到「已添加附件」那条绿条
+                c.instanceFollowRedirects = false
+                c.outputStream.use { it.write(bytes) }
+                val code = c.responseCode
+                val loc = c.getHeaderField("Location")
+                val txt = (if (code in 200..299) c.inputStream else c.errorStream)
+                    ?.bufferedReader()?.use { it.readText() } ?: ""
+                c.disconnect()
+                ui {
+                    if (code in 200..399 && loc != null) {
+                        if (this::web.isInitialized) {
+                            web.loadUrl("http://127.0.0.1:$p" + loc)
+                        }
+                    } else if (code in 200..399) {
+                        if (this::web.isInitialized) {
+                            web.loadUrl("http://127.0.0.1:$p/event")
+                        }
+                    } else {
+                        val msg = try {
+                            JSONObject(txt).optString("error", "上传失败")
+                        } catch (t: Throwable) {
+                            "上传失败（HTTP " + code + "）"
+                        }
+                        AlertDialog.Builder(this).setTitle("上传失败")
+                            .setMessage(msg).setPositiveButton("好", null).show()
+                    }
+                }
+            } catch (t: Throwable) {
+                ui {
+                    AlertDialog.Builder(this).setTitle("上传失败")
+                        .setMessage(t.message ?: t.javaClass.simpleName)
+                        .setPositiveButton("好", null).show()
+                }
+            }
+        }
+    }
+
+    /**
+     * 用系统应用打开本机服务上的附件（规程 PDF、参赛号截图）。
+     *
+     * 为什么不在 WebView 里直接点链接：Android WebView 没有 PDF 渲染器，
+     * 点了只会白屏；而 127.0.0.1 属于「同源」，shouldOverrideUrlLoading
+     * 也不会触发。交给系统后，浏览器 / PDF 阅读器 / 相册都能读这个地址。
+     */
+    private fun openLocalFile(rel: String) {
+        val p = port
+        if (p <= 0) {
+            toast("本地服务还没起来，稍后再试")
+            return
+        }
+        val path = if (rel.startsWith("/")) rel else "/" + rel
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW,
+                Uri.parse("http://127.0.0.1:" + p + path)))
+        } catch (t: Throwable) {
+            toast("没有能打开它的应用：" + (t.message ?: t.javaClass.simpleName))
+        }
+    }
+
+    // ------------------------------------------------------------ GPX 导入
+    /**
+     * 从 intent 里取 GPX 的 Uri。
+     *
+     * 支持三种入口：ACTION_VIEW（文件管理器「用其他应用打开」）、
+     * ACTION_SEND（微信 / 浏览器「分享到」）、ACTION_EDIT（少数文件管理器）。
+     * 不校验扩展名——有些来源只给 MIME，扩展名反而缺失；真正的内容合法性
+     * 由 Python 侧的 GPX 解析器把关（解析失败会明确报错，不会写脏数据）。
+     */
+    private fun gpxFrom(it: Intent?): Uri? {
+        if (it == null) return null
+        return when (it.action) {
+            Intent.ACTION_VIEW, Intent.ACTION_EDIT -> it.data
+            Intent.ACTION_SEND -> {
+                @Suppress("DEPRECATION")
+                it.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) ?: it.data
+            }
+            else -> null
+        }
+    }
+
+    /** 系统文件选择器：只列 GPX / XML，避免在几千个文件里翻。 */
+    private fun pickGpx() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            // 有些文件管理器把 .gpx 报成 application/octet-stream，
+            // 所以 type 放宽到 */*，再用 EXTRA_MIME_TYPES 收窄候选。
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf(
+                "application/gpx+xml", "application/xml", "text/xml",
+                "application/octet-stream"))
+        }
+        try {
+            startActivityForResult(i, REQ_GPX)
+        } catch (t: Throwable) {
+            toast("打不开文件选择器：" + (t.message ?: t.javaClass.simpleName))
+        }
+    }
+
+    /**
+     * 把 GPX 交给本地服务解析。
+     *
+     * 读 content:// 必须走 ContentResolver（不能当路径直接读），
+     * 上传走回环 HTTP：Python 侧已经有解析器，两边共用一份逻辑，
+     * 不做第二套 Kotlin 解析（否则数字会和桌面端对不上）。
+     */
+    private fun importGpx(uri: Uri) {
+        toast("正在读取 GPX…")
+        thread {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw IllegalStateException("读不到文件内容")
+                if (bytes.isEmpty()) throw IllegalStateException("这个文件是空的")
+                if (bytes.size > 40 * 1024 * 1024)
+                    throw IllegalStateException("文件超过 40 MB，不像 GPX")
+                val p = port
+                if (p <= 0) throw IllegalStateException("本地服务还没起来，稍后再试")
+                val c = java.net.URL("http://127.0.0.1:$p/__event/gpx")
+                    .openConnection() as java.net.HttpURLConnection
+                c.requestMethod = "POST"
+                c.doOutput = true
+                c.connectTimeout = 20000
+                c.readTimeout = 90000
+                c.setRequestProperty("Content-Type", "application/gpx+xml")
+                c.setFixedLengthStreamingMode(bytes.size)
+                c.outputStream.use { it.write(bytes) }
+                val code = c.responseCode
+                val txt = (if (code in 200..299) c.inputStream else c.errorStream)
+                    ?.bufferedReader()?.use { it.readText() } ?: ""
+                c.disconnect()
+                val o = JSONObject(txt)
+                ui {
+                    if (o.optBoolean("ok")) {
+                        val off = if (o.optBoolean("ascent_off"))
+                            "（与官方 +${o.optInt("official_ascent")} m 差 >10%，以官方为准）"
+                        else ""
+                        toast("已导入 ${o.optDouble("km")} km / +${o.optInt("ascent")} m$off")
+                        if (this::web.isInitialized) {
+                            web.loadUrl("http://127.0.0.1:$p/event?imported=1")
+                        }
+                    } else {
+                        AlertDialog.Builder(this).setTitle("导入失败")
+                            .setMessage(o.optString("error", "未知错误"))
+                            .setPositiveButton("好", null).show()
+                    }
+                }
+            } catch (t: Throwable) {
+                ui {
+                    AlertDialog.Builder(this).setTitle("导入失败")
+                        .setMessage(t.message ?: t.javaClass.simpleName)
+                        .setPositiveButton("好", null).show()
+                }
+            }
+        }
+    }
+
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     /**
@@ -4344,6 +4607,10 @@ class MainActivity : Activity() {
         const val REQ_BUNDLE = 1002
         const val REQ_MEAL_PICK = 1003
         const val REQ_MEAL_SHOT = 1004
+        /** GPX 必须让开 1003/1004（1.0.8 拍照识热量已占用） */
+        const val REQ_GPX = 1005
+        /** 赛事资料附件上传（PDF / 图片 / 文本） */
+        const val REQ_ATTACH = 1006
 
         /**
          * 读 HTML 里的导出探针；旧版 Python 没有探针时返回空串，走尺寸兜底。
