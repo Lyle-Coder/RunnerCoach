@@ -103,6 +103,9 @@ ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:
 .msg.a{align-self:flex-start;background:var(--card);border:1px solid var(--line);
   border-bottom-left-radius:5px}
 .msg.a.think{color:var(--muted);font-style:normal}
+/* 归档提示：不是一条对话，是分隔线，所以居中 + 虚线 + 不占气泡宽度 */
+.msg.sys{align-self:center;max-width:92%;background:transparent;border:1px dashed var(--line);
+  color:var(--muted);font-size:11.5px;padding:5px 10px;border-radius:10px}
 .quick{display:flex;gap:7px;flex-wrap:wrap;margin-top:4px}
 .quick button{border:1px solid var(--line);background:var(--card);border-radius:999px;
   padding:7px 12px;font-size:12.5px;color:var(--ink-2);font-family:inherit}
@@ -615,6 +618,23 @@ async function viewWeight(force) {
 /* ---------------- 对话 ---------------- */
 const QUICK = ['今天的心率区间怎么控制？', '这周跑量是不是加太快了？', '比赛前两周该怎么减量？'];
 
+/* 历史只在服务端：每次进对话页都拉一遍，页面里的 CHAT 只是渲染缓存。
+   以前 CHAT 是唯一存储，切一次 tab 回来就空了。 */
+async function loadChatHistory() {
+  try {
+    const j = await api('chat_history', {limit: 80});
+    if (!j.ok) return;
+    CHAT = (j.messages || []).map(m => ({role: m.role, content: m.content, ts: m.ts}));
+    STATE.digest = j.digest || null;
+    STATE.chatTotal = j.total || CHAT.length;
+  } catch (e) { /* 拉不到就沿用内存里的，至少别白屏 */ }
+}
+
+async function viewChat() {
+  await loadChatHistory();
+  renderChat();
+}
+
 function renderChat() {
   const v = $('#view');
   const frag = document.createDocumentFragment();
@@ -632,6 +652,11 @@ function renderChat() {
     e.appendChild(q);
     box.appendChild(e);
   } else {
+    // 归档过的部分只留一行提示：原文还在服务端，要翻全文走导出，不在气泡里堆
+    if (STATE.digest && STATE.digest.text) {
+      box.appendChild(el('div', 'msg sys',
+        '更早的 ' + (STATE.digest.upto || 0) + ' 条已收进摘要，后面的回答会带上它'));
+    }
     CHAT.forEach(m => box.appendChild(el('div', 'msg ' + (m.role === 'user' ? 'u' : 'a'), esc(m.content))));
   }
   frag.appendChild(box);
@@ -662,7 +687,8 @@ async function send(text) {
   const think = el('div', 'msg a think', '思考中…');
   v.querySelector('.chat').appendChild(think);
 
-  const j = await api('chat', {messages: CHAT});
+  // 只发这一句：历史存在服务端（data/ai_chat.json），切页面回来还接得上
+  const j = await api('chat', {text: text});
   STATE.busy = false;
   if (!j.ok) {
     think.remove();
@@ -673,6 +699,7 @@ async function send(text) {
     return;
   }
   CHAT.push({role: 'assistant', content: j.reply});
+  if (j.archived) await loadChatHistory();   // 刚归档过，摘要变了，顺手刷新
   renderChat();
 }
 
@@ -934,7 +961,7 @@ function switchTab(t) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === t));
   if (t === 'today') viewToday(false);
   if (t === 'weight') viewWeight(false);
-  if (t === 'chat') renderChat();
+  if (t === 'chat') viewChat();
 }
 
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => switchTab(b.dataset.v));

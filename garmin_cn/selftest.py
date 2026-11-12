@@ -4619,6 +4619,46 @@ def run() -> int:
     except ImportError:
         pass
 
+    # ---- AI 对话历史：落盘、滑动窗口、摘要归档 ----
+    # 用户的诉求是「切页面回来还能看到之前问过什么」，所以原文一条都不能删；
+    # 只把窗口外的部分压成摘要，避免上下文越滚越大。
+    try:
+        from unittest import mock as _umCS
+        from . import chatstore as _CS
+
+        _cd = Path(tempfile.mkdtemp())
+        with _umCS.patch.object(_CS, "PATH", _cd / "ai_chat.json"):
+            _CS.clear()
+            assert _CS.context() == [], "空历史不该有上下文"
+            for _i in range(3):
+                _CS.append("user", f"问{_i}")
+                _CS.append("assistant", f"答{_i}")
+            assert len(_CS.load()["messages"]) == 6
+            assert len(_CS.context()) == 6
+            assert not _CS.should_archive(), "6 条就触发归档，窗口太小"
+
+            for _i in range(20):
+                _CS.append("user", f"追{_i}")
+                _CS.append("assistant", f"回{_i}")
+            _n = len(_CS.load()["messages"])
+            assert _CS.should_archive(), "超出窗口却没触发归档"
+            _r = _CS.archive(lambda old, b: f"摘要{len(b)}条")
+            assert _r and _r["upto"] == _CS.CHUNK
+            assert len(_CS.load()["messages"]) == _n, "归档把原文删了（历史不该丢）"
+            _ctx = _CS.context()
+            assert _ctx[0]["role"] == "system" and "摘要" in _ctx[0]["content"]
+            assert len(_ctx) == _CS.KEEP + 1, "上下文条数不对（摘要 + 窗口）"
+
+            _CS.append("user", "这一句要撤掉")
+            _CS.drop_last_user()
+            assert _CS.load()["messages"][-1]["content"] != "这一句要撤掉"
+
+            (_cd / "ai_chat.json").write_text("{坏掉的 json", encoding="utf-8")
+            assert _CS.load()["messages"] == [], "历史文件损坏时没有兜底"
+        shutil.rmtree(_cd, ignore_errors=True)
+    except ImportError:
+        pass
+
     # ---- 有分段但关门未公布：海拔剖面不能崩 ----
     # 真机踩过：路跑赛事按补给站建了分段、官方关门还没公布，margin_s 全是 None，
     # _relief 里拿 None 和 0 比大小直接 TypeError，整页 500。
