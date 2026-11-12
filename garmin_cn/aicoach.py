@@ -625,6 +625,29 @@ def activity_review(activity_id: str, date: str | None = None) -> dict:
 
     from .actcard import pace_txt
 
+    # 步频不在这条 activity 行里：activities 表只有时长/距离/心率，步频与分圈
+    # 存在 activity_detail。不读出来，模型就会说「没有步频数据」——而数据其实在。
+    # 分圈同理：判断「后程是否掉速」必须给每公里的配速。
+    cad_avg, cad_max = None, None
+    splits: list[dict] = []
+    try:
+        _row = store.conn.execute(
+            "SELECT cad_avg, cad_max, payload FROM activity_detail WHERE activity_id = ?",
+            (activity_id,)).fetchone()
+        if _row:
+            cad_avg, cad_max = num(_row["cad_avg"]), num(_row["cad_max"])
+            _detail = json.loads(_row["payload"] or "{}")
+            for _lap in (_detail.get("laps") or [])[:16]:
+                _p, _d = num(_lap.get("pace_s")), num(_lap.get("dist_m"))
+                if not _p or (_d or 0) < 200:
+                    continue
+                splits.append({"km": round((_d or 0) / 1000, 2),
+                               "pace": pace_txt(_p),
+                               "hr": num(_lap.get("hr_avg")),
+                               "cad": num(_lap.get("cad"))})
+    except Exception:
+        pass
+
     pace = act.get("pace_s_km")
     ctx = {
         "date": (act.get("date") or "")[:10],
@@ -635,7 +658,9 @@ def activity_review(activity_id: str, date: str | None = None) -> dict:
         "avg_pace": pace_txt(pace) if pace else None,
         "avg_hr": act.get("avg_hr"),
         "max_hr": act.get("max_hr"),
-        "avg_cadence": act.get("avg_cadence"),
+        "avg_cadence": cad_avg if cad_avg is not None else act.get("avg_cadence"),
+        "max_cadence": cad_max,
+        "splits": splits[:12],
         "elev_gain_m": act.get("elev_gain_m"),
         "calories": act.get("calories"),
         "training_effect": act.get("training_effect"),
@@ -661,6 +686,10 @@ def activity_review(activity_id: str, date: str | None = None) -> dict:
 
 纪律：
 - 越野跑要在意爬升与后程掉速；路跑要看配速漂移；心率数据缺失就别分析心率。
+- **avg_cadence / max_cadence / max_hr / splits 已经给出来了就必须用**：
+  判断后程有没有掉速，直接看 splits 里每公里配速的走势；
+  不要写「没有步频数据」「没有最大心率」这类与上文矛盾的话。
+- 只有字段确实是 null 才可以说缺数据，并且要点明缺的是哪一个。
 - 只有一次数据时不要谈「趋势」，只谈这一次。
 - 别把正常的长距离掉速说成问题，也别把明显的过速说成「状态好」。"""
 

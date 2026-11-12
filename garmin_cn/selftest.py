@@ -4075,6 +4075,41 @@ def run() -> int:
         assert len(_acalls) == 4 and not _w3.get("cached"), \
             "force=True 没有绕过缓存（「重新分析」按钮会点不动）"
 
+        # 单次训练解读：步频与分圈必须进上下文。
+        # 用户反馈模型说「没有最大心率和步频数据」——步频只存在 activity_detail，
+        # activities 表根本没这一列，旧上下文里它永远是 None。
+        _astore.upsert_activity({
+            "activity_id": "A1", "date": _aday, "start_ts": _aday + " 07:00",
+            "type": "running", "name": "晨跑", "duration_s": 2640,
+            "distance_m": 8410, "avg_hr": 157, "max_hr": 181,
+            "calories": 412, "pace_s_km": 317, "source": "garmin"})
+        _astore.conn.execute(
+            "INSERT OR REPLACE INTO activity_detail "
+            "(activity_id, fetched_at, cad_avg, cad_max, payload) VALUES (?,?,?,?,?)",
+            ("A1", _aday, 188.0, 196.0, json.dumps({"laps": [
+                {"dist_m": 1000, "dur_s": 317, "pace_s": 317, "hr_avg": 150, "cad": 188},
+                {"dist_m": 410, "dur_s": 140, "pace_s": 341, "hr_avg": 168, "cad": 183},
+            ]})))
+        _astore.conn.commit()
+        _act_msgs: list = []
+
+        def _fake_act(messages, **kw):
+            _act_msgs.append(messages)
+            return {"text": '{"title":"晨跑","summary":"节奏偏快","good":[],'
+                            '"improve":[],"next":""}',
+                    "model": "m", "elapsed": 0.2}
+
+        with _um3.patch("garmin_cn.llm.chat", side_effect=_fake_act):
+            _rev = _AC.activity_review("A1", _aday)
+        assert _rev.get("ok"), f"训练解读失败：{_rev}"
+        # 断言看用户消息原文：整包 json.dumps 会把引号转义成 \"，搜不到字段名
+        _ctx_txt = str(_act_msgs[0][1]["content"])
+        assert '"max_cadence": 196' in _ctx_txt, \
+            "最大步频没进上下文，模型只能瞎猜"
+        assert '"avg_cadence": 188' in _ctx_txt, "平均步频没进上下文"
+        assert '"splits"' in _ctx_txt and '"km": 1.0' in _ctx_txt, \
+            "每公里分圈没进上下文，判断不了后程掉速"
+
     # ---- 拍照识热量：文字描述要一起进请求；空 items 要自动重试一次 --------
     _mreq: list = []
     _mseq = [{"text": "Sorry, I can't see food here.", "model": "m", "elapsed": 0.5},
