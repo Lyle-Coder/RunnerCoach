@@ -3239,9 +3239,10 @@ def run() -> int:
     assert re.search(r"\.me \.grid\.three \.card\{[^}]*height:88px", _ucss, re.S), \
         "三张数值卡没固定高度"
     _ads = re.findall(r'<span class="ad">([^<]*)</span>', _me)
-    # 运动设置与高驰训练导入分别有独立入口；副标题仍保持单行。
-    assert len(_ads) == 9 and all(len(a) <= 14 for a in _ads), \
+    # 运动设置、高驰训练导入、日历提醒分别有独立入口；副标题仍保持单行。
+    assert len(_ads) == 10 and all(len(a) <= 14 for a in _ads), \
         f"网格卡数量或说明长度不对：{_ads}"
+    assert any("系统日历" in a for a in _ads), "「我的」页没有日历提醒入口"
 
     # ---- 0.6.6：品牌图标统一到开屏 / 角标 / 三张出图 / 完整看板 ------------
     from garmin_cn import brand as _BR
@@ -3385,8 +3386,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（1.1.9 → 128）。
-    assert 'versionCode = 130' in (
+    # 每次发版要同步改这里（本次 1.3.0 → 131）。
+    assert 'versionCode = 131' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -5275,6 +5276,32 @@ def run() -> int:
     assert "只有路线、没有途经点" not in _EVUI.render_page({"slug": ["self-2026"]}), \
         "明明有途经点，还在提示「只有路线」"
 
+    # 官方「路线」格式：<rte><rtept>，以及 GPX 1.0 命名空间
+    _rte = "".join(f'<rtept lat="30" lon="{0.44 * i / 99}"><ele>{20 + i % 9}</ele>'
+                   f'</rtept>' for i in range(100))
+    for _label, _head in (
+        ("rte 1.1", '<gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">'),
+        ("rte 1.0", '<gpx version="1.0" xmlns="http://www.topografix.com/GPX/1/0">'),
+        ("无命名空间", '<gpx version="1.1">'),
+    ):
+        (_ed / "track.gpx").write_text(
+            '<?xml version="1.0"?>' + _head + "<rte>" + _rte + "</rte></gpx>",
+            encoding="utf-8")
+        _rr = _EV.parse_gpx(_ed / "track.gpx", slug="self-2026")
+        assert _rr["points"] == 100, f"{_label} 的 rtept 没解析出来（{_rr['points']} 点）"
+        assert _rr["total_km"] > 40, f"{_label} 距离算错了：{_rr['total_km']}"
+
+    # 只有 5 个点：报错要说清找到了几个，别只说「少于 10 个」
+    (_ed / "track.gpx").write_text(
+        '<?xml version="1.0"?><gpx xmlns="http://www.topografix.com/GPX/1/1"><rte>'
+        + "".join(f'<rtept lat="30" lon="{0.1 * i}"/>' for i in range(5))
+        + "</rte></gpx>", encoding="utf-8")
+    try:
+        _EV.parse_gpx(_ed / "track.gpx", slug="self-2026")
+        raise AssertionError("5 个点的 GPX 居然通过了")
+    except ValueError as _e:
+        assert "5 个坐标点" in str(_e), f"报错没说清找到了几个点：{_e}"
+
     # 刻度疏密跟着赛程：全马 5 km、百公里 10 km
     assert _EVUI._spark([[0, 10], [20, 20], [40, 15]], 5).count('stroke-dasharray') == 7, \
         "全马该按每 5 km 打刻度"
@@ -5316,6 +5343,229 @@ def run() -> int:
     _soon = E2.trips("self-2026", today="2027-03-24")
     assert _soon and _soon[0]["days"] == 0, f"当天那件事没排在最前：{_soon[:1]}"
 
+    # ---- 手填行程 / 住宿：入口、定位、坐标、提醒、地图标注 ---------------
+    from garmin_cn import basemap as _BM3
+    import urllib.parse as _upx
+
+    # 高德地理编码返回 GCJ，存下来的是 WGS：正反算要能还原
+    _glon, _glat = _BM3.wgs84_to_gcj02(104.05, 30.66)
+    _wlon, _wlat = _BM3.gcj02_to_wgs84(_glon, _glat)
+    assert abs(_wlon - 104.05) < 1e-6 and abs(_wlat - 30.66) < 1e-6, \
+        "GCJ→WGS 反算不准，住宿会标偏几百米"
+    assert _EV._norm_at("2027/3/25 15:00") == "2027-03-25T15:00", \
+        "手填时间没归一"
+    assert _EV._norm_at("2027-03-25") == "2027-03-25T00:00", \
+        "只填日期时该当作 00:00"
+    try:
+        _EV._norm_at("下周三")
+        raise AssertionError("不合法日期居然通过了")
+    except ValueError:
+        pass
+
+    # 不联网：把地理编码、城市反查、合理性判断都替成固定结果
+    with _mock.patch.object(_BM3, "geocode",
+                            lambda *a, **k: {"lat": 30.67, "lon": 104.06,
+                                             "name": "测试酒店"}), \
+            _mock.patch.object(E2, "_trip_city", lambda slug: "成都"), \
+            _mock.patch.object(E2, "_trip_plausible", lambda *a, **k: True):
+        _ti = _EV.trip_add("self-2026", "stay", "2027-03-25 15:00",
+                           "入住 都江堰锦江之星", "都江堰锦江之星")
+    assert _ti.get("lat") == 30.67 and _ti.get("lon") == 104.06, \
+        "住宿地址没落到坐标上"
+    assert len(_EV.trip_manual("self-2026")) == 1, "手填行程没存进 trip.json"
+    _tp3 = E2.trips("self-2026", today="2026-11-13")
+    assert any(x.get("manual") and x["kind"] == "stay" for x in _tp3), \
+        "手填住宿没出现在行程列表"
+    assert sum(1 for x in _tp3
+               if x["kind"] == "stay" and x["at"][:10] == "2027-03-25") == 1, \
+        "资料里同一天的住宿和手填的重复了"
+    assert any(r["src"] == "行程" for r in E2.timeline("self-2026")), \
+        "手填行程没进首页「临近」提醒"
+
+    # 同名地点被解析到外省时，宁可不标：否则底图取景会被拉到 2000 km 外
+    _stat_backup = E2._read("self-2026", "track_stats.json")
+    E2._write("self-2026", "track_stats.json",
+              {"polyline": [[30.0 + i * 0.001, 120.0 + i * 0.001]
+                            for i in range(20)]})
+    assert _EV._trip_plausible("self-2026", 30.02, 120.02), \
+        "赛道边的住宿被判成不合理坐标"
+    assert not _EV._trip_plausible("self-2026", 26.36, 100.14), \
+        "解析到云南的同名地点没被拦住，整张底图会被拉坏"
+    if _stat_backup is not None:
+        E2._write("self-2026", "track_stats.json", _stat_backup)
+
+    # 三个点：起点、终点、住宿；每个都能点开高德，且用 GCJ 坐标
+    _pins = _EVUI._course_pins("self-2026", [[30.0, 120.0], [30.1, 120.1]])
+    assert [p["label"] for p in _pins[:2]] == ["起点", "终点"], \
+        f"起终点没标上：{_pins[:2]}"
+    assert len(_pins) == 3 and _pins[2]["kind"] == "stay", \
+        f"住宿没标上：{_pins}"
+    # 机场 / 车站虽然也有坐标，但不能上赛道图：几十公里外会把 105K 赛道
+    # 挤成画幅一角的一小团。它们只在行程列表里各自带导航按钮。
+    _raw_pois = _EV.trip_pins("self-2026")
+    with _mock.patch.object(
+            _EV, "trip_pins",
+            lambda *a, **k: _raw_pois + [
+                {"kind": "flight", "label": "返程航班", "place": "机场",
+                 "lat": 30.5, "lon": 120.5, "at": ""}]):
+        _pins_far = _EVUI._course_pins(
+            "self-2026", [[30.0, 120.0], [30.1, 120.1]])
+    assert len(_pins_far) == 3 and all(
+        p["kind"] != "flight" for p in _pins_far), \
+        "机场被画进赛道图，底图取景会被拉到整个城市"
+    assert all("uri.amap.com/navigation" in p["url"] for p in _pins), \
+        "标注点没有高德导航链接"
+    assert "uri.amap.com/marker" in _EVUI._amap_url(30.0, 120.0, "测试", nav=False), \
+        "「看位置」应该走单点标注而不是路径规划"
+    _pq = _upx.parse_qs(_upx.urlparse(_pins[0]["url"]).query)
+    _to = _pq["to"][0].split(",")
+    _plon, _plat = float(_to[0]), float(_to[1])
+    assert _pq["callnative"][0] == "1", "没让高德尝试唤起 App"
+    _elon, _elat = _BM3.wgs84_to_gcj02(120.0, 30.0)
+    assert abs(_plon - _elon) < 1e-5 and abs(_plat - _elat) < 1e-5, \
+        "高德 URI 传了 WGS 坐标，导航会偏到隔壁街"
+    assert _EVUI._pin_tag([]) == ""
+    assert _EVUI._pin_tag([[30.67, 104.06]]) == \
+           _EVUI._pin_tag([[30.67, 104.06]]), "同样的 POI 每次换缓存名会反复取图"
+    assert _EVUI._pin_tag([[30.67, 104.06]]) != \
+           _EVUI._pin_tag([[30.68, 104.06]]), "POI 变了还命中旧底图，住宿会落到画幅外"
+
+    # 没有底图 Key 时也要出标注（矢量模式），并且取景把住宿一起算进去
+    from garmin_cn import actcard as _AC3
+
+    _pin_near = [dict(p) for p in _pins]
+    _pin_near[2]["lat"], _pin_near[2]["lon"] = 30.05, 120.15
+    _svg_pins = _AC3.track_svg([[30.0, 120.0], [30.1, 120.1], [30.2, 120.0]],
+                               720, 360, pins=_pin_near)
+    assert "起点" in _svg_pins and "终点" in _svg_pins, \
+        "矢量俯视图上的起终点标注没渲染"
+    assert _svg_pins.count("<a href=") >= 3, \
+        "三个点都得能点，不能只画个圆"
+    # 图上圆点太小，还得有一排大按钮兜底
+    with _mock.patch.object(_BM3, "available", lambda: False):
+        _map_html = _EVUI._course_map(
+            "self-2026", {"polyline": [[30.0, 120.0], [30.1, 120.1]]})
+    assert "导航到起点" in _map_html and "导航到终点" in _map_html, \
+        "赛道图旁边没有起终点导航按钮"
+    assert "导航到住宿" in _map_html, "住宿没进赛道图的导航按钮"
+    assert "导航到高铁" not in _map_html and "导航到航班" not in _map_html, \
+        "机场/车站又混进赛道图导航按钮了"
+    # 空行程时「行程与预订」区块必须还在，且添加入口默认展开
+    with _mock.patch.object(E2, "trips", lambda *a, **k: []), \
+            _mock.patch.object(_BM3, "available", lambda: False):
+        _empty_trip_html = _EVUI.render_page({"slug": ["self-2026"]})
+    assert "行程与预订" in _empty_trip_html, \
+        "没行程就把整块藏了，用户找不到入口"
+    assert "加一条行程" in _empty_trip_html and "<details class=\"fold\" open>", \
+        "空行程时添加表单没默认展开"
+
+    with _mock.patch.object(_BM3, "geocode",
+                            lambda *a, **k: {"lat": 30.68, "lon": 104.07,
+                                             "name": "新地址"}), \
+            _mock.patch.object(E2, "_trip_city", lambda slug: "成都"), \
+            _mock.patch.object(E2, "_trip_plausible", lambda *a, **k: True):
+        assert _EV.trip_geo("self-2026", 0, "换个地址"), "补地址没返回条目"
+    assert _EV.trip_manual("self-2026")[0]["lat"] == 30.68, "重新定位没写回坐标"
+    assert _EV.trip_del("self-2026", 0), "手填行程删不掉"
+    assert not _EV.trip_manual("self-2026"), "删完还留着空壳"
+
+    # ---- 预订提前量：倒推、可改、单条覆盖、过期不消失、已订 -------------
+    assert _EV.BOOKING_LEAD == {"flight": 60, "train": 15, "stay": 45,
+                                "race": 0, "other": 0}, "默认提前量被改了"
+    _EV.trip_add("self-2026", "flight", "2027-03-25 08:30", "CA1883 起飞")
+    _EV.trip_add("self-2026", "train", "2027-03-25 14:05", "G8712 成都东")
+    _EV.trip_add("self-2026", "stay", "2027-03-26 15:00", "入住 都江堰")
+    _bk = _EV.bookings("self-2026", today="2027-01-01")
+    assert len(_bk) == 3, f"该有三条待办：{_bk}"
+    _due = {b["kind"]: b["due"] for b in _bk}
+    assert _due == {"flight": "2027-01-24", "train": "2027-03-10",
+                    "stay": "2027-02-09"}, f"提前量倒推错了：{_due}"
+    assert [b["kind"] for b in _bk] == ["flight", "stay", "train"], \
+        "待办该按截止日排，不是按行程日"
+    # 赛事级可改：只改航班，其它两项保持
+    assert _EV.set_booking_rules("self-2026", {"flight": "10"})["flight"] == 10
+    assert _EV.booking_rules("self-2026")["stay"] == 45, "改航班把住宿也改了"
+    assert {b["kind"]: b["due"] for b in
+            _EV.bookings("self-2026", today="2027-01-01")}["flight"] == \
+        "2027-03-15", "改完规则待办没重算"
+    try:
+        _EV.set_booking_rules("self-2026", {"train": "-3"})
+        raise AssertionError("负的提前量居然收下了")
+    except ValueError:
+        pass
+    # 单条覆盖：0 表示这条不生成待办
+    _EV.trip_add("self-2026", "flight", "2027-03-27 18:00", "返程航班",
+                 lead="0")
+    assert len(_EV.bookings("self-2026", today="2027-01-01")) == 3, \
+        "单条填 0 还是生成了待办"
+    # 过期不消失：最该催的就是这一条
+    _late = _EV.bookings("self-2026", today="2027-04-01")
+    assert len(_late) == 3 and all(b["overdue"] and b["days"] < 0
+                                   for b in _late), \
+        "截止日过了待办就消失，等于白提醒"
+    # 标已订：默认仍可见（能取消），但首页「临近」不再推
+    _idx = next(b["idx"] for b in _late if b["kind"] == "stay")
+    assert _EV.trip_book("self-2026", _idx, True)["booked"] is True
+    _all_bk = _EV.bookings("self-2026", today="2027-01-01")
+    assert all(b["kind"] != "stay" for b in
+               _EV.bookings("self-2026", today="2027-01-01",
+                            include_booked=False)), "标了已订还在催"
+    assert _all_bk[-1]["booked"] and _all_bk[-1]["kind"] == "stay", \
+        "已订的该沉到底且仍可见，免得误点后找不回来"
+    _up = [r for r in _EV.upcoming(days=80, today="2027-01-01")
+           if r.get("slug") == "self-2026" and r.get("booking")]
+    assert _up and all("入住 都江堰" not in r["label"] for r in _up), \
+        "首页「临近」还在推已订的住宿"
+    assert any(r["label"] == "CA1883 起飞" for r in _up), \
+        "首页「临近」没带上待订的航班"
+    with _mock.patch.object(_BM3, "available", lambda: False):
+        _bk_html = _EVUI.render_page({"slug": ["self-2026"]})
+    for _txt in ("该订了", "改预订提前量", "标为已订", "取消已订"):
+        assert _txt in _bk_html, f"赛事页缺了「{_txt}」"
+    assert "提前量" in _bk_html, "添加表单里没有单条提前量入口"
+    assert 'data-act="calendarSync"' in _bk_html, \
+        "赛事页没有「同步到系统日历」入口"
+
+    # ---- 系统日历清单：过期/已订不写、uid 稳定、原生能认回自己 ---------
+    _ci = [x for x in _EV.calendar_items(today="2027-01-01")
+           if x["slug"] == "self-2026"]
+    assert _ci, "日历清单为空"
+    _cbk = [x for x in _ci if x["type"] == "booking"]
+    _ctp = [x for x in _ci if x["type"] == "trip"]
+    assert _cbk and _ctp, f"预订或行程没进日历清单：{[x['type'] for x in _ci]}"
+    assert all("入住 都江堰" not in x["title"] for x in _cbk), \
+        "标了已订还往系统日历写提醒"
+    assert all(x["at"].endswith("09:00") and x["minutes"] == [0]
+               for x in _cbk), "预订提醒该在截止日 09:00 弹"
+    assert all(isinstance(x["minutes"], list) and x["minutes"] and
+               all(isinstance(m, int) for m in x["minutes"]) for x in _ci), \
+        "提醒分钟数格式不对，原生会插出 0 分钟外的怪提醒"
+    assert all(("rcuid=" + x["uid"]) in x["desc"] and
+               x["desc"].count("#RunnerCoach") == 1 for x in _ci), \
+        "描述缺 uid 标记，下次同步会认不出自己写的事件"
+    assert len({x["uid"] for x in _ci}) == len(_ci), "uid 撞了"
+    assert _EV.calendar_items(today="2027-01-01") == \
+        _EV.calendar_items(today="2027-01-01"), \
+        "同一天的清单每次生成不同 id，日历会被反复删建"
+    # 只填日期没填时刻：不能把事件定在 00:00 半夜弹
+    _EV.trip_add("self-2026", "other", "2027-03-24", "领物")
+    _ci2 = [x for x in _EV.calendar_items(today="2027-01-01")
+            if x["slug"] == "self-2026"]
+    _ling = [x for x in _ci2 if "领物" in x["title"]]
+    assert len(_ling) == 1 and _ling[0]["at"].endswith("09:00"), \
+        "只填日期的行程没归一到 09:00"
+    assert not any(x["type"] == "booking"
+                   for x in _EV.calendar_items(today="2027-04-01")), \
+        "过期的待办还往过去插日历事件，只会补一条骚扰通知"
+    import json as _json
+    from garmin_cn import appapi as _AP
+
+    _ap = _json.loads(_AP.call("calendar_list"))
+    assert _ap["ok"] and _ap["count"] == len(_ap["items"]), \
+        "App 桥没拿到日历清单"
+    assert all({"uid", "at", "title", "desc", "minutes"} <= set(x)
+               for x in _ap["items"]), "清单字段缺了，原生会跳过这些事件"
+
     # ---- CP 表截图识别：解析、校验、不猜 -------------------------------
     from garmin_cn import cpocr as _CO
 
@@ -5342,6 +5592,43 @@ def run() -> int:
 
     _none_segs, _ = _CO.clean([{"name": "甲", "km": 9999}], {"distance_km": 42})
     assert not _none_segs, "超过赛程 1.3 倍的里程该被丢掉（多半是识别错了行）"
+
+    # 路跑不带水：携水必须能填 0（以前下限卡 500，表单直接被原生校验顶回来）
+    assert _EV.set_fuel("self-2026", carry_ml=0)["carry_ml"] == 0, \
+        "携水填 0 被拒了——路跑不带水是正常配置"
+    try:
+        _EV.set_fuel("self-2026", carry_ml=4000)
+        raise AssertionError("携水 4000 居然存进去了")
+    except ValueError:
+        pass
+
+    # ---- 赛道俯视图：抽稀、底图 URL、页面渲染 -------------------------
+    assert len(_EV.thin_track([(30.0, 120.0, 10)] * 5000)) == 240, "抽稀没按 240 点收口"
+    _th_small = _EV.thin_track([(30.0, 120.0, 10), (30.1, 120.1, 12)])
+    assert _th_small == [[30.0, 120.0], [30.1, 120.1]], f"少点数被改动了：{_th_small}"
+    assert _EV.thin_track([(30.0, 120.0, 10)]) == [], "只有 1 个点时不该算轨迹"
+    assert _EV.map_ident("panda-105k-2027") == "ev-panda-105k-2027"
+    # slug 由 _dir/active_slug 保证合法，这里只确认前缀和字符集
+    assert _EV.map_ident("mar-2026").startswith("ev-")
+
+    # 页面里必须有俯视图；这里把底图关掉，保证测试不联网
+    from garmin_cn import basemap as _BM2
+
+    _mk = [(30.0 + i * 0.0002, 120.0 + i * 0.0003, 20) for i in range(240)]
+    _st = E2._read("self-2026", "track_stats.json") or {}
+    _st = dict(_st)
+    _st["polyline"] = _EV.thin_track(_mk)
+    E2._write("self-2026", "track_stats.json", _st)
+    with _mock.patch.object(_BM2, "available", lambda: False):
+        _mh2 = _EVUI.render_page({"slug": ["self-2026"]})
+    assert 'class="cmap"' in _mh2, "赛事页没有赛道俯视图"
+    assert "矢量轨迹" in _mh2, "没配底图时该说明可以配 Key"
+
+    # 预览页：图片必须带「缩到一屏」的样式（否则长截图把整页拉长，像没加载出来）
+    (_ed / "海报.png").write_bytes(b"\x89PNG\r\n")
+    _pv = _EVUI.render_doc_page({"slug": ["self-2026"], "name": ["海报.png"]})
+    assert "max-height:72vh" in _pv, "预览图没有限高，长图会铺满好几屏"
+    assert "pvImg" in _pv and "full" in _pv, "预览图不能点开看原尺寸"
 
     # 页面：赛事页要有识别入口和文字粘贴（建完赛事之后也能补）
     assert "cpocr:self-2026" in _th, "赛事页没有 CP 表识别入口"

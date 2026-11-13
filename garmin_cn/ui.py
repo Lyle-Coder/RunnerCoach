@@ -688,10 +688,10 @@ def _vital(label: str, value, unit: str, sub: str, spark: str,
 
 
 def _upcoming_html(days: int = 30, limit: int = 3) -> str:
-    """首页「临近」：未来 N 天里赛事时间线的下几个点（领物、报名截止、开赛）。
+    """首页「临近」：未来 N 天里的时间点 + 该订的待办（最多 limit 条）。
 
-    只显示最近 limit 条；一条都没有就整块不出现，不留空盒子。
-    提醒开关走表单（/__event/remind），不依赖 JS。
+    一条都没有就整块不出现，不留空盒子。提醒开关走表单（/__event/remind），
+    不依赖 JS。预订待办的文案带「该订」并强制标热色，避免和「开赛」混在一起。
     """
     try:
         from . import event as E
@@ -708,14 +708,22 @@ def _upcoming_html(days: int = 30, limit: int = 3) -> str:
             on = bool((E.reminders(slug) or {}).get("%s|%s" % (r["at"], r["label"])))
         except Exception:
             on = False
-        d = r.get("days")
-        when = "今天" if d == 0 else ("明天" if d == 1 else f"T-{d}")
-        hh = r["at"][11:16] if r["at"][11:16] != "00:00" else ""
+        d = r.get("days") or 0
+        is_bk = bool(r.get("booking"))
+        if is_bk:
+            when = ("今天该订" if d == 0 else
+                    (f"该订 T-{d}" if d > 0 else f"订期过 {-d} 天"))
+        else:
+            when = "今天" if d == 0 else ("明天" if d == 1 else f"T-{d}")
+        hot = " hot" if (d <= 2 or is_bk) else ""
+        # 预订待办只给日期：截止日当天 09:00 是我们自己定的提醒时刻，
+        # 显示成「01/25 09:00」会被误读成航班/入住的时刻
+        hh = "" if (is_bk or r["at"][11:16] == "00:00") else r["at"][11:16]
         stamp = r["at"][5:10].replace("-", "/") + (f" {hh}" if hh else "")
         label = r.get("label") or "时间点"
         out.append(
             '<div class="rc-up">'
-            f'<span class="rc-up-d{" hot" if (d or 0) <= 2 else ""}">{esc(when)}</span>'
+            f'<span class="rc-up-d{hot}">{esc(when)}</span>'
             f'<span class="rc-up-t"><b>{esc(stamp)}</b> {esc(label)}'
             f'<span class="rc-up-e">{esc(r.get("event") or "")}</span></span>'
             '<form method="post" action="/__event/remind" style="margin:0">'
@@ -1532,6 +1540,7 @@ def me_page() -> str:
             action="amap"),
         act("⚙", "运动设置", "跑步 / 骑行 · FTP", href="/sports"),
         act("⇧", "高驰训练", "跑步 / 骑行 · 预览导入", href="/training"),
+        act("▦", "日历提醒", "「该订了」写进系统日历", action="calendarSync"),
     ])
     # 数据与备份：导出/导入是「换手机保命」的两个动作，放同一排最显眼
     data_tiles = acts_grid([

@@ -729,6 +729,64 @@ class _Handler(SimpleHTTPRequestHandler):
             err = ("改名失败：%s" % e) if act == "rename" else ("删除失败：%s" % e)
         self._back(slug, err=err, ok=okmsg, anchor="docs")
 
+    def _event_trip(self, u) -> None:
+        """行程与住宿：增 / 删 / 补地址 / 改提前量 / 标已订。
+
+        地址解析走高德 Web 服务，没 Key 或没认出来也照常存文字——
+        不能因为定位失败就把用户订好的酒店信息丢掉。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 16 * 1024:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+
+        def one(k: str) -> str | None:
+            v = (qs.get(k) or [""])[0].strip()
+            return v or None
+
+        from . import event as E
+
+        slug = one("slug")
+        act = one("act") or "add"
+        err, okmsg = "", ""
+        try:
+            if act == "del":
+                if not E.trip_del(slug, int(one("idx") or -1)):
+                    raise ValueError("这条行程已经不存在了")
+                okmsg = "已删除这条行程"
+            elif act == "geo":
+                item = E.trip_geo(slug, int(one("idx") or -1), one("place") or "")
+                if not item:
+                    raise ValueError("这条行程已经不存在了")
+                okmsg = ("已定位，赛道图上会标出来" if item.get("lat") else
+                         "地址没定位到（写具体一点，或确认已配高德 Key）")
+            elif act == "rules":
+                E.set_booking_rules(slug, {k: one(k) for k in
+                                           ("flight", "train", "stay")})
+                okmsg = "预订提前量已更新，待办已重算"
+            elif act in ("book", "unbook"):
+                if not E.trip_book(slug, int(one("idx") or -1),
+                                   on=(act == "book")):
+                    raise ValueError("这条行程已经不存在了")
+                okmsg = "已标为已订" if act == "book" else "已取消已订"
+            else:
+                item = E.trip_add(slug, one("kind") or "other",
+                                  one("at") or "", one("label") or "",
+                                  one("place") or "", lead=one("lead"))
+                okmsg = "已加进行程，按提前量生成「该订了」待办"
+                if one("place") and not item.get("lat"):
+                    okmsg += "；地址没定位到（写具体点，或确认已配高德 Key）"
+        except ValueError as e:
+            err = str(e)
+        except Exception as e:
+            err = "保存失败：%s" % e
+        self._back(slug, err=err, ok=okmsg, anchor="trip")
+
     def _event_remind(self, u) -> None:
         """首页「临近」里的提醒开关。开关是首页的，所以回到 / 而不是 /event。"""
         if not self._is_loopback():
@@ -1106,6 +1164,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._event_delete(u)
         if u.path == "/__event/doc":
             return self._event_doc(u)
+        if u.path == "/__event/trip":
+            return self._event_trip(u)
         if u.path == "/__event/attach":
             return self._event_attach(u)
         if u.path == "/__event/file":

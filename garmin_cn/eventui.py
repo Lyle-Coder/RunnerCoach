@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import io
 import re
 import urllib.parse as _up
@@ -146,7 +147,7 @@ select.fi{cursor:pointer}
   background:transparent}
 .dfa .dfb.danger:active{background:rgba(224,106,95,.12)}
 /* 行程与预订：一行一件事，左边标签、中间倒计时、右边日期与出处 */
-.trip{display:flex;align-items:baseline;gap:8px;padding:7px 0;
+.trip{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 8px;padding:7px 0;
   border-top:1px solid rgba(255,255,255,.05)}
 .trip:first-of-type{border-top:0}
 .tk{flex:none;font-size:10px;padding:1px 7px;border-radius:99px;
@@ -159,9 +160,37 @@ select.fi{cursor:pointer}
   font-variant-numeric:tabular-nums}
 .td.warn{color:#D6A75A}
 .td.hot{color:#E06A5F;font-weight:700}
-.tt{flex:1;min-width:0;font-size:12.5px;color:var(--fg,#E8F0FB)}
+.tt{flex:1 1 55%;min-width:0;font-size:12.5px;color:var(--fg,#E8F0FB)}
 .tt b{font-variant-numeric:tabular-nums;margin-right:4px}
 .ts{margin-left:6px;font-size:11px;color:var(--faint,#7689A2)}
+.tplace{display:block;margin-top:3px;font-size:11px;color:var(--faint,#7689A2)}
+.tnav,.tdel{flex:none;font-size:11px;padding:3px 9px;border-radius:6px;
+  border:1px solid rgba(79,214,166,.4);color:#4FD6A6;text-decoration:none;
+  background:transparent;line-height:1.5;cursor:pointer}
+.tdel{border-color:rgba(127,138,151,.35);color:var(--muted,#7F8A97)}
+.tinline{display:inline}
+.tgeo{margin-top:6px}
+.tgeo .fi{min-width:0}
+/* 预订待办：过了截止日也留着，最该催的恰恰是这一条 */
+.bk{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 8px;padding:7px 0;
+  border-top:1px solid rgba(255,255,255,.05)}
+.bk:first-of-type{border-top:0}
+.bk.done{opacity:.52}
+.bk .bt{flex:1 1 55%;min-width:0;font-size:12.5px;color:var(--fg,#E8F0FB)}
+.bk .bd{display:block;margin:2px 0 0;font-size:11px;color:var(--faint,#7689A2)}
+.bkrule{display:flex;flex-wrap:wrap;gap:8px}
+.bkrule label{flex:1 1 90px;font-size:11px;color:var(--muted,#7F8A97)}
+.bkrule .fi{width:100%}
+/* 俯视图：SVG 是 720×360 的定尺，宽度拉满、高度按比例 */
+.cmap{margin-top:10px}
+.cmap svg{display:block;width:100%;height:auto;border-radius:10px}
+.maplg{display:flex;flex-wrap:wrap;gap:12px;margin:5px 0 2px;
+  font-size:11px;color:var(--muted,#7F8A97)}
+.maplg i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+.maplg .s i{background:#4FD6A6}.maplg .e i{background:#E05555}
+.maplg .h i{background:#D6A75A}
+.cmapnav{margin-top:8px}
+.cmapnav a.btn{text-decoration:none;padding:0 13px;font-size:12px;min-height:40px}
 .dtimes{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px}
 .dtime{font-size:10.5px;padding:2px 8px;border-radius:99px;color:#9FE7C8;
   background:rgba(79,214,166,.1);border:1px solid rgba(79,214,166,.28)}
@@ -172,8 +201,7 @@ select.fi{cursor:pointer}
 .dmore>summary::before{content:"✎ "}
 .dpre{white-space:pre-wrap;word-break:break-word;font-size:12.5px;
   line-height:1.7;color:var(--fg,#E8F0FB);margin:0}
-.dimg{display:block;width:100%;height:auto;border-radius:12px;
-  border:1px solid rgba(255,255,255,.08)}
+
 .dbig{padding:24px 12px;text-align:center;color:var(--muted,#7F8A97);font-size:12.5px}
 .hint code{background:rgba(255,255,255,.06);border-radius:4px;padding:0 4px;
   font-size:11px}
@@ -345,41 +373,326 @@ def _spark(profile: list, tick_km: float = 0) -> str:
             f"</svg>")
 
 
+def _amap_url(lat, lon, name: str, nav: bool = True) -> str:
+    """点标注跳到高德：默认直接发起导航，装了 App 就唤起 App。
+
+    `nav=True` 用路径规划 URI，**不传 from**：高德在移动端会自动把当前位置
+    填成起点，一点就是「去这里」；`nav=False` 是单点标注，只定位不规划路线。
+    坐标要按 GCJ 传（coordinate=gaode）：轨迹和 trip.json 存的都是 WGS-84，
+    直接把 WGS 塞进 URL 会偏 400~500 m，导航就导到隔壁街。
+    """
+    try:
+        from . import basemap as BM
+
+        glat, glon = BM.to_gcj(float(lat), float(lon))
+    except Exception:
+        return ""
+    label = str(name or "位置").replace(",", " ")[:30]
+    if nav:
+        q = _up.urlencode({"to": f"{glon:.6f},{glat:.6f},{label}",
+                           "mode": "car", "coordinate": "gaode",
+                           "callnative": "1", "src": "RunnerCoach"}, safe=",")
+        return "https://uri.amap.com/navigation?" + q
+    q = _up.urlencode({"position": f"{glon:.6f},{glat:.6f}",
+                       "name": label, "coordinate": "gaode",
+                       "callnative": "1", "src": "RunnerCoach"}, safe=",")
+    return "https://uri.amap.com/marker?" + q
+
+
+def _pin_tag(coords: list) -> str:
+    """POI 变了就换一张底图：取景里要装下酒店，缓存名必须跟着坐标变。
+
+    不带这层的话，加完住宿仍命中导入 GPX 时那张「只按轨迹取景」的缓存，
+    酒店会落在画幅外，看一眼像是没标上。
+    """
+    if not coords:
+        return ""
+    raw = "|".join("%.5f,%.5f" % (float(a), float(b)) for a, b in coords)
+    return "-p" + hashlib.md5(raw.encode("utf-8")).hexdigest()[:6]
+
+
+def _course_pins(slug: str, line: list) -> list[dict]:
+    """赛道图上要标的三个点：起点、终点、住宿。
+
+    只认 `stay`：机票 / 高铁 / 领物虽然也有坐标，但它们在几十公里外的
+    机场和车站，一起塞进取景会把 105K 赛道压成画幅一角的一小团。
+    那些点在「行程与预订」列表里各自带导航按钮，不往赛道图上画。
+    """
+    pins = []
+    try:
+        ev = E._read(slug, "event.json") or {}
+    except Exception:
+        ev = {}
+    short = str(ev.get("short") or ev.get("name") or "赛事")[:12]
+    if line:
+        for kind, label, p in (("start", "起点", line[0]),
+                               ("end", "终点", line[-1])):
+            pins.append({"kind": kind, "label": label,
+                         "lat": p[0], "lon": p[1],
+                         "url": _amap_url(p[0], p[1], short + " · " + label)})
+    try:
+        pois = E.trip_pins(slug)
+    except Exception:
+        pois = []
+    for p in pois:
+        if p["kind"] != "stay":
+            continue
+        # 标签只留几个字：酒店全名铺在 720×360 的图上会把轨迹盖住
+        label = "住宿"
+        short_name = str(p.get("label") or p.get("place") or label)[:6]
+        pins.append({"kind": p["kind"], "label": short_name,
+                     "lat": p["lat"], "lon": p["lon"],
+                     "url": _amap_url(p["lat"], p["lon"],
+                                      p.get("place") or p.get("label") or label)})
+    return pins
+
+
+def _course_map(slug: str, stats: dict) -> str:
+    """赛道俯视图：底图 + 轨迹 + 可点开的起点/终点/住宿标注。
+
+    剖面回答「哪一段在爬」，俯视图回答「它在哪儿」；起点、终点、住哪儿
+    是赛前真正要找的三个点，点一下直接交给高德定位导航。
+    """
+    line = stats.get("polyline") or []
+    if len(line) < 2:
+        # 加 polyline 之前导的老数据：现读一次 GPX，顺便补写回 stats，
+        # 免得每次打开赛事页都解析一遍几 MB 的 XML
+        try:
+            g = E._dir(slug) / "track.gpx"
+            if g.is_file():
+                r = E.parse_gpx(g, slug=slug, save=False)
+                line = r.get("polyline") or []
+                if line:
+                    _s2 = dict(stats)
+                    _s2["polyline"] = line
+                    E._write(slug, "track_stats.json", _s2)
+        except Exception:
+            line = []
+    if len(line) < 2:
+        return ""
+
+    pins = _course_pins(slug, line)
+    # 起终点本来就在轨迹外框内，不用扩大取景；POI 才可能把画幅撑开。
+    extra = [[p["lat"], p["lon"]] for p in pins
+             if p["kind"] not in ("start", "end")]
+    ident = E.map_ident(slug) + _pin_tag(extra)
+    bm, href = None, None
+    try:
+        from . import basemap as BM
+
+        if BM.available():
+            # 缓存命中是秒回；没命中最多等 6 秒（导入时已经预取过一次）
+            bm = BM.ensure(line, E.MAP_W, E.MAP_H, ident=ident,
+                           timeout=6, extra=extra)
+            if bm:
+                href = "/basemap/%s-%dx%d.png" % (
+                    ident, E.MAP_W, E.MAP_H)
+    except Exception:
+        bm, href = None, None
+
+    try:
+        from . import actcard as AC
+
+        svg = AC.track_svg(line, E.MAP_W, E.MAP_H,
+                           basemap=bm, href=href, pins=pins)
+    except Exception:
+        return ""
+    cap = ("含高德底图 · 只作地形参考；<b>点图上的标注可跳高德导航</b>" if bm
+           else "矢量轨迹 · <b>点标注可跳高德导航</b>；"
+                "在「我的 → 地图底图」配 Key 后可叠底图")
+    legend = ('<div class="maplg"><span class="s"><i></i>起点</span>'
+              '<span class="e"><i></i>终点</span>'
+              + ('<span class="h"><i></i>住宿</span>'
+                 if any(p["kind"] == "stay" for p in pins) else "")
+              + "</div>")
+    # SVG 里的圆点在手机上只有几像素，旁边再给一排 40px 高的按钮兜底：
+    # 手指点不准标注时，照样能一键导航到起点 / 终点 / 住处。
+    # 住处多填了几家时按钮只留第一家（按钮写死「住宿」，重复三份没意义），
+    # 其余的仍能在图上点开。
+    quick = ([p for p in pins if p["kind"] in ("start", "end")]
+             + [p for p in pins if p["kind"] == "stay"][:1])
+    navs = ('<div class="pager cmapnav">'
+            + "".join(
+                f'<a class="btn" href="{ui.esc(p["url"])}">导航到'
+                + ui.esc(p["label"] if p["kind"] in ("start", "end")
+                         else "住宿") + "</a>"
+                for p in quick if p.get("url"))
+            + "</div>")
+    return ('<div class="cmap">' + svg + "</div>" + legend + navs
+            + f'<div class="sub2" style="margin:6px 0 2px">{cap}</div>')
+
+
 _TRIP_CN = {"flight": "航班", "train": "高铁", "stay": "住宿",
             "race": "开赛", "other": "其他"}
 
 
-def _trips_html(slug: str) -> str:
-    """「行程与预订」：资料里认出来的航班 / 高铁 / 住宿 / 领物，带倒计时。
+def _booking_html(slug: str, hid: str) -> str:
+    """「该订了」待办：按提前量从行程日倒推，过期也不消失。
 
-    赛前最容易忘的不是比赛本身，而是机票什么时候订、酒店几号入住。
-    这些写进资料后散在正文里，临到头没人想得起来翻——所以单独拎出来，
-    按时间排，3 天内标红、7 天内标黄。
+    只针对手填的确定行程。已订的沉到底并变灰，留「取消已订」是防止
+    误点一下就把待办永久抹掉。
     """
     try:
-        items = E.trips(slug)
+        items = E.bookings(slug)
+        rules = E.booking_rules(slug)
     except Exception:
         return ""
     if not items:
         return ""
     rows = []
+    for b in items:
+        d = b["days"]
+        when = (f"已过 {-d} 天" if d < 0 else
+                ("今天" if d == 0 else f"还有 {d} 天"))
+        cls = " hot" if d <= 7 else (" warn" if d <= 14 else "")
+        stamp = b["due"][5:].replace("-", "/")
+        act, txt = (("unbook", "取消已订") if b["booked"]
+                    else ("book", "标为已订"))
+        btn = ('<form class="dinline" method="post" action="/__event/trip">' + hid
+               + f'<input type="hidden" name="act" value="{act}">'
+               + f'<input type="hidden" name="idx" value="{b["idx"]}">'
+               + f'<button class="tnav" type="submit">{txt}</button></form>')
+        rows.append(
+            f'<div class="bk{" done" if b["booked"] else ""}">'
+            f'<span class="tk {b["kind"]}">订</span>'
+            f'<span class="td{cls}">{when}</span>'
+            f'<span class="bt"><b>{stamp}</b> 前订 · {ui.esc(b["label"])}'
+            f'<span class="bd">提前 {b["lead"]} 天</span></span>'
+            + btn + "</div>")
+    head = ('<div class="sub2"><b>该订了</b> · 按「航班 '
+            f'{rules["flight"]} 天 / 高铁 {rules["train"]} 天 / '
+            f'住宿 {rules["stay"]} 天」从行程日倒推。'
+            '错过了也留在这里，不会悄悄消失；订好后标为已订即可。'
+            '下面的按钮可以把这些日子<b>写进系统日历</b>，由日历到点通知，'
+            '不用打开 App。</div>')
+    return ('<div class="card">' + head + "".join(rows)
+            + '<div class="pager"><div class="btn" data-act="calendarSync">'
+              '同步到系统日历</div></div>' + "</div>")
+
+
+def _trips_html(slug: str, hid: str = "") -> str:
+    """「行程与预订」：手填的 + 资料里认出来的，带倒计时和入口。
+
+    之前这一块只在**已经从资料里认出时间点**时才出现，等于「先有鸡才有蛋」：
+    没写资料的人根本找不到在哪加住宿。现在常驻，且空的时候把添加表单
+    默认展开——入口就在眼前，不用去资料里翻。
+
+    住宿填了地址会解析成坐标，赛道俯视图上跟着标点；没配高德 Key 也能
+    存文字、跳导航（导航 URI 不依赖 Key），只是地图上标不出位置。
+    """
+    try:
+        items = E.trips(slug)
+    except Exception:
+        items = []
+    rows = []
     for x in items:
         d = x["days"]
-        when = "今天" if d == 0 else ("明天" if d == 1 else f"还有 {d} 天")
+        when = ("今天" if d == 0 else "明天" if d == 1 else
+                (f"已过 {-d} 天" if d < 0 else f"还有 {d} 天"))
         hh = x["at"][11:16]
         stamp = x["at"][5:10].replace("-", "/") + ("" if hh == "00:00" else " " + hh)
-        cls = " hot" if d <= 3 else (" warn" if d <= 7 else "")
+        cls = " hot" if 0 <= d <= 3 else (" warn" if 0 <= d <= 7 else "")
+        lat, lon = x.get("lat"), x.get("lon")
+        nav = ""
+        if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+            label = x.get("place") or x["label"]
+            url = _amap_url(lat, lon, label)
+            if url:
+                nav = (f'<a class="tnav" href="{ui.esc(url)}">导航</a>'
+                       f'<a class="tdel" href="{ui.esc(_amap_url(lat, lon, label, nav=False))}">'
+                       "看位置</a>")
+        place = str(x.get("place") or "")
+        # 手填但没定位上的：给一个「补地址」入口，不用删了重加
+        geo_form = ""
+        if x.get("manual") and lat is None:
+            geo_form = (
+                '<details class="dmore tgeo"><summary>补 / 改地址，定位到地图</summary>'
+                '<form class="frm" method="post" action="/__event/trip">' + hid
+                + '<input type="hidden" name="act" value="geo">'
+                f'<input type="hidden" name="idx" value="{x.get("idx", 0)}">'
+                '<div class="frow"><label>酒店 / 车站全名或地址'
+                f'<input class="fi" name="place" value="{ui.esc(place)}" '
+                'placeholder="例：都江堰锦江之星"></label></div>'
+                '<div class="fbtns"><button class="btn" type="submit">重新定位</button>'
+                '<span class="fhint">要配高德 Web 服务 Key</span></div>'
+                "</form></details>")
+        del_btn = (
+            '<form class="dinline" method="post" action="/__event/trip">' + hid
+            + '<input type="hidden" name="act" value="del">'
+            f'<input type="hidden" name="idx" value="{x.get("idx", 0)}">'
+            '<button class="tdel" type="submit">删</button></form>'
+            if x.get("manual") else "")
         rows.append(
             '<div class="trip">'
             f'<span class="tk {x["kind"]}">{_TRIP_CN.get(x["kind"], "其他")}</span>'
             f'<span class="td{cls}">{when}</span>'
             f'<span class="tt"><b>{stamp}</b> {ui.esc(x["label"])}'
-            f'<span class="ts">{ui.esc(x["source"])}</span></span></div>')
-    return ('<div class="card">'
-            '<div class="sub2">从「资料」里认出来的时间点。'
-            '航班 / 高铁 / 住宿只要写了日期就会出现在这里，'
-            '<b>3 天内标红</b>，别等出发前才想起来订。</div>'
-            + "".join(rows) + "</div>")
+            f'<span class="ts">{ui.esc(x["source"])}</span>'
+            + (f'<span class="tplace">📍 {ui.esc(place)}'
+               + (" · 已在赛道图标注" if nav and x["kind"] == "stay"
+                  else " · 已定位，可导航" if nav else " · 未定位")
+               + "</span>" if place else "")
+            + geo_form
+            + ('<span class="ts">已订</span>' if x.get("booked") else "")
+            + "</span>" + nav + del_btn + "</div>")
+
+    kinds = "".join(f'<option value="{k}"'
+                    + (' selected' if k == "stay" else "")
+                    + f'>{ui.esc(v)}</option>' for k, v in E.TRIP_KINDS.items())
+    form = (
+        '<details class="fold"' + (" open" if not rows else "") + '>'
+        '<summary>＋ 加一条行程 / 住宿（入口就在这里）</summary>'
+        '<p class="hint">机票、高铁、酒店、领物都能加。'
+        '<b>住宿填酒店全名或地址</b>，会自动定位并标到赛道俯视图上，'
+        '点标注可跳高德导航；航班 / 高铁在下面列表里各自带导航按钮，'
+        '不标到赛道图上（离赛道几十公里，画上去会把赛道挤成一小团）。'
+        '所有条目同时进首页「临近」，并按提前量生成<b>「该订了」待办</b>。</p>'
+        '<form class="frm" method="post" action="/__event/trip">' + hid
+        + '<input type="hidden" name="act" value="add">'
+        '<div class="frow"><label>类型<select class="fi" name="kind">'
+        + kinds + '</select></label>'
+        '<label>日期时间<input class="fi" name="at" type="datetime-local"></label></div>'
+        '<div class="frow"><label class="fwide">说明<input class="fi" name="label" '
+        'placeholder="例：入住 都江堰锦江之星 / CA1883 起飞" required></label></div>'
+        '<div class="frow"><label class="fwide">地点（可留空，住宿建议填）'
+        '<input class="fi" name="place" placeholder="酒店全名 / 车站 / 地址，用来定位">'
+        '</label></div>'
+        '<div class="frow fwide"><label>预订提前量（天，留空按默认）'
+        '<input class="fi" type="number" min="0" max="365" name="lead" '
+        'placeholder="例：90；填 0 = 这条不生成预订待办"></label></div>'
+        '<div class="fbtns"><button class="btn primary" type="submit">加进行程</button>'
+        '<span class="fhint">没配 Key 也能存，只是地图上不标点</span></div>'
+        "</form></details>")
+
+    head = ('<div class="sub2">航班 / 高铁 / 住宿写在「资料」里也会自动出现在这里；'
+            '确定好的信息用上面的表单直接填更准。<b>3 天内标红</b>，'
+            '别等出发前才想起来订。</div>'
+            if rows else
+            '<div class="sub2">这里还没有行程。订好机票 / 高铁 / 酒店后'
+            '<b>在下面直接加一条</b>：会按时间倒计时提醒，'
+            '住宿填了地址还会在赛道图上标出位置。</div>')
+    try:
+        rules = E.booking_rules(slug)
+    except Exception:
+        rules = dict(E.BOOKING_LEAD)
+    rule_html = (
+        '<details class="fold" id="triprule"><summary>改预订提前量'
+        '（航班 / 高铁 / 住宿）</summary>'
+        '<p class="hint">按行程发生日倒推「该订了」的日子。'
+        '填 0 = 这类不生成待办；单条行程也能在添加时单独指定。</p>'
+        '<form class="frm" method="post" action="/__event/trip">' + hid
+        + '<input type="hidden" name="act" value="rules">'
+        '<div class="frow bkrule">'
+        + "".join(
+            f'<label>{ui.esc(E.TRIP_KINDS[k])}（天）'
+            f'<input class="fi" type="number" min="0" max="365" '
+            f'name="{k}" value="{rules[k]}"></label>'
+            for k in ("flight", "train", "stay"))
+        + '</div><div class="fbtns"><button class="btn" type="submit">'
+          '保存提前量</button><span class="fhint">改完待办立刻重算</span>'
+          '</div></form></details>')
+    return (_booking_html(slug, hid) + '<div class="card">' + head
+            + "".join(rows) + "</div>" + form + rule_html)
 
 
 def _relief(rows: list) -> str:
@@ -663,6 +976,7 @@ def render_page(qs: dict | None = None) -> str:
             f'<span>{stats["points"]} 点 · 海拔 {stats["min_ele"]}–{stats["max_ele"]} m</span>'
             + (f'<span class="tag">{edition} 届参考</span>' if edition else "")
             + "</div>" + warn + note + _spark(stats.get("profile") or [], _tick)
+            + _course_map(slug, stats)
             + (('<div class="cmptitle">CP 里程对照（官方 vs 轨迹）</div>' + cmp_tbl)
                if cmp_tbl else "")
             + '<div class="pager"><div class="btn" data-act="gpx">换一条 GPX</div></div></div>')
@@ -835,7 +1149,7 @@ def render_page(qs: dict | None = None) -> str:
         '<div class="frow"><label>自带比例<input class="fi" name="carry_ratio" '
         f'type="number" step="0.05" min="0.2" max="1" value="{cfg["carry_ratio"]}"></label>'
         '<label>携水 ml<input class="fi" name="carry_ml" type="number" step="100" '
-        f'min="500" max="3000" value="{cfg["carry_ml"]}"></label>'
+        f'min="0" max="3000" value="{cfg["carry_ml"]}"></label>'
         '<label>停留 min<input class="fi" name="stop_min" type="number" step="1" '
         f'min="0" max="30" value="{cfg["stop_min"]}"></label>'
         '<label>换装停留<input class="fi" name="dropbag_stop_min" type="number" '
@@ -974,7 +1288,9 @@ def render_page(qs: dict | None = None) -> str:
 
     docs_card = (
         '<p class="hint">赛前要翻的东西都放这里：规则、交通住宿、领物、报名凭证、成绩。'
-        + "规程 PDF、参赛号截图可以点右上「传附件」直接选文件。</p>"
+        + "规程 PDF、参赛号截图可以点右上「传附件」直接选文件。"
+        + '<b>订好的酒店 / 航班 / 高铁请到 <a href="#trip">行程与预订</a> 单条添加</b>：'
+        + "那里能定位并在赛道图上标点，也会单独提醒。</p>"
         + '<div class="pager" style="margin:10px 0 2px">'
           f'<div class="btn primary" data-act="attach:{slug}">传附件</div>'
           '<span class="fhint" style="margin-left:10px">PDF / 图片 / 文本，单个 ≤ 20 MB</span>'
@@ -1215,8 +1531,8 @@ def render_page(qs: dict | None = None) -> str:
             + review_sec
             + ui.sec("补给与换装", _bar("fuel") + fuel_card, anchor="fuel")
             + ui.sec("强制装备", _bar("gear") + gears, anchor="gear")
-            + (ui.sec("行程与预订", _bar("trip") + _trips_html(slug), anchor="trip")
-               if E.trips(slug) else "")
+            + ui.sec("行程与预订", _bar("trip") + _trips_html(slug, HID),
+                     anchor="trip")
             + ui.sec("资料", _bar("docs") + docs_card, anchor="docs")
             + ui.sec("调整", _bar("adjust") + edit_card + danger_card, anchor="adjust"))
 
@@ -1394,6 +1710,21 @@ def add_parser(sub):
     q.set_defaults(func=cmd)
     return q
 
+# 预览页用 ui.page 的外壳，拿不到上面那份 CSS，所以这几条随身带。
+# 原来靠 ui.page 的基础样式撑着，图片连 max-height 都没有——长截图会把
+# 整页拉得老长，看着像「图没加载出来」。
+_PV_CSS = (
+    "<style>"
+    ".dimg{display:block;width:100%;height:auto;max-height:72vh;object-fit:contain;"
+    "background:rgba(255,255,255,.03);border-radius:12px;cursor:zoom-in;"
+    "border:1px solid rgba(255,255,255,.08)}"
+    ".dimg.full{max-height:none;object-fit:fill;cursor:zoom-out}"
+    ".dpre{white-space:pre-wrap;word-break:break-word;font-size:12.5px;"
+    "line-height:1.7;color:var(--ink,#E8F0FB);margin:0}"
+    ".dbig{padding:24px 12px;text-align:center;color:var(--muted,#7F8A97);"
+    "font-size:12.5px}"
+    "</style>")
+
 _PREVIEW_TEXT = (".txt", ".md", ".csv", ".ics", ".json")
 _PREVIEW_IMG = (".png", ".jpg", ".jpeg")
 
@@ -1429,7 +1760,16 @@ def render_doc_page(qs: dict | None = None) -> str:
     suf = fp.suffix.lower()
     raw_url = "/event-file/%s/%s" % (slug, _up.quote(name))
     if suf in _PREVIEW_IMG:
-        body = f'<img class="dimg" src="{raw_url}" alt="{ui.esc(name)}">'
+        body = (f'<img class="dimg" id="pvImg" src="{raw_url}" '
+                f'alt="{ui.esc(name)}">'
+                '<div class="sub2" id="pvHint" style="text-align:center;margin-top:8px">'
+                "已缩放到一屏 · 点图片看原尺寸</div>"
+                '<script>(function(){var i=document.getElementById("pvImg"),'
+                'h=document.getElementById("pvHint");if(!i)return;'
+                'i.addEventListener("click",function(){'
+                'var on=i.classList.toggle("full");'
+                'if(h)h.textContent=on?"原尺寸 · 点图片缩回一屏":"已缩放到一屏 · 点图片看原尺寸";'
+                '});})();</script>')
     elif suf in _PREVIEW_TEXT:
         try:
             text = io.open(fp, encoding="utf-8", errors="replace").read(200000)
@@ -1445,6 +1785,6 @@ def render_doc_page(qs: dict | None = None) -> str:
     size = E.human_size(fp.stat().st_size)
     return ui.page("EVENT · 资料", name,
                    f"{slug} · {size}",
-                   '<div class="card">' + body + "</div>",
+                   '<div class="card">' + _PV_CSS + body + "</div>",
                    chips=ui.chip(suf.lstrip(".").upper()),
                    back=("返回赛事", "/event#docs"))

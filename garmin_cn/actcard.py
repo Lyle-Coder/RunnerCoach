@@ -49,7 +49,7 @@ import subprocess
 from pathlib import Path
 
 from . import brand as BR
-from .activity import project
+from .activity import project, projector
 from .activity import resolve_training as _resolve_training
 from .card import _find_browser
 from .exportspec import probe as _export_probe
@@ -350,7 +350,63 @@ def _pins(pts: list, r: float = PIN_R) -> str:
     return disc(sx, sy, "#4FD6A6") + block(ex, ey, "#E05555", side)
 
 
-def _track_on_map(track: list, w: int, h: int, bm: dict, theme: dict | None = None) -> str:
+_POI_COLOR = {"start": "#4FD6A6", "end": "#E05555", "stay": "#D6A75A",
+              "flight": "#8CC2FF", "train": "#9FE7C8", "race": "#E06A5F"}
+
+
+def _poi_pins(pins: list, xy, w: int, h: int) -> str:
+    """俯视图上的标注点（起点 / 终点 / 住宿…）：带文字，点一下跳高德。
+
+    `xy(lat, lon)` 是调用方给的投影函数，必须跟画轨迹那条线用**同一套**
+    变换（底图版是 to_px 再 p'=p*s+t，矢量版是 projector）。少乘一次 s，
+    标注就和轨迹错开，看着像「住宿标到山沟里了」。
+
+    字号按 viewBox 给：这张图在手机上是等比缩到 ~340 px 宽显示的，
+    720 里的 20 px 字实际只有 9 px，比这再小就认不出来了。
+    """
+    pts = []
+    for p in pins:
+        px, py = xy(p["lat"], p["lon"])
+        pts.append((px, py, p))
+
+    # 起终点几乎重合（绕圈赛道）时并成一个「起 / 终」，别画两坨叠在一起
+    st = [x for x in pts if x[2].get("kind") == "start"]
+    en = [x for x in pts if x[2].get("kind") == "end"]
+    merged = None
+    if st and en and math.hypot(st[0][0] - en[0][0], st[0][1] - en[0][1]) < 16:
+        merged = (st[0][0], st[0][1])
+        pts = [x for x in pts if x[2].get("kind") not in ("start", "end")]
+        pts.append((merged[0], merged[1], {
+            "kind": "start", "label": "起 / 终",
+            "url": st[0][2].get("url") or en[0][2].get("url")}))
+
+    out = []
+    for x, y, p in pts:
+        if not (-20 <= x <= w + 20 and -20 <= y <= h + 20):
+            continue          # 落在画幅外的（地址解析到几十公里外）不硬画
+        color = _POI_COLOR.get(p.get("kind") or "", "#8CC2FF")
+        label = str(p.get("label") or "")[:8]
+        # 靠右边时把文字翻到左边，避免被裁掉
+        flip = x > w - 110
+        tx_ = x - 13 if flip else x + 13
+        anchor = "end" if flip else "start"
+        # 前面垫一个透明大圆：可见标记只有 r=9（手机上缩到 ~4px），
+        # 没有这层命中区，手指根本点不中导航链接
+        g = (f'<circle cx="{x:.1f}" cy="{y:.1f}" r="28" fill="transparent"/>'
+             f'<circle cx="{x:.1f}" cy="{y:.1f}" r="9" fill="{color}" '
+             f'stroke="#0B111A" stroke-width="2.5"/>'
+             f'<text x="{tx_:.1f}" y="{y + 7:.1f}" fill="{color}" font-size="20" '
+             f'font-weight="700" text-anchor="{anchor}" paint-order="stroke" '
+             f'stroke="#0B111A" stroke-width="4">{esc(label)}</text>')
+        url = p.get("url")
+        if url:
+            g = f'<a href="{esc(url)}">{g}</a>'
+        out.append(g)
+    return "".join(out)
+
+
+def _track_on_map(track: list, w: int, h: int, bm: dict, theme: dict | None = None,
+                  href: str | None = None, pins: list | None = None) -> str:
     """底图版轨迹：底图当背景，折线仍由我们画。
 
     取景是我们自己用 location+zoom 定的（见 basemap.fit），并且那张图是按
@@ -379,6 +435,14 @@ def _track_on_map(track: list, w: int, h: int, bm: dict, theme: dict | None = No
     pts = [(x * s + tx, y * s + ty) for x, y in pts0]
     tf = f"translate({tx:.2f},{ty:.2f}) scale({s:.4f})"
     d = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    # 有带起终点的标注时不再画默认的绿点/红方块：同一个位置两套标记会打架
+    def _xy(lat, lon):
+        px, py = B.to_px(lat, lon, meta)
+        return px * s + tx, py * s + ty
+
+    has_se = bool(pins) and any(p.get("kind") in ("start", "end") for p in pins)
+    marks = _poi_pins(pins, _xy, w, h) if has_se else _pins(pts)
+    poi = "" if (has_se or not pins) else _poi_pins(pins, _xy, w, h)
     return f"""
 <svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">
   <defs>
@@ -398,7 +462,7 @@ def _track_on_map(track: list, w: int, h: int, bm: dict, theme: dict | None = No
   </defs>
   <g clip-path="url(#trkclip)">
     <g transform="{tf}">
-      <image href="{esc(bm['png'])}" x="0" y="0" width="{iw}" height="{ih}"
+      <image href="{esc(href if href else bm['png'])}" x="0" y="0" width="{iw}" height="{ih}"
              preserveAspectRatio="none" filter="url(#mapdim)"/>
     </g>
     <rect x="0" y="0" width="{w}" height="{h}" fill="url(#mapVeil)"/>
@@ -406,7 +470,7 @@ def _track_on_map(track: list, w: int, h: int, bm: dict, theme: dict | None = No
           stroke-linejoin="round" opacity="0.45" filter="url(#mglow)"/>
     <path d="{d}" fill="none" stroke="url(#mtrk)" stroke-width="3.2" stroke-linecap="round"
           stroke-linejoin="round"/>
-    {_pins(pts)}
+    {marks}{poi}
     <text x="{w - 10}" y="{h - 9}" text-anchor="end" class="src">高德地图</text>
   </g>
   <rect x="0.5" y="0.5" width="{w - 1}" height="{h - 1}" rx="10"
@@ -415,14 +479,28 @@ def _track_on_map(track: list, w: int, h: int, bm: dict, theme: dict | None = No
 
 
 def track_svg(track: list, w: int, h: int, photo: str | None = None,
-              basemap: dict | None = None, theme: dict | None = None) -> str:
+              basemap: dict | None = None, theme: dict | None = None,
+              href: str | None = None, pins: list | None = None) -> str:
     th = theme or theme_for(None)
     if basemap:
-        return _track_on_map(track, w, h, basemap, th)
+        # href 给的是「服务端能取到这张图」的 URL：WebView 里 file:// 会被拦，
+        # 页面必须走同源的 /basemap/xxx.png
+        return _track_on_map(track, w, h, basemap, th, href=href, pins=pins)
 
-    pts = project(track, w, h, pad=16)
+    # 有标注时把 POI 一起塞进取景范围：只按轨迹算 bbox 的话，城里的酒店
+    # 常常被甩到画幅外，标不上。轨迹的像素点仍只取前 len(track) 个。
+    _poi_pts = [[p["lat"], p["lon"]] for p in (pins or [])]
+    if _poi_pts:
+        _all, _xy = projector(track + _poi_pts, w, h, pad=16)
+        pts = _all[:len(track)]
+    else:
+        _xy = None
+        pts = project(track, w, h, pad=16)
     if len(pts) < 2:
         return f'<div class="empty" style="width:{w}px;height:{h}px">无轨迹数据</div>'
+    has_se = bool(pins) and any(p.get("kind") in ("start", "end") for p in pins)
+    marks = _poi_pins(pins, _xy, w, h) if has_se else _pins(pts)
+    poi = "" if (has_se or not pins) else _poi_pins(pins, _xy, w, h)
     d = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
     bg = ""
     if photo:
@@ -448,7 +526,7 @@ def track_svg(track: list, w: int, h: int, photo: str | None = None,
         stroke-linejoin="round" opacity="0.28" filter="url(#glow)"/>
   <path d="{d}" fill="none" stroke="url(#trk)" stroke-width="3.4" stroke-linecap="round"
         stroke-linejoin="round"/>
-  {_pins(pts)}
+  {marks}{poi}
 </svg>"""
 
 
