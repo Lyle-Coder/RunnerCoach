@@ -5525,60 +5525,84 @@ def run() -> int:
     assert _EV.trip_del("self-2026", 0), "手填行程删不掉"
     assert not _EV.trip_manual("self-2026"), "删完还留着空壳"
 
-    # ---- 预订提前量：倒推、可改、单条覆盖、过期不消失、已订 -------------
+    # ---- 预订提醒：按比赛日倒推、填行程自动已订、手动覆盖 --------------
     assert _EV.BOOKING_LEAD == {"flight": 60, "train": 15, "stay": 45,
                                 "race": 0, "other": 0}, "默认提前量被改了"
-    _EV.trip_add("self-2026", "flight", "2027-03-25 08:30", "CA1883 起飞")
-    _EV.trip_add("self-2026", "train", "2027-03-25 14:05", "G8712 成都东")
-    _EV.trip_add("self-2026", "stay", "2027-03-26 15:00", "入住 都江堰")
+    # 赛事日 2027-03-27。建好赛事、一条行程都没填，就该有这三条提醒——
+    # 1.3.1 前反过来，必须先填好「订了哪趟航班」才生成待办。
     _bk = _EV.bookings("self-2026", today="2027-01-01")
-    assert len(_bk) == 3, f"该有三条待办：{_bk}"
+    assert len(_bk) == 3, f"建好赛事就该有三条预订提醒：{_bk}"
+    assert all(b["race"] == "2027-03-27" for b in _bk), "锚点不是比赛日期"
     _due = {b["kind"]: b["due"] for b in _bk}
-    assert _due == {"flight": "2027-01-24", "train": "2027-03-10",
-                    "stay": "2027-02-09"}, f"提前量倒推错了：{_due}"
+    assert _due == {"flight": "2027-01-26", "stay": "2027-02-10",
+                    "train": "2027-03-12"}, f"按比赛日倒推错了：{_due}"
     assert [b["kind"] for b in _bk] == ["flight", "stay", "train"], \
-        "待办该按截止日排，不是按行程日"
+        "待办该按截止日排"
+    assert all(not b["booked"] for b in _bk), \
+        "资料里认出来的推荐航班/酒店不该被当成用户已订"
+    assert all(b["label"] == _EV.BOOKING_LABELS[b["kind"]] for b in _bk), \
+        "待办该是「订机票」这类通用提醒，不该绑具体行程"
     # 赛事级可改：只改航班，其它两项保持
     assert _EV.set_booking_rules("self-2026", {"flight": "10"})["flight"] == 10
     assert _EV.booking_rules("self-2026")["stay"] == 45, "改航班把住宿也改了"
     assert {b["kind"]: b["due"] for b in
             _EV.bookings("self-2026", today="2027-01-01")}["flight"] == \
-        "2027-03-15", "改完规则待办没重算"
+        "2027-03-17", "改完规则没按比赛日重算"
     try:
         _EV.set_booking_rules("self-2026", {"train": "-3"})
         raise AssertionError("负的提前量居然收下了")
     except ValueError:
         pass
-    # 单条覆盖：0 表示这条不生成待办
-    _EV.trip_add("self-2026", "flight", "2027-03-27 18:00", "返程航班",
-                 lead="0")
-    assert len(_EV.bookings("self-2026", today="2027-01-01")) == 3, \
-        "单条填 0 还是生成了待办"
-    # 过期不消失：最该催的就是这一条
-    _late = _EV.bookings("self-2026", today="2027-04-01")
+    # 填了对应类型的预订信息 → 自动视为已订，不用再手点一次
+    _EV.trip_add("self-2026", "flight", "2027-03-25 08:30", "CA1883 起飞")
+    _EV.trip_add("self-2026", "train", "2027-03-25 14:05", "G8712 成都东")
+    _EV.trip_add("self-2026", "stay", "2027-03-26 15:00", "入住 都江堰")
+    _auto = {b["kind"]: b
+             for b in _EV.bookings("self-2026", today="2027-01-01")}
+    assert all(b["booked"] and b["auto"] for b in _auto.values()), \
+        "填了预订信息没自动视为已订"
+    assert "自动视为已订" in _auto["stay"]["reason"], "没说明为什么停了提醒"
+    assert not _EV.bookings("self-2026", today="2027-01-01",
+                            include_booked=False), "自动已订了还在催"
+    # 手动覆盖：填了但只是计划 → 仍需提醒；没填也能直接关掉
+    _EV.set_booking_done("self-2026", "stay", done=False)
+    assert [b["kind"] for b in _EV.bookings(
+        "self-2026", today="2027-01-01", include_booked=False)] == ["stay"], \
+        "手动「仍需提醒」没盖掉自动已订"
+    _EV.set_booking_done("self-2026", "stay", done=True)
+    assert not _EV.bookings("self-2026", today="2027-01-01",
+                            include_booked=False), "标「不用提醒」没生效"
+    _EV.set_booking_rules("self-2026", {"flight": "60"})
+    assert "stay" in _EV._booking_prefs("self-2026")["done"], \
+        "改提前量把手动覆盖抹掉了"
+    # 过期不消失（最该催的就是这条），但比赛结束后不再催
+    _late = _EV.bookings("self-2026", today="2027-03-20")
     assert len(_late) == 3 and all(b["overdue"] and b["days"] < 0
                                    for b in _late), \
         "截止日过了待办就消失，等于白提醒"
-    # 标已订：默认仍可见（能取消），但首页「临近」不再推
-    _idx = next(b["idx"] for b in _late if b["kind"] == "stay")
-    assert _EV.trip_book("self-2026", _idx, True)["booked"] is True
-    _all_bk = _EV.bookings("self-2026", today="2027-01-01")
-    assert all(b["kind"] != "stay" for b in
-               _EV.bookings("self-2026", today="2027-01-01",
-                            include_booked=False)), "标了已订还在催"
-    assert _all_bk[-1]["booked"] and _all_bk[-1]["kind"] == "stay", \
-        "已订的该沉到底且仍可见，免得误点后找不回来"
+    assert _EV.bookings("self-2026", today="2027-04-01") == [], \
+        "比赛都过了还在催订机票"
+    # 只留住宿行程 → 航班/高铁该催，住宿自动已订
+    _EV._write("self-2026", _EV.BOOKING_FILE,
+               {"lead": dict(_EV.BOOKING_LEAD)})
+    _EV._trip_save("self-2026",
+                   [x for x in _EV.trip_manual("self-2026")
+                    if x["kind"] == "stay"])
     _up = [r for r in _EV.upcoming(days=80, today="2027-01-01")
            if r.get("slug") == "self-2026" and r.get("booking")]
-    assert _up and all("入住 都江堰" not in r["label"] for r in _up), \
+    assert {r["kind"] for r in _up} == {"flight", "train"}, \
+        "首页「临近」没按自动已订过滤"
+    assert all(r["label"] in ("订机票", "订高铁票") for r in _up), \
         "首页「临近」还在推已订的住宿"
-    assert any(r["label"] == "CA1883 起飞" for r in _up), \
-        "首页「临近」没带上待订的航班"
     with _mock.patch.object(_BM3, "available", lambda: False):
         _bk_html = _EVUI.render_page({"slug": ["self-2026"]})
-    for _txt in ("该订了", "改预订提前量", "标为已订", "取消已订"):
+    for _txt in ("该订了", "改预订提前量", "按比赛日", "自动视为已订",
+                 "已订 / 不用提醒", "仍需提醒"):
         assert _txt in _bk_html, f"赛事页缺了「{_txt}」"
-    assert "提前量" in _bk_html, "添加表单里没有单条提前量入口"
+    assert 'name="kind" value="flight"' in _bk_html, \
+        "按钮没按类型提交（待办已不绑行程下标）"
+    assert "单条行程也能在添加时" not in _bk_html, \
+        "单条提前量输入已废弃，文案还在误导"
     assert 'data-act="calendarSync"' in _bk_html, \
         "赛事页没有「同步到系统日历」入口"
 
@@ -5589,8 +5613,9 @@ def run() -> int:
     _cbk = [x for x in _ci if x["type"] == "booking"]
     _ctp = [x for x in _ci if x["type"] == "trip"]
     assert _cbk and _ctp, f"预订或行程没进日历清单：{[x['type'] for x in _ci]}"
-    assert all("入住 都江堰" not in x["title"] for x in _cbk), \
-        "标了已订还往系统日历写提醒"
+    assert {x["kind"] for x in _cbk} == {"flight", "train"}, \
+        "自动已订的住宿还往系统日历写提醒"
+    assert "2027-03-27" in _cbk[0]["desc"], "日历描述没写清是按比赛日倒推"
     assert all(x["at"].endswith("09:00") and x["minutes"] == [0]
                for x in _cbk), "预订提醒该在截止日 09:00 弹"
     assert all(isinstance(x["minutes"], list) and x["minutes"] and
@@ -5611,7 +5636,7 @@ def run() -> int:
     assert len(_ling) == 1 and _ling[0]["at"].endswith("09:00"), \
         "只填日期的行程没归一到 09:00"
     assert not any(x["type"] == "booking"
-                   for x in _EV.calendar_items(today="2027-04-01")), \
+                   for x in _EV.calendar_items(today="2027-03-20")), \
         "过期的待办还往过去插日历事件，只会补一条骚扰通知"
     import json as _json
     from garmin_cn import appapi as _AP

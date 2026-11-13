@@ -558,10 +558,10 @@ _TRIP_CN = {"flight": "航班", "train": "高铁", "stay": "住宿",
 
 
 def _booking_html(slug: str, hid: str) -> str:
-    """「该订了」待办：按提前量从行程日倒推，过期也不消失。
+    """「该订了」：按**比赛日**倒推的三类提醒，填了同类型行程自动已订。
 
-    只针对手填的确定行程。已订的沉到底并变灰，留「取消已订」是防止
-    误点一下就把待办永久抹掉。
+    按钮按类型而不是行程下标提交——待办现在根本不绑具体行程，锚点是
+    赛事日期。已订的沉底变灰但留着，既能反悔，也让人看清「为什么没催了」。
     """
     try:
         items = E.bookings(slug)
@@ -570,32 +570,39 @@ def _booking_html(slug: str, hid: str) -> str:
         return ""
     if not items:
         return ""
+    race = items[0].get("race") or ""
+    race_txt = race[5:].replace("-", "/") if race else "比赛日"
     rows = []
     for b in items:
         d = b["days"]
-        when = (f"已过 {-d} 天" if d < 0 else
-                ("今天" if d == 0 else f"还有 {d} 天"))
-        cls = " hot" if d <= 7 else (" warn" if d <= 14 else "")
+        when = ("已订" if b["booked"] else
+                (f"已过 {-d} 天" if d < 0 else
+                 ("今天" if d == 0 else f"还有 {d} 天")))
+        cls = "" if b["booked"] else (
+            " hot" if d <= 7 else (" warn" if d <= 14 else ""))
         stamp = b["due"][5:].replace("-", "/")
-        act, txt = (("unbook", "取消已订") if b["booked"]
-                    else ("book", "标为已订"))
+        act, txt = (("unbook", "仍需提醒") if b["booked"]
+                    else ("book", "已订 / 不用提醒"))
         btn = ('<form class="dinline" method="post" action="/__event/trip">' + hid
                + f'<input type="hidden" name="act" value="{act}">'
-               + f'<input type="hidden" name="idx" value="{b["idx"]}">'
+               + f'<input type="hidden" name="kind" value="{b["kind"]}">'
                + f'<button class="tnav" type="submit">{txt}</button></form>')
+        note = (f'<span class="bd">{ui.esc(b["reason"])}</span>'
+                if b.get("reason") else "")
         rows.append(
             f'<div class="bk{" done" if b["booked"] else ""}">'
             f'<span class="tk {b["kind"]}">订</span>'
             f'<span class="td{cls}">{when}</span>'
-            f'<span class="bt"><b>{stamp}</b> 前订 · {ui.esc(b["label"])}'
-            f'<span class="bd">提前 {b["lead"]} 天</span></span>'
+            f'<span class="bt"><b>{stamp}</b> 前 · {ui.esc(b["label"])}'
+            f'<span class="bd">提前 {b["lead"]} 天</span>' + note + '</span>'
             + btn + "</div>")
-    head = ('<div class="sub2"><b>该订了</b> · 按「航班 '
-            f'{rules["flight"]} 天 / 高铁 {rules["train"]} 天 / '
-            f'住宿 {rules["stay"]} 天」从行程日倒推。'
-            '错过了也留在这里，不会悄悄消失；订好后标为已订即可。'
-            '下面的按钮可以把这些日子<b>写进系统日历</b>，由日历到点通知，'
-            '不用打开 App。</div>')
+    head = ('<div class="sub2"><b>该订了</b> · 按比赛日 '
+            f'<b>{race_txt}</b> 倒推：航班 {rules["flight"]} 天 / '
+            f'高铁 {rules["train"]} 天 / 住宿 {rules["stay"]} 天。'
+            '到点由<b>系统日历</b>推送通知，不用打开 App。'
+            '<b>填好对应类型的行程就自动视为已订</b>，提醒和日历事件一起停；'
+            '本地比赛不坐飞机这类情况，直接点「不用提醒」也行。'
+            '错过了也留在这里，不会悄悄消失。</div>')
     return ('<div class="card">' + head + "".join(rows)
             + '<div class="pager"><div class="btn" data-act="calendarSync">'
               '同步到系统日历</div></div>' + "</div>")
@@ -679,7 +686,9 @@ def _trips_html(slug: str, hid: str = "") -> str:
         '<b>住宿填酒店全名或地址</b>，会自动定位并标到赛道俯视图上，'
         '点标注可跳高德导航；航班 / 高铁在下面列表里各自带导航按钮，'
         '不标到赛道图上（离赛道几十公里，画上去会把赛道挤成一小团）。'
-        '所有条目同时进首页「临近」，并按提前量生成<b>「该订了」待办</b>。</p>'
+        '所有条目同时进首页「临近」，并写进系统日历按类型提前提醒。'
+        '<b>填了机票 / 高铁 / 住宿，上面「该订了」里对应的一类就自动视为已订，'
+        '不再催你。</b></p>'
         '<form class="frm" method="post" action="/__event/trip">' + hid
         + '<input type="hidden" name="act" value="add">'
         '<div class="frow"><label>类型<select class="fi" name="kind">'
@@ -690,20 +699,18 @@ def _trips_html(slug: str, hid: str = "") -> str:
         '<div class="frow"><label class="fwide">地点（可留空，住宿建议填）'
         '<input class="fi" name="place" placeholder="酒店全名 / 车站 / 地址，用来定位">'
         '</label></div>'
-        '<div class="frow fwide"><label>预订提前量（天，留空按默认）'
-        '<input class="fi" type="number" min="0" max="365" name="lead" '
-        'placeholder="例：90；填 0 = 这条不生成预订待办"></label></div>'
         '<div class="fbtns"><button class="btn primary" type="submit">加进行程</button>'
         '<span class="fhint">没配 Key 也能存，只是地图上不标点</span></div>'
         "</form></details>")
 
     head = ('<div class="sub2">航班 / 高铁 / 住宿写在「资料」里也会自动出现在这里；'
-            '确定好的信息用上面的表单直接填更准。<b>3 天内标红</b>，'
-            '别等出发前才想起来订。</div>'
+            '确定好的信息用上面的表单直接填更准，也算「已订」。'
+            '<b>3 天内标红</b>，别等出发前才想起来看。</div>'
             if rows else
-            '<div class="sub2">这里还没有行程。订好机票 / 高铁 / 酒店后'
-            '<b>在下面直接加一条</b>：会按时间倒计时提醒，'
-            '住宿填了地址还会在赛道图上标出位置。</div>')
+            '<div class="sub2">这里还没有行程，但上面的「该订了」已经按比赛日'
+            '在倒计时了。订好机票 / 高铁 / 酒店后<b>在下面直接加一条</b>：'
+            '会按时间提醒，住宿填了地址还会在赛道图上标出位置，'
+            '对应那一类的预订提醒也会自动停掉。</div>')
     try:
         rules = E.booking_rules(slug)
     except Exception:
@@ -711,8 +718,9 @@ def _trips_html(slug: str, hid: str = "") -> str:
     rule_html = (
         '<details class="fold" id="triprule"><summary>改预订提前量'
         '（航班 / 高铁 / 住宿）</summary>'
-        '<p class="hint">按行程发生日倒推「该订了」的日子。'
-        '填 0 = 这类不生成待办；单条行程也能在添加时单独指定。</p>'
+        '<p class="hint">按<b>比赛日期</b>倒推「该订了」的日子，'
+        '跟填没填行程无关。填 0 = 这一类不提醒；改完立刻重算，'
+        '同步日历后旧事件会自动替换。</p>'
         '<form class="frm" method="post" action="/__event/trip">' + hid
         + '<input type="hidden" name="act" value="rules">'
         '<div class="frow bkrule">'
