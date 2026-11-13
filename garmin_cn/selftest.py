@@ -3200,8 +3200,8 @@ def run() -> int:
     assert re.search(r"\.me \.grid\.three \.card\{[^}]*height:88px", _ucss, re.S), \
         "三张数值卡没固定高度"
     _ads = re.findall(r'<span class="ad">([^<]*)</span>', _me)
-    # AI 模型服务已经挪到账号行（带开关），网格从 8 张变 7 张
-    assert len(_ads) == 8 and all(len(a) <= 14 for a in _ads), \
+    # 运动设置与高驰训练导入分别有独立入口；副标题仍保持单行。
+    assert len(_ads) == 9 and all(len(a) <= 14 for a in _ads), \
         f"网格卡数量或说明长度不对：{_ads}"
 
     # ---- 0.6.6：品牌图标统一到开屏 / 角标 / 三张出图 / 完整看板 ------------

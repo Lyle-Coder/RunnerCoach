@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""高驰官方 MCP 客户端：只做 REST 拿不到的那部分 —— **睡眠**。
+"""高驰官方 MCP 客户端：OAuth、睡眠和结构化训练导入。
 
 为什么单开一个模块
 ------------------
@@ -28,8 +28,8 @@ HRV、静息心率、负荷、VO2max。睡眠只有两条路：
 
 区域
 ----
-国内 `mcpcn.coros.com` / 欧洲 `mcpeu.coros.com` / 美国 `mcpus.coros.com`。
-token 只在注册它的那个区有效，client_id 也是按区注册的。
+官方统一入口为 `mcp.coros.com`，发现后仍固定到 CN/EU/US issuer。
+已有区域凭据保持原 issuer，不能将旧 token 直接发给其它区域。
 
 数据口径
 --------
@@ -58,12 +58,13 @@ CLIENT_NAME = "RunnerCoach"
 PROTOCOL_VERSION = "2025-06-18"
 
 HOSTS = {
+    "auto": "https://mcp.coros.com",
     "asia": "https://mcpcn.coros.com",
     "cn": "https://mcpcn.coros.com",
     "eu": "https://mcpeu.coros.com",
     "us": "https://mcpus.coros.com",
 }
-REGION_CN = {"asia": "国内", "cn": "国内", "eu": "欧洲", "us": "美国"}
+REGION_CN = {"auto": "自动", "asia": "国内", "cn": "国内", "eu": "欧洲", "us": "美国"}
 
 # 睡眠工具：官方文档里叫 querySleepOverview，返回一整段可读文本（也可能直接
 # 给结构化 JSON）。HRV 另有一个 querySleepHrv，这里只用主睡眠那一个。
@@ -132,6 +133,8 @@ class CorosMcp:
         self.refresh_token = ""
         self.expires_at = 0.0
         self.session_id = ""
+        self._initialized = False
+        self.authorization_id = ""
         self.protocol = PROTOCOL_VERSION
         self.last_text = ""          # 最近一次工具返回的纯文本（排障用）
         self._verifier = ""
@@ -144,6 +147,8 @@ class CorosMcp:
             got = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
+        if self.region == "auto" and got.get("region") in HOSTS and got.get("region") != "auto":
+            self.region = got["region"]
         if _norm_region(got.get("region")) != self.region:
             # 换区后旧 token 一定无效，但不能顺手删文件——用户可能只是输错区
             return
@@ -151,6 +156,7 @@ class CorosMcp:
         self.access_token = str(got.get("access_token") or "")
         self.refresh_token = str(got.get("refresh_token") or "")
         self.expires_at = float(got.get("expires_at") or 0)
+        self.authorization_id = str(got.get("authorization_id") or "")
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -158,6 +164,7 @@ class CorosMcp:
                    "access_token": self.access_token,
                    "refresh_token": self.refresh_token,
                    "expires_at": self.expires_at,
+                   "authorization_id": self.authorization_id,
                    "saved_at": dt.datetime.now().isoformat(timespec="seconds")}
         self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                              encoding="utf-8")
@@ -171,6 +178,8 @@ class CorosMcp:
             setattr(self, attr, "")
         self.expires_at = 0.0
         self.session_id = ""
+        self._initialized = False
+        self.authorization_id = ""
         try:
             self.path.unlink()
         except OSError:
@@ -193,6 +202,13 @@ class CorosMcp:
         """动态注册一个公共客户端（无密钥）。client_id 按区缓存，不用每次注册。"""
         if self.client_id and not force:
             return self.client_id
+        if self.region == "auto":
+            st, _, raw = _http(self.base + "/.well-known/openid-configuration")
+            issuer = str(_json(raw, "授权发现").get("issuer") or "").rstrip("/") if st == 200 else ""
+            region = next((k for k, host in HOSTS.items() if k != "auto" and host == issuer), "")
+            if not region:
+                raise McpError("高驰授权区域发现失败，请选择账号所在区域重新授权")
+            self.region = region
         body = json.dumps({
             "client_name": CLIENT_NAME,
             "redirect_uris": [CALLBACK],
@@ -235,7 +251,7 @@ class CorosMcp:
             raise McpError(f"授权被拒绝：{err}")
         if not code:
             raise McpError("回调里没有 code，授权没走完")
-        if state and self._state and state != self._state:
+        if not state or not self._state or state != self._state:
             raise McpError("回调和本次请求对不上（state 不一致），请重来一次")
         if not self._verifier:
             raise McpError("这次授权没有 PKCE 记录，请在同一个进程里重新发起")
@@ -243,7 +259,12 @@ class CorosMcp:
                                "redirect_uri": CALLBACK, "client_id": self.client_id,
                                "code_verifier": self._verifier})
         st, _, raw = _http(self.base + "/oauth2/token", data=data, headers=headers)
-        return self._take_token(st, raw, "换 token")
+        result = self._take_token(st, raw, "换 token")
+        self.authorization_id = secrets.token_hex(16)
+        self._initialized = False
+        self.session_id = ""
+        self.save()
+        return result
 
     def refresh(self) -> dict:
         if not self.refresh_token or not self.client_id:
@@ -307,7 +328,7 @@ class CorosMcp:
         return _read_rpc(raw)
 
     def initialize(self) -> dict:
-        if self.session_id:
+        if self._initialized:
             return {"session": self.session_id, "reused": True}
         out = self._rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                          "params": {"protocolVersion": self.protocol,
@@ -315,16 +336,30 @@ class CorosMcp:
                                     "clientInfo": {"name": CLIENT_NAME,
                                                    "version": "1.0.0"}}}) or {}
         ver = str(((out.get("result") or {}).get("protocolVersion")) or "")
+        if out.get("error") or not ver:
+            raise McpError("高驰 MCP 初始化失败，请重新连接")
         if ver:
             self.protocol = ver
-        self._rpc({"jsonrpc": "2.0", "method": "notifications/initialized"}, notify=True)
+        # 当前官方网关无状态，不要求 session 头，也不接 initialized 通知。
+        self._initialized = True
         return {"session": self.session_id, "protocol": self.protocol}
 
     def tools(self) -> list[dict]:
         self.initialize()
-        out = self._rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list",
-                         "params": {}}) or {}
-        return list(((out.get("result") or {}).get("tools")) or [])
+        tools, cursor, seen = [], "", set()
+        while True:
+            out = self._rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+                             "params": {"cursor": cursor} if cursor else {}}) or {}
+            result = out.get("result") or {}
+            if out.get("error") or not isinstance(result.get("tools"), list):
+                raise McpError("读取高驰 MCP 工具列表失败")
+            tools.extend(result["tools"])
+            cursor = result.get("nextCursor") or ""
+            if not cursor:
+                return tools
+            if cursor in seen:
+                raise McpError("高驰 MCP 工具列表分页异常")
+            seen.add(cursor)
 
     def call(self, name: str, arguments: dict | None = None) -> dict:
         self.initialize()
@@ -333,10 +368,21 @@ class CorosMcp:
         if out.get("error"):
             e = out["error"]
             raise McpError(f"高驰 MCP 调用 {name} 失败：{e.get('message') or e}")
-        res = out.get("result") or {}
+        res = out.get("result")
+        if not isinstance(res, dict) or not res:
+            raise McpError("高驰 MCP 返回不完整，操作结果尚不能确认")
         if res.get("isError"):
             raise McpError(f"高驰 MCP 调用 {name} 报错：{_text_of(res)[:200]}")
         return res
+
+    def binding(self) -> str:
+        """本次授权的本地隔离标识；刷新 token 保留，重新登录后重新生成。"""
+        if not self.access_token:
+            raise McpError("请先授权高驰 MCP")
+        if not self.authorization_id:
+            self.authorization_id = secrets.token_hex(16)
+            self.save()
+        return self.authorization_id
 
     # ---------------- 业务：睡眠 ----------------
     def sleep(self, days: int = 30) -> list[dict]:
@@ -706,13 +752,6 @@ def login_local(home: Path | str, region: str = "asia", timeout: int = 180,
             self.end_headers()
             self.wfile.write(body)
 
-    say("→ 正在打开高驰授权页，登录并点「同意」即可 …")
-    say(f"  浏览器没自动打开就把这个地址粘进去：\n  {url}\n")
-    if open_browser:
-        try:
-            webbrowser.open(url)
-        except Exception:
-            pass
     try:
         srv = HTTPServer(("127.0.0.1", 53682), _Cb)
     except OSError as e:
@@ -720,6 +759,13 @@ def login_local(home: Path | str, region: str = "asia", timeout: int = 180,
     srv.timeout = 5
     deadline = time.time() + timeout
     try:
+        say("→ 正在打开高驰授权页，登录并点「同意」即可 …")
+        say(f"  浏览器没自动打开就把这个地址粘进去：\n  {url}\n")
+        if open_browser:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
         while not got.get("url") and time.time() < deadline:
             srv.handle_request()          # 超时返回 False，循环再看截止时间
     finally:
