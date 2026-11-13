@@ -732,6 +732,36 @@ def _upcoming_html(days: int = 30, limit: int = 3) -> str:
             + "".join(out) + "</section>")
 
 
+def _reading_card(limit: int = 8) -> str:
+    """首页最底部的「延伸阅读」：内容一行、换行、破折号接数据源。
+
+    多条轮播（每 6 秒换一条），靠一段内联 JS 切 class，不发请求、不重排。
+    内容取不到就整块不出现——首页不能因为一块可选内容变空。
+    """
+    try:
+        from . import reading as RD
+
+        items = RD.items(limit)
+    except Exception:
+        return ""
+    if not items:
+        return ""
+    slides = "".join(
+        f'<div class="rdi{" on" if i == 0 else ""}">'
+        f'<p class="rdt">{esc(it["text"])}</p>'
+        f'<p class="rds">—— {esc(it["src"])}</p></div>'
+        for i, it in enumerate(items))
+    return ('<section class="rc-panel rc-rd-panel" id="rc-read">'
+            '<div class="rc-panel-hd"><span class="rc-eyebrow">延伸阅读</span>'
+            f'<span class="rc-win">共 {len(items)} 条 · 每 6 秒换一条</span></div>'
+            f'<div class="rc-rd">{slides}</div></section>'
+            '<script>(function(){var b=document.getElementById("rc-read");'
+            'if(!b)return;var s=b.querySelectorAll(".rdi");'
+            'if(s.length<2)return;var i=0;'
+            'setInterval(function(){s[i].classList.remove("on");'
+            'i=(i+1)%s.length;s[i].classList.add("on");},6000);})();</script>')
+
+
 def home_page() -> str:
     """「今日」tab：首屏即一页式大屏（0.6.7）。
 
@@ -994,7 +1024,7 @@ def home_page() -> str:
 
     body_html_all = ('<div class="rc-screen">' + verdict + hero + load_html
                      + body_html + plan_html + _upcoming_html()
-                     + week_html + '</div>')
+                     + week_html + _reading_card() + '</div>')
     # 只留两个数据胶囊：宽屏自动铺成大屏，不再需要第三个按钮。
     # 一图流也不再挂页头：那枚胶囊在横屏大屏里孤零零地压着结论条，
     # 0.6.13 起统一收进「我的」页的低频动作列表。

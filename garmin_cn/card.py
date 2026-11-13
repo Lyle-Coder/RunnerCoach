@@ -680,6 +680,19 @@ def build_html(res: dict, sync_at: str | None = None,
     hrv_spark = _spark(hrv_pts[-14:], h=42, color="#5FA8E0", label="HRV", unit=" ms")
     rhr_spark = _spark(rhr_pts[-14:], h=42, color="#E06A5F", label="静息心率", unit=" bpm")
 
+    # 延伸阅读：一图流右上角只放一句 brief。取不到内容（文件缺失/坏 JSON）
+    # 就整块不出现——出图不能因为一块可选内容挂掉。
+    rd_html = ""
+    try:
+        from . import reading as _RD
+
+        _rd = _RD.pick()
+        if _rd:
+            rd_html = (f'<div class="rd"><span>延伸阅读 · {esc(_rd["head"])}</span>'
+                       f'{esc(_rd["text"])}</div>')
+    except Exception:
+        rd_html = ""
+
     # AI 点评：只有拿到现成文本才画。限两行——一图流高度写死 1080×1920，
     # 多三行就会把底部挤出画幅。
     ai_html = ""
@@ -743,7 +756,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
   -webkit-font-smoothing:antialiased}}
 .wrap{{width:{W}px;height:{H}px;padding:34px 52px 26px;display:flex;flex-direction:column}}
 .top{{position:relative;display:flex;justify-content:space-between;
-  align-items:flex-end;gap:24px;padding-bottom:16px;
+  align-items:flex-start;gap:24px;padding-bottom:16px;
   border-bottom:1px solid #223349}}
 .top::after{{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
   background:linear-gradient(90deg,#3B82F6,rgba(34,211,238,.35),transparent);
@@ -755,8 +768,13 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
    角标保留（0.6.10）。 */
 .meta{{flex:0 1 46%;max-width:46%;text-align:right;font-size:19px;
   color:#8FA4BF;line-height:1.5;word-break:break-word}}
-.meta .m1{{font-size:22px;font-weight:650;color:#8CC2FF;
-  font-variant-numeric:tabular-nums}}
+/* 延伸阅读：贴在同步时间下面。两行封顶，一图流高度是写死的 1080×1920。 */
+.meta .rd{{margin-top:10px;padding-top:9px;border-top:1px solid #223349;
+  font-size:17px;line-height:1.45;color:#9AA5B1;text-align:left;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;
+  overflow:hidden}}
+.meta .rd span{{display:block;font-size:15px;color:#5FA8E0;font-weight:700;
+  letter-spacing:.5px;margin-bottom:2px}}
 .meta .m2{{font-size:18px;color:#7689A2;margin-top:4px}}
 .hero{{display:flex;align-items:center;gap:40px;padding:14px 0 12px;height:196px;overflow:hidden}}
 .score-box{{text-align:center;min-width:250px}}
@@ -773,7 +791,13 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .bar-track i{{display:block;height:100%;border-radius:5px}}
 .card{{background:#141E2B;border:1px solid #24344A;border-radius:18px;padding:18px 26px}}
 .card h3{{font-size:21px;color:#7F8A97;font-weight:400;margin-bottom:10px;letter-spacing:1px}}
-.sess{{margin-top:16px;padding:22px 28px}}
+/* 处方卡两栏：左边类型/时长/营养，右边评语与 AI。
+   原来评语、AI、营养条竖着叠，卡高约 400px；改两栏后省下约 100px，
+   正好给顶部那条延伸阅读腾地方。 */
+.sess{{margin-top:16px;padding:22px 28px;display:grid;
+  grid-template-columns:1.1fr .9fr;gap:24px;align-items:start}}
+.sess .sl{{min-width:0}}
+.sess .sr{{min-width:0;border-left:1px solid #24344A;padding-left:22px}}
 .sess .st{{font-size:38px;font-weight:700;letter-spacing:1px}}
 .sess .chips{{margin:10px 0 10px}}
 .chip{{display:inline-block;font-size:20px;padding:4px 14px;border-radius:999px;
@@ -950,8 +974,8 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 <div class="top">
   <div class="rc-date"><div class="date">{d.strftime("%m月%d日")}<small>{DOW[d.weekday()]}</small></div></div>
   <div class="meta">
-    <div class="m1">恢复度 <b>{_f(r.get("score"))}</b> / 100</div>
     <div class="m2">{esc(src)} · 已同步 {esc((sync_at or "")[:16]) or esc(res["date"])}</div>
+    {rd_html}
   </div>
 </div>
 
@@ -964,13 +988,17 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 </div>
 
 <div class="card sess">
-  <h3>今日处方</h3>
-  <div class="st">{esc(s["type"])}</div>
-  <div class="chips"><span class="chip main">{esc(s["duration"])}</span><span class="chip">{esc(s["intensity"])}</span></div>
-  <div class="why">{esc(s["why"])}</div>
-  {ai_html}
-  {nutri_chips}
-  {rp_line}
+  <div class="sl">
+    <h3>今日处方</h3>
+    <div class="st">{esc(s["type"])}</div>
+    <div class="chips"><span class="chip main">{esc(s["duration"])}</span><span class="chip">{esc(s["intensity"])}</span></div>
+    {nutri_chips}
+    {rp_line}
+  </div>
+  <div class="sr">
+    <div class="why">{esc(s["why"])}</div>
+    {ai_html}
+  </div>
 </div>
 
 <div class="row4">

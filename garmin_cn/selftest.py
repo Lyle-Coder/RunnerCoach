@@ -1663,6 +1663,27 @@ def run() -> int:
     assert _b7["val"] == "90" and _b7["kind"] == "bb", \
         "同时有电量与恢复程度时应优先电量（两家口径不混用）"
 
+    # ---- 延伸阅读：内容库结构 / 抽取 / 两处渲染 -------------------------
+    from garmin_cn import reading as _RD2
+
+    _bad = _RD2.validate()
+    assert not _bad, f"延伸阅读内容库不合格：{_bad[:3]}"
+    _p1 = _RD2.pick(seed="2026-11-13")
+    _p2 = _RD2.pick(seed="2026-11-13")
+    assert _p1 and _p1["id"] == _p2["id"], "同一 seed 抽到的条目不稳定（测试没法复现）"
+    assert _p1["src"] and _p1["text"], "条目缺正文或数据源"
+    _its = _RD2.items(6)
+    assert len(_its) == len({x["id"] for x in _its}), "首页轮播里出现了重复条目"
+
+    _ch = _C.build_html(res, "2026-11-13 06:24", "Garmin 国区", "自检点评")
+    assert '<div class="m1">' not in _ch, "顶部右上角还留着与主图重复的恢复度数字"
+    assert '<div class="rd">' in _ch and "延伸阅读" in _ch, "一图流没有延伸阅读"
+    assert '<div class="sl">' in _ch and '<div class="sr">' in _ch, \
+        "今日处方没改成两栏，评语与 AI 点评没挪到右侧"
+    _home_rd = U.home_page()
+    assert 'id="rc-read"' in _home_rd and "—— " in _home_rd, \
+        "首页底部没有延伸阅读卡，或没按「内容 / —— 数据源」排版"
+
     _rm = _MT.readiness({"date": "2026-11-13", "sleep_score": 80, "recovery": 55},
                          [])
     _names = [p["name"] for p in _rm["parts"]]
@@ -3133,8 +3154,9 @@ def run() -> int:
 
     _card_src = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
     _act_src = (ROOT / "garmin_cn/actcard.py").read_text(encoding="utf-8")
-    assert "max-width:46%" in _card_src and 'class="m1"' in _card_src, \
-        "看板一图流顶部右侧没限宽，长来源会挤出画幅"
+    # 顶部右上角不再有重复的「恢复度 79 / 100」，改为限宽的 meta + 延伸阅读
+    assert "max-width:46%" in _card_src and '.meta .rd{' in _card_src, \
+        "看板一图流顶部右侧没限宽，长来源会挤出画幅 / 延伸阅读没贴住 meta"
     assert "flex-wrap:nowrap" in _act_src, \
         "活动图顶部标签还会换行/被挤走"
     assert "background:#12161B" in _card_src, \
