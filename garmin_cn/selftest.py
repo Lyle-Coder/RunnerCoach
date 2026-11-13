@@ -3386,7 +3386,7 @@ def run() -> int:
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
     # 每次发版要同步改这里（1.1.9 → 128）。
-    assert 'versionCode = 129' in (
+    assert 'versionCode = 130' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
