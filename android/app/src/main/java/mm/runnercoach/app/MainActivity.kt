@@ -496,6 +496,7 @@ class MainActivity : Activity() {
                     "mealShot" -> askMealPhoto()
                     "aiSettings" -> openAiSettings()
                     "aiToggle" -> toggleAi()
+                    "simpleToggle" -> toggleSimple()
                     "corosSleep" -> askCorosSleep()
                     "login" -> showLoginPicker()
                     "mi" -> showMiPanel()
@@ -1333,6 +1334,21 @@ class MainActivity : Activity() {
         web.loadUrl("http://127.0.0.1:$port/ai#settings")
     }
 
+    /** 「我的 → 简洁模式」：先把不用的模块藏起来，随时可以关回来。 */
+    private fun toggleSimple() {
+        thread {
+            val r = apiCall("simple_toggle")
+            ui {
+                if (!r.optBoolean("ok")) {
+                    toast("切换失败：${r.optString("error")}")
+                    return@ui
+                }
+                toast(if (r.optBoolean("simple_mode")) "已切到简洁模式" else "已恢复完整模式")
+                reload()
+            }
+        }
+    }
+
     /** 行尾开关：只翻 AI 总开关，不动 provider / key，改完刷新当前页。 */
     private fun toggleAi() {
         thread {
@@ -1462,12 +1478,14 @@ class MainActivity : Activity() {
         }
         AlertDialog.Builder(this)
             .setTitle("补充一句（可选）")
-            .setMessage("照片看不清份量时写一句更准：主食多少、有没有喝汤、几个鸡蛋。")
+            .setMessage("照片看不清份量时写一句更准：主食多少、有没有喝汤、几个鸡蛋。留空就直接按照片估。")
             .setView(wrap)
+            // 只留一个识别按钮：输入框留空时，「识别」和原来的「直接识别」
+            // 走的是同一条路径，两个按钮只是让人犹豫点哪个。
             .setPositiveButton("识别") { _, _ ->
                 doMealEstimate(uri, input.text.toString().trim())
             }
-            .setNegativeButton("直接识别") { _, _ -> doMealEstimate(uri, "") }
+            .setNegativeButton("取消", null)
             .show()
     }
 

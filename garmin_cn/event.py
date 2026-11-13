@@ -890,6 +890,215 @@ def del_doc(slug: str | None, idx: int) -> bool:
     return True
 
 
+def update_doc(slug: str | None, idx: int, *, title: str | None = None,
+               kind: str | None = None, body: str | None = None,
+               url: str | None = None) -> dict:
+    """改一条资料。只改传进来的字段，没传的保持原样。
+
+    为什么单独一个函数而不是「删了重加」：删了重加会换掉 `at`（添加日期），
+    顺序也会跑到末尾，用户改个错别字就会发现条目位置变了。
+    """
+    slug = active_slug(slug)
+    data = _read(slug, "docs.json") or {}
+    items = data.get("items") or []
+    if idx < 0 or idx >= len(items):
+        raise ValueError("这条资料已经不存在了")
+    it = items[idx]
+    if title is not None:
+        t = title.strip()
+        if not t:
+            raise ValueError("标题不能为空")
+        if len(t) > 80:
+            raise ValueError("标题太长了（上限 80 字）")
+        it["title"] = t
+    if kind is not None:
+        if kind not in DOC_KINDS:
+            raise ValueError("资料分类不认识：%s" % kind)
+        it["kind"] = kind
+    if body is not None:
+        b = body.strip()
+        if len(b) > 4000:
+            raise ValueError("正文太长了（上限 4000 字）")
+        it["body"] = b
+    if url is not None:
+        u = url.strip()
+        if u and not re.match(r"^https?://", u):
+            raise ValueError("链接要以 http:// 或 https:// 开头")
+        it["url"] = u
+    if not (it.get("body") or it.get("url")):
+        raise ValueError("正文和链接至少留一个")
+    _write(slug, "docs.json", {"items": items})
+    return {"title": it["title"], "kind": it["kind"]}
+
+
+def rename_file(slug: str | None, name: str, new_name: str) -> str:
+    """附件改名。扩展名必须保留、不能覆盖已有文件。
+
+    附件是按文件名引用的，所以改名就等于移动文件——这里拒绝任何路径成分，
+    免得「../」把文件挪出赛事目录。
+    """
+    slug = active_slug(slug)
+    d = _dir(slug)
+    src = d / name
+    if not src.is_file():
+        raise ValueError("附件不存在：%s" % name)
+    if src.suffix.lower() not in ATTACH_EXT:
+        raise ValueError("不支持的类型：%s" % src.suffix)
+    raw = (new_name or "").strip().replace("\\", "/")
+    raw = raw.split("/")[-1].strip()
+    if not raw:
+        raise ValueError("新名字不能为空")
+    stem = Path(raw).stem.strip()
+    if not stem:
+        raise ValueError("新名字不能为空")
+    if len(stem) > 60:
+        raise ValueError("新名字太长了（上限 60 字）")
+    if stem.startswith("."):
+        raise ValueError("新名字不能以点开头")
+    dst = d / (stem + src.suffix.lower())
+    if dst.name == src.name:
+        return dst.name
+    if dst.exists():
+        raise ValueError("已经有同名附件了：%s" % dst.name)
+    src.rename(dst)
+    return dst.name
+
+
+# ---------------------------------------------------------------- 时间点识别
+
+# 三种常见写法，都允许后面跟 HH:MM / HH：MM：
+#   2026-11-20 18:00 / 2026年11月20日 / 11月20日 18:00 / 11-20
+# 单独的 HH:MM 不认——没有日期的时间点在时间线上没法排序，认了只会更乱。
+_TIME_RES = (
+    re.compile(r"(20\d{2})\s*[-/年.]\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})\s*日?"
+               r"(?:\s*[T ]?\s*(\d{1,2})\s*[:：]\s*(\d{2}))?"),
+    re.compile(r"(?<!\d)(\d{1,2})\s*月\s*(\d{1,2})\s*日"
+               r"(?:\s*[T ]?\s*(\d{1,2})\s*[:：]\s*(\d{2}))?"),
+    # 最后一条最容易误伤：「配速 4-5 分」「心率 150-160」不是日期，
+    # 所以后面紧跟单位的一律不认。
+    re.compile(r"(?<![\d.])(\d{1,2})[-.](\d{1,2})(?![\d])"
+               r"(?:\s*[T ]?\s*(\d{1,2})\s*[:：]\s*(\d{2}))?"
+               r"(?!\s*(?:分|小时|km|公里|kg|%|次|个|天|周|倍))"),
+)
+
+_LABEL_TRIM = " \t　，。；：、（）()【】[]<>《》-—·…•>"
+
+
+def parse_times(text: str, year: int | None = None) -> list[dict]:
+    """从一段文字里认出具体时间点，返回 [{at, label, date_only}]，按时间升序。
+
+    `label` 取日期前面那一小截（「报名截止」「领物」），没有就用「时间点」。
+    认不出来就返回空列表，不猜——宁缺勿错。
+    """
+    y0 = int(year or dt.date.today().year)
+    out, seen = [], set()
+    for line in str(text or "").splitlines():
+        for rx in _TIME_RES:
+            for m in rx.finditer(line):
+                g = m.groups()
+                if len(g) == 5:
+                    y, mo, da, hh, mm = g
+                else:
+                    y, (mo, da, hh, mm) = y0, g
+                try:
+                    yi, mo_i, da_i = int(y), int(mo), int(da)
+                    hi = int(hh) if hh else 0
+                    mi = int(mm) if mm else 0
+                    when = dt.datetime(yi, mo_i, da_i, hi, mi)
+                except (TypeError, ValueError):
+                    continue
+                at = when.strftime("%Y-%m-%dT%H:%M")
+                if at in seen:
+                    continue
+                # 标签取「同一句里、日期前面」那一小截：先按标点切成句，
+                # 再取最后一段，避免把上一句的「11-18 18:00，」也带进来。
+                _cut = re.split(r"[，。；;、\n]", line[:m.start()])[-1]
+                label = _cut.strip(_LABEL_TRIM)[-14:].strip() or "时间点"
+                seen.add(at)
+                out.append({"at": at, "label": label,
+                            "date_only": not (hh and mm), "raw": m.group(0)})
+    out.sort(key=lambda x: x["at"])
+    return out
+
+
+def timeline(slug: str | None = None, *, today: str | None = None,
+             horizon_days: int = 180) -> list[dict]:
+    """一场赛事的时间线：开赛 + 资料正文里认出来的时间点。
+
+    只用来「提醒」，不写回文件：资料随时会改，缓存只会让时间对不上。
+    """
+    slug = active_slug(slug)
+    ev = _read(slug, "event.json") or {}
+    d0 = str(ev.get("date") or "")[:10]
+    year = int(d0[:4]) if d0[:4].isdigit() else dt.date.today().year
+    rows = []
+    if d0:
+        t0 = str(ev.get("start_time") or "00:00")[:5]
+        rows.append({"at": f"{d0}T{t0}", "label": "开赛",
+                     "src": "赛事", "slug": slug, "title": ev.get("name") or slug})
+    for it in docs(slug).get("items") or []:
+        text = (it.get("title") or "") + "\n" + (it.get("body") or "")
+        for tp in parse_times(text, year):
+            rows.append({"at": tp["at"], "label": tp["label"],
+                         "src": it.get("title") or "资料",
+                         "slug": slug, "title": ev.get("name") or slug})
+    rows.sort(key=lambda x: x["at"])
+    if today:
+        try:
+            end = (dt.date.fromisoformat(today) + dt.timedelta(days=horizon_days)).isoformat()
+            rows = [r for r in rows if r["at"][:10] <= end]
+        except ValueError:
+            pass
+    return rows
+
+
+def upcoming(days: int = 45, today: str | None = None) -> list[dict]:
+    """所有赛事里未来 N 天的时间点，首页「临近」用。带 days 倒计时与提醒状态。"""
+    t0 = dt.date.fromisoformat(today) if today else dt.date.today()
+    end = t0 + dt.timedelta(days=max(1, int(days)))
+    out = []
+    for e in list_events(today=t0):
+        slug = e.get("slug")
+        if not slug:
+            continue
+        try:
+            rows = timeline(slug)
+        except Exception:
+            continue
+        for r in rows:
+            try:
+                when = dt.datetime.strptime(r["at"], "%Y-%m-%dT%H:%M")
+            except ValueError:
+                continue
+            if when.date() < t0 or when.date() > end:
+                continue
+            r = dict(r)
+            r["days"] = (when.date() - t0).days
+            r["event"] = e.get("short") or e.get("name") or slug
+            out.append(r)
+    out.sort(key=lambda x: x["at"])
+    return out
+
+
+def reminders(slug: str | None = None) -> dict:
+    """已设提醒：{"<at>|<label>": true}。关掉就删键，不留空壳。"""
+    slug = active_slug(slug)
+    return (_read(slug, "remind.json") or {}).get("on") or {}
+
+
+def set_remind(slug: str | None, at: str, label: str, on: bool = True) -> dict:
+    slug = active_slug(slug)
+    data = _read(slug, "remind.json") or {}
+    cur = dict(data.get("on") or {})
+    key = "%s|%s" % (at, label)
+    if on:
+        cur[key] = True
+    else:
+        cur.pop(key, None)
+    _write(slug, "remind.json", {"on": cur})
+    return cur
+
+
 # ---------------------------------------------------------------- 赛中状态
 
 # 赛中不写 event.json：比赛当天数据要能一键清空重来，单独一个文件更干净。

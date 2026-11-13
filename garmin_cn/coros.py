@@ -129,6 +129,24 @@ LOGIN_1030_HINT = (
 )
 
 
+def _recovery_of(item: dict) -> float | None:
+    """从一条 dayDetail / analyse 记录里捞「恢复程度」（0-100 百分比）。
+
+    高驰没有佳明那种 body battery，但训练页有「恢复程度」。这个字段的键名
+    在不同版本 / 区域叫法不一（recovery / recoverRate / recoveryPercent…），
+    所以不写死：任何名字里带 recover 的键都算，取第一个 0-100 的数值。
+    """
+    if not isinstance(item, dict):
+        return None
+    for k, v in item.items():
+        if "recover" not in str(k).lower():
+            continue
+        n = _num(v)
+        if n is not None and 0 <= n <= 100:
+            return n
+    return None
+
+
 def _iso(yyyymmdd) -> str | None:
     s = str(yyyymmdd or "").strip()
     if len(s) == 8 and s.isdigit():
@@ -398,6 +416,7 @@ class CorosCloud:
                 "vo2max": _num(m.get("vo2max") or it.get("vo2max")),
                 "distance_m": _num(it.get("distance")),
                 "sleep_total_min": sl_min,
+                "recovery": _recovery_of(it) or _recovery_of(m),
                 "steps": _num(it.get("steps") or it.get("step") or m.get("steps")),
                 "synced_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "raw": json.dumps(it, ensure_ascii=False)[:20000],
@@ -414,6 +433,10 @@ class CorosCloud:
                            if "hr" in str(k).lower() or "heart" in str(k).lower()}
                 _dg.log_exc("coros.rhr", "HR 字段: "
                             + json.dumps(hr_keys, ensure_ascii=False)[:400])
+                # 「恢复程度」不在已知文档里，键名只能靠真机返回确认：
+                # 把最近一天的字段名整体留一行，缺数据时一眼能看出叫什么。
+                _dg.log_exc("coros.rhr", "dayDetail 键名: "
+                            + ",".join(sorted(map(str, day_list[-1].keys())))[:600])
         except Exception:
             pass
         return rows
