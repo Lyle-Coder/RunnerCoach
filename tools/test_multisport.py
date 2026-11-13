@@ -215,6 +215,18 @@ class AppTest(unittest.TestCase):
         with patch.object(coach, "_race_today", return_value=None):
             self.assertIn("30.0 km/h", card.build_html(res))
 
+    def test_existing_coros_history_reinterprets_native_speed_offline(self):
+        self.s.upsert_activity(ride(source="coros", distance_m=25000, duration_s=4500,
+                                   pace_s_km=2500, raw=json.dumps({"labelId": "ride", "sportType": 200,
+                                       "speedUnit": 1, "avgSpeed": 2500, "distance": 25000,
+                                       "totalTime": 4500, "workoutTime": 3600})))
+        response = appapi.activities(types="bike")
+        self.assertEqual(response["items"][0]["metric"]["value"], "25.0")
+        self.assertEqual(response["items"][0]["metric_text"], "均速 25.0 km/h")
+        doc = history.history_page({"type": ["bike"]})
+        self.assertIn("25.0 km/h", doc)
+        self.assertNotIn("1.4 km/h", doc)
+
     def test_shared_load_ignores_vendor_scale(self):
         rows = [{"date": self.day, "resting_hr": 55}]
         a = metrics.daily_loads(rows, [self.row], method="trimp")
