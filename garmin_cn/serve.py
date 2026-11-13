@@ -858,6 +858,71 @@ class _Handler(SimpleHTTPRequestHandler):
         except Exception as e:
             return self._back(slug, err="导入失败：%s" % e, anchor="import")
 
+    def _event_cp_ocr(self, u) -> None:
+        """CP 表截图 → 结构化 CP 行（走大模型视觉，校验不过不写盘）。
+
+        和 GPX 一样：App 把图片原样 POST 过来，服务端只认回环。识别结果
+        先过 cpocr.clean 的递增/合理范围校验，再交给 ingest.apply 走和
+        「粘贴文字」完全相同的写盘路径——两条入口在档案里没有区别。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0:
+            return self._json({"ok": False, "error": "没收到图片"}, 400)
+        if n > 12 * 1024 * 1024:
+            return self._json({"ok": False, "error": "图片太大（上限 12 MB）"}, 413)
+        data = self.rfile.read(n)
+        mime = (self.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
+        if not mime.startswith("image/"):
+            return self._json({"ok": False, "error": "只收图片"}, 400)
+
+        import base64
+
+        from . import cpocr
+        from . import event as E
+        from . import ingest as I
+        from . import llm
+
+        try:
+            ev = E.load_event(parse_qs(u.query).get("slug", [None])[0])
+        except Exception as e:
+            return self._json({"ok": False, "error": "赛事不存在：%s" % e}, 400)
+
+        try:
+            r = cpocr.parse_image(base64.b64encode(data).decode("ascii"), mime, ev)
+        except llm.LLMError as e:
+            return self._json({"ok": False, "error": e.message, "code": e.kind}, 400)
+        except ValueError as e:
+            return self._json({"ok": False, "error": str(e)}, 400)
+        except Exception as e:                      # noqa: BLE001
+            return self._json({"ok": False, "error": "识别失败：%s" % e}, 500)
+
+        if not r["segments"]:
+            return self._json({
+                "ok": False,
+                "error": "这张图里没认出 CP 行。表格要尽量裁到只剩表格、别带页眉页脚；"
+                         "实在认不出就手动贴文字。"}, 400)
+        if r["problems"]:
+            return self._json({"ok": False,
+                               "error": "识别结果没通过校验，未写入 —— "
+                                        + "；".join(r["problems"][:2])}, 400)
+
+        try:
+            out = I.apply(ev, {"segments": r["segments"]}, by="ocr")
+        except Exception as e:                      # noqa: BLE001
+            return self._json({"ok": False, "error": "写入失败：%s" % e}, 500)
+        if not out.get("ok"):
+            bad = "；".join(i["msg"] for i in I.errors(out.get("issues") or [])[:2])
+            return self._json({"ok": False,
+                               "error": "数据没通过校验，未写入 —— " + (bad or "未知原因")}, 400)
+        return self._json({"ok": True, "n": out.get("n_segments") or len(r["segments"]),
+                           "model": r.get("model") or "",
+                           "km": r["segments"][-1]["km"]})
+
     def _event_gear(self, u) -> None:
         """勾选一条强制装备（页面上的 checkbox 直接 POST 到这里）。
 
@@ -997,6 +1062,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._frame_post(u)
         if u.path == "/__event/gpx":
             return self._event_gpx(u)
+        if u.path == "/__event/cp_ocr":
+            return self._event_cp_ocr(u)
         if u.path == "/__event/gear":
             return self._event_gear(u)
         if u.path in ("/__event/target", "/__event/course", "/__event/fuel"):

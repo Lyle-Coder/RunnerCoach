@@ -119,6 +119,9 @@ class MainActivity : Activity() {
     private var splashAt = 0L
     private var splashGone = false
 
+    /** 正在为哪一场识别 CP 表：选图是异步的，回来时得知道贴给谁。 */
+    private var pendingCpSlug = ""
+
     /** 系统「用 RunnerCoach 打开 GPX」传进来的文件；等服务起来后再导入。 */
     private var pendingGpx: Uri? = null
 
@@ -514,6 +517,8 @@ class MainActivity : Activity() {
                     // 带参数的动作放最后：`else` 必须是 when 的最后一个分支
                     else -> if (name.startsWith("attach:")) {
                         pickAttachment(name.removePrefix("attach:"))
+                    } else if (name.startsWith("cpocr:")) {
+                        askCpImage(name.removePrefix("cpocr:"))
                     } else if (name.startsWith("openUrl:")) {
                         openLocalFile(name.removePrefix("openUrl:"))
                     } else {
@@ -2420,6 +2425,12 @@ class MainActivity : Activity() {
         }
         if (requestCode == REQ_BUNDLE && resultCode == android.app.Activity.RESULT_OK) {
             data?.data?.let { askImportBundle(it) }
+            return
+        }
+        if (requestCode == REQ_CP_IMG) {
+            if (resultCode == android.app.Activity.RESULT_OK) {
+                data?.data?.let { importCpImage(it) } ?: toast("没拿到图片")
+            }
             return
         }
         if (requestCode == REQ_GPX) {
@@ -4453,6 +4464,80 @@ class MainActivity : Activity() {
         }
     }
 
+    // ------------------------------------------------------ CP 表截图识别
+    /**
+     * 选一张规程里的 CP 表截图，交给本地服务用大模型识别。
+     *
+     * 只做「从文件/相册选」：CP 表绝大多数是公众号截图、已经在相册里；
+     * 纸质规程想拍就先拍再选，比再写一套拍照 + 临时文件的流程省事。
+     */
+    private fun askCpImage(slug: String) {
+        pendingCpSlug = slug
+        try {
+            startActivityForResult(
+                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "image/*"
+                },
+                REQ_CP_IMG,
+            )
+        } catch (t: Throwable) {
+            toast("打不开相册：${t.message}")
+        }
+    }
+
+    /** 图片原样 POST 给 Python 侧识别；写盘与校验都在那边做。 */
+    private fun importCpImage(uri: Uri) {
+        val slug = pendingCpSlug.ifBlank {
+            try {
+                android.net.Uri.parse(web.url ?: "").getQueryParameter("slug") ?: ""
+            } catch (t: Throwable) {
+                ""
+            }
+        }
+        toast("正在识别 CP 表…要十几秒")
+        thread {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw IllegalStateException("读不到图片")
+                if (bytes.isEmpty()) throw IllegalStateException("这张图是空的")
+                if (bytes.size > 12 * 1024 * 1024)
+                    throw IllegalStateException("图片超过 12 MB，先裁一下再传")
+                val p = port
+                if (p <= 0) throw IllegalStateException("本地服务还没起来，稍后再试")
+                val mime = contentResolver.getType(uri) ?: "image/jpeg"
+                val q = if (slug.isNotBlank())
+                    "?slug=" + java.net.URLEncoder.encode(slug, "UTF-8") else ""
+                val c = java.net.URL("http://127.0.0.1:$p/__event/cp_ocr$q")
+                    .openConnection() as java.net.HttpURLConnection
+                c.requestMethod = "POST"
+                c.doOutput = true
+                c.connectTimeout = 20000
+                // 视觉请求慢：给足 2 分钟，别在模型还在读图时先超时
+                c.readTimeout = 120000
+                c.setRequestProperty("Content-Type", mime)
+                c.setFixedLengthStreamingMode(bytes.size)
+                c.outputStream.use { it.write(bytes) }
+                val code = c.responseCode
+                val txt = (if (code in 200..299) c.inputStream else c.errorStream)
+                    ?.bufferedReader()?.use { it.readText() } ?: ""
+                c.disconnect()
+                val o = JSONObject(txt)
+                ui {
+                    if (o.optBoolean("ok")) {
+                        toast("已识别 " + o.optInt("n") + " 个 CP（到 " +
+                            o.optDouble("km") + " km），核对后再保存")
+                        if (this::web.isInitialized) web.reload()
+                    } else {
+                        toast(o.optString("error", "识别失败"))
+                    }
+                }
+            } catch (t: Throwable) {
+                ui { toast("识别失败：" + (t.message ?: t.javaClass.simpleName)) }
+            }
+        }
+    }
+
     // ------------------------------------------------------------ GPX 导入
     /**
      * 从 intent 里取 GPX 的 Uri。
@@ -4679,6 +4764,7 @@ class MainActivity : Activity() {
         const val REQ_MEAL_SHOT = 1004
         /** GPX 必须让开 1003/1004（1.0.8 拍照识热量已占用） */
         const val REQ_GPX = 1005
+        const val REQ_CP_IMG = 1006
         /** 赛事资料附件上传（PDF / 图片 / 文本） */
         const val REQ_ATTACH = 1006
         const val REQ_FILE_CHOOSER = 1007

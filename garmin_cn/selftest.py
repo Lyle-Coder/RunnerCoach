@@ -5280,6 +5280,73 @@ def run() -> int:
         "全马该按每 5 km 打刻度"
     (_ed / "track.gpx").unlink()
 
+    # ---- 行程与预订：分类、跨年、页面渲染 -------------------------------
+    E2 = _EV  # 同一个模块
+    (E2._dir("self-2026") / "docs.json").write_text(_js3.dumps({"items": [
+        {"title": "去程", "kind": "logistics", "at": "", "url": "",
+         "body": "航班 CA1883 3月25日 08:30 首都T3 起飞\n"
+                 "酒店 3月25日 入住 都江堰锦江之星\n"
+                 "高铁 G8712 3月24日 14:05 成都东站"},
+        {"title": "领物", "kind": "rule", "at": "", "url": "",
+         "body": "领物 3月26日 10:00 开始，17:00 截止"},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    _ev2 = E2.load_event("self-2026")
+    _ev2["date"] = "2027-03-27"
+    (E2._dir("self-2026") / "event.json").write_text(
+        _js3.dumps(_ev2, ensure_ascii=False), encoding="utf-8")
+
+    _tp = E2.trips("self-2026", today="2026-11-13")
+    _by_kind = {x["kind"]: x for x in _tp}
+    assert _by_kind.get("flight"), f"航班没识别出来：{_tp}"
+    assert _by_kind.get("train"), f"高铁没识别出来：{_tp}"
+    assert _by_kind.get("stay"), f"住宿没识别出来：{_tp}"
+    assert _by_kind.get("race"), f"领物/开赛没识别出来：{_tp}"
+    # 跨年：资料写「3月25日」，赛事在 2027 —— 不能算成 2026-03-25（已过期）
+    assert _by_kind["stay"]["at"].startswith("2027-03-25"), \
+        f"跨年日期没按赛事年份推：{_by_kind['stay']['at']}"
+    # 分类不能串行：酒店那行不能被当成航班
+    assert _by_kind["stay"]["text"].startswith("酒店"), \
+        f"住宿那条取到了别的行：{_by_kind['stay']['text']}"
+
+    _th = _EVUI.render_page({"slug": ["self-2026"]})
+    assert "行程与预订" in _th, "赛事页没有「行程与预订」区块"
+    assert 'class="tk stay"' in _th and 'class="tk flight"' in _th, "行程标签没渲染"
+
+    # 临期高亮：3 天内标红
+    _soon = E2.trips("self-2026", today="2027-03-24")
+    assert _soon and _soon[0]["days"] == 0, f"当天那件事没排在最前：{_soon[:1]}"
+
+    # ---- CP 表截图识别：解析、校验、不猜 -------------------------------
+    from garmin_cn import cpocr as _CO
+
+    _fake = ('{"segments":[{"idx":1,"name":"CP1 仙山雅宿","km":10.9,"cutoff":"8:05"},'
+             '{"idx":2,"name":"冰川瀑布景区","km":22.3,"cutoff":null},'
+             '{"idx":3,"name":"","km":30.0,"cutoff":"12:00"},'
+             '{"idx":4,"name":"没里程","km":null}]}')
+    _obj = _CO._json_obj(_fake)
+    _segs, _probs = _CO.clean(_obj["segments"], {"distance_km": 105})
+    assert len(_segs) == 2, f"该丢掉没地名/没里程的行，实际留下 {len(_segs)} 条：{_segs}"
+    assert _segs[0]["name"] == "仙山雅宿", "地名前面的 CP1 前缀没清掉"
+    assert _segs[0]["cutoff"] == "08:05", "关门时间没补零成 HH:MM"
+    assert [x["idx"] for x in _segs] == [1, 2], "编号没重排成连续"
+    assert not _probs, f"正常的一批不该有问题：{_probs}"
+
+    # 模型偶尔会把行读乱：clean 按里程重排（宁可按数字排，也不要按错误顺序编号）
+    _ord_segs, _ = _CO.clean(
+        [{"name": "甲", "km": 50}, {"name": "乙", "km": 40}], {"distance_km": 105})
+    assert [x["km"] for x in _ord_segs] == [40, 50], "乱序没按里程重排"
+    # 同一个里程出现两行（表里常有「CP5 / CP5 补给站」）只留一条
+    _dup_segs, _ = _CO.clean(
+        [{"name": "甲", "km": 30}, {"name": "甲补给", "km": 30}], {"distance_km": 105})
+    assert len(_dup_segs) == 1, "同里程的重复行没去掉"
+
+    _none_segs, _ = _CO.clean([{"name": "甲", "km": 9999}], {"distance_km": 42})
+    assert not _none_segs, "超过赛程 1.3 倍的里程该被丢掉（多半是识别错了行）"
+
+    # 页面：赛事页要有识别入口和文字粘贴（建完赛事之后也能补）
+    assert "cpocr:self-2026" in _th, "赛事页没有 CP 表识别入口"
+    assert 'action="/__event/import"' in _th, "赛事页不能粘贴 CP 表文字"
+
     _EV.set_remind("self-2026", "2026-11-18T18:00", "报名截止", True)
     assert _EV.reminders("self-2026"), "提醒没存下来"
     _EV.set_remind("self-2026", "2026-11-18T18:00", "报名截止", False)
