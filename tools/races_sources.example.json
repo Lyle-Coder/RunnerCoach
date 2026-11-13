@@ -1,0 +1,42 @@
+{
+  "_说明": "复制成 data/races_sources.json 再改。mode=manual 表示窗口由你填（最可靠）；mode=page 表示去抓 page 里的公告，解析不出窗口就写 unknown，App 不展示。窗口格式一律 YYYY-MM-DD。",
+  "sources": [
+    {
+      "id": "qinling-43k-2027",
+      "name": "秦岭山地马拉松 43K",
+      "date": "2027-03-28",
+      "dist_km": 43,
+      "ascent_m": 2600,
+      "place": "陕西 · 西安",
+      "mode": "manual",
+      "reg_open": "2026-11-20",
+      "reg_close": "2027-01-31",
+      "url": "https://example.com/qinling-2027",
+      "source": "赛事官网"
+    },
+    {
+      "id": "fuzhou-marathon-2027",
+      "name": "福州马拉松（全马）",
+      "date": "2027-12-27",
+      "dist_km": 42.2,
+      "ascent_m": 120,
+      "place": "福建 · 福州",
+      "mode": "page",
+      "page": "https://example.com/fuzhou-2027/notice",
+      "source": "赛事公告"
+    },
+    {
+      "id": "utmb-2027",
+      "name": "UTMB Mont-Blanc · UTMB",
+      "date": "2027-08-27",
+      "dist_km": 171,
+      "ascent_m": 10000,
+      "place": "法国 · 霞慕尼",
+      "mode": "manual",
+      "reg_open": "2027-01-10",
+      "reg_close": "2027-01-20",
+      "url": "https://utmb.world/",
+      "source": "UTMB 官网"
+    }
+  ]
+}
