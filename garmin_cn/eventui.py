@@ -373,21 +373,33 @@ def _spark(profile: list, tick_km: float = 0) -> str:
             f"</svg>")
 
 
-def _amap_url(lat, lon, name: str, nav: bool = True) -> str:
-    """点标注跳到高德：默认直接发起导航，装了 App 就唤起 App。
+def _amap_gcj(lat, lon, name: str = ""):
+    """返回 (GCJ 纬, GCJ 经, 清洗过的名称)，转不了就返回 None。
 
-    `nav=True` 用路径规划 URI，**不传 from**：高德在移动端会自动把当前位置
-    填成起点，一点就是「去这里」；`nav=False` 是单点标注，只定位不规划路线。
-    坐标要按 GCJ 传（coordinate=gaode）：轨迹和 trip.json 存的都是 WGS-84，
-    直接把 WGS 塞进 URL 会偏 400~500 m，导航就导到隔壁街。
+    轨迹和 trip.json 存的都是 WGS-84，高德 App 的 `androidamap://` 和网页
+    URI 都要 GCJ-02；直接塞 WGS 会偏 400~500 m，导航导到隔壁街。
+    两种入口共用这一处转换，别各写一遍。名称里的逗号换成空格：动作串用
+    逗号分隔，Kotlin 侧 split(",", 3) 才不会把地名切开。
     """
     try:
         from . import basemap as BM
 
         glat, glon = BM.to_gcj(float(lat), float(lon))
     except Exception:
+        return None
+    return glat, glon, str(name or "位置").replace(",", " ")[:30]
+
+
+def _amap_url(lat, lon, name: str, nav: bool = True) -> str:
+    """高德网页 URI：桌面浏览器直接用，App 里给「没装高德」兜底。
+
+    `nav=True` **不传 from**：高德在移动端会自动把当前位置填成起点；
+    `nav=False` 是单点标注，只定位不规划路线。
+    """
+    g = _amap_gcj(lat, lon, name)
+    if not g:
         return ""
-    label = str(name or "位置").replace(",", " ")[:30]
+    glat, glon, label = g
     if nav:
         q = _up.urlencode({"to": f"{glon:.6f},{glat:.6f},{label}",
                            "mode": "car", "coordinate": "gaode",
@@ -397,6 +409,22 @@ def _amap_url(lat, lon, name: str, nav: bool = True) -> str:
                        "name": label, "coordinate": "gaode",
                        "callnative": "1", "src": "RunnerCoach"}, safe=",")
     return "https://uri.amap.com/marker?" + q
+
+
+def _amap_act(lat, lon, name: str, nav: bool = True) -> str:
+    """原生动作载荷：让 Kotlin 用 `androidamap://` 直接拉起高德 App。
+
+    格式 `amapNav|amapView:经度,纬度,URL编码的名称`。以前走网页 URI 的
+    `callnative=1`，要浏览器先打开高德网页再由网页唤起 App，多一跳且常被
+    国产 ROM / 浏览器拦掉，用户看到的就是「打开网页」。现在 WebView 里点
+    一下直接发 Intent；桌面浏览器没有 GC 桥，仍走 href 的网页兜底。
+    """
+    g = _amap_gcj(lat, lon, name)
+    if not g:
+        return ""
+    glat, glon, label = g
+    kind = "amapNav" if nav else "amapView"
+    return f"{kind}:{glon:.6f},{glat:.6f},{_up.quote(label, safe='')}"
 
 
 def _pin_tag(coords: list) -> str:
@@ -429,7 +457,8 @@ def _course_pins(slug: str, line: list) -> list[dict]:
                                ("end", "终点", line[-1])):
             pins.append({"kind": kind, "label": label,
                          "lat": p[0], "lon": p[1],
-                         "url": _amap_url(p[0], p[1], short + " · " + label)})
+                         "url": _amap_url(p[0], p[1], short + " · " + label),
+                         "act": _amap_act(p[0], p[1], short + " · " + label)})
     try:
         pois = E.trip_pins(slug)
     except Exception:
@@ -440,10 +469,11 @@ def _course_pins(slug: str, line: list) -> list[dict]:
         # 标签只留几个字：酒店全名铺在 720×360 的图上会把轨迹盖住
         label = "住宿"
         short_name = str(p.get("label") or p.get("place") or label)[:6]
+        _place = p.get("place") or p.get("label") or label
         pins.append({"kind": p["kind"], "label": short_name,
                      "lat": p["lat"], "lon": p["lon"],
-                     "url": _amap_url(p["lat"], p["lon"],
-                                      p.get("place") or p.get("label") or label)})
+                     "url": _amap_url(p["lat"], p["lon"], _place),
+                     "act": _amap_act(p["lat"], p["lon"], _place)})
     return pins
 
 
@@ -513,7 +543,8 @@ def _course_map(slug: str, stats: dict) -> str:
              + [p for p in pins if p["kind"] == "stay"][:1])
     navs = ('<div class="pager cmapnav">'
             + "".join(
-                f'<a class="btn" href="{ui.esc(p["url"])}">导航到'
+                f'<a class="btn" href="{ui.esc(p["url"])}" '
+                f'data-act="{ui.esc(p.get("act", ""))}">导航到'
                 + ui.esc(p["label"] if p["kind"] in ("start", "end")
                          else "住宿") + "</a>"
                 for p in quick if p.get("url"))
@@ -598,9 +629,11 @@ def _trips_html(slug: str, hid: str = "") -> str:
             label = x.get("place") or x["label"]
             url = _amap_url(lat, lon, label)
             if url:
-                nav = (f'<a class="tnav" href="{ui.esc(url)}">导航</a>'
-                       f'<a class="tdel" href="{ui.esc(_amap_url(lat, lon, label, nav=False))}">'
-                       "看位置</a>")
+                nav = (f'<a class="tnav" href="{ui.esc(url)}" '
+                   f'data-act="{ui.esc(_amap_act(lat, lon, label))}">导航</a>'
+                   f'<a class="tdel" href="{ui.esc(_amap_url(lat, lon, label, nav=False))}" '
+                   f'data-act="{ui.esc(_amap_act(lat, lon, label, nav=False))}">'
+                   "看位置</a>")
         place = str(x.get("place") or "")
         # 手填但没定位上的：给一个「补地址」入口，不用删了重加
         geo_form = ""

@@ -366,7 +366,16 @@ BRIDGE_JS = """<script>
         var aid = n.getAttribute('data-aid');
         if (aid) { if (window.GC && GC.activity) GC.activity(aid); return; }
         var act = n.getAttribute('data-act');
-        if (act) { if (window.GC && GC.action) GC.action(act); return; }
+        if (act) {
+          /* 有原生桥就拦掉 <a href> 的默认跳转：导航按钮既要唤起高德 App，
+             不能同时又开一次网页。桌面浏览器没有 GC，保留 href 兜底。
+             只拦链接本身，别把表单里按钮的 submit 一并取消掉。 */
+          if (window.GC && GC.action) {
+            if (n.getAttribute('href')) e.preventDefault();
+            GC.action(act);
+          }
+          return;
+        }
       }
       n = n.parentNode;
     }

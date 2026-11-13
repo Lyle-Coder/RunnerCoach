@@ -532,6 +532,10 @@ class MainActivity : Activity() {
                         askCpImage(name.removePrefix("cpocr:"))
                     } else if (name.startsWith("openUrl:")) {
                         openLocalFile(name.removePrefix("openUrl:"))
+                    } else if (name.startsWith("amapNav:")) {
+                        openAmap(name.removePrefix("amapNav:"), nav = true)
+                    } else if (name.startsWith("amapView:")) {
+                        openAmap(name.removePrefix("amapView:"), nav = false)
                     } else {
                         toast("未知操作：$name")
                     }
@@ -4488,6 +4492,71 @@ class MainActivity : Activity() {
         }
     }
 
+    // ------------------------------------------------------ 高德地图直达
+    /**
+     * 用 androidamap:// 直接拉起高德 App，不再绕 uri.amap.com 网页。
+     *
+     * 网页 URI 的 callnative=1 要先由浏览器打开高德 H5、再由 H5 唤起 App，
+     * 国产 ROM / 浏览器常把这一跳拦掉，用户看到的就是「打开网页」。
+     * payload 形如 `经度,纬度,URL编码的名称`，坐标已是 GCJ-02（dev=0）。
+     * 没装高德时回退到原来的网页 URI，功能不至于丢。
+     */
+    private fun openAmap(payload: String, nav: Boolean) {
+        val parts = payload.split(",", limit = 3)
+        val lon = parts.getOrNull(0)?.toDoubleOrNull()
+        val lat = parts.getOrNull(1)?.toDoubleOrNull()
+        if (lon == null || lat == null) {
+            toast("导航坐标无效")
+            return
+        }
+        val poi = try {
+            java.net.URLDecoder.decode(parts.getOrNull(2) ?: "", "UTF-8")
+        } catch (t: Throwable) {
+            ""
+        }
+        val encPoi = try {
+            java.net.URLEncoder.encode(if (poi.isBlank()) "位置" else poi, "UTF-8")
+        } catch (t: Throwable) {
+            ""
+        }
+        // 官方文档：dev=0 表示传的是已加密（GCJ-02）坐标；style 虽被
+        // 8.2.6 起的用户本地设置覆盖，仍属必填参数。
+        val scheme = StringBuilder(
+            if (nav) "androidamap://navi?" else "androidamap://viewMap?")
+            .append("sourceApplication=RunnerCoach")
+            .append("&poiname=").append(encPoi)
+            .append("&lat=").append(lat)
+            .append("&lon=").append(lon)
+            .append("&dev=0")
+        if (nav) scheme.append("&style=2")
+        val amap = Intent(Intent.ACTION_VIEW, Uri.parse(scheme.toString())).apply {
+            addCategory(Intent.CATEGORY_DEFAULT)
+            setPackage(AMAP_PKG)
+        }
+        try {
+            // Android 11+ 包可见性：Manifest 没声明 <queries> 的话，
+            // resolveActivity 即使装了高德也返回 null。
+            if (amap.resolveActivity(packageManager) != null) {
+                startActivity(amap)
+                return
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "高德地图不可用", t)
+        }
+        val web = if (nav)
+            "https://uri.amap.com/navigation?to=$lon,$lat,$encPoi" +
+                "&mode=car&coordinate=gaode&callnative=1&src=RunnerCoach"
+        else
+            "https://uri.amap.com/marker?position=$lon,$lat&name=$encPoi" +
+                "&coordinate=gaode&callnative=1&src=RunnerCoach"
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(web)))
+            toast("未安装高德地图，已打开网页版")
+        } catch (t: Throwable) {
+            toast("打不开地图：" + (t.message ?: t.javaClass.simpleName))
+        }
+    }
+
     // ------------------------------------------------------ CP 表截图识别
     /**
      * 选一张规程里的 CP 表截图，交给本地服务用大模型识别。
@@ -5104,6 +5173,8 @@ class MainActivity : Activity() {
         const val REQ_FILE_CHOOSER = 1007
         /** 系统日历读写权限申请 */
         const val REQ_CALENDAR = 1008
+        /** 高德地图包名：直接唤起导航要用，Android 11+ 还需在 Manifest 声明 <queries> */
+        const val AMAP_PKG = "com.autonavi.minimap"
 
         /**
          * 读 HTML 里的导出探针；旧版 Python 没有探针时返回空串，走尺寸兜底。
