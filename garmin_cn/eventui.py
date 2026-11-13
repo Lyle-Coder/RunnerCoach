@@ -277,8 +277,13 @@ def _fmt_margin(s: float | None) -> tuple[str, str]:
     return txt, "ok"
 
 
-def _spark(profile: list) -> str:
-    """剖面 sparkline（纯 SVG，不依赖外部图表库）。"""
+def _spark(profile: list, tick_km: float = 0) -> str:
+    """剖面 sparkline（纯 SVG，不依赖外部图表库）。
+
+    `tick_km` 给了就每 N 公里画一条竖虚线和里程数字。马拉松的 GPX 通常
+    只有路线、没有途经点，剖面就成了一条没刻度的曲线——加上 5 km 刻度
+    才看得出「30 km 之后那道长坡在哪」。
+    """
     if len(profile) < 3:
         return ""
     xs = [p[0] for p in profile]
@@ -292,8 +297,24 @@ def _spark(profile: list) -> str:
         px = (x - x0) / ((x1 - x0) or 1) * W
         py = H - (y - y0) / span * (H - 10) - 5
         pts.append(f"{px:.1f},{py:.1f}")
+
+    grid = ""
+    if tick_km and tick_km > 0 and x1 > tick_km:
+        k = tick_km
+        marks = []
+        while k < x1 - 0.05:
+            px = (k - x0) / ((x1 - x0) or 1) * W
+            marks.append(
+                f'<line x1="{px:.1f}" y1="0" x2="{px:.1f}" y2="{H - 2:.0f}" '
+                f'stroke="#223349" stroke-width="1" stroke-dasharray="3 4"/>'
+                f'<text x="{px + 2:.1f}" y="{H - 3:.0f}" fill="#5B6775" '
+                f'font-size="9.5">{k:g}</text>')
+            k += tick_km
+        grid = "".join(marks)
+
     return (f'<svg class="prof" viewBox="0 0 {W:.0f} {H:.0f}" '
             f'preserveAspectRatio="none">'
+            + grid +
             f'<polyline points="{" ".join(pts)}" fill="none" stroke="#4FD6A6" '
             f'stroke-width="2.2" stroke-linejoin="round"/>'
             f'<text x="2" y="12" fill="#7F8A97" font-size="11">{y1:.0f} m</text>'
@@ -535,12 +556,29 @@ def render_page(qs: dict | None = None) -> str:
         cmp = E.track_compare(slug) if cd["has_course"] else {"rows": []}
         ref = (course.get("reference") or {}).get("track") or {}
         edition = ref.get("edition") or ""
-        d_km = (cmp.get("track_km") or 0) - ev["distance_km"]
-        d_up = (cmp.get("track_ascent") or 0) - ev["ascent_m"]
-        warn = (f'<div class="sub2 warnbox">轨迹与 2027 官方相差 '
-                f'{d_km:+.1f} km / {d_up:+d} m'
-                + ("；中间几段是改线区，<b>CP 里程与关门以海报为准</b>，轨迹只作地形参考"
-                   if not cmp.get("same_course", True) else "") + "</div>")
+        # 差异一律拿「轨迹实测」跟「赛事标注」比。原先取 cmp["track_km"]，
+        # 而没有 course.json 时（马拉松基本都没有 CP 表）它是 None，于是
+        # 一律算成「相差 -42.2 km」——一句凭空冒出来的假话。
+        _total = stats.get("total_km") or 0
+        _dist0 = ev.get("distance_km") or 0
+        _asc0 = ev.get("ascent_m") or 0
+        d_km = _total - _dist0
+        d_up = (stats.get("ascent_m") or 0) - _asc0
+        # 刻度疏密跟着赛程走：全马 5 km、百公里 10 km、168 用 20 km
+        _tick = 5 if _total <= 45 else (10 if _total <= 120 else 20)
+        _ed = f"{edition} 官方" if edition else "赛事标注"
+        _deviated = cd["has_course"] and not cmp.get("same_course", True)
+        warn = ""
+        if abs(d_km) >= 0.3 or abs(d_up) > max(50, _asc0 * 0.3):
+            warn = (f'<div class="sub2 warnbox">轨迹与{_ed}相差 '
+                    f'{d_km:+.1f} km / {d_up:+d} m'
+                    + ("；中间几段是改线区，<b>CP 里程与关门以海报为准</b>，"
+                       "轨迹只作地形参考" if _deviated else "") + "</div>")
+        # 没有途经点不是错：马拉松的官方 GPX 通常只给路线，不给 CP 标注
+        note = "" if (stats.get("waypoints") or []) else (
+            '<div class="sub2">只有路线、没有途经点：距离与海拔照常计算，'
+            f'剖面按每 {_tick:g} km 打了刻度；CP 里程对照做不了'
+            "（马拉松一般就是这样，不影响其他计算）。</div>")
         rows_cmp = []
         for x in (cmp.get("rows") or []):
             if x.get("km_gpx") is None:
@@ -564,7 +602,7 @@ def render_page(qs: dict | None = None) -> str:
             f'<span>滤波爬升 +{stats["ascent_m"]:,} m / -{stats["descent_m"]:,} m</span>'
             f'<span>{stats["points"]} 点 · 海拔 {stats["min_ele"]}–{stats["max_ele"]} m</span>'
             + (f'<span class="tag">{edition} 届参考</span>' if edition else "")
-            + "</div>" + warn + _spark(stats.get("profile") or [])
+            + "</div>" + warn + note + _spark(stats.get("profile") or [], _tick)
             + (('<div class="cmptitle">CP 里程对照（官方 vs 轨迹）</div>' + cmp_tbl)
                if cmp_tbl else "")
             + '<div class="pager"><div class="btn" data-act="gpx">换一条 GPX</div></div></div>')
@@ -574,7 +612,8 @@ def render_page(qs: dict | None = None) -> str:
             + ("官方 GPX 从「柴古唐斯」小程序下载后，用下面的按钮选中即可，"
                "会自动算出滤波爬升与海拔剖面（GPX 是 3D 赛道视频的前提）。"
                if cd["has_course"] else
-               "有官方 GPX 的话可以导入，会画出海拔剖面；没有也不影响余量之外的各项计算。")
+               "官方 GPX 如果是「只有路线、没有途经点」的也没关系："
+               "会算出距离、滤波爬升和带里程刻度的海拔剖面，只是做不了 CP 对照。")
             + "</div>"
             + (_relief(rows) if cd["has_course"] else "")
             + '<div class="pager"><div class="btn primary" data-act="gpx">选择 GPX 文件</div>'
