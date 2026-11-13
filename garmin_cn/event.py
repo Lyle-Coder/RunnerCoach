@@ -788,7 +788,8 @@ ATTACH_EXT = (".pdf", ".png", ".jpg", ".jpeg", ".txt", ".md", ".csv",
               ".gpx", ".ics", ".xlsx", ".docx")
 # 赛事目录里的系统文件，不算「用户资料」
 RESERVED_FILES = {"event.json", "course.json", "gear.md", "race.json",
-                  "track.gpx", "track_stats.json", "docs.json"}
+                  "track.gpx", "track_stats.json", "docs.json",
+                  "trip.json", "remind.json"}
 
 
 def human_size(n: float) -> str:
@@ -1073,6 +1074,17 @@ def timeline(slug: str | None = None, *, today: str | None = None,
             rows.append({"at": tp["at"], "label": tp["label"],
                          "src": it.get("title") or "资料",
                          "slug": slug, "title": ev.get("name") or slug})
+    # 手填的行程也要进时间线：住宿几号入住、机票几点起飞，这些是用户自己
+    # 确定的计划，比从资料里猜出来的更该推提醒（首页「临近」按它排）
+    _seen_at = {r["at"] for r in rows}
+    for it in trip_manual(slug):
+        _at = str(it.get("at") or "")[:16]
+        if not _at or _at in _seen_at:
+            continue
+        _seen_at.add(_at)
+        rows.append({"at": _at, "label": str(it.get("label") or "行程")[:40],
+                     "src": "行程", "slug": slug,
+                     "title": ev.get("name") or slug})
     rows.sort(key=lambda x: x["at"])
     if today:
         try:
@@ -1099,6 +1111,187 @@ def _trip_kind(label: str, text: str) -> str:
         if any(w in blob for w in words):
             return kind
     return "other"
+
+
+# ---------------------------------------------------------------- 行程与住宿（手填）
+
+# 资料里认出来的时间点是「可能」，用户自己填的才是「确定」。住宿尤其如此：
+# 订好了哪家酒店，就要能在赛道图上看到它离起点多远——光靠正文里一行字不够。
+TRIP_KINDS = {
+    "stay": "住宿",
+    "flight": "航班",
+    "train": "高铁",
+    "race": "领物 / 开赛",
+    "other": "其他",
+}
+
+_TRIP_AT = "%Y-%m-%dT%H:%M"
+
+
+def _norm_at(raw: str) -> str:
+    """把填进来的时间归一成 `YYYY-MM-DDTHH:MM`。
+
+    手机原生 datetime-local 给的就是这个格式，但复制粘贴来的常是
+    `2027-03-25`、`2027/3/25 15:00`，这里都认；认不出就报错让人改，
+    绝不替人猜一个日期——行程猜错比空着更糟。
+    """
+    s = str(raw or "").strip().replace("/", "-")
+    if not s:
+        raise ValueError("要填日期")
+    s = re.sub(r"\s+", "T", s)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        s += "T00:00"
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})T(\d{1,2}):(\d{2})(?::\d{2})?", s)
+    if not m:
+        raise ValueError("时间写成 2027-03-25 15:00 这样的")
+    y, mo, da, hh, mi = (int(x) for x in m.groups())
+    try:
+        return dt.datetime(y, mo, da, hh, mi).strftime(_TRIP_AT)
+    except ValueError:
+        raise ValueError("这个日期/时刻不存在：%s" % str(raw).strip())
+
+
+def trip_manual(slug: str | None = None) -> list[dict]:
+    """手填的行程条目（trip.json）。原样返回，不排序也不推断。"""
+    slug = active_slug(slug)
+    items = (_read(slug, "trip.json") or {}).get("items")
+    if not isinstance(items, list):
+        return []
+    return [dict(x) for x in items if isinstance(x, dict)]
+
+
+def _trip_save(slug: str, items: list[dict]) -> list[dict]:
+    items = sorted(items, key=lambda x: str(x.get("at") or ""))
+    _write(slug, "trip.json", {"items": items})
+    return items
+
+
+_TRIP_CITY_CACHE: dict[str, str] = {}
+
+
+def _trip_city(slug: str) -> str:
+    """用赛道起点反查城市，给地址解析加限定。
+
+    「白鹿音乐广场」不加城市会被高德匹配到云南鹤庆县（差 2000 km），
+    加上「成都」才落到四川彭州。手写地址的人多半只写店名，不限定城市
+    很容易出一枚把整张地图取景拉坏的坐标。同一场赛事只查一次。
+    """
+    if slug in _TRIP_CITY_CACHE:
+        return _TRIP_CITY_CACHE[slug]
+    city = ""
+    try:
+        line = (_read(slug, "track_stats.json") or {}).get("polyline") or []
+        if line:
+            from . import basemap as BM
+
+            region = BM.regeo(line[0][0], line[0][1])
+            city = (region or "").split("·")[-1]
+    except Exception:
+        city = ""
+    if city:
+        _TRIP_CITY_CACHE[slug] = city
+    return city
+
+
+def _trip_plausible(slug: str, lat: float, lon: float) -> bool:
+    """解析出的坐标离赛道太远就当没解析到，别让它把底图取景拉到外省。
+
+    阈值按赛道跨度放宽：越野赛的住宿可能真在几十公里外的城里；
+    但一个跑到 1000 km 外的结果一定是同名地点匹配错了，宁可不标。
+    没有轨迹时无从判断，交给用户自己看地址文字。
+    """
+    try:
+        line = (_read(slug, "track_stats.json") or {}).get("polyline") or []
+        if len(line) < 2:
+            return True
+
+        def km(a, b):
+            return math.hypot((a[0] - b[0]) * 111.0,
+                              (a[1] - b[1]) * 111.0
+                              * math.cos(math.radians((a[0] + b[0]) / 2)))
+
+        step = max(1, len(line) // 60)
+        near = min(km((lat, lon), p) for p in line[::step])
+        span = max(km(line[0], p) for p in line[::step])
+        return near <= max(80.0, span * 2.0)
+    except Exception:
+        return True
+
+
+def _trip_locate(item: dict, slug: str | None = None) -> bool:
+    """把 item["place"] 落到坐标上（WGS，跟轨迹同一套）。成功与否都返回。"""
+    place = str(item.get("place") or "").strip()
+    if not place:
+        return False
+    try:
+        from . import basemap as BM
+
+        hit = BM.geocode(place, city=_trip_city(active_slug(slug)))
+    except Exception:
+        hit = None
+    if not hit:
+        return False
+    if not _trip_plausible(active_slug(slug), hit["lat"], hit["lon"]):
+        return False
+    item["lat"] = hit["lat"]
+    item["lon"] = hit["lon"]
+    item["geo"] = hit.get("name") or place
+    return True
+
+
+def trip_add(slug: str | None, kind: str, at: str, label: str,
+             place: str = "") -> dict:
+    """加一条行程/住宿。`place` 填了才会去解析坐标（没 Key 就只存文字）。"""
+    slug = active_slug(slug)
+    kind = kind if kind in TRIP_KINDS else _trip_kind(label, label) or "other"
+    label = str(label or "").strip()
+    if not label:
+        raise ValueError("写一句这是什么（例：入住 都江堰锦江之星）")
+    item = {"kind": kind, "at": _norm_at(at), "label": label[:80],
+            "place": str(place or "").strip()[:120]}
+    _trip_locate(item, slug)
+    _trip_save(slug, trip_manual(slug) + [item])
+    return item
+
+
+def trip_geo(slug: str | None, idx: int, place: str = "") -> dict | None:
+    """补/改地点并重新定位。地址第一次没认出来时用得上，不用删了重加。"""
+    slug = active_slug(slug)
+    items = trip_manual(slug)
+    if not (0 <= idx < len(items)):
+        raise ValueError("这条行程已经不存在了")
+    if str(place or "").strip():
+        items[idx]["place"] = str(place).strip()[:120]
+    for k in ("lat", "lon", "geo"):
+        items[idx].pop(k, None)
+    _trip_locate(items[idx], slug)
+    _trip_save(slug, items)
+    return items[idx]
+
+
+def trip_del(slug: str | None, idx: int) -> bool:
+    slug = active_slug(slug)
+    items = trip_manual(slug)
+    if not (0 <= idx < len(items)):
+        return False
+    items.pop(idx)
+    _trip_save(slug, items)
+    return True
+
+
+def trip_pins(slug: str | None = None) -> list[dict]:
+    """有坐标的手填行程，用来在赛道俯视图上打点（按时间排序）。"""
+    out = []
+    for it in trip_manual(slug):
+        lat, lon = it.get("lat"), it.get("lon")
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            continue
+        out.append({"kind": it.get("kind") or "other",
+                    "label": str(it.get("label") or ""),
+                    "place": it.get("place") or "",
+                    "at": it.get("at") or "",
+                    "lat": float(lat), "lon": float(lon)})
+    return out
 
 
 def trips(slug: str | None = None, *, today: str | None = None,
@@ -1128,6 +1321,29 @@ def trips(slug: str | None = None, *, today: str | None = None,
         need = 0
     end = t0 + dt.timedelta(days=max(1, int(horizon_days), need))
     out, seen = [], set()
+    # 手填的排在最前，而且**不过时间窗**：用户明确写进来的，哪怕日期是
+    # 上个月（补记行程）也要看得见；资料里猜出来的才按窗口裁。
+    manual = trip_manual(slug)
+    for i, it in enumerate(manual):
+        try:
+            when = dt.datetime.strptime(str(it.get("at") or "")[:16], _TRIP_AT)
+        except ValueError:
+            continue
+        kind = it.get("kind") if it.get("kind") in TRIP_KINDS else "other"
+        out.append({
+            "at": when.strftime(_TRIP_AT),
+            "label": str(it.get("label") or "行程"),
+            "source": "手填",
+            "kind": kind,
+            "days": (when.date() - t0).days,
+            "date_only": when.strftime("%H:%M") == "00:00",
+            "text": str(it.get("label") or "")[:80],
+            "manual": True, "idx": i,
+            "place": str(it.get("place") or ""),
+            "lat": it.get("lat"), "lon": it.get("lon"),
+        })
+    # 手填过的「同一类、同一天」就不再从资料里重复提醒一遍
+    _manual_day = {(x["kind"], x["at"][:10]) for x in out}
     for it in docs(slug).get("items") or []:
         title = str(it.get("title") or "")
         body = str(it.get("body") or "")
@@ -1148,10 +1364,13 @@ def trips(slug: str | None = None, *, today: str | None = None,
                 key = tp["at"]
                 if key in seen:
                     continue
+                _kind = _trip_kind(tp["label"], line)
+                if (_kind, tp["at"][:10]) in _manual_day:
+                    continue
                 seen.add(key)
                 out.append({
                     "at": tp["at"], "label": tp["label"], "source": title,
-                    "kind": _trip_kind(tp["label"], line),
+                    "kind": _kind,
                     "days": (when.date() - t0).days,
                     "date_only": tp.get("date_only"),
                     "text": line[:80],

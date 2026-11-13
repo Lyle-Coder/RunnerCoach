@@ -5342,6 +5342,117 @@ def run() -> int:
     _soon = E2.trips("self-2026", today="2027-03-24")
     assert _soon and _soon[0]["days"] == 0, f"当天那件事没排在最前：{_soon[:1]}"
 
+    # ---- 手填行程 / 住宿：入口、定位、坐标、提醒、地图标注 ---------------
+    from garmin_cn import basemap as _BM3
+    import urllib.parse as _upx
+
+    # 高德地理编码返回 GCJ，存下来的是 WGS：正反算要能还原
+    _glon, _glat = _BM3.wgs84_to_gcj02(104.05, 30.66)
+    _wlon, _wlat = _BM3.gcj02_to_wgs84(_glon, _glat)
+    assert abs(_wlon - 104.05) < 1e-6 and abs(_wlat - 30.66) < 1e-6, \
+        "GCJ→WGS 反算不准，住宿会标偏几百米"
+    assert _EV._norm_at("2027/3/25 15:00") == "2027-03-25T15:00", \
+        "手填时间没归一"
+    assert _EV._norm_at("2027-03-25") == "2027-03-25T00:00", \
+        "只填日期时该当作 00:00"
+    try:
+        _EV._norm_at("下周三")
+        raise AssertionError("不合法日期居然通过了")
+    except ValueError:
+        pass
+
+    # 不联网：把地理编码、城市反查、合理性判断都替成固定结果
+    with _mock.patch.object(_BM3, "geocode",
+                            lambda *a, **k: {"lat": 30.67, "lon": 104.06,
+                                             "name": "测试酒店"}), \
+            _mock.patch.object(E2, "_trip_city", lambda slug: "成都"), \
+            _mock.patch.object(E2, "_trip_plausible", lambda *a, **k: True):
+        _ti = _EV.trip_add("self-2026", "stay", "2027-03-25 15:00",
+                           "入住 都江堰锦江之星", "都江堰锦江之星")
+    assert _ti.get("lat") == 30.67 and _ti.get("lon") == 104.06, \
+        "住宿地址没落到坐标上"
+    assert len(_EV.trip_manual("self-2026")) == 1, "手填行程没存进 trip.json"
+    _tp3 = E2.trips("self-2026", today="2026-11-13")
+    assert any(x.get("manual") and x["kind"] == "stay" for x in _tp3), \
+        "手填住宿没出现在行程列表"
+    assert sum(1 for x in _tp3
+               if x["kind"] == "stay" and x["at"][:10] == "2027-03-25") == 1, \
+        "资料里同一天的住宿和手填的重复了"
+    assert any(r["src"] == "行程" for r in E2.timeline("self-2026")), \
+        "手填行程没进首页「临近」提醒"
+
+    # 同名地点被解析到外省时，宁可不标：否则底图取景会被拉到 2000 km 外
+    _stat_backup = E2._read("self-2026", "track_stats.json")
+    E2._write("self-2026", "track_stats.json",
+              {"polyline": [[30.0 + i * 0.001, 120.0 + i * 0.001]
+                            for i in range(20)]})
+    assert _EV._trip_plausible("self-2026", 30.02, 120.02), \
+        "赛道边的住宿被判成不合理坐标"
+    assert not _EV._trip_plausible("self-2026", 26.36, 100.14), \
+        "解析到云南的同名地点没被拦住，整张底图会被拉坏"
+    if _stat_backup is not None:
+        E2._write("self-2026", "track_stats.json", _stat_backup)
+
+    # 三个点：起点、终点、住宿；每个都能点开高德，且用 GCJ 坐标
+    _pins = _EVUI._course_pins("self-2026", [[30.0, 120.0], [30.1, 120.1]])
+    assert [p["label"] for p in _pins[:2]] == ["起点", "终点"], \
+        f"起终点没标上：{_pins[:2]}"
+    assert len(_pins) == 3 and _pins[2]["kind"] == "stay", \
+        f"住宿没标上：{_pins}"
+    assert all("uri.amap.com/navigation" in p["url"] for p in _pins), \
+        "标注点没有高德导航链接"
+    assert "uri.amap.com/marker" in _EVUI._amap_url(30.0, 120.0, "测试", nav=False), \
+        "「看位置」应该走单点标注而不是路径规划"
+    _pq = _upx.parse_qs(_upx.urlparse(_pins[0]["url"]).query)
+    _to = _pq["to"][0].split(",")
+    _plon, _plat = float(_to[0]), float(_to[1])
+    assert _pq["callnative"][0] == "1", "没让高德尝试唤起 App"
+    _elon, _elat = _BM3.wgs84_to_gcj02(120.0, 30.0)
+    assert abs(_plon - _elon) < 1e-5 and abs(_plat - _elat) < 1e-5, \
+        "高德 URI 传了 WGS 坐标，导航会偏到隔壁街"
+    assert _EVUI._pin_tag([]) == ""
+    assert _EVUI._pin_tag([[30.67, 104.06]]) == \
+           _EVUI._pin_tag([[30.67, 104.06]]), "同样的 POI 每次换缓存名会反复取图"
+    assert _EVUI._pin_tag([[30.67, 104.06]]) != \
+           _EVUI._pin_tag([[30.68, 104.06]]), "POI 变了还命中旧底图，住宿会落到画幅外"
+
+    # 没有底图 Key 时也要出标注（矢量模式），并且取景把住宿一起算进去
+    from garmin_cn import actcard as _AC3
+
+    _pin_near = [dict(p) for p in _pins]
+    _pin_near[2]["lat"], _pin_near[2]["lon"] = 30.05, 120.15
+    _svg_pins = _AC3.track_svg([[30.0, 120.0], [30.1, 120.1], [30.2, 120.0]],
+                               720, 360, pins=_pin_near)
+    assert "起点" in _svg_pins and "终点" in _svg_pins, \
+        "矢量俯视图上的起终点标注没渲染"
+    assert _svg_pins.count("<a href=") >= 3, \
+        "三个点都得能点，不能只画个圆"
+    # 图上圆点太小，还得有一排大按钮兜底
+    with _mock.patch.object(_BM3, "available", lambda: False):
+        _map_html = _EVUI._course_map(
+            "self-2026", {"polyline": [[30.0, 120.0], [30.1, 120.1]]})
+    assert "导航到起点" in _map_html and "导航到终点" in _map_html, \
+        "赛道图旁边没有起终点导航按钮"
+    assert "导航到住宿" in _map_html, "住宿没进赛道图的导航按钮"
+    # 空行程时「行程与预订」区块必须还在，且添加入口默认展开
+    with _mock.patch.object(E2, "trips", lambda *a, **k: []), \
+            _mock.patch.object(_BM3, "available", lambda: False):
+        _empty_trip_html = _EVUI.render_page({"slug": ["self-2026"]})
+    assert "行程与预订" in _empty_trip_html, \
+        "没行程就把整块藏了，用户找不到入口"
+    assert "加一条行程" in _empty_trip_html and "<details class=\"fold\" open>", \
+        "空行程时添加表单没默认展开"
+
+    with _mock.patch.object(_BM3, "geocode",
+                            lambda *a, **k: {"lat": 30.68, "lon": 104.07,
+                                             "name": "新地址"}), \
+            _mock.patch.object(E2, "_trip_city", lambda slug: "成都"), \
+            _mock.patch.object(E2, "_trip_plausible", lambda *a, **k: True):
+        assert _EV.trip_geo("self-2026", 0, "换个地址"), "补地址没返回条目"
+    assert _EV.trip_manual("self-2026")[0]["lat"] == 30.68, "重新定位没写回坐标"
+    assert _EV.trip_del("self-2026", 0), "手填行程删不掉"
+    assert not _EV.trip_manual("self-2026"), "删完还留着空壳"
+
     # ---- CP 表截图识别：解析、校验、不猜 -------------------------------
     from garmin_cn import cpocr as _CO
 

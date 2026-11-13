@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import statistics
 from typing import Any
 
@@ -282,14 +283,18 @@ def build_track(details: dict, *, keep: int = TRACK_POINTS) -> list[list[float]]
     return pts
 
 
-def project(track: list[list[float]], w: float, h: float, pad: float = 6.0) -> list[tuple[float, float]]:
-    """等距圆柱投影 + 等比缩放，把经纬度压到 w×h 画布内（无底图）。"""
+def projector(track: list[list[float]], w: float, h: float, pad: float = 6.0):
+    """等距圆柱投影：返回 (轨迹点, 任意点映射函数)。
+
+    标注点（住宿、起终点）必须跟轨迹用**同一套**缩放和偏移，否则会标到
+    错位置；把变换拎出来共用，比在两处各写一遍安全。
+    """
     if not track:
-        return []
+        return [], (lambda lat, lon: (0.0, 0.0))
     lats = [p[0] for p in track]
     lons = [p[1] for p in track]
     lat0 = sum(lats) / len(lats)
-    kx = 111320.0 * abs(__import__("math").cos(__import__("math").radians(lat0)))
+    kx = 111320.0 * abs(math.cos(math.radians(lat0)))
     ky = 110540.0
     xs = [(lo) * kx for lo in lons]
     ys = [(la) * ky for la in lats]
@@ -300,7 +305,16 @@ def project(track: list[list[float]], w: float, h: float, pad: float = 6.0) -> l
     scale = min((w - 2 * pad) / spanx, (h - 2 * pad) / spany)
     ox = (w - spanx * scale) / 2
     oy = (h - spany * scale) / 2
-    return [(ox + (x - minx) * scale, oy + (maxy - y) * scale) for x, y in zip(xs, ys)]
+
+    def at(lat: float, lon: float) -> tuple[float, float]:
+        return (ox + (lon * kx - minx) * scale, oy + (maxy - lat * ky) * scale)
+
+    return [at(la, lo) for la, lo in zip(lats, lons)], at
+
+
+def project(track: list[list[float]], w: float, h: float, pad: float = 6.0) -> list[tuple[float, float]]:
+    """等距圆柱投影 + 等比缩放，把经纬度压到 w×h 画布内（无底图）。"""
+    return projector(track, w, h, pad)[0]
 
 
 # ---------------------------------------------------------------- 天气
