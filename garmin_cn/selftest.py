@@ -1682,7 +1682,7 @@ def run() -> int:
     assert '<div class="rd"><span>' not in _ch, "延伸阅读还带着单独一行标记"
     # 顶部必须 flex:none：定高 1920 的列里，它一旦被压缩，meta 就会压到 hero 上
     _card_src_now = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
-    assert "padding-bottom:16px;flex:none;" in _card_src_now, \
+    assert re.search(r"\.top\{\{[^}]*flex:none", _card_src_now), \
         "一图流顶部会被 flex 压缩，延伸阅读会压到睡眠条上"
     assert '<div class="sl">' in _ch and '<div class="sr">' in _ch, \
         "今日处方没改成两栏，评语与 AI 点评没挪到右侧"
@@ -3161,8 +3161,8 @@ def run() -> int:
     _card_src = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
     _act_src = (ROOT / "garmin_cn/actcard.py").read_text(encoding="utf-8")
     # 顶部右上角不再有重复的「恢复度 79 / 100」，改为限宽的 meta + 延伸阅读
-    assert "max-width:46%" in _card_src and '.meta .rd{' in _card_src, \
-        "看板一图流顶部右侧没限宽，长来源会挤出画幅 / 延伸阅读没贴住 meta"
+    assert "max-width:46%" in _card_src and '.rd{{' in _card_src, \
+        "看板一图流顶部右侧没限宽，长来源会挤出画幅 / 延伸阅读没样式"
     assert "flex-wrap:nowrap" in _act_src, \
         "活动图顶部标签还会换行/被挤走"
     assert "background:#12161B" in _card_src, \

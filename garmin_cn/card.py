@@ -758,25 +758,21 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
   -webkit-font-smoothing:antialiased}}
 .wrap{{width:{W}px;height:{H}px;padding:34px 52px 26px;display:flex;flex-direction:column}}
 .top{{position:relative;display:flex;justify-content:space-between;
-  align-items:flex-start;gap:24px;padding-bottom:16px;flex:none;
-  border-bottom:1px solid #223349}}
-.top::after{{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
-  background:linear-gradient(90deg,#3B82F6,rgba(34,211,238,.35),transparent);
-  pointer-events:none}}
-.date{{font-size:38px;font-weight:700;letter-spacing:1px;white-space:nowrap;
-  margin:6px 0 0 12px}}
+  align-items:baseline;gap:24px;padding-bottom:2px;flex:none}}
+.date{{font-size:34px;font-weight:700;letter-spacing:1px;white-space:nowrap}}
 .date small{{font-size:21px;font-weight:400;color:#8FA4BF;margin-left:10px}}
 /* 右侧限宽：来源/同步时间一长就会把右侧顶到画幅外。两行拆开、各自可
    换行，右侧永远留在 52px 安全区内。抬头只留日期，页脚左下角那枚品牌
    角标保留（0.6.10）。 */
 .meta{{flex:0 1 46%;max-width:46%;text-align:right;font-size:19px;
   color:#8FA4BF;line-height:1.5;word-break:break-word}}
-/* 延伸阅读：小号斜体、压暗，像一句脚注；两行封顶防止顶出去。 */
-.meta .rd{{margin-top:7px;padding-top:7px;border-top:1px solid #1E2C3D;
-  font-size:15px;font-style:italic;line-height:1.55;color:#7E8B9C;
-  text-align:left;display:-webkit-box;-webkit-box-orient:vertical;
-  -webkit-line-clamp:2;overflow:hidden}}
-.meta .m2{{font-size:18px;color:#7689A2;margin-top:4px}}
+/* 延伸阅读：一条整宽的注脚条，用上边线给「刊头 + 数据」收口。
+   顶部那条渐变线撤掉，全块只留这一条分界，视线不打架。 */
+.rd{{margin:12px 0 0;padding-top:10px;border-top:1px solid #223349;
+  font-size:15px;font-style:italic;line-height:1.5;color:#7E8B9C;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+  overflow:hidden}}
+.meta .m2{{font-size:16px;color:#7689A2}}
 .hero{{display:flex;align-items:center;gap:40px;padding:14px 0 12px;height:196px;overflow:hidden}}
 .score-box{{text-align:center;min-width:250px}}
 .score{{font-size:104px;font-weight:700;line-height:.95;color:{color};letter-spacing:-4px}}
@@ -977,7 +973,6 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
   <div class="rc-date"><div class="date">{d.strftime("%m月%d日")}<small>{DOW[d.weekday()]}</small></div></div>
   <div class="meta">
     <div class="m2">{esc(src)} · 已同步 {esc((sync_at or "")[:16]) or esc(res["date"])}</div>
-    {rd_html}
   </div>
 </div>
 
@@ -988,6 +983,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
   </div>
   <div class="bars">{_bars(r.get("parts") or [])}</div>
 </div>
+{rd_html}
 
 <div class="card sess">
   <div class="sl">
