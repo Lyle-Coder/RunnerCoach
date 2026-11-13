@@ -149,6 +149,12 @@ _BASE = """
   display:flex;align-items:center;justify-content:center;
   margin:-9px -6px -9px 0;font-size:15px;cursor:pointer;opacity:.5;line-height:1}
 .rc-bell.on{opacity:1}
+/* 首页「延伸阅读」：内容一行、换行破折号接数据源，多条轮播 */
+.rc-rd{margin-top:2px}
+.rc-rd .rdi{display:none}
+.rc-rd .rdi.on{display:block}
+.rc-rd .rdt{margin:0;font-size:13px;line-height:1.6;color:var(--ink,#E8F0FB)}
+.rc-rd .rds{margin:5px 0 0;font-size:11.5px;color:var(--faint,#7689A2)}
 .rc-week-hd{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
 .rc-week-hd .big-num{font-size:26px;line-height:1.15}
 .rc-week-hd .big-num small{font-size:12.5px;font-weight:500;margin-left:4px;
@@ -218,6 +224,7 @@ _BIG = """
 /* 临近块只在竖屏出现：宽屏是写死的 6 区栅格（1280×800 不许滚动），
    再塞一块会把固定行高挤破；横屏本来也不适合「今天要记得什么」。 */
 {p}.rc-up-panel{display:none}
+{p}.rc-rd-panel{display:none}
 {p}.rc-plan-panel{grid-area:p}
 /* 面板内部可滚，页面本身不滚；1280×800 无页面滚动、无面板截断 */
 {p}.rc-panel{overflow:auto}
