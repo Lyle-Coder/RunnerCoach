@@ -1406,6 +1406,10 @@ def me_page() -> str:
     except Exception:
         ai = {}
     ai_on = bool(ai.get("ai_enabled", True))
+    try:
+        _simple = A.simple_mode()
+    except Exception:
+        _simple = False
     if not ai_on:
         ai_sub = "已关闭 · 点这里重新打开"
     elif not ai.get("configured"):
@@ -1433,7 +1437,14 @@ def me_page() -> str:
                    act="bodySource", tone="a") +
                # 开关自己带 data-act，点它不会顺带打开设置；点行的其它地方才进配置
                row("◍", "AI 模型服务", ai_sub, act="aiSettings", tone="b", go=False,
-                   switch=("on" if ai_on else "off"), sw_act="aiToggle"))
+                   switch=("on" if ai_on else "off"), sw_act="aiToggle") +
+               # 简洁模式：把「先不用」的模块整个藏起来，而不是灰掉。
+               # 灰按钮只会让人去点它试试，然后发现没什么用。
+               row("◐", "简洁模式",
+                   ("已开启 · 只留今日 / 历史 · 教练只看今日与体重" if _simple
+                    else "关 · 教练含对话 / 备赛 / 力量"),
+                   act="simpleToggle", tone="a", go=False,
+                   switch=("on" if _simple else "off"), sw_act="simpleToggle"))
 
     # 「补全历史」已经完全没有按钮了：它由 App 在每次刷新后**后台**由近到远
     # 自动往前挪，进度写在标题栏小字。这里只做只读展示，不提供点击 ——

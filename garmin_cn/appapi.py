@@ -68,6 +68,30 @@ def _cfg() -> dict:
         return {}
 
 
+def simple_mode() -> bool:
+    """简洁模式：教练页只留「今日 / 体重」，备赛 / 力量 / 对话这些入口都不出现。
+
+    读的是 config.json，不另开文件——它本来就是「这台设备怎么用」的偏好。
+    """
+    return bool(_cfg().get("simple_mode"))
+
+
+def set_simple_mode(on: bool) -> dict:
+    cfg = _cfg()
+    cfg["simple_mode"] = bool(on)
+    try:
+        CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        CONFIG.chmod(0o600)
+    except Exception as e:
+        return {"ok": False, "error": f"写不进配置：{e}"}
+    return {"ok": True, "simple_mode": bool(on)}
+
+
+def simple_toggle() -> dict:
+    """「我的」页那个开关：只翻一下，不改别的配置。"""
+    return set_simple_mode(not simple_mode())
+
+
 def _remember_email(email: str) -> None:
     """只记邮箱，不记密码。"""
     cfg = _cfg()
@@ -143,7 +167,7 @@ _API = {
     "motion_html", "motion_status", "motion_cleanup", "motion_audio",
     "clips_list", "clips_add", "clips_remove", "clips_reprobe",
     "clips_remove_many", "clips_update",
-    "set_llm_config", "get_llm_config", "ai", "ai_toggle",
+    "set_llm_config", "get_llm_config", "ai", "ai_toggle", "simple_toggle",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
     "hw_status", "hw_import", "hw_login", "hw_probe", "hw_sync", "hw_logout",
