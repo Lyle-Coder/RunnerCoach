@@ -706,8 +706,7 @@ def from_laps(laps: list[dict] | None, forced: bool = False) -> dict | None:
 
 # 只有跑步类活动才谈得上间歇版式；力量训练、骑行等的 hasIntensityIntervals
 # 语义不同（力量训练也可能是 True），不能套同一套双栏。
-RUN_TYPES = {"running", "trail_running", "track_running", "treadmill_running",
-             "indoor_running", "virtual_run", "ultra_run"}
+from .sports import RUN_TYPES
 
 
 def training_mode(detail: dict | None) -> dict:

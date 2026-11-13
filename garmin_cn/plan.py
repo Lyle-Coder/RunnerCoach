@@ -255,7 +255,7 @@ CLASSIFY_REV = 3
 
 
 def annotate(data: dict, activity_days: set[str] | None = None,
-             today: str | None = None) -> dict:
+             today: str | None = None, activities: list[dict] | None = None) -> dict:
     """按「完成证据」重算 done / missed，不靠日期猜。
 
     证据只有两种：
@@ -269,6 +269,19 @@ def annotate(data: dict, activity_days: set[str] | None = None,
     today = today or dt.date.today().isoformat()
     done = set(data.get("done_days") or []) if int(data.get("classify") or 0) >= CLASSIFY_REV else set()
     done |= {d for d in (activity_days or set()) if d}
+    from .sports import completion
+    # Dates establish that training occurred, never that a particular course was completed.
+    evidence = list(activities or [])
+    for w in data.get("week") or []:
+        for a in w.get("acts") or []:
+            evidence.append({"date": w["date"], "type": a.get("sport_key"),
+                             "distance_m": (a.get("km") or 0) * 1000,
+                             "duration_s": (a.get("minutes") or 0) * 60})
+    # Local activity rows supersede calendar summaries on the same day to avoid double counting.
+    local_dates = {a.get("date") for a in activities or []}
+    if local_dates:
+        evidence = list(activities) + [a for a in evidence[len(activities):] if a.get("date") not in local_dates]
+    done |= {a.get("date") for a in evidence if a.get("date")}
 
     for w in data.get("week") or []:
         has_plan = bool(w.get("items"))
@@ -277,7 +290,7 @@ def annotate(data: dict, activity_days: set[str] | None = None,
         # 于是周一没排课、只骑了趟通勤，本周就显示「已完成 1/6」——
         # 计划外的活动被算进了计划完成率。
         w["trained"] = trained
-        w["done"] = has_plan and trained
+        w["done"] = has_plan and completion(w.get("items") or [], [a for a in evidence if a.get("date") == w["date"]])
         # 有计划以外还练过：单独记一笔，界面上叫「计划外」，不计入完成率
         w["extra"] = (not has_plan) and trained and w["date"] <= today
         # 今天还没过完，谈不上「没完成」
@@ -285,7 +298,7 @@ def annotate(data: dict, activity_days: set[str] | None = None,
     t = data.get("today") or {}
     if t:
         t["trained"] = t.get("date") in done
-        t["done"] = bool(t.get("items")) and t.get("trained")
+        t["done"] = completion(t.get("items") or [], [a for a in evidence if a.get("date") == t.get("date")])
         t["missed"] = False
 
     data["done_days"] = sorted(done)
@@ -631,11 +644,12 @@ def from_coach(res: dict, today: str | None = None,
     """
     from . import raceplan
     from .coach import pick_session
+    from .sports import preferred
 
     today = today or dt.date.today().isoformat()
     d0 = dt.date.fromisoformat(today)
     try:
-        has_race = bool(raceplan.available())
+        has_race = preferred(res) == "run" and bool(raceplan.available())
     except Exception:
         has_race = False
 
@@ -657,6 +671,7 @@ def from_coach(res: dict, today: str | None = None,
                     "sport": "跑步",
                     "sport_key": "running",
                     "minutes": info.get("minutes") or None,
+                    "km": info.get("km") or None,
                     "effect": None,
                     "rest": False,
                     "status": None,
@@ -690,8 +705,9 @@ def from_coach(res: dict, today: str | None = None,
             today_items = [{
                 "name": _kind,
                 "detail": s.get("why") or "",
-                "sport": "跑步",
-                "sport_key": "running",
+                "sport": s.get("sport") or ("骑行" if preferred(res) == "bike" else "跑步"),
+                "sport_key": s.get("sport_key") or ("cycling" if preferred(res) == "bike" else "running"),
+                "steps": s.get("steps") or [],
                 "minutes": _minutes_of(s.get("duration")),
                 "effect": s.get("intensity"),
                 "rest": False,
@@ -726,4 +742,4 @@ def from_coach(res: dict, today: str | None = None,
         "next_items": [],
         "rest_days_in_week": sum(1 for w in week if w["rest"]),
     }
-    return annotate(data, activity_days, today)
+    return annotate(data, activity_days, today, res.get("activities") or [])

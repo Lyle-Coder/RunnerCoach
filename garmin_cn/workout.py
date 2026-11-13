@@ -25,13 +25,14 @@ from typing import Any
 
 SPORT_RUN = {"sportTypeId": 1, "sportTypeKey": "running"}
 SPORT_STR = {"sportTypeId": 5, "sportTypeKey": "strength_training"}
+SPORT_BIKE = {"sportTypeId": 2, "sportTypeKey": "cycling"}
 
 # Garmin Connect step/end-condition/target 枚举（经真机验证 + 官方 DTO 对齐）
 STEP_TYPE = {"warmup": 1, "cooldown": 2, "interval": 3, "recovery": 4,
              "rest": 5, "repeat": 6, "other": 7}
 END_COND = {"lap": 1, "time": 2, "distance": 3, "heart_rate": 6,
             "iterations": 7, "fixed_rest": 8, "fixed_repetition": 9, "reps": 10}
-TARGET = {"none": 1, "hr": 4, "pace": 6}   # pace.zone 单位 = 米/秒，快端在前
+TARGET = {"none": 1, "power": 2, "hr": 4, "pace": 6}   # pace.zone 单位 = 米/秒，快端在前
 
 # 分区锚点重算（v8）：2026-11-08 安康半马 1:28:59 / 4:11/km / 均心率 190，
 # 全程稳在 190–192、最后 3 km 加速到 3:25 → 阈值心率 LTHR ≈ 190、最大心率 ≈ 207。
@@ -110,7 +111,7 @@ def _step(order: int, step_type: str, end_cond: str, value: float,
     }
     if target:
         tk, span = target
-        key = "heart.rate.zone" if tk == "hr" else "pace.zone"
+        key = {"hr": "heart.rate.zone", "pace": "pace.zone", "power": "power.zone"}[tk]
         s["targetType"] = {"workoutTargetTypeId": TARGET[tk],
                            "workoutTargetTypeKey": key}
         s["targetValueOne"] = span[0]
@@ -190,6 +191,9 @@ def build_all(info: dict) -> list[dict]:
     """把某天的课次转成 Connect 课程列表。力量日 = 力量课 + 跑步课两节。"""
     if not info or info.get("is_rest"):
         return []
+    from .sports import item_family
+    if item_family(info) == "bike":
+        return [build_cycling(info)]
 
     kind = info["kind"]
     phase = info.get("phase") or ""
@@ -315,6 +319,32 @@ def build_all(info: dict) -> list[dict]:
                      [_seg(SPORT_RUN, steps)])]
 
 
+def build_cycling(info: dict) -> dict:
+    """Cycling DTO uses watts, never the running pace conversion.
+
+    Enum reference: python-garminconnect/garminconnect/workout.py (SportType,
+    TargetType, CustomPowerTarget). Reuses the existing create/schedule channel.
+    """
+    from .sports import number, profile
+    ftp = number(info.get("ftp_w")) or number(profile("bike").get("ftp_w"))
+    steps = []
+    source_steps = info.get("steps") or []
+    if not source_steps:
+        raise ValueError("骑行课程缺少训练步骤")
+    for i, part in enumerate(source_steps, 1):
+        seconds = number(part.get("seconds"))
+        low, high = number(part.get("ftp_low")), number(part.get("ftp_high"))
+        if seconds is None or not 0 < seconds <= 86400 or low is None or high is None or not 0 <= low <= high <= 3:
+            raise ValueError("骑行步骤的用时或功率目标无效")
+        kind = "warmup" if i == 1 else "cooldown" if i == len(source_steps) else "recovery" if high <= .55 else "interval"
+        target = ("power", (round(ftp * low), round(ftp * high))) if ftp else None
+        steps.append(_step(i, kind, "time", seconds, target, str(part.get("name") or "骑行") + f" · FTP {low * 100:.0f}–{high * 100:.0f}%"))
+    payload = _workout(info.get("name") or info.get("type") or "骑行训练", info.get("why") or "本地骑行模板",
+                       SPORT_BIKE, [_seg(SPORT_BIKE, steps)])
+    payload["estimatedDurationInSecs"] = int(sum(s["endConditionValue"] for s in steps))
+    return payload
+
+
 def create(client, payload: dict) -> dict | None:
     """创建课程，返回接口回包（含 workoutId）。"""
     return client.post("/workout-service/workout", payload)
@@ -416,3 +446,86 @@ def push_range(client, start: dt.date, end: dt.date, *, dry: bool = False,
             out.append(push_day(client, info, d.isoformat(), dry=dry))
         d += dt.timedelta(days=1)
     return out
+
+
+def push_cli(args, db, client_factory) -> int:
+    """把 105K 课表推成佳明 Connect 训练课程，并排进日历（手表自动同步）。"""
+    from . import raceplan
+    from .auth import AuthError
+    import json
+
+    if getattr(args, "sport", "run") == "bike":
+        from .cycling import push_cli as cycling_cli
+        return cycling_cli(args, db, client_factory)
+
+    if not raceplan.available():
+        print("× 本地课表未配置：需要 tools/make_plan.py 与 tools/make_card.py")
+        print("  这两份是个人课表，仓库不含；没有它们会回退到佳明教练计划。")
+        return 2
+
+    mp = raceplan._mp()
+    today = dt.date.today()
+
+    if args.all:
+        start, end = raceplan.span()
+    elif args.week:
+        start = mp.date_of(args.week, 0)
+        end = mp.date_of(args.week, 6)
+    elif args.date:
+        start = end = dt.date.fromisoformat(args.date)
+    elif args.start or args.end:
+        start = dt.date.fromisoformat(args.start) if args.start else today
+        end = dt.date.fromisoformat(args.end) if args.end else start
+    else:
+        start, end = today, today + dt.timedelta(days=6)
+
+    if start > end:
+        start, end = end, start
+    days = (end - start).days + 1
+    print(f"区间 {start} → {end}（{days} 天）" + ("　[演练，不会真的提交]" if args.dry_run else ""))
+
+    client = None
+    if not args.dry_run:
+        try:
+            client = client_factory(require=True)
+        except AuthError as e:
+            print(f"× {e}\n  先运行：run.bat login")
+            return 3
+
+    results = push_range(client, start, end, dry=args.dry_run,
+                                 replace=args.replace)
+    ok = skip = fail = 0
+    for r in results:
+        if r.get("skipped"):
+            skip += 1
+            continue
+        if r.get("error"):
+            fail += 1
+            print(f"  × {r['date']} {r['name']}　{r['error']}")
+            continue
+        ok += 1
+        tail = ""
+        if not args.dry_run:
+            tail = f"  id={r.get('workoutId')}"
+            tail += " · 已排程" if r.get("scheduled") else " · 排程失败"
+        print(f"  √ {r['date']} {r['name']}{tail}")
+        if args.dry_run and args.verbose:
+            import json
+            print(json.dumps(r["payload"], ensure_ascii=False, indent=1))
+
+    if client is not None:
+        try:
+            plans = client.active_plans() or []
+            if plans:
+                names = "、".join(str(p.get("trainingPlanName") or p.get("name") or "?")
+                                 for p in plans[:3])
+                print(f"\n！佳明侧还有进行中的计划：{names}")
+                print("  手表会同时显示两套课表，建议去 Connect → 训练计划 里结束它们，"
+                      "只看日历里的 105K 课程。")
+        except Exception:
+            pass
+
+    print(f"完成：建成 {ok}，跳过休息 {skip}，失败 {fail}")
+    if fail:
+        return 1
+    return 0

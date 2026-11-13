@@ -456,6 +456,7 @@ class MainActivity : Activity() {
             path.startsWith("/posture") -> goTab(TAB_COACH) // 姿态评估也在教练下
             path.startsWith("/files") -> goTab(TAB_ME)     // 产物属于我的
             path.startsWith("/privacy") -> goTab(TAB_ME)   // 隐私说明也挂在我的下面
+            path.startsWith("/sports") -> goTab(TAB_ME)    // 运动设置属于我的
             activeTab != TAB_TODAY -> goTab(TAB_TODAY)     // 其它 tab 先回今日
             else -> finish()                         // 已在今日根页面，退出
         }
@@ -608,7 +609,7 @@ class MainActivity : Activity() {
         val t = when {
             path.startsWith("/ai") -> TAB_COACH
             path.startsWith("/me") || path.startsWith("/files") ||
-                path.startsWith("/privacy") -> TAB_ME
+                path.startsWith("/privacy") || path.startsWith("/sports") -> TAB_ME
             path.startsWith("/history") || path.startsWith("/view") -> TAB_HISTORY
             else -> TAB_TODAY
         }

@@ -38,7 +38,9 @@ CACHE_DIR = ROOT / "data" / "ai"
 
 # 系统提示词：人设 + 数据纪律。写死在这里，业务层不各写一份，
 # 免得三个场景的教练口径互相打架（一个说加练、一个说休息）。
-SYSTEM = """你是 RunnerCoach 的私人跑步教练，服务一位正在备战 105K 越野赛的跑者。
+SYSTEM = """你是 RunnerCoach 的私人耐力运动教练，支持跑步、骑行与交叉训练。
+训练目标、主要运动和赛事只依据本次上下文；不要默认用户备战 105K。
+骑行用 km/h、踏频 rpm 和功率 W，跑步用配速和步频 spm；不要混淆。
 
 工作原则：
 1. **只依据给定数据说话**。数字必须来自上下文；没给的就说"数据里没有"，绝不编造。
@@ -209,7 +211,7 @@ def daily_advice(date: str | None = None, force: bool = False) -> dict:
 
     b = brief(res)
     sess = b.get("session") or {}
-    instruction = f"""以下是跑者今天的数据与规则引擎给出的处方。
+    instruction = f"""以下是运动者今天的数据与规则引擎给出的处方。
 
 {ctx}
 
@@ -265,7 +267,7 @@ def daily_advice(date: str | None = None, force: bool = False) -> dict:
 # 提示词越「像要求」，模型越容易把要求当正文抄回来——长规则版实测会让
 # deepseek 把「写 90 到 140 字、引用数字、不复述处方」整段输出到看板上。
 # 现在只留最短的一句任务，其余靠 _looks_like_echo 兜底。
-NOTE_SYSTEM = ("你是 RunnerCoach 的跑步教练。看下面的数据，用中文写两句话："
+NOTE_SYSTEM = ("你是 RunnerCoach 的跑步与骑行教练。按上下文的运动类型，用中文写两句话："
                "今天身体状态如何、最该注意什么。要引用具体数字。只输出这两句正文。")
 
 # 同一日期只允许一个后台任务在跑：看板会被反复打开，不挡住就会
@@ -714,7 +716,10 @@ def activity_review(activity_id: str, date: str | None = None) -> dict:
     # 步频不在这条 activity 行里：activities 表只有时长/距离/心率，步频与分圈
     # 存在 activity_detail。不读出来，模型就会说「没有步频数据」——而数据其实在。
     # 分圈同理：判断「后程是否掉速」必须给每公里的配速。
+    from . import sports
+    bike = sports.family(act.get("type")) == "bike"
     cad_avg, cad_max = None, None
+    _detail = {}
     splits: list[dict] = []
     try:
         _row = store.conn.execute(
@@ -725,10 +730,13 @@ def activity_review(activity_id: str, date: str | None = None) -> dict:
             _detail = json.loads(_row["payload"] or "{}")
             for _lap in (_detail.get("laps") or [])[:16]:
                 _p, _d = num(_lap.get("pace_s")), num(_lap.get("dist_m"))
-                if not _p or (_d or 0) < 200:
+                if not bike and (not _p or (_d or 0) < 200):
                     continue
                 splits.append({"km": round((_d or 0) / 1000, 2),
-                               "pace": pace_txt(_p),
+                               "pace": None if bike else pace_txt(_p),
+                               "speed_kmh": round(3600 / _p, 1) if bike and _p else None,
+                               "power_w": num(_lap.get("pwr_avg")),
+                               "duration_s": num(_lap.get("dur_s")),
                                "hr": num(_lap.get("hr_avg")),
                                "cad": num(_lap.get("cad"))})
     except Exception:
@@ -741,23 +749,31 @@ def activity_review(activity_id: str, date: str | None = None) -> dict:
         "name": act.get("name"),
         "dist_km": round((act.get("distance_m") or 0) / 1000, 2),
         "duration_min": round((act.get("duration_s") or 0) / 60),
-        "avg_pace": pace_txt(pace) if pace else None,
+        "avg_pace": pace_txt(pace) if pace and not bike else None,
+        "avg_speed_kmh": round(3600 / sports.pace_seconds(act), 1) if bike and sports.pace_seconds(act) else None,
+        "cadence_unit": "rpm" if bike else "spm",
         "avg_hr": act.get("avg_hr"),
         "max_hr": act.get("max_hr"),
         "avg_cadence": cad_avg if cad_avg is not None else act.get("avg_cadence"),
         "max_cadence": cad_max,
         "splits": splits[:12],
-        "elev_gain_m": act.get("elev_gain_m"),
+        "elev_gain_m": act.get("ascent"),
         "calories": act.get("calories"),
-        "training_effect": act.get("training_effect"),
+        "training_effect": {"aerobic": act.get("aerobic_te"), "anaerobic": act.get("anaerobic_te")},
         "today_readiness": (res.get("readiness") or {}).get("score"),
         "week_load": {
             "ctl": (res.get("load") or {}).get("ctl"),
             "atl": (res.get("load") or {}).get("atl"),
         },
     }
+    if bike:
+        from .cycling import for_detail, intervals
+        ctx["cycling"] = for_detail(_detail)
+        ctx["cycling"].pop("power_histogram", None)
+        ctx["power_intervals"] = intervals(_detail)
+        ctx["sport_load"] = (res.get("load_by_sport") or {}).get("bike")
 
-    instruction = f"""以下是这位跑者的一次训练记录及当时的身体状态。
+    instruction = f"""以下是这位运动者的一次训练记录及当时的身体状态。
 
 {json.dumps(ctx, ensure_ascii=False, indent=1)}
 
@@ -767,13 +783,15 @@ def activity_review(activity_id: str, date: str | None = None) -> dict:
   "summary": "两句话总结这次训练质量，必须引用具体数字，70 字以内",
   "good": ["1 到 3 条做得好的地方"],
   "improve": ["1 到 3 条可以改进的地方"],
-  "next": "下一次同类训练的具体建议，含配速/心率区间，45 字以内"
+  "next": "下一次同类训练的具体建议，按运动类型使用指标，45 字以内"
 }}
 
 纪律：
 - 越野跑要在意爬升与后程掉速；路跑要看配速漂移；心率数据缺失就别分析心率。
+- 骑行看踏频、功率、功率间歇和路况；不要仅凭均速判断训练强度或耐力，也不要评价跑步步幅。
+- FTP 未设置不推断 IF/TSS；功率缺失不臆测功率区间。跨项目的活动负荷不等于完成课表。
 - **avg_cadence / max_cadence / max_hr / splits 已经给出来了就必须用**：
-  判断后程有没有掉速，直接看 splits 里每公里配速的走势；
+  跑步参考分圈配速；骑行参考功率与均速，并承认地形、风阻影响；
   不要写「没有步频数据」「没有最大心率」这类与上文矛盾的话。
 - 只有字段确实是 null 才可以说缺数据，并且要点明缺的是哪一个。
 - 只有一次数据时不要谈「趋势」，只谈这一次。
