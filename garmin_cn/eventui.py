@@ -172,8 +172,7 @@ select.fi{cursor:pointer}
 .dmore>summary::before{content:"✎ "}
 .dpre{white-space:pre-wrap;word-break:break-word;font-size:12.5px;
   line-height:1.7;color:var(--fg,#E8F0FB);margin:0}
-.dimg{display:block;width:100%;height:auto;border-radius:12px;
-  border:1px solid rgba(255,255,255,.08)}
+
 .dbig{padding:24px 12px;text-align:center;color:var(--muted,#7F8A97);font-size:12.5px}
 .hint code{background:rgba(255,255,255,.06);border-radius:4px;padding:0 4px;
   font-size:11px}
@@ -835,7 +834,7 @@ def render_page(qs: dict | None = None) -> str:
         '<div class="frow"><label>自带比例<input class="fi" name="carry_ratio" '
         f'type="number" step="0.05" min="0.2" max="1" value="{cfg["carry_ratio"]}"></label>'
         '<label>携水 ml<input class="fi" name="carry_ml" type="number" step="100" '
-        f'min="500" max="3000" value="{cfg["carry_ml"]}"></label>'
+        f'min="0" max="3000" value="{cfg["carry_ml"]}"></label>'
         '<label>停留 min<input class="fi" name="stop_min" type="number" step="1" '
         f'min="0" max="30" value="{cfg["stop_min"]}"></label>'
         '<label>换装停留<input class="fi" name="dropbag_stop_min" type="number" '
@@ -1394,6 +1393,21 @@ def add_parser(sub):
     q.set_defaults(func=cmd)
     return q
 
+# 预览页用 ui.page 的外壳，拿不到上面那份 CSS，所以这几条随身带。
+# 原来靠 ui.page 的基础样式撑着，图片连 max-height 都没有——长截图会把
+# 整页拉得老长，看着像「图没加载出来」。
+_PV_CSS = (
+    "<style>"
+    ".dimg{display:block;width:100%;height:auto;max-height:72vh;object-fit:contain;"
+    "background:rgba(255,255,255,.03);border-radius:12px;cursor:zoom-in;"
+    "border:1px solid rgba(255,255,255,.08)}"
+    ".dimg.full{max-height:none;object-fit:fill;cursor:zoom-out}"
+    ".dpre{white-space:pre-wrap;word-break:break-word;font-size:12.5px;"
+    "line-height:1.7;color:var(--ink,#E8F0FB);margin:0}"
+    ".dbig{padding:24px 12px;text-align:center;color:var(--muted,#7F8A97);"
+    "font-size:12.5px}"
+    "</style>")
+
 _PREVIEW_TEXT = (".txt", ".md", ".csv", ".ics", ".json")
 _PREVIEW_IMG = (".png", ".jpg", ".jpeg")
 
@@ -1429,7 +1443,16 @@ def render_doc_page(qs: dict | None = None) -> str:
     suf = fp.suffix.lower()
     raw_url = "/event-file/%s/%s" % (slug, _up.quote(name))
     if suf in _PREVIEW_IMG:
-        body = f'<img class="dimg" src="{raw_url}" alt="{ui.esc(name)}">'
+        body = (f'<img class="dimg" id="pvImg" src="{raw_url}" '
+                f'alt="{ui.esc(name)}">'
+                '<div class="sub2" id="pvHint" style="text-align:center;margin-top:8px">'
+                "已缩放到一屏 · 点图片看原尺寸</div>"
+                '<script>(function(){var i=document.getElementById("pvImg"),'
+                'h=document.getElementById("pvHint");if(!i)return;'
+                'i.addEventListener("click",function(){'
+                'var on=i.classList.toggle("full");'
+                'if(h)h.textContent=on?"原尺寸 · 点图片缩回一屏":"已缩放到一屏 · 点图片看原尺寸";'
+                '});})();</script>')
     elif suf in _PREVIEW_TEXT:
         try:
             text = io.open(fp, encoding="utf-8", errors="replace").read(200000)
@@ -1445,6 +1468,6 @@ def render_doc_page(qs: dict | None = None) -> str:
     size = E.human_size(fp.stat().st_size)
     return ui.page("EVENT · 资料", name,
                    f"{slug} · {size}",
-                   '<div class="card">' + body + "</div>",
+                   '<div class="card">' + _PV_CSS + body + "</div>",
                    chips=ui.chip(suf.lstrip(".").upper()),
                    back=("返回赛事", "/event#docs"))

@@ -1386,7 +1386,9 @@ def set_fuel(slug: str | None, **kw) -> dict:
               "sodium_mg_h": (200, 1500), "gel_g": (10, 40),
               "stop_min": (0, 30), "dropbag_stop_min": (0, 60),
               "temp_c": (-20, 40), "carry_ratio": (0.2, 1.0),
-              "carry_ml": (500, 3000)}
+              # 下限给 0：路跑补给站密，本来就不用带水；以前卡 500，
+              # 想填 0 的人会被原生校验直接顶回来（用户反馈）。
+              "carry_ml": (0, 3000)}
     for k, (lo, hi) in limits.items():
         if kw.get(k) is None:
             continue
@@ -1520,16 +1522,55 @@ def parse_gpx(path: str | Path, slug: str | None = None,
 
     坑（设计稿 §7.3）：GPS 高程噪声 ±3–5 m，直接累加会把 5547 m 算成 8000+。
     处理：5 点滑动平均后，只累计上升超过 3 m 的段落。
+
+    三种写法都要认（用户报过「GPX 里少于 10 个轨迹点」，就是只认了第一种）：
+      · <trk><trkseg><trkpt>  运动手表导出，最常见
+      · <rte><rtept>          官方「路线」文件，赛事方给的多半是这个
+      · <wpt>                 只有航点没有线的兜底
+    命名空间也不写死：GPX 1.0 / 1.1 / 无命名空间都用 `{*}tag` 通配，
+    1.0 的文件按 1.1 取同样会得到 0 个点。
     """
-    ns = {"g": "http://www.topografix.com/GPX/1/1"}
     tree = ET.parse(path)
-    pts = []
-    for trkpt in tree.iter("{%s}trkpt" % ns["g"]):
-        lat, lon = float(trkpt.get("lat")), float(trkpt.get("lon"))
-        ele = trkpt.find("{%s}ele" % ns["g"])
-        pts.append((lat, lon, float(ele.text) if ele is not None else None))
+
+    def _local(el) -> str:
+        # ElementTree 的 iter() **不认** `{*}` 通配（那是 find/findall 的语法），
+        # 所以按 local name 自己比。命名空间可能是 1.1 / 1.0 / 没有。
+        return str(el.tag).rsplit("}", 1)[-1]
+
+    def _child_text(el, name: str):
+        for ch in el:
+            if _local(ch) == name:
+                return ch.text
+        return None
+
+    buckets: dict[str, list] = {"trkpt": [], "rtept": [], "wpt": []}
+    for node in tree.iter():
+        name = _local(node)
+        if name not in buckets:
+            continue
+        try:
+            lat, lon = float(node.get("lat")), float(node.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        try:
+            raw = _child_text(node, "ele")
+            z = float(raw) if raw else None
+        except (TypeError, ValueError):
+            z = None
+        buckets[name].append((lat, lon, z))
+
+    pts, kind = [], ""
+    for tag in ("trkpt", "rtept", "wpt"):
+        got = buckets[tag]
+        if len(got) > len(pts):
+            pts, kind = got, tag
+        if len(pts) >= 10:
+            break
     if len(pts) < 10:
-        raise ValueError("GPX 里少于 10 个轨迹点：%s" % path)
+        # 报错要说清「文件里到底有什么」，否则用户只会看到一句无从下手的话
+        raise ValueError(
+            "这个 GPX 里只找到 %d 个坐标点（trkpt/rtept/wpt 都试过），"
+            "少于 10 个没法算距离。可能不是轨迹文件，或者被截断了。" % len(pts))
 
     # 距离
     def haversine(a, b):
@@ -1572,10 +1613,15 @@ def parse_gpx(path: str | Path, slug: str | None = None,
     # 航点投影：每个 wpt 找到轨迹上最近的点，换算成累计里程。
     # 直接按经纬度取最近点即可——这类赛事航点都落在轨迹上，误差 <20 m。
     raw_w = []
-    for wpt in tree.iter("{%s}wpt" % ns["g"]):
-        nm = wpt.find("{%s}name" % ns["g"])
-        raw_w.append((float(wpt.get("lat")), float(wpt.get("lon")),
-                      (nm.text or "").strip() if nm is not None else ""))
+    for wpt in tree.iter():
+        if _local(wpt) != "wpt":
+            continue
+        nm = _child_text(wpt, "name")
+        try:
+            raw_w.append((float(wpt.get("lat")), float(wpt.get("lon")),
+                          (nm or "").strip()))
+        except (TypeError, ValueError):
+            continue
     wpts = []
     for lat, lon, nm in raw_w:
         best, bi = 1e18, 0

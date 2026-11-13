@@ -4539,12 +4539,28 @@ class MainActivity : Activity() {
                 c.disconnect()
                 val o = JSONObject(txt)
                 ui {
+                    // 用弹窗而不是 toast：识别要等十几秒，用户这期间多半在看别的；
+                    // toast 一闪就没了，根本不知道成没成（用户反馈）。
                     if (o.optBoolean("ok")) {
-                        toast("已识别 " + o.optInt("n") + " 个 CP（到 " +
-                            o.optDouble("km") + " km），核对后再保存")
-                        if (this::web.isInitialized) web.reload()
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("识别完成")
+                            .setMessage(
+                                "认出 " + o.optInt("n") + " 个 CP，最远到 " +
+                                    o.optDouble("km") + " km。\n\n" +
+                                    "往下滑到「调整 → CP 表」核对每一行的里程与关门，" +
+                                    "确认无误再点保存。"
+                            )
+                            .setPositiveButton("看看结果") { _, _ ->
+                                if (this@MainActivity::web.isInitialized) web.reload()
+                            }
+                            .setNegativeButton("稍后", null)
+                            .show()
                     } else {
-                        toast(o.optString("error", "识别失败"))
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("识别失败")
+                            .setMessage(o.optString("error", "识别失败，换个图再试"))
+                            .setPositiveButton("好", null)
+                            .show()
                     }
                 }
             } catch (t: Throwable) {
@@ -4578,18 +4594,31 @@ class MainActivity : Activity() {
     private fun pickGpx() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            // 有些文件管理器把 .gpx 报成 application/octet-stream，
-            // 所以 type 放宽到 */*，再用 EXTRA_MIME_TYPES 收窄候选。
+            // 只列 GPX：标准 MIME 是 application/gpx+xml；不带 octet-stream 兜底，
+            // 有些文件管理器会把 .gpx 报成它，去掉就一个文件都看不见了。
+            // 至于 text/xml / application/xml 一律去掉——留着会把手机里
+            // 所有 xml 都摆上来，等于没过滤。
             type = "*/*"
             putExtra(Intent.EXTRA_MIME_TYPES, arrayOf(
-                "application/gpx+xml", "application/xml", "text/xml",
-                "application/octet-stream"))
+                "application/gpx+xml", "application/octet-stream"))
         }
         try {
             startActivityForResult(i, REQ_GPX)
         } catch (t: Throwable) {
             toast("打不开文件选择器：" + (t.message ?: t.javaClass.simpleName))
         }
+    }
+
+    /** 文件的显示名（选完核对扩展名用）。拿不到就返回空串。 */
+    private fun pickName(uri: Uri): String = try {
+        contentResolver.query(uri, null, null, null, null)?.use { c ->
+            if (!c.moveToFirst()) "" else {
+                val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (i >= 0) c.getString(i) ?: "" else ""
+            }
+        } ?: ""
+    } catch (t: Throwable) {
+        ""
     }
 
     /**
@@ -4606,6 +4635,16 @@ class MainActivity : Activity() {
             android.net.Uri.parse(web.url ?: "").getQueryParameter("slug") ?: ""
         } catch (t: Throwable) {
             ""
+        }
+        // 文件选择器只能按 MIME 过滤，octet-stream 那一档什么都能混进来。
+        // 这里按名字再拦一道：省一次上传、也省一句「解析失败」。
+        val nm = pickName(uri)
+        if (nm.isNotBlank()) {
+            val low = nm.lowercase()
+            if (!low.endsWith(".gpx") && !low.endsWith(".xml")) {
+                toast("这不是 GPX 文件（$nm），请选 .gpx")
+                return
+            }
         }
         toast("正在读取 GPX…")
         thread {
