@@ -5238,6 +5238,48 @@ def run() -> int:
             pass
     assert (_ed / "event.json").is_file(), "删除顺带把赛事档案删了"
 
+    # ---- GPX：只有路线、没有途经点也要能用（马拉松基本都是这样） ------
+    import math as _mth
+
+    def _mk_gpx(points, wpts=()):
+        body = "".join(
+            f'<trkpt lat="{a}" lon="{b}"><ele>{c}</ele></trkpt>' for a, b, c in points)
+        w = "".join(
+            f'<wpt lat="{a}" lon="{b}"><name>{nm}</name></wpt>'
+            for a, b, nm in wpts)
+        return ('<?xml version="1.0"?><gpx version="1.1" creator="selftest" '
+                'xmlns="http://www.topografix.com/GPX/1/1">' + w
+                + "<trk><trkseg>" + body + "</trkseg></trk></gpx>")
+
+    # 42 km 直线，海拔锯齿状起伏（保证滤波后仍有爬升）
+    _mpts = [(30.0, 0.4376 * i / 299, round(30 + 8 * _mth.sin(i / 9.0), 1))
+             for i in range(300)]
+    (_ed / "track.gpx").write_text(_mk_gpx(_mpts), encoding="utf-8")
+    _mg = _EV.parse_gpx(_ed / "track.gpx", slug="self-2026")
+    assert _mg["waypoints"] == [], "这份 GPX 本来就没有 wpt，不该解出途经点"
+    assert _mg["ascent_m"] > 0, "没有途经点时爬升也要照常算"
+
+    _mh = _EVUI.render_page({"slug": ["self-2026"]})
+    assert "只有路线、没有途经点" in _mh, "无途经点的 GPX 没有给出说明，用户会以为导不进"
+    assert "相差 -42" not in _mh and "相差 -4" not in _mh, \
+        "没有 CP 表时算出了假的里程差异（基准取了 0）"
+    assert 'stroke-dasharray="3 4"' in _mh, "剖面没有里程刻度，长坡看不出在第几公里"
+
+    # 带途经点时不该再提示「只有路线」
+    _mpts2 = [(30.0, 0.4376 * i / 299, round(30 + 8 * _mth.sin(i / 9.0), 1))
+              for i in range(300)]
+    (_ed / "track.gpx").write_text(
+        _mk_gpx(_mpts2, [(30.0, 0.1, "10K"), (30.0, 0.3, "30K")]), encoding="utf-8")
+    _wg = _EV.parse_gpx(_ed / "track.gpx", slug="self-2026")
+    assert len(_wg["waypoints"]) == 2, f"途经点没解析出来：{_wg['waypoints']}"
+    assert "只有路线、没有途经点" not in _EVUI.render_page({"slug": ["self-2026"]}), \
+        "明明有途经点，还在提示「只有路线」"
+
+    # 刻度疏密跟着赛程：全马 5 km、百公里 10 km
+    assert _EVUI._spark([[0, 10], [20, 20], [40, 15]], 5).count('stroke-dasharray') == 7, \
+        "全马该按每 5 km 打刻度"
+    (_ed / "track.gpx").unlink()
+
     _EV.set_remind("self-2026", "2026-11-18T18:00", "报名截止", True)
     assert _EV.reminders("self-2026"), "提醒没存下来"
     _EV.set_remind("self-2026", "2026-11-18T18:00", "报名截止", False)
