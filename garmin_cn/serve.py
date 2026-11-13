@@ -129,6 +129,12 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._html(history.history_page(parse_qs(u.query)))
         if u.path in ("/me", "/me.html"):
             return self._html(ui.me_page())
+        if u.path == "/sports":
+            if not self._is_loopback():
+                return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+            if not getattr(self.server, "sports_token", ""):
+                self.server.sports_token = secrets.token_urlsafe(32)
+            return self._html(ui.sports_page(self.server.sports_token))
         if u.path in ("/plan", "/plan.html"):
             return self._html(ui.plan_page(parse_qs(u.query)))
         if u.path in ("/files", "/files.html"):
@@ -762,6 +768,25 @@ class _Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         u = urlparse(self.path)
+        if u.path == "/__sports":
+            if not self._is_loopback():
+                return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                if not 0 < n <= 4096:
+                    raise ValueError("参数过大或为空")
+                values = {k: v[0] for k, v in parse_qs(self.rfile.read(n).decode("utf-8"), keep_blank_values=True).items()}
+                token = getattr(self.server, "sports_token", "")
+                if not token or not hmac.compare_digest(values.get("token", ""), token):
+                    return self._json({"ok": False, "error": "页面已过期，请重新打开运动设置"}, 403)
+                from .sports import save_settings
+                save_settings(values)
+            except (ValueError, OSError) as e:
+                return self._html(ui.sports_page(getattr(self.server, "sports_token", ""), str(e)))
+            self.send_response(303)
+            self.send_header("Location", "/sports")
+            self.end_headers()
+            return
         # 回放视频：动画页 `?export=1` 会自己逐帧 POST 上来，这里只负责收。
         if u.path.startswith(("/__frame", "/__done", "/__timeline", "/__diag")):
             return self._frame_post(u)

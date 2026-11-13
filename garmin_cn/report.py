@@ -698,7 +698,8 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     sl = res["sleep"]
     b = brief(res)
     _pc = plan_card(res.get("plan"))
-    _rc = race_card(d)
+    from .sports import preferred
+    _rc = race_card(d) if preferred(res) == "run" else ""
     race_sec = ('<h2 class="sec">105K 备赛 · 本周课表</h2>' + _rc) if _rc else ""
     if _rc:
         plan_sec = ('<h2 class="sec">RunnerCoach 教练 · 本周课表（参考）</h2>' + _pc) if _pc else ""
@@ -720,6 +721,11 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     loads = [L["loads"].get(x, 0) for x in dates]
     ctl = L["ctl_series"][-len(dates):] if L["ctl_series"] else []
     atl = L["atl_series"][-len(dates):] if L["atl_series"] else []
+    if L.get("series_dates"):
+        ctl_map = dict(zip(L["series_dates"], L["ctl_series"]))
+        atl_map = dict(zip(L["series_dates"], L["atl_series"]))
+        ctl = [ctl_map.get(day, 0) for day in dates]
+        atl = [atl_map.get(day, 0) for day in dates]
 
     tr = res["trends"]
     # 手动补录小睡后给的是估算分：标「估」，别和设备原始评分混为一谈
@@ -762,7 +768,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
           res["series"]["steps"], "#93A6BF",
           extra=f"目标 {fmt(t.get('step_goal'))}")
     _cand(t.get("vo2max") is not None,
-          "VO2max", fmt(t.get("vo2max"), d=1), "", tr["vo2max"]["delta"], "up",
+          "VO2max · 未分项", fmt(t.get("vo2max"), d=1), "", tr["vo2max"]["delta"], "up",
           res["series"]["vo2"], "#4ADE80")
     _cand(today_load is not None,
           "今日负荷", fmt(today_load), "", None, "up",
@@ -868,7 +874,8 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
         dur = (num(a.get("duration_s")) or 0) / 60
         dist = (num(a.get("distance_m")) or 0) / 1000
         pace = num(a.get("pace_s_km"))
-        pace_s = f"{int(pace)//60}'{int(pace)%60:02d}\"" if pace else "—"
+        from .sports import metric_text
+        pace_s = metric_text(a)
         # data-aid 给 App 的 WebView 用：点这一行就能出该活动的图。
         # 桌面/静态页面里它只是个无害的自定义属性，不绑事件。
         aid = a.get("activity_id")
@@ -888,7 +895,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     table = (
         '<div class="tbl-scroll">'
         "<table><thead><tr><th>日期</th><th>类型</th><th>名称</th><th>时长</th>"
-        "<th>距离</th><th>配速</th><th>平均心率</th><th>负荷</th></tr></thead><tbody>"
+        "<th>距离</th><th>配速 / 均速</th><th>平均心率</th><th>负荷</th></tr></thead><tbody>"
         + ("".join(rows) or '<tr><td colspan="8" class="empty">近 5 周没有活动记录</td></tr>')
         + "</tbody></table></div>"
     )
@@ -1047,6 +1054,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
 恢复度 = 睡眠 35% + HRV 30% + 静息心率 20% + 身体电量 15%。睡眠与身体电量直接用 Garmin 原始 0–100 分；
 HRV 与静息心率以 28 天中位数为基线，持平或更好记满分，HRV 每低 30% 扣满、静息心率每高 6 bpm 扣满。<br>
 ACWR = 近 7 天负荷 ÷（近 28 天负荷 ÷ 4）；CTL/ATL 为 42 天与 7 天指数移动平均，TSB = CTL − ATL。<br>
+综合负荷统一使用心率 TRIMP；无心率的活动未计入。设备负荷与骑行 TSS 保持独立，不与 TRIMP 相加。<br>
 数据来源：{esc(source_foot(store))}。本页为本地生成，不上传任何数据。
 </div>
 </div></body></html>"""

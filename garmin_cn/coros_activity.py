@@ -25,7 +25,7 @@ from . import route
 from .coros import CorosAuthError, CorosCloud, CorosError
 
 # 12 = 接入高驰天气，旧缓存重新抓取以补齐天气
-ADAPTER_VERSION = 12
+ADAPTER_VERSION = 13
 
 
 def raw_activity(row: dict) -> dict:
@@ -429,6 +429,13 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
     _gct, _vo = dynamics(data)
     _sport = number(data.get("sportType") or native.get("sportType"))
     _is_run = _sport is not None and int(_sport) in (100, 101, 102, 103)
+    from .coros import SPORT_TYPE
+    from .sports import family, profile
+    sport_key = SPORT_TYPE.get(int(_sport), "other") if _sport is not None else "other"
+    bike = family(sport_key) == "bike"
+    if bike:
+        for point in points:
+            point["stride"] = None
     if (_gct is None or _vo is None) and _is_run:
         # 有任一跑步动态缺失：把键树记下来，用户发「诊断日志」
         # 就能看到真实字段在哪一层、叫什么。
@@ -469,6 +476,11 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
                "gct_ms": _gct, "vo_cm": _vo,
                "all_samples": len(points), "repaired": 0, "rescaled": 0,
                "drift": None}
+    from .cycling import analyze
+    cycling = analyze(points, profile("bike").get("ftp_w")) if bike else None
+    if cycling:
+        summary["cad_avg"] = summary["cad_avg"] if summary["cad_avg"] is not None else cycling["cad_avg"]
+        summary["stride_avg"] = None
     # lapList 包含公里、5 公里、10 公里和全程汇总，只选一组。
     groups = data.get("lapList") or []
     if not isinstance(groups, list) or any(not isinstance(g, dict) for g in groups):
@@ -509,6 +521,7 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
                      "cad": cad, "stride": stride,
                      "ele_gain": number(lap.get("elevGain") or lap.get("ascent")),
                      "cad_server": cad, "stride_server": stride,
+                     "pwr_avg": number(lap.get("avgPower")),
                      # 不足一公里的尾圈用暗色标记；间歇的短圈另有完整配速，不算 partial
                      "is_partial": False})
     if len(laps) > 1 and laps[-1]["dist_m"] < 900 and \
@@ -556,7 +569,8 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
     track_points = track if track else act.build_track(canonical)
     lap_groups = lap_groups_of(groups)
     _diag_training(data, lap_groups)
-    return {"activity_id": str(activity_id), "source": "coros",
+    return {"activity_id": str(activity_id), "source": "coros", "sport": sport_key,
+            **({"cycling": cycling} if bike else {}),
             "adapter_version": ADAPTER_VERSION,
             "fetched_at": dt.datetime.now().isoformat(timespec="seconds"),
             "summary": summary, "laps": laps, "hr_zones": hr_zones,

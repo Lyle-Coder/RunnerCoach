@@ -771,7 +771,7 @@ def home_page() -> str:
     acute, ctl, tsb = load.get("acute_7d"), load.get("ctl"), load.get("tsb")
     items = (
         ("7 天负荷", f"{acute:.0f}" if isinstance(acute, (int, float)) else "—",
-         "TRIMP · 近 7 天累计"),
+         "统一心率 TRIMP · 近 7 天累计"),
         ("CTL 体能", f"{ctl:.1f}" if isinstance(ctl, (int, float)) else "—",
          "42 天指数均线"),
         ("TSB 状态", f"{tsb:+.1f}" if isinstance(tsb, (int, float)) else "—",
@@ -1014,13 +1014,8 @@ def _session(res: dict) -> str:
     s = (res.get("readiness") or {}).get("score")
     if s is None:
         return "先同步数据"
-    if s >= 85:
-        return "可安排强度课"
-    if s >= 70:
-        return "按计划训练"
-    if s >= 55:
-        return "轻松跑或恢复活动"
-    return "休息 / 低强度活动"
+    from .coach import pick_session
+    return pick_session(res)["type"]
 
 
 def _mask_email(v) -> str:
@@ -1044,14 +1039,14 @@ def _act_metric(a: dict) -> str:
     会被读成「跑了 0 公里」，明明是没跑。"""
     dist = float(a.get("distance_m") or 0) / 1000.0
     dur = float(a.get("duration_s") or 0) / 60.0
-    pace = a.get("pace_s_km") or 0
+    from .sports import metric_text
     kind = str(a.get("type") or "")
     bits: list[str] = []
     if kind in ("running", "trail_running", "walking") or dist >= 0.1:
         if dist >= 0.1:
             bits.append(f"{dist:.2f} km")
-        if pace:
-            bits.append(f"配速 {int(pace) // 60}'{int(pace) % 60:02d}\"")
+        if dist > 0:
+            bits.append(metric_text(a, label=True))
         elif dur >= 1:
             bits.append(f"{dur:.0f} 分钟")
     else:
@@ -1273,7 +1268,16 @@ def plan_page(qs: dict | None = None) -> str:
                        f'<div class="card"><div class="kvline"><span>{esc(nxt)}</span>'
                        f'<b>{esc(_plan_items_line(r.get("next_items") or []))}</b></div></div>')
 
-    body = (sec("今日", _today_plan_card(r)) +
+    steps_html = ""
+    from .sports import profile
+    ftp = profile("bike").get("ftp_w")
+    for item in (r.get("today") or {}).get("items") or []:
+        for step in item.get("steps") or []:
+            power = (f"{ftp * step['ftp_low']:.0f}–{ftp * step['ftp_high']:.0f} W" if ftp
+                     else f"FTP {step['ftp_low'] * 100:.0f}–{step['ftp_high'] * 100:.0f}%（未设置 FTP）")
+            steps_html += f'<div class="kvline"><span>{esc(step["name"])} · {step["seconds"] / 60:g} 分钟</span><b>{esc(power)}</b></div>'
+    steps_section = sec("骑行步骤", '<div class="card">' + steps_html + '</div>') if steps_html else ""
+    body = (sec("今日", _today_plan_card(r)) + steps_section +
             sec("本周", f'<div class="wk">{rows}</div>') +
             next_sec +
             sec("计划信息", info) +
@@ -1301,6 +1305,38 @@ def _clip_count() -> int:
         return len(A.clips_list().get("items") or [])
     except Exception:
         return 0
+
+
+def sports_page(token: str, message: str = "") -> str:
+    from . import sports as S
+    cfg = S.config()
+    select = '<label>主要运动 <select name="preferred_sport">' + ''.join(
+        f'<option value="{key}"{" selected" if S.preferred() == key else ""}>{name}</option>'
+        for key, name in (("run", "跑步"), ("bike", "骑行"))) + '</select></label>'
+    fields = []
+    for key, name in (("run", "跑步"), ("bike", "骑行")):
+        p = S.profile(key, cfg)
+        inputs = []
+        for field, label, lo, hi in (("max_hr", "最大心率 bpm", 80, 240), ("lthr", "阈值心率 bpm", 60, 230), ("ftp_w", "FTP W", 30, 1000)):
+            if key == "run" and field == "ftp_w":
+                continue
+            inputs.append(f'<label style="display:block;margin:12px 0">{label} '
+                          f'<input type="number" name="{key}_{field}" min="{lo}" max="{hi}" step="1" value="{esc(p.get(field) or "")}" placeholder="未设置"></label>')
+        names = ','.join(p.get("hr_zone_names") or [])
+        if key == "bike":
+            inputs.append('<label style="display:block;margin:12px 0">本地骑行模板 <select name="bike_workout">' + ''.join(
+                f'<option value="{v}"{" selected" if p.get("workout", "endurance") == v else ""}>{label}</option>'
+                for v, label in (("endurance", "有氧"), ("recovery", "恢复"), ("intervals", "功率间歇"))) + '</select></label>')
+        inputs.append(f'<label style="display:block">Z1–Z5 名称 <input name="{key}_hr_zone_names" value="{esc(names)}" placeholder="热身,轻松,有氧,阈值,极限" style="width:100%;margin-top:8px"></label>')
+        fields.append(sec(name, '<div class="card">' + ''.join(inputs) + '</div>'))
+    body = (f'<p class="note">{esc(message)}</p>' if message else '')
+    body += (f'<form action="/__sports" method="post"><input type="hidden" name="token" value="{esc(token)}">'
+             + sec("训练偏好", '<div class="card">' + select + '</div>') + ''.join(fields)
+             + '<div class="note">睡眠、HRV、体重仍共用。最大心率用于分项目负荷估算；阈值心率用于骑行课表目标说明，'
+               '设备心率分区时长保持原始口径。FTP 留空时不计算 IF / TSS；历史骑行按当前 FTP 复算。'
+               'VO₂max 的现有日汇总尚未按运动分项，请勿将它视为骑行专项指标。</div>'
+               '<div class="pager"><button class="btn primary" type="submit">保存运动设置</button></div></form>')
+    return page("SPORTS · 运动设置", "运动设置", "跑步与骑行分别配置", body, back=("返回我的", "/me"))
 
 
 def me_page() -> str:
@@ -1400,6 +1436,7 @@ def me_page() -> str:
         act("⌖", "地图底图",
             "已配置 · 带底图" if _map_on() else "未配置 · 矢量轨迹",
             action="amap"),
+        act("⚙", "运动设置", "跑步 / 骑行 · FTP", href="/sports"),
     ])
     # 数据与备份：导出/导入是「换手机保命」的两个动作，放同一排最显眼
     data_tiles = acts_grid([

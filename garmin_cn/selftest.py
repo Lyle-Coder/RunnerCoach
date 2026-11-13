@@ -400,6 +400,8 @@ def run() -> int:
     import tempfile as _tf
     from pathlib import Path as _Path
     from garmin_cn import appapi as AP
+    # UI/API checks must use the synthetic fixture, never the user's local database.
+    AP.DB = tmp_db
     from garmin_cn.store import Store as _Store
     from garmin_cn.sync import SyncService as _Sync
 
@@ -491,7 +493,8 @@ def run() -> int:
     assert cal["source"] == "calendar" and cal["scheduled"], cal
     assert cal["today"]["items"][0]["minutes"] == 40
     assert cal["today"]["items"][0]["km"] == 7.0
-    assert cal["week"][1]["done"] is True, "周二有带 activityId 的记录，应标已完成"
+    assert cal["week"][1]["trained"] is True and cal["week"][1]["done"] is False, \
+        "练过不等于完成：缺运动类型且距离未达标，不能标记完成"
     assert cal["week"][3]["done"] is False and cal["week"][3]["missed"] is True, \
         "周四计划了但没做，应该标「未完成」——旧版按日期一律当已完成"
     assert cal["next_date"] == "2026-11-15", cal["next_date"]  # 11-09 是 note，跳过
@@ -530,12 +533,12 @@ def run() -> int:
     assert "409" not in _tc, "课表里的通勤距离仍然是错的"
     assert "4.1 km" in _tc and "今天练过" in _tc, \
         "练过的记录没有单列出来（且措辞应是「练过」而不是「完成」）"
-    # 本地库那天有活动（含高驰）也算完成
+    # 只有活动日期没有运动类型/训练量，只能证明练过。
     with_local = PL.from_calendar([
         {"itemType": "workout", "date": "2026-11-03", "title": "轻松跑"}],
         "2026-11-07", {"2026-11-03"})
-    assert with_local["week"][1]["done"] is True, \
-        "本地库有活动应判完成（高驰的活动不在佳明日历里）"
+    assert with_local["week"][1]["trained"] is True and with_local["week"][1]["done"] is False, \
+        "仅有活动日期不能证明完成同项目课表"
     # 今天没排课但已经练了：课表仍是「休息」，练过的单列一行（不冒充课表）
     today_act = PL.from_calendar([
         {"itemType": "activity", "date": "2026-11-07", "title": "晨跑",
@@ -595,7 +598,7 @@ def run() -> int:
     assert "本周完成" in _ui_plan_src, "计划页没有统计本周完成情况"
     # 计划接口读缓存时也要按本地库重算：同步之后「今天练没练」会变
     _aa_plan_src = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
-    assert "annotate(data, days, today)" in _aa_plan_src, \
+    assert "annotate(data, days, today, evidence)" in _aa_plan_src, \
         "计划接口直接用缓存里的完成度，同步后不会更新"
     assert PL._months("2026-11-07")[0] == (2026, 10), "要连上个月一起拉，兼容月份语义"
 
@@ -747,7 +750,7 @@ def run() -> int:
     assert "if Path(s).is_absolute() and Path(s).is_file():" in _ap_src, \
         "真机绝对路径会被误判成同源 URL"
     with _tf.TemporaryDirectory() as _atd:
-        _aroot = _Path(_atd)
+        _aroot = _Path(_atd).resolve()
         (_aroot / "data/media").mkdir(parents=True)
         (_aroot / "data/motion_cache").mkdir(parents=True)
         _av = _aroot / "data/media/a.mp4"
@@ -1469,7 +1472,7 @@ def run() -> int:
     assert "def _month_bars(" in _h_src and "def _bucket_rows(" in _h_src, \
         "历史页缺柱状图/周期分组渲染"
     for _kw in ("本月跑量", "本年跑量", "累计跑量", "近 12 个月跑量"):
-        assert _kw in _h_src, f"历史页首缺统计项：{_kw}"
+        assert _kw in hp, f"历史页首缺统计项：{_kw}"
     assert 'mchip("按周", "week")' in _h_src and 'mchip("按月", "month")' in _h_src \
         and 'mchip("按年", "year")' in _h_src, "没有周/月/年切换"
     # 一键补全只从「我的 → 历史数据」的对话框进（也不在历史页）；
@@ -1598,7 +1601,7 @@ def run() -> int:
         return _chart_svg(doc)
 
     _pg_list2 = _H.history_page({"mode": ["list"]})
-    assert _svg_only(_pg_list2).count('href="/history?mode=month&amp;sel=') == 12, \
+    assert _svg_only(_pg_list2).count('href="/history?mode=month&amp;type=run&amp;sel=') == 12, \
         "列表页柱状图的柱子不能点进对应月份"
     assert "点柱子看当月" in _pg_list2, "柱状图没提示可以点"
     # 月视图是 28~31 根密排 → 柱子不做链接（9px 宽，手指点不准反而误触）
@@ -2771,7 +2774,9 @@ def run() -> int:
     assert _n_wk == 7, f"周视图不是固定 7 个刻度位（周中打开也要铺满整周）：{_n_wk}"
 
     # ---- 产物页批量管理：勾选 + 二次确认删除 ----
-    _fp = U.files_page(ROOT / "output")
+    _product_fixture = Path(tempfile.mkdtemp())
+    (_product_fixture / "selftest.html").write_text("<p>synthetic</p>", encoding="utf-8")
+    _fp = U.files_page(_product_fixture)
     assert 'class="row pick"' in _fp and 'type="checkbox"' in _fp, "产物行没有勾选框"
     assert "pickbar" in _fp and "/__files/delete" in _fp, "产物页没有批量删除条"
     # 行必须是 div 不是 label：label 会把「点右侧箭头」也转发成勾选
@@ -2899,7 +2904,7 @@ def run() -> int:
         "三张数值卡没固定高度"
     _ads = re.findall(r'<span class="ad">([^<]*)</span>', _me)
     # AI 模型服务已经挪到账号行（带开关），网格从 8 张变 7 张
-    assert len(_ads) == 7 and all(len(a) <= 14 for a in _ads), \
+    assert len(_ads) == 8 and all(len(a) <= 14 for a in _ads), \
         f"网格卡数量或说明长度不对：{_ads}"
 
     # ---- 0.6.6：品牌图标统一到开屏 / 角标 / 三张出图 / 完整看板 ------------

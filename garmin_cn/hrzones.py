@@ -58,11 +58,13 @@ def _clean(value, index: int) -> str:
     return s[:MAX_LEN] or GARMIN_ZONE_NAMES[index]
 
 
-def zone_descriptions(cfg: dict | None = None) -> list[str]:
+def zone_descriptions(cfg: dict | None = None, sport: str = "") -> list[str]:
     """Z1–Z5 的中文副名；cfg=None 时读本机 config.json，读失败回退官方默认。"""
     if cfg is None:
         cfg = _cfg()
-    custom = cfg.get("hr_zone_names") if isinstance(cfg, dict) else None
+    from .sports import profile
+    custom = profile(sport, cfg).get("hr_zone_names") if sport else None
+    custom = custom if custom is not None else cfg.get("hr_zone_names") if isinstance(cfg, dict) else None
     if not isinstance(custom, (list, tuple)) or len(custom) != 5:
         return list(GARMIN_ZONE_NAMES)
     return [_clean(custom[i], i) for i in range(5)]

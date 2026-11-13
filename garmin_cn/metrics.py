@@ -199,22 +199,26 @@ def sleep_debt(rows: list[dict], need_min: int = SLEEP_NEED_MIN, window: int = 7
 
 
 # ---------------- 训练负荷 ----------------
-def daily_loads(rows: list[dict], activities: list[dict], max_hr: int = MAX_HR_DEFAULT) -> dict[str, float]:
+def daily_loads(rows: list[dict], activities: list[dict], max_hr: int = MAX_HR_DEFAULT,
+                method: str = "source", profiles: dict | None = None) -> dict[str, float]:
     loads: dict[str, float] = {r["date"]: 0.0 for r in rows}
     for a in activities:
         d = a.get("date")
         if not d:
             continue
-        load = num(a.get("load"))
+        from .sports import family
+        params = (profiles or {}).get(family(a.get("type"))) or {}
+        sport_max = num(params.get("max_hr")) or max_hr
+        load = num(a.get("load")) if method == "source" else None
         if load is None:
             minutes = num(a.get("duration_s"), 0) / 60
             avg_hr = num(a.get("avg_hr"))
             rhr = num(next((r.get("resting_hr") for r in rows if r["date"] == d), None), 55)
-            if avg_hr and minutes:
-                hrr = clamp((avg_hr - rhr) / max(1, (max_hr - rhr)), 0, 1)
+            if avg_hr and minutes and 30 <= avg_hr <= 240 and sport_max > rhr:
+                hrr = clamp((avg_hr - rhr) / max(1, (sport_max - rhr)), 0, 1)
                 load = minutes * hrr * 0.64 * math.exp(1.92 * hrr)
             else:
-                load = minutes * 4
+                load = minutes * 4 if method == "source" else 0
         loads[d] = loads.get(d, 0.0) + (load or 0)
     return loads
 
@@ -229,9 +233,10 @@ def ewma(series: list[float], span: int) -> list[float]:
     return out
 
 
-def training_status(rows: list[dict], activities: list[dict], max_hr: int = MAX_HR_DEFAULT) -> dict:
+def training_status(rows: list[dict], activities: list[dict], max_hr: int = MAX_HR_DEFAULT,
+                    method: str = "source", profiles: dict | None = None) -> dict:
     dates = [r["date"] for r in rows]
-    loads = daily_loads(rows, activities, max_hr)
+    loads = daily_loads(rows, activities, max_hr, method, profiles)
     seq = [loads.get(d, 0.0) for d in dates]
     ctl = ewma(seq, 42)
     atl = ewma(seq, 7)
@@ -269,7 +274,11 @@ def training_status(rows: list[dict], activities: list[dict], max_hr: int = MAX_
         "acute_7d": round(acute, 1),
         "chronic_28d": round(chronic28, 1),
         "week_min": week_min,
+        "method": method,
+        "label": "统一心率 TRIMP" if method == "trimp" else "设备原始负荷（跨来源不可直接比较）",
+        "missing_hr_count": sum(1 for a in activities if not 30 <= (num(a.get("avg_hr")) or 0) <= 240),
         "ctl_series": [round(x, 1) for x in ctl],
+        "series_dates": dates,
         "atl_series": [round(x, 1) for x in atl],
     }
 
@@ -325,6 +334,9 @@ def flags(res: dict) -> list[dict]:
         out.append({"level": "warn", "text": f"疲劳积累 TSB {tsb}，建议减量"})
     elif tsb > 15:
         out.append({"level": "ok", "text": f"状态新鲜 TSB {tsb}，可安排强度课"})
+    missing = res["load"].get("missing_hr_count") or 0
+    if missing:
+        out.append({"level": "warn", "text": f"{missing} 次活动缺少有效心率，综合 TRIMP 未计入这些活动，请同时查看训练时长"})
     if not out:
         out.append({"level": "ok", "text": "各项指标平稳，按计划训练即可"})
 
@@ -373,6 +385,14 @@ def derive(store, date: str, window: int = 30) -> dict:
     except (TypeError, ValueError):
         stale_days = 0
     acts = store.activities(daterange_end_back(date, 35)[0], date)
+    from .sports import config, family, preferred
+    sport_cfg = config()
+    profiles = sport_cfg.get("sport_profiles") or {}
+    # A shared CTL curve uses one formula; vendor load and cycling TSS stay separate.
+    load_dates = daterange(date, max(84, window))
+    load_rows = {r["date"]: r for r in store.recent_days(max(84, window), end=date)}
+    load_history = [load_rows.get(d) or {"date": d} for d in load_dates]
+    load_activities = store.activities(load_dates[0], date)
 
     # 手动睡眠矫正（手表整晚没戴这类）：给出即覆盖，历史行也原地改，
     # 这样 readiness / 睡眠债 / 7 天柱状图用的都是同一份矫正后的数。
@@ -418,7 +438,10 @@ def derive(store, date: str, window: int = 30) -> dict:
             "end": today.get("sleep_end"),
             "debt_h": 0,
         },
-        "load": training_status(history, acts),
+        "load": training_status(load_history, load_activities, method="trimp", profiles=profiles),
+        "load_by_sport": {key: training_status(load_history, [a for a in load_activities if family(a.get("type")) == key],
+                                               method="trimp", profiles=profiles) for key in ("run", "bike")},
+        "preferred_sport": preferred(),
         "activities": acts,
         "trends": {
             "hrv": trend(today, history, "hrv_night"),

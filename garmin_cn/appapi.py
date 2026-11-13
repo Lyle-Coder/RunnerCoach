@@ -41,6 +41,7 @@ from .exportspec import BG_ACT, BG_CARD, spec as export_spec
 from .metrics import derive
 from .store import Store
 from .sync import SyncService
+from .sports import family as sport_family
 
 # 数据放哪：桌面/ Termux 用项目目录；APK 里代码在只读的 assets 里，
 # 由 Kotlin 侧在启动 Python 前设 GARMIN_HOME 指到 filesDir。
@@ -208,8 +209,7 @@ def ai(action: str = "status", payload_json: str = "{}") -> dict:
         return {"ok": False, "error": f"参数不合法：{e}"}
     return aiapi.dispatch(str(action or "status"), payload)
 
-_RUN_TYPES = ("running", "trail_running", "treadmill_running", "track_running",
-              "virtual_run", "indoor_running", "obstacle_run", "ultra_run")
+from .sports import RUN_TYPES as _RUN_TYPES
 
 
 def call(name: str, args_json: str = "[]") -> str:
@@ -1776,7 +1776,11 @@ def _plan_local(today: str, days: set[str], note: str = "") -> dict:
     from .plan import from_coach
 
     try:
-        res = derive(Store(DB), today)
+        store = Store(DB)
+        try:
+            res = derive(store, today)
+        finally:
+            store.conn.close()
         data = from_coach(res, today, days)
     except Exception as e:  # noqa: BLE001 - 兜底失败就老实说，别假装有计划
         from . import diag
@@ -1829,7 +1833,13 @@ def plan(refresh: bool = False, date: str | None = None,
                 "empty": True}
     # 新拉的与缓存的都重新标注一次：同步之后「今天练没练」会变，
     # 缓存里的 done 不能一直用旧的。
-    return {"ok": True, **annotate(data, days, today)}
+    store = Store(DB)
+    try:
+        start = (dt.date.fromisoformat(today) - dt.timedelta(days=21)).isoformat()
+        evidence = store.activities(start, today)
+    finally:
+        store.conn.close()
+    return {"ok": True, **annotate(data, days, today, evidence)}
 
 
 def runs(limit: int = 30, days: int = 180) -> dict:
@@ -1890,7 +1900,8 @@ def history_stats(start: str | None = None, end: str | None = None,
         return {"ok": False, "error": f"{type(ex).__name__}: {ex}"}
 
     kind = (types or "").strip().lower()
-    allow = set(_RUN_TYPES) if kind == "run" else None
+    from .sports import allowed_types
+    allow = allowed_types(kind)
     picked = [r for r in rows if allow is None or (r.get("type") or "") in allow]
 
     months: dict[str, dict] = {}
@@ -2043,12 +2054,8 @@ def activities(start: str | None = None, end: str | None = None,
             return {"ok": False, "error": "开始日期不能晚于结束日期"}
         rows = store.activities(s, e)
         kind = (types or "").strip().lower()
-        if kind == "run":
-            allow = set(_RUN_TYPES)
-        elif kind and kind not in ("all", "全部"):
-            allow = {x.strip() for x in kind.split(",") if x.strip()}
-        else:
-            allow = None
+        from .sports import allowed_types, metric, metric_text
+        allow = allowed_types(kind)
         picked = [r for r in rows if allow is None or (r.get("type") or "") in allow]
         lim = max(1, min(500, int(limit or 100)))
         off = max(0, int(offset or 0))
@@ -2067,6 +2074,8 @@ def activities(start: str | None = None, end: str | None = None,
                 "type": r.get("type") or "",
                 "dist": round(dist, 2),
                 "pace": pace_s,
+                "metric": metric(r),
+                "metric_text": metric_text(r, label=True),
                 "dur": dur_s,
                 "hr": r.get("avg_hr"),
                 "load": r.get("load"),
@@ -2147,18 +2156,20 @@ def act_card_html(activity_id: str, title: str | None = None,
             except Exception as e:
                 return {"ok": False, "source": "coros",
                         "error": f"抓高驰明细失败（需要联网）：{type(e).__name__}: {e}"}
-        elif not detail:
+        elif not detail or (sport_family(row.get("type")) == "bike" and detail.get("adapter_version", 0) < 2):
             try:
                 from . import activity as act
 
                 detail = act.ensure(store, _client(email, password), aid)
             except (AuthError, SessionExpired):
-                return {"ok": False, "need_login": True, "source": "garmin",
-                        "error": "这条活动的明细还没缓存，需要联网登录后抓一次"}
+                if not detail:
+                    return {"ok": False, "need_login": True, "source": "garmin",
+                            "error": "这条活动的明细还没缓存，需要联网登录后抓一次"}
             except Exception as e:
-                return {"ok": False,
-                        "source": provider,
-                        "error": f"获取佳明活动明细失败：{e}"}
+                if not detail:
+                    return {"ok": False,
+                            "source": provider,
+                            "error": f"获取佳明活动明细失败：{e}"}
         if not detail:
             return {"ok": False, "error": "没拿到活动明细"}
 
@@ -2916,7 +2927,7 @@ def clips_update(clip_id: str, dur: float = 0, w: int = 0, h: int = 0,
 
 BUNDLE_KIND = "runnercoach-data"
 BUNDLE_VER = 1
-BUNDLE_EXTRAS = ("plan.json", "manual.json", "meals.json", "clips.json")
+BUNDLE_EXTRAS = ("plan.json", "manual.json", "meals.json", "clips.json", "sports.json")
 BUNDLE_TABLES = ("daily", "activities", "activity_detail", "body",
                  "race_results", "coach_notes")
 
@@ -2983,6 +2994,17 @@ def db_export() -> dict:
             src.close()
         counts = _db_stats(tmp)
         extras = [n for n in BUNDLE_EXTRAS if (HOME / "data" / n).is_file()]
+        from . import sports
+        sport_cfg = sports.config()
+        sport_values = {"preferred_sport": sports.preferred()}
+        for key in ("run", "bike"):
+            p = sports.profile(key, sport_cfg)
+            for field in ("max_hr", "lthr", "ftp_w"):
+                sport_values[f"{key}_{field}"] = p.get(field) or ""
+            sport_values[f"{key}_hr_zone_names"] = ','.join(p.get("hr_zone_names") or [])
+        sport_values["bike_workout"] = sports.profile("bike", sport_cfg).get("workout", "endurance")
+        if "sports.json" not in extras:
+            extras.append("sports.json")
         manifest = {
             "kind": BUNDLE_KIND,
             "bundle": BUNDLE_VER,
@@ -2996,7 +3018,10 @@ def db_export() -> dict:
                        json.dumps(manifest, ensure_ascii=False, indent=1) + "\n")
             z.write(tmp, "garmin.db")
             for n in extras:
-                z.write(HOME / "data" / n, f"extras/{n}")
+                if n == "sports.json":
+                    z.writestr("extras/sports.json", json.dumps(sport_values, ensure_ascii=False))
+                else:
+                    z.write(HOME / "data" / n, f"extras/{n}")
             z.writestr("README.txt", _BUNDLE_README)
     except (OSError, sqlite3.Error, zipfile.BadZipFile) as e:
         return {"ok": False, "error": f"导出失败：{type(e).__name__}: {e}"}
@@ -3074,9 +3099,13 @@ def db_import(zip_path: str = "") -> dict:
             key = f"extras/{n}"
             if key in names:
                 try:
-                    (HOME / "data" / n).write_bytes(z.read(key))
+                    if n == "sports.json":
+                        from .sports import save_settings
+                        save_settings(json.loads(z.read(key)))
+                    else:
+                        (HOME / "data" / n).write_bytes(z.read(key))
                     restored.append(n)
-                except (KeyError, OSError):
+                except (KeyError, OSError, ValueError, TypeError):
                     pass
 
     return {"ok": True, "counts": _db_stats(DB), "restored": restored,

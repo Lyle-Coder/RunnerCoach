@@ -146,7 +146,7 @@ def _week_cells(plan: dict | None, today: str,
         else:
             name, sub = "休", ""
         act = done.get(date) or {}
-        if d.get("done") or (act.get("min") or 0) >= 5:
+        if d.get("done"):
             badge = '<div class="act ok">已完成</div>'
         elif is_today:
             badge = '<div class="act void">今天</div>'
@@ -189,9 +189,9 @@ def _race_week(day: dt.date, done: dict[str, dict] | None = None) -> str:
         if mins >= 5:
             body = f"{km:.1f} km" if km >= 0.1 else f"{mins:.0f} 分钟"
             tgt_km, tgt_min = r.get("km") or 0, r.get("minutes") or 0
-            hit = ((tgt_km and km >= tgt_km * 0.9)
-                   or (tgt_min and mins >= tgt_min * 0.9)
-                   or (r["kind"] == "rest" and mins >= 25))
+            hit = (km >= tgt_km * .9 if tgt_km else mins >= tgt_min * .9 if tgt_min else False)
+            if r["kind"] == "rest":
+                hit = False
             badge = f'<div class="act {"ok" if hit else "part"}">{esc(body)}</div>'
         elif r["date"] < today and r["kind"] != "rest":
             badge = '<div class="act miss">未练</div>'
@@ -275,10 +275,12 @@ def _acts_by_day(acts: list[dict], dates: set[str]) -> dict[str, dict]:
         day = (a.get("date") or "")[:10]
         if day not in dates:
             continue
-        b = out.setdefault(day, {"km": 0.0, "min": 0.0, "n": 0})
-        if (a.get("type") or "") == "running":
+        b = out.setdefault(day, {"km": 0.0, "min": 0.0, "all_min": 0.0, "n": 0})
+        from .sports import family
+        if family(a.get("type")) == "run":
             b["km"] += (num(a.get("distance_m")) or 0) / 1000
-        b["min"] += (num(a.get("duration_s")) or 0) / 60
+            b["min"] += (num(a.get("duration_s")) or 0) / 60
+        b["all_min"] += (num(a.get("duration_s")) or 0) / 60
         b["n"] += 1
     return out
 
@@ -470,7 +472,8 @@ def build_html(res: dict, sync_at: str | None = None,
         if (a.get("date") or "")[:10] != res["date"]:      # 今天练过的去「今日训练」卡看
             dist = (num(a.get("distance_m"), 0) or 0) / 1000
             pace = num(a.get("pace_s_km"))
-            pace_s = f"{int(pace)//60}′{int(pace)%60:02d}″" if pace else "—"
+            from .sports import metric_text
+            pace_s = metric_text(a)
             last = (f'{esc((a.get("date") or "")[5:])} · {dist:.2f}km · {pace_s}'
                     f' · HR{_f(a.get("avg_hr"))}')
 
@@ -490,10 +493,13 @@ def build_html(res: dict, sync_at: str | None = None,
         pace = num(a.get("pace_s_km"))
         # 骑行/游泳这类用配速没意义：5′06″/km 得自己换算才知道是 11.8 km/h，
         # 直接给均速。跑步仍然给配速，那是跑者真正在意的数字。
-        if atype.startswith(("cycl", "bik")) and dist > 0 and dur_s > 0:
-            metric = f"{dist / (dur_s / 3600):.1f} km/h"
-        elif atype.startswith("swim") and pace:
-            metric = f"{int(pace)//60 if pace >= 60 else 0}′{int(pace) % 60:02d}″/100m"
+        from .sports import family
+        if family(atype) == "bike" and dist > 0 and dur_s > 0:
+            from .sports import metric_text
+            metric = metric_text(a)
+        elif family(atype) == "swim" and pace:
+            from .sports import metric_text
+            metric = metric_text(a)
         else:
             metric = f"{int(pace)//60}′{int(pace)%60:02d}″" if pace else ""
         head = (a.get("start_ts") or "")[11:16] or "今天"
@@ -597,7 +603,8 @@ def build_html(res: dict, sync_at: str | None = None,
     rpi = None
     try:
         from . import raceplan
-        if raceplan.available():
+        from .sports import preferred
+        if preferred(res) == "run" and raceplan.available():
             rpi = raceplan.day_info(d)
     except Exception:
         rpi = None

@@ -46,8 +46,7 @@ MIN_DIST_M = 500.0
 
 SOURCE_RANK = {"garmin": 0, "coros": 1, "keep": 2}
 
-_RUN = {"running", "trail_running", "treadmill_running", "track_running", "virtual_run"}
-_BIKE = {"cycling", "road_biking", "mountain_biking", "gravel_cycling", "indoor_cycling"}
+from .sports import RUN_TYPES as _RUN, BIKE_TYPES as _BIKE
 _DAY = 86400.0
 
 
