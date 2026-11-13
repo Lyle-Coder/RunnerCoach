@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -59,6 +60,7 @@ CACHE = ROOT / "data" / "basemaps"
 
 API = "https://restapi.amap.com/v3/staticmap"
 GEO = "https://restapi.amap.com/v3/geocode/regeo"
+GEOCODE = "https://restapi.amap.com/v3/geocode/geo"
 
 
 def key() -> str | None:
@@ -119,6 +121,62 @@ def wgs84_to_gcj02(lon: float, lat: float) -> tuple[float, float]:
     return lon + dlon, lat + dlat
 
 
+def gcj02_to_wgs84(lon: float, lat: float) -> tuple[float, float]:
+    """GCJ 反算回 WGS-84（高德地址解析给的是 GCJ，我们统一按 WGS 存）。
+
+    反算没有闭式解，用「正算 - 差值」迭代逼近：连做 4 次残差就落到厘米级，
+    比查表简单，也不需要引第三方库。下面 geocode() 存的是 WGS，画图时
+    `to_px()` 再按 DATUM 转回 GCJ，来回一趟误差远小于一个像素。
+    """
+    if _out_of_china(lon, lat):
+        return lon, lat
+    wlon, wlat = lon, lat
+    for _ in range(4):
+        glon, glat = wgs84_to_gcj02(wlon, wlat)
+        wlon += lon - glon
+        wlat += lat - glat
+    return wlon, wlat
+
+
+def geocode(addr: str, city: str = "", k: str | None = None) -> dict | None:
+    """地址 / 店名 → 坐标。返回 `{"lat","lon","name"}`（**WGS-84**）或 None。
+
+    住宿、领物点这类地方用户只会写「都江堰锦江之星」这种名字，得靠高德的
+    地理编码落到点上。接口返回的是 GCJ 坐标，这里立刻反算成 WGS，好让
+    它跟轨迹、GPX 走同一套投影——两套坐标系混着存，图上必然错开 400 m。
+    """
+    addr = (addr or "").strip()
+    if not addr:
+        return None
+    k = k or key()
+    if not k:
+        return None
+    q = {"address": addr, "key": k}
+    if city:
+        q["city"] = city
+    url = GEOCODE + "?" + urllib.parse.urlencode(q)
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            j = json.loads(resp.read().decode("utf-8", "ignore"))
+    except Exception:
+        return None
+    if str(j.get("status")) != "1":
+        return None
+    geos = j.get("geocodes") or []
+    if not geos:
+        return None
+    loc = str((geos[0] or {}).get("location") or "")
+    try:
+        glon, glat = (float(x) for x in loc.split(","))
+    except Exception:
+        return None
+    wlon, wlat = gcj02_to_wgs84(glon, glat)
+    return {"lat": round(wlat, 6), "lon": round(wlon, 6),
+            "name": str(geos[0].get("formatted_address") or addr)}
+
+
 # ------------------------------------------------------------------ 取图
 # 高德静态地图一个 zoom 级别对应 **512** 像素的世界宽度，不是 Web 墨卡托标准的
 # 256（等价于别人家的 zoom+1）。这条是实测出来的：把一条已知经纬度的短线交给
@@ -167,7 +225,8 @@ def _span(track: list, z: int) -> tuple[float, float]:
     return max(x1 - x0, 1e-6), max(y1 - y0, 1e-6)
 
 
-def fit(track: list[list[float]], w: int, h: int, pad: float = 18.0) -> dict:
+def fit(track: list[list[float]], w: int, h: int, pad: float = 18.0,
+        extra: list | None = None) -> dict:
     """按轨迹范围定取景：算中心经纬度、一个整数 zoom，以及一个回缩比例 s。
 
     为什么不用「自动取景」（不传 location/zoom）：它留的内边距是黑盒，
@@ -183,8 +242,12 @@ def fit(track: list[list[float]], w: int, h: int, pad: float = 18.0) -> dict:
     现在的做法：跳到**深一档** zoom（轨迹比画幅略大），再整体缩小 s≤1 装回来。
     底图只会被缩小（缩不会糊，高德 scale=2 给了 2 倍像素），轨迹占位更满，
     而且底图永远是「够大再裁」的，绝不会因为 s<1 而露出卡片底色。
+
+    `extra` 是必须一起入画的额外坐标（住宿、领物点等 POI）：只按轨迹取景时，
+    城里的酒店常常落在画幅外，标不上去。传进来后外框把 POI 也算进去。
     """
-    pts = _gcj(track)
+    allp = [list(p) for p in track] + [list(e) for e in (extra or [])]
+    pts = _gcj(allp)
     if len(pts) < 2:
         raise ValueError("轨迹点不足，无法取景")
     lons = [p[0] for p in pts]
@@ -194,14 +257,14 @@ def fit(track: list[list[float]], w: int, h: int, pad: float = 18.0) -> dict:
 
     z = 4
     for cand in range(MAX_ZOOM, 3, -1):
-        bw, bh = _span(track, cand)
+        bw, bh = _span(allp, cand)
         if bw <= need_w and bh <= need_h:
             z = cand
             break
     if z < MAX_ZOOM:
         z += 1                      # 深一档 → 保证下面算出来的 s 落在 (0.5, 1]
 
-    bw, bh = _span(track, z)
+    bw, bh = _span(allp, z)
     s = max(min(need_w / bw, need_h / bh, 1.0), 0.5)
     # 底图要按「回缩后的画幅」取，才能整张贴满卡片：s<1 时取更大的图再缩小
     iw, ih = math.ceil(w / s), math.ceil(h / s)
@@ -325,7 +388,8 @@ def probe(k: str | None = None, save: Path | None = None) -> tuple[bool, str]:
     return False, f"{_ERR.get(code, j.get('info') or '未知错误')}（infocode={code}）"
 
 
-def ensure(track: list[list[float]], w: int, h: int, ident: str = "act") -> dict | None:
+def ensure(track: list[list[float]], w: int, h: int, ident: str = "act",
+           timeout: float = 25, extra: list | None = None) -> dict | None:
     """拿一张底图 + 它的取景参数：先看缓存，再打接口。
 
     返回 `{"png": 路径, "meta": {...}}`；任何一步不顺返回 None，调用方回落到
@@ -351,12 +415,12 @@ def ensure(track: list[list[float]], w: int, h: int, ident: str = "act") -> dict
     k = key()
     if not k:
         return None
-    meta = fit(track, w, h)
+    meta = fit(track, w, h, extra=extra)
     meta["region"] = regeo(meta["center"][1], meta["center"][0])
     try:
         req = urllib.request.Request(static_url(meta, k), headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = resp.read()
     except Exception:
         return None
