@@ -5439,6 +5439,20 @@ def run() -> int:
     _elon, _elat = _BM3.wgs84_to_gcj02(120.0, 30.0)
     assert abs(_plon - _elon) < 1e-5 and abs(_plat - _elat) < 1e-5, \
         "高德 URI 传了 WGS 坐标，导航会偏到隔壁街"
+    # 原生直达：网页 URI 只作兜底，App 里点标注必须发 androidamap://
+    _an = _EVUI._amap_act(30.0, 120.0, "测试,起点")
+    _av = _EVUI._amap_act(30.0, 120.0, "测试,起点", nav=False)
+    assert _an.startswith("amapNav:") and _av.startswith("amapView:"), \
+        "高德直达动作名不对，Kotlin 侧收不到"
+    _ap = _an.split(":", 1)[1].split(",")
+    assert len(_ap) == 3, "载荷必须是 经度,纬度,名称 三段"
+    assert abs(float(_ap[0]) - _elon) < 1e-5 and \
+           abs(float(_ap[1]) - _elat) < 1e-5, \
+        "原生动作传了 WGS 坐标；高德 dev=0 会偏 400~500 m"
+    assert _upx.unquote(_ap[2]) == "测试 起点", \
+        "地名里的逗号没清掉，Kotlin split 会切错载荷"
+    assert all(p.get("act", "").startswith("amapNav:") for p in _pins), \
+        "赛道图标注没带原生导航动作，点了还是开网页"
     assert _EVUI._pin_tag([]) == ""
     assert _EVUI._pin_tag([[30.67, 104.06]]) == \
            _EVUI._pin_tag([[30.67, 104.06]]), "同样的 POI 每次换缓存名会反复取图"
@@ -5456,6 +5470,8 @@ def run() -> int:
         "矢量俯视图上的起终点标注没渲染"
     assert _svg_pins.count("<a href=") >= 3, \
         "三个点都得能点，不能只画个圆"
+    assert _svg_pins.count('data-act="amapNav:') >= 3, \
+        "SVG 标注没带原生动作，手机上点标注仍会跳网页"
     # 图上圆点太小，还得有一排大按钮兜底
     with _mock.patch.object(_BM3, "available", lambda: False):
         _map_html = _EVUI._course_map(
@@ -5465,6 +5481,31 @@ def run() -> int:
     assert "导航到住宿" in _map_html, "住宿没进赛道图的导航按钮"
     assert "导航到高铁" not in _map_html and "导航到航班" not in _map_html, \
         "机场/车站又混进赛道图导航按钮了"
+    assert 'data-act="amapNav:' in _map_html, \
+        "赛道图快捷导航按钮没接原生动作"
+    _trip_html_amap = _EVUI._trips_html("self-2026", "")
+    assert 'data-act="amapNav:' in _trip_html_amap and \
+           'data-act="amapView:' in _trip_html_amap, \
+        "行程列表的「导航 / 看位置」还是纯网页链接"
+    assert 'href="https://uri.amap.com/' in _trip_html_amap, \
+        "网页兜底链接被删了，桌面浏览器和没装高德的手机会点不动"
+    _kt_amap = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert 'name.startsWith("amapNav:")' in _kt_amap and \
+           'name.startsWith("amapView:")' in _kt_amap, \
+        "JS 桥没接高德直达动作"
+    assert 'androidamap://navi?' in _kt_amap and \
+           'androidamap://viewMap?' in _kt_amap and 'dev=0' in _kt_amap, \
+        "没按官方 scheme 唤起高德 App（或坐标偏移标记不对）"
+    assert 'setPackage(AMAP_PKG)' in _kt_amap and \
+           'const val AMAP_PKG = "com.autonavi.minimap"' in _kt_amap, \
+        "没限定高德包名，可能弹应用选择框或被别的 App 截走"
+    _mf_amap = (ROOT / "android/app/src/main/AndroidManifest.xml").read_text(
+        encoding="utf-8")
+    assert "<queries>" in _mf_amap and "com.autonavi.minimap" in _mf_amap, \
+        "Android 11+ 没声明包可见性：装了高德也会被 resolveActivity 判成没装"
+    from garmin_cn import ui as _UI_AMAP
+    assert "e.preventDefault()" in _UI_AMAP.BRIDGE_JS, \
+        "没拦掉 <a href> 默认跳转，会既唤起 App 又开一次网页"
     # 空行程时「行程与预订」区块必须还在，且添加入口默认展开
     with _mock.patch.object(E2, "trips", lambda *a, **k: []), \
             _mock.patch.object(_BM3, "available", lambda: False):
