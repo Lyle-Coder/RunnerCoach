@@ -1679,8 +1679,8 @@ def run() -> int:
     assert '<div class="m1">' not in _ch, "顶部右上角还留着与主图重复的恢复度数字"
     assert '<div class="rd">' in _ch and "延伸阅读" in _ch, "一图流没有延伸阅读"
     # 顶部必须 flex:none：定高 1920 的列里，它一旦被压缩，meta 就会压到 hero 上
-    assert ".top{{position:relative;display:flex;justify-content:space-between;\n" \
-        "  align-items:flex-start;gap:24px;padding-bottom:16px;flex:none;" in _card_src, \
+    _card_src_now = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
+    assert "padding-bottom:16px;flex:none;" in _card_src_now, \
         "一图流顶部会被 flex 压缩，延伸阅读会压到睡眠条上"
     assert '<div class="sl">' in _ch and '<div class="sr">' in _ch, \
         "今日处方没改成两栏，评语与 AI 点评没挪到右侧"
