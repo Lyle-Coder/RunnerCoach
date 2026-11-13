@@ -37,7 +37,7 @@ class CorosLoginActivity : Activity() {
         }
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         address = TextView(this).apply {
-            text = "高驰授权 · 只读取睡眠与 HRV，密码只提交给高驰"
+            text = "高驰授权 · 睡眠与 HRV / 训练导入，密码只提交给高驰"
             setPadding(24, 20, 24, 12)
         }
         layout.addView(address)

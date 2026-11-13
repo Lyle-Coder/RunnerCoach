@@ -1107,7 +1107,8 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
 
     dist_km = (num(row.get("distance_m")) or 0) / 1000
     dur = num(row.get("duration_s")) or 0
-    pace = (num(row.get("pace_s_km")) or (dur / dist_km if dist_km else None))
+    from .sports import pace_seconds
+    pace = pace_seconds(row)
     th = theme_for(row.get("type"))
     # hide 档连精确起跑时刻也去掉：固定作息 + 日期同样能缩小常跑地点范围
     start = "" if mode == PV.MODE_HIDE else (row.get("start_ts") or "")[11:16]
