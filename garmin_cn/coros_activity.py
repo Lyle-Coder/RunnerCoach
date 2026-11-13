@@ -2,8 +2,8 @@
 
 Training Hub frequencyList: timestamp 为百分之一秒，GPS 为度 × 1e7，
 **distance 为厘米（→ ÷100 得米），altitude 已经是米（不要再除）**，
-speed 是「秒/公里」（→ 1000/pace 得 m/s）。summary 里以毫秒为单位的
-totalTime 实际是厘秒，distance 同样是厘米，maxSpeed 是秒/公里。
+speed / avgSpeed / maxSpeed 依 speedUnit 解释：1=km/h×100，3=秒/公里；
+缺少单位的旧格式仍按秒/公里。totalTime 实际是厘秒，distance 同样是厘米。
 分圈 lapItemList 的 distance/time 也是厘米/厘秒。
 协议参考 https://github.com/benniblau/coros-mcp/blob/main/coros_downloader.py
 高驰汇总和步态保留原始口径；轨迹、抽稀和出图复用公共实现。
@@ -22,10 +22,10 @@ import math
 
 from . import activity as act
 from . import route
-from .coros import CorosAuthError, CorosCloud, CorosError
+from .coros import CorosAuthError, CorosCloud, CorosError, speed_mps, average_speed_mps
 
-# 12 = 接入高驰天气，旧缓存重新抓取以补齐天气
-ADAPTER_VERSION = 13
+# 14 = 按 speedUnit 归一骑行速度，旧缓存重新抓取以修正均速/最高速度/曲线。
+ADAPTER_VERSION = 14
 
 
 def raw_activity(row: dict) -> dict:
@@ -391,6 +391,8 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
     samples = data.get("frequencyList") or []
     if not isinstance(samples, list) or any(not isinstance(p, dict) for p in samples):
         raise CorosError("高驰时序数据格式已变化，无法解析轨迹")
+    native = data.get("summary") or {}
+    unit = native.get("speedUnit", data.get("speedUnit"))
     fields = ("directTimestamp", "directSpeed", "directHeartRate", "directDoubleCadence",
               "directElevation", "sumDistance", "directPower")
     metrics, poly = [], []
@@ -400,8 +402,7 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
         if t is None:
             continue
         ms = t * 10  # centiseconds -> milliseconds
-        pace = number(p.get("speed"))
-        speed = 1000 / pace if pace and pace > 0 else None
+        speed = speed_mps(p.get("speed"), p.get("speedUnit", unit))
         metrics.append({"metrics": [ms, speed, number(p.get("heart")),
                         number(p.get("cadence")),
                         number(p.get("altitude")),        # 米，原值
@@ -425,7 +426,6 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
                        "cad": cad, "stride": number(p.get("cadenceLength")),
                        "ele": ele, "dist": dist, "pwr": power,
                        "bb": None, "gap": None, "source": "coros"})
-    native = data.get("summary") or {}
     _gct, _vo = dynamics(data)
     _sport = number(data.get("sportType") or native.get("sportType"))
     _is_run = _sport is not None and int(_sport) in (100, 101, 102, 103)
@@ -546,19 +546,24 @@ def normalize(data: dict, activity_id: str, track: list | None = None) -> dict:
                             f"lapList 无有效分圈，已按逐点切出 {len(laps)} 圈")
             except Exception:
                 pass
-    # summary 的最大速度是「秒/公里」，换算成 m/s 给卡片用（列表接口的 maxSpeed 常为 0）
-    max_pace = number(native_summary.get("maxSpeed"))
+    # 汇总与时序使用相同的明确单位，不把骑行的 km/h×100 当成跑步配速。
+    max_speed = speed_mps(native_summary.get("maxSpeed"), unit)
+    avg_speed = average_speed_mps({**native_summary, "speedUnit": unit})
     row_metrics = {"aerobic_te": number(native_summary.get("aerobicEffect")),
                    "anaerobic_te": number(native_summary.get("anaerobicEffect")),
-                   "max_speed_mps": round(1000 / max_pace, 3) if max_pace and max_pace > 0 else None}
+                   "max_speed_mps": round(max_speed, 3) if max_speed and max_speed > 0 else None}
     for target, key, divisor in (
             ("distance_m", "distance", 100), ("duration_s", "totalTime", 100),
-            ("pace_s_km", "avgSpeed", 1), ("avg_hr", "avgHr", 1),
+            ("avg_hr", "avgHr", 1),
             ("max_hr", "maxHr", 1), ("ascent", "elevGain", 1),
             ("load", "trainingLoad", 1), ("calories", "calories", 1000)):
         value = number(native_summary.get(key), divisor)
         if value is not None:
             row_metrics[target] = value
+    if avg_speed is not None and avg_speed > 0:
+        row_metrics["pace_s_km"] = 1000 / avg_speed
+        if bike:
+            row_metrics["avg_speed_mps"] = avg_speed
     zones = next((g.get("zoneItemList") or [] for g in data.get("zoneList") or []
                   if g.get("type") == 126), [])
     hr_zones = [{"index": int(number(z.get("zoneIndex")) or 0),

@@ -44,6 +44,7 @@ import datetime as dt
 import gzip
 import hashlib
 import json
+import math
 import re
 import time
 import urllib.error
@@ -208,6 +209,49 @@ def _num(v) -> float | None:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def speed_mps(value, unit=3) -> float | None:
+    """Training Hub speedUnit: 1=km/h*100, 2=knots*100,
+    3=sec/km, 4=sec/100m, 5=sec/500m. Missing unit keeps legacy sec/km.
+
+    Verified against the official getSpeedValueWithSpeedType/getSpeedUnitText
+    in static.coros.com/coros-traininghub-v2/assets/main-5sqL4v9u.js.
+    Never infer a unit from the size of the number or the sport alone.
+    """
+    v = _num(value)
+    if v is None or not math.isfinite(v) or v < 0 or v == 65535:
+        return None
+    code = _num(unit) if unit not in (None, "") else 3
+    if code == 1:
+        return v / 360  # km/h*100 -> m/s
+    if code == 2:
+        return v * 1852 / 360000
+    distance = {3: 1000, 4: 100, 5: 500}.get(code)
+    return distance / v if distance and v > 0 else None
+
+
+def average_speed_mps(data: dict) -> float | None:
+    """Prefer the device average; only use effective time/distance as fallback.
+
+    List: meters/seconds. Detail: centimeters/centiseconds. avgSpeedV2, when
+    available, always stores km/h*100, independently of pace display units.
+    """
+    for key, unit in (("avgSpeedV2", 1), ("avgSpeed", data.get("speedUnit"))):
+        speed = speed_mps(data.get(key), unit)
+        if speed is not None and speed > 0:
+            return speed
+    pace = _num(data.get("avgPace"))
+    if pace is not None and math.isfinite(pace) and 0 < pace < 65535:
+        return 1000 / pace
+    dist = _num(data.get("distance", data.get("totalDistance")))
+    duration = _num(data.get("workoutTime"))
+    if not duration or duration <= 0:
+        duration = _num(data.get("totalTime"))
+    # Both dimensions share the same scale in detail (cm / centisecond = m/s).
+    if dist is not None and duration is not None and math.isfinite(dist) and math.isfinite(duration) and dist > 0 and duration > 0:
+        return dist / duration
+    return None
 
 
 def _tsec(v) -> float | None:
@@ -472,6 +516,10 @@ class CorosCloud:
         pace = None
         if dist and dur and dist > 1000:
             pace = round(dur / (dist / 1000))
+        from .sports import family
+        if family(SPORT_TYPE.get(a.get("sportType"))) == "bike":
+            speed = average_speed_mps(a)
+            pace = 1000 / speed if speed and speed > 0 else None
         start_ts = _ts(a.get("startTime"))
         cal = _num(a.get("calorie"))
         return {
