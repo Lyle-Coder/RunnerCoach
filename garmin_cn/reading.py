@@ -144,13 +144,16 @@ def races(today: dt.date | None = None, soon: int | None = None) -> list[dict]:
     return out
 
 
-def pick(seed: str | None = None) -> dict | None:
+def pick(seed: str | None = None, *, with_races: bool = True) -> dict | None:
     """一图流用：随机取一条。
 
     用户要求「每次随机」——不按日期固定，导两次不一样也算正常。
     传 seed 时变成确定性（selftest 用）。
+
+    `with_races=False` 只在简洁模式下用：一图流是给别人扫一眼的图，里面
+    出现「某比赛报名剩 3 天」是打扰而不是信息。术语留着重，赛事不出现。
     """
-    pool = _items() + races(soon=RACE_SOON)
+    pool = _items() + (races(soon=RACE_SOON) if with_races else [])
     if not pool:
         return None
     if seed is not None:

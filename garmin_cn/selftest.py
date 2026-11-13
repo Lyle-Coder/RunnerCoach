@@ -1928,6 +1928,45 @@ def run() -> int:
     assert 'id="rc-read"' in _home_rd and "—— " in _home_rd, \
         "首页底部没有延伸阅读卡，或没按「内容 / —— 数据源」排版"
 
+    # ---- 简洁模式：赛事不进一图流 ----------------------------------------
+    _sm_dir = Path(tempfile.mkdtemp())
+    (_sm_dir / "races.json").write_text(_js3.dumps({"items": [
+        {"id": f"s{i}", "name": f"赛事{i}", "date": _dd(30 + i),
+         "reg_open": _dd(-1), "reg_close": _dd(2 + i)} for i in range(20)]},
+        ensure_ascii=False), encoding="utf-8")
+    _ov5 = _RD2.OVERRIDE
+    _RD2.OVERRIDE = _sm_dir
+    try:
+        _hit = sum(1 for _ in range(30) if (_RD2.pick() or {}).get("kind") == "race")
+        assert _hit > 0, "对照组没抽到赛事，说明 races 没进池子，后面断言等于没测"
+        for _ in range(30):
+            _r = _RD2.pick(with_races=False)
+            assert not _r or _r.get("kind") != "race", \
+                f"with_races=False 仍返回了赛事：{_r}"
+
+        # 一图流：简洁模式下取注脚必须带 with_races=False
+        _seen = []
+
+        def _spy(**kw):
+            _seen.append(kw)
+            return _RD2._items()[0]
+
+        with _mock.patch.object(_RD2, "pick", _spy), \
+                _mock.patch("garmin_cn.appapi.simple_mode", lambda: True):
+            _C.build_html(res, "2026-11-13 06:24", "Garmin 国区", "自检点评")
+        assert _seen and _seen[0].get("with_races") is False, \
+            f"简洁模式下取注脚没关掉赛事：{_seen}"
+
+        # 关掉简洁模式要恢复（别把开关做成单向的）
+        _seen.clear()
+        with _mock.patch.object(_RD2, "pick", _spy), \
+                _mock.patch("garmin_cn.appapi.simple_mode", lambda: False):
+            _C.build_html(res, "2026-11-13 06:24", "Garmin 国区", "自检点评")
+        assert _seen and _seen[0].get("with_races") is True, \
+            f"完整模式下把赛事也关掉了：{_seen}"
+    finally:
+        _RD2.OVERRIDE = _ov5
+
     _rm = _MT.readiness({"date": "2026-11-13", "sleep_score": 80, "recovery": 55},
                          [])
     _names = [p["name"] for p in _rm["parts"]]
