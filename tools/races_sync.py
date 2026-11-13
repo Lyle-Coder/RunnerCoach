@@ -216,25 +216,41 @@ def cmd_check(out: Path) -> int:
         print(f"· {out} 还没有数据（先跑一次 races_sync.py）")
         return 0
     today = dt.date.today()
-    print(f"· {out}  updated={data.get('updated')}  共 {len(items)} 场")
-    stale = bad = 0
+    print(f"· {out}  version={data.get('version')}  updated={data.get('updated')}"
+          f"  共 {len(items)} 场")
+
+    expired, unknown, stale, ok = [], [], [], 0
     for it in items:
-        st = str(it.get("status") or "unknown")
+        try:
+            close = dt.date.fromisoformat(str(it.get("reg_close") or "")[:10])
+        except ValueError:
+            unknown.append(it)
+            continue
+        if close < today:
+            expired.append(it)
+            continue
+        ok += 1
         try:
             age = (today - dt.date.fromisoformat(str(it.get("checked_at") or "")[:10])).days
         except ValueError:
             age = 999
-        flag = ""
         if age > 7:
-            flag += f"  [{age} 天未核对]"
-            stale += 1
-        if st == "unknown":
-            flag += "  [窗口不明，不展示]"
-            bad += 1
-        print(f"  {st:8} {it.get('date')} {it.get('name')}{flag}")
-    print(f"\n· 报名中 {sum(1 for i in items if i.get('status') == 'open')} 场"
-          f" · 过期未核对 {stale} · 窗口不明 {bad}")
-    return 0 if not bad else 0
+            stale.append((it, age))
+
+    print(f"· 报名中 {ok} 场 · 已过期 {len(expired)} · 窗口不明 {len(unknown)}"
+          f" · 超 7 天未核对 {len(stale)}")
+    # 只列需要看的，不把 165 场全刷一遍
+    for it in expired[:5]:
+        print(f"  [过期] {it.get('reg_close')} {it.get('name')}")
+    if len(expired) > 5:
+        print(f"  [过期] …另有 {len(expired) - 5} 场")
+    for it in unknown[:5]:
+        print(f"  [窗口不明] {it.get('name')}")
+    for it, age in stale[:5]:
+        print(f"  [{age} 天未核对] {it.get('name')}")
+    if expired or unknown:
+        print("\n  跑 `--prune` 可以把过期/坏窗口的条目从文件里清掉")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -242,11 +258,31 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sources", type=Path, default=DEFAULT_SOURCES)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--check", action="store_true", help="只检查现有输出")
+    ap.add_argument("--prune", action="store_true",
+                    help="只清理：删掉已出报名窗口的条目，不联网")
     ap.add_argument("--dry-run", action="store_true", help="不写盘，只打印变化")
     args = ap.parse_args(argv)
 
     if args.check:
         return cmd_check(args.out)
+
+    if args.prune:
+        from garmin_cn import races_fetch as RF
+
+        old_out = RF.OUT
+        try:
+            RF.OUT = args.out
+            r = RF.prune()
+        finally:
+            RF.OUT = old_out
+        if not r.get("ok"):
+            print(f"× 清理失败：{r.get('error')}")
+            return 1
+        if not r.get("removed"):
+            print(f"· 没有过期的条目（保留 {r.get('kept', 0)} 场）")
+        else:
+            print(f"√ 清掉 {r['removed']} 场过期条目，保留 {r['kept']} 场")
+        return 0
 
     srcs = load_json(args.sources, {}).get("sources") or []
     if not srcs:
