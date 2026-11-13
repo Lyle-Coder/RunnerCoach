@@ -455,7 +455,10 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
 
     s = route_mod.summary(rt)
     started = (row.get("start_ts") or "")[5:16]
+    from .sports import family
     pl = {
+        "sport": row.get("type") or "running",
+        "is_bike": family(row.get("type")) == "bike",
         "w": W, "h": H,
         "title": row.get("name") or "跑步",
         "sub": " · ".join(x for x in [started,
@@ -679,8 +682,8 @@ function paceAt(rt) {
   const dt = b - a, dd = paceDist(b) - paceDist(a);
   if (dt > 0 && dd > 1) {
     const p = dt / dd * 1000;                        // s/km
-    // 60s/km ~ 40min/km 之外是 GPS 漂移或站定不动，不拿来污染角标
-    if (isFinite(p) && p > 60 && p < 2400) {
+    // 骑行允许超过 60 km/h；跑步仍保持原来的漂移门槛。
+    if (isFinite(p) && p > (D.is_bike ? 20 : 60) && p < 2400) {
       lastPace = lastPace == null ? p : lastPace + (p - lastPace) * 0.30;
     }
   }
@@ -984,7 +987,7 @@ function drawHud(hd, rt) {
     return String(Math.round(a + (b2 - a) * f));
   };
   const cells = [
-    ['配速', fmtPace(paceAt(rt)), '/km', '#E9EFF6'],
+    [D.is_bike ? '速度' : '配速', D.is_bike ? (paceAt(rt) ? (3600 / paceAt(rt)).toFixed(1) : '—') : fmtPace(paceAt(rt)), D.is_bike ? 'km/h' : '/km', '#E9EFF6'],
     ['心率', hrNow(), 'bpm', '#FF7A6B'],
     ['用时', fmtClock(rt), '', '#E9EFF6'],
   ];

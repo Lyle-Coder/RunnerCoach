@@ -8,6 +8,7 @@ import datetime as dt
 
 from .metrics import num
 from . import plan as plan_mod
+from . import sports
 
 
 def _today_acts(res: dict) -> list[dict]:
@@ -82,24 +83,29 @@ def pick_session(res: dict) -> dict:
 
     plan_rest, plan_text, plan_next = _plan_today(res)
 
-    done = _today_acts(res)
+    race = _race_today(res) if sports.preferred(res) == "run" else None
+    items = [i for i in ((res.get("plan") or {}).get("today") or {}).get("items") or [] if not i.get("rest")]
+    sport = "run" if race else (sports.item_family(items[0]) if items else sports.preferred(res))
+    done_all = _today_acts(res)
+    done = [a for a in done_all if sports.family(a.get("type")) == sport]
+    all_min = sum((num(a.get("duration_s")) or 0) for a in done_all) / 60
     done_min = sum((num(a.get("duration_s")) or 0) for a in done) / 60
-    # 距离只算跑步：骑行、力量也记时长，但混进 km 会得出「今天已跑 8 km」的假数
+    # 课表进度仅累计同项目，其他运动只进入总负荷。
     done_km = sum((num(a.get("distance_m")) or 0) for a in done
-                  if (a.get("type") or "") == "running") / 1000
+                  if sports.family(a.get("type")) == sport) / 1000
     done_txt = ""
     if done_min >= 5:
         done_txt = f"另外，今天已记录 {done_min:.0f} 分钟"
         if done_km >= 0.1:
             done_txt += f" / {done_km:.2f} km"
-        done_txt += "，就不用再叠加了。"
+        done_txt += "，后续训练也要考虑这部分负荷。"
+    if all_min - done_min >= 5:
+        done_txt += f"今天另有其他运动 {all_min - done_min:.0f} 分钟，计入总负荷，不抵扣本项目课表。"
 
     parts = {p["name"]: p for p in (res["readiness"].get("parts") or [])}
     hrv_score = (parts.get("HRV") or {}).get("score")
     soft = (s < 75 or (acwr or 0) > 1.5 or debt >= 6
             or (hrv_score is not None and hrv_score < 70))
-
-    race = _race_today(res)
 
     # 今天到底练没练，是排在最前面的一件事。
     # 之前只看恢复度：跑完 10.8 km 之后状态分自然被拉低，于是看板还在说
@@ -109,13 +115,11 @@ def pick_session(res: dict) -> dict:
     tgt_km = num((race or {}).get("km")) or 0
     tgt_min = num((race or {}).get("minutes")) or 0
     if race and race.get("is_rest"):
-        finished = done_min >= 25
+        finished = all_min >= 25
+        done_full = f"{all_min:.0f} 分钟"
     else:
-        finished = done_min >= 10 and (
-            (tgt_km > 0 and done_km >= tgt_km * 0.9)
-            or (tgt_min > 0 and done_min >= tgt_min * 0.9)
-            or (tgt_km <= 0 and tgt_min <= 0 and done_min >= 30)
-        )
+        targets = [{"sport_key": "running", "km": tgt_km, "minutes": tgt_min}] if race else items
+        finished = sports.completion(targets, done_all) if targets else done_min >= 30
 
     if finished and not (race and race.get("is_race")):
         if race and race.get("is_rest"):
@@ -135,14 +139,14 @@ def pick_session(res: dict) -> dict:
             tgt_txt = "（原排 " + " / ".join(x for x in [
                 f"{tgt_km:g} km" if tgt_km else "", f"{tgt_min:.0f} 分钟" if tgt_min else ""] if x) + "）"
         tail = ("恢复度不高是这次训练的结果，不是「今天不该练」的理由——"
-                "接下来只做恢复，别再补跑。" if s < 75 else
+                "接下来只做恢复，别再追加训练。" if s < 75 else
                 "剩下的时间交给恢复：补水、补碳水、拉伸 10 分钟。")
         return {
-            "type": "课表已完成 · 放松恢复",
+            "type": "课表已完成 · 放松恢复" if race or items else "今日已训练 · 放松恢复",
             "duration": f"已完成 {done_full}",
             "intensity": "—",
             "why": f"{plan_txt}{tgt_txt}今天已经完成 {done_full}，不用再叠加训练量。{tail}",
-            "source": "raceplan" if race else "garmin_plan",
+            "source": "raceplan" if race else "garmin_plan" if items else "coach",
         }
 
     if s < 60 or tsb < -25:
@@ -235,6 +239,16 @@ def pick_session(res: dict) -> dict:
                    + (done_txt or ""),
             "source": "garmin_plan",
         }
+    if sport == "bike":
+        from .cycling import session
+        profile = sports.profile("bike")
+        result = session(s if not soft else min(s, 74), tsb, profile.get("ftp_w"), profile.get("workout", "endurance"))
+        if profile.get("lthr"):
+            result["why"] += f"骑行阈值心率参考 {profile['lthr']:.0f} bpm，心率分区以设备设置为准。"
+        if plan_text:
+            result.update(type="按骑行课表训练", why=f"今日课表：{plan_text}。" + result["why"])
+        result["why"] += done_txt
+        return result
     if s < 75 or (acwr or 0) > 1.5 or debt >= 6:
         extra = "，另外近 7 天睡眠缺口偏大" if debt >= 6 else ""
         plan_hint = f"今天计划是{plan_text}，建议按状态降一档执行。" if plan_text else ""
@@ -475,8 +489,15 @@ def context_markdown(res: dict) -> str:
                   for x in body_lines[1:]]
     lines.append("")
     lines.append("## 训练负荷")
+    lines.append(f"- 主要运动：{'骑行' if sports.preferred(res) == 'bike' else '跑步'}；{L.get('label') or '综合负荷'}")
+    for key, label in (("run", "跑步"), ("bike", "骑行")):
+        load = (res.get("load_by_sport") or {}).get(key) or {}
+        if load:
+            lines.append(f"- {label}近 7 天 {load.get('week_min', 0):.0f} 分钟，TRIMP {load.get('acute_7d', 0):.1f}")
     lines.append(f"- 7 天负荷 {L['acute_7d']}｜28 天负荷 {L['chronic_28d']}｜ACWR {L['acwr']}（{L['acwr_state']}）")
     lines.append(f"- CTL {L['ctl']}｜ATL {L['atl']}｜TSB {L['tsb']}")
+    if L.get("missing_hr_count"):
+        lines.append(f"- {L['missing_hr_count']} 次活动缺少心率，未计入 TRIMP；设备负荷与骑行 TSS 单独展示，不相加。")
 
     wk = res["week"]
 
@@ -497,10 +518,7 @@ def context_markdown(res: dict) -> str:
     for a in res["activities"][:6]:
         dur = num(a.get("duration_s"), 0) / 60
         dist = num(a.get("distance_m"), 0) / 1000
-        pace = a.get("pace_s_km")
-        pace_s = ""
-        if pace:
-            pace_s = f"，配速 {int(pace)//60}'{int(pace)%60:02d}\"/km"
+        pace_s = "，" + sports.metric_text(a, label=True)
         lines.append(f"- {a.get('date')} {a.get('type')} {a.get('name') or ''}：{dur:.0f} 分钟，"
                      f"{dist:.2f} km，平均心率 {_fmt(a.get('avg_hr'))}{pace_s}")
     if not res["activities"]:
@@ -516,7 +534,7 @@ def context_markdown(res: dict) -> str:
     for f in res["flags"]:
         lines.append(f"- [{f['level']}] {f['text']}")
 
-    race = _race_today(res)
+    race = _race_today(res) if sports.preferred(res) == "run" else None
     if race:
         from . import raceplan as _rp
 
@@ -528,7 +546,8 @@ def context_markdown(res: dict) -> str:
             lines.append(f"- {r['date']} {r['dow']}：{r['main']}"
                          + (f" · {r['sub']}" if r.get("sub") else ""))
 
-    lines += _event_lines(res["date"])
+    if sports.preferred(res) == "run":
+        lines += _event_lines(res["date"])
 
     plan = res.get("plan")
     if plan and plan.get("available"):

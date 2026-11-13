@@ -58,6 +58,7 @@ from . import privacy as PV
 from . import interval as IV
 from . import easteregg as EG
 from . import hrzones as HRZ
+from . import sports as SP
 
 # 画幅宽 1080：内容高度约 1830（桌面/手机实测一致），裁掉页面留白后
 # 比例 ≈ 1.81，与 9:16 的 1.778 只差 2%，contain 后四边几乎只剩安全带。
@@ -148,15 +149,16 @@ SPORT_FALLBACK = ("运动", "#5FA8E0", "#3B82F6", "pace")
 def theme_for(activity_type: str | None) -> dict:
     """按运动类型取主题，顺带算好标签底/边的三档色阶（同一个主色压暗得来）。"""
     key = (activity_type or "").strip().lower()
-    tag, acc, acc2, kind = SPORTS.get(key, SPORT_FALLBACK)
+    from .sports import family
+    fallback = SPORTS["cycling"] if family(key) == "bike" else SPORTS["running"] if family(key) == "run" else SPORT_FALLBACK
+    tag, acc, acc2, kind = SPORTS.get(key, fallback)
     return {
         "key": key or "other",
         "tag": tag, "acc": acc, "acc2": acc2, "kind": kind,
         "tag_bg": _mix(acc, BG, 0.86),      # 深底带一点主色
         "tag_bd": _mix(acc, BG, 0.52),      # 描边更亮一档
         "grad2": _mix(acc2, "#FFFFFF", 0.55),  # 主数字渐变的末端（跑步≈#9FD8FF，与旧版一致）
-        "is_run": kind == "pace" and key in (
-            "running", "trail_running", "treadmill_running", "track_running", "virtual_run"),
+        "is_run": family(key) == "run",
     }
 
 
@@ -487,7 +489,8 @@ def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
     eles = [p.get("ele") for p in run]
     valid_p = [p for p in paces if p]
     if not valid_p:
-        return f'<div class="empty" style="width:{w}px;height:{h}px">无配速数据</div>'
+        label = "无速度数据" if th["kind"] == "speed" else "无配速数据"
+        return f'<div class="empty" style="width:{w}px;height:{h}px">{label}</div>'
     # 纵向范围取 2%~98% 分位，再各留 6% 余量：既不压扁，也不会把超出的值
     # 夹成一根根「方块」。超出的部分由 clipPath 裁掉。
     sv = sorted(valid_p)
@@ -732,7 +735,10 @@ def _runs(flags: list[bool], limit: int = 26) -> list[int]:
 def spark_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
     """走势小图：跑步看步频/步幅，其他运动看速度/心率。修正过的点单独标出来。"""
     th = theme or theme_for(None)
-    if th["is_run"]:
+    if SP.family(th["key"]) == "bike":
+        run = [p for p in points if p.get("pwr") is not None or p.get("cad") is not None]
+        lack = "无踏频或功率时序"
+    elif th["is_run"]:
         run = [p for p in points if p.get("cad") and (p.get("source") == "coros" or (p.get("spd") or 0) >= 2.2)]
         lack = "无步态时序"
     else:
@@ -792,6 +798,9 @@ def spark_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
     if not th["is_run"]:
         b1 = band(spd, y1, band_h, th["acc"], "速度", " km/h", "spk1")
         b2 = band(hrs, y2, band_h, AXIS_HR, "心率", " bpm", "spk2")
+    if SP.family(th["key"]) == "bike":
+        b1 = band([p.get("pwr") for p in run], y1, band_h, th["acc"], "功率", " W", "spk1")
+        b2 = band([p.get("cad") for p in run], y2, band_h, "#E8C547", "踏频", " rpm", "spk2")
     return f"""
 <svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">
   <defs>
@@ -1141,7 +1150,12 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     # 可能是「未知」甚至历史版本写死的 False（真机删数据重拉后正好是这种），
     # 只在「缺键」时回填会漏掉后一种，导致 10-21 的 15×400 m 永远默认版式。
     # 高驰没有这个标记 —— 走「手动计圈结构」判定（interval.detect_coros）。
-    if is_coros:
+    bike_iv = None
+    if SP.family(row.get("type")) == "bike":
+        from .cycling import intervals
+        bike_iv = intervals(detail)
+        iv = None
+    elif is_coros:
         iv = IV.detect_coros(detail)
     else:
         detail = {**detail, "training": _resolve_training(detail, raw)}
@@ -1177,10 +1191,14 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
             # 单圈活动（骑行代步、短距离）按「每公里」标题会显得莫名其妙
             lap_title, lap_sub = "全程", "未分段"
         else:
-            lap_title, lap_sub = "每公里", f"{n_real} 圈"
+            lap_title, lap_sub = ("分圈" if SP.family(row.get("type")) == "bike" else "每公里"), f"{n_real} 圈"
         if is_coros and detail.get("lap_distance_m") != 1000 and n_real > 1:
             lap_title, lap_sub = "分圈", f"{n_real} 圈"
         lap_html = lap_rows(laps, th, egg=egg)
+    if bike_iv:
+        from .cycling import interval_html
+        lap_title, lap_sub = "骑行功率间歇", f'{bike_iv["sets"]} 组 · 按功率区分工作与恢复'
+        lap_html = interval_html(bike_iv)
     if egg:
         unit = "组" if egg["kind"] == "interval" else "圈"
         lap_sub = (f'{lap_sub} · <em class="egg-sub">'
@@ -1253,6 +1271,37 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
                       (f"{max_spd * 3.6:.1f}" if max_spd else "—", "最高 km/h"),
                       (f"{asc:.0f}", "爬升 m"),
                       (f"{hr_avg:.0f}" if hr_avg else "—", "心率 bpm")]
+    from .sports import family
+    power_note = ""
+    chart_html = None
+    if family(row.get("type")) == "bike":
+        from .cycling import for_detail
+        cm = for_detail(detail)
+        if not any((num(p.get("spd")) or 0) > 0 for p in points) and any(p.get("pwr") is not None for p in points):
+            from .cycling import power_chart
+            chart_title, chart_lg = "功率与心率", "功率"
+            chart_html = power_chart(points, CH_CW, 262)
+        if not dist_km and cm.get("avg_power_w") is not None:
+            hero_lab, hero_sub = "平均功率", "瓦 W"
+            hero_val = f'{cm["avg_power_w"]:.0f}'
+        tech_title = "骑行踏频与功率"
+        def pv(key, digits=0):
+            value = cm.get(key)
+            return f"{value:.{digits}f}" if value is not None else "—"
+        tech_cells = [(f"{cad_avg:.0f}" if cad_avg is not None else pv("cad_avg"), "踏频 rpm"),
+                      (pv("avg_power_w"), "均功率 W"), (pv("normalized_power_w"), "NP W"),
+                      (pv("intensity_factor", 2), "IF")]
+        power_note = (f'NP {pv("normalized_power_w")} W · IF {pv("intensity_factor", 2)} · TSS {pv("tss", 1)}'
+                      f'<br>功率覆盖 {cm.get("power_coverage", 0) * 100:.0f}% · '
+                      + (f'FTP {cm["ftp_w"]:.0f} W' if cm.get("ftp_w") else '未设置 FTP，IF / TSS 不计算'))
+        zs = cm.get("power_zones") or []
+        ztotal = sum(z["seconds"] for z in zs)
+        if ztotal:
+            colors = ("#778899", "#4DA3FF", "#4ADE80", "#E8C547", "#FF9E62", "#F87171", "#C2A8FF")
+            bar = ''.join(f'<i title="Z{z["zone"]} {z["seconds"] / 60:.1f} 分钟" style="display:block;width:{z["seconds"] / ztotal * 100:.2f}%;background:{colors[z["zone"] - 1]}"></i>' for z in zs)
+            power_note += '<br>功率 Z1–Z7<div style="display:flex;height:10px;margin-top:5px;border-radius:5px;overflow:hidden">' + bar + '</div>'
+    if chart_html is None:
+        chart_html = chart_svg(points, CH_CW, 262, th)
     # hero 右侧固定「上 3 下 3」：用时 / 爬升 / 主要益处，然后技术三项。
     # 距离已经提到左侧大数字，不再重复占格。
     head3 = [(dur_txt(dur), "用时", 0), (f"{asc:.0f}", "爬升 m", 0),
@@ -1317,13 +1366,13 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
       {trk_body}
     </div>
     <div class="card zc">
-      {zone_block(hr_z, "心率分区", "占比 / 时长", coros=is_coros)}
+      {zone_block(hr_z, "心率分区", "占比 / 时长", coros=is_coros, descriptions=HRZ.zone_descriptions(sport=row.get("type") or ""))}
     </div>
   </div>
 
   <div class="card ch">
     <div class="ctitle">{esc(chart_title)}<span><em class="lg pace"></em>{esc(chart_lg)}　<em class="lg hr"></em>心率{ele_lg}</span></div>
-    {chart_svg(points, CH_CW, 262, th)}
+    {chart_html}
   </div>
 
   <div class="tech">
@@ -1343,7 +1392,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
         <div class="t"><b>{te_a}</b><span>有氧 TE</span></div>
         <div class="t"><b>{te_n}</b><span>无氧 TE</span></div>
       </div>
-      <div class="drift">{"—" if is_coros else _drift_txt(drift, s, th)}</div>
+      <div class="drift{' power-note' if power_note else ''}">{power_note or ("—" if is_coros else _drift_txt(drift, s, th))}</div>
     </div>
   </div>
 
@@ -1495,6 +1544,7 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
    两卡并排时结构一致，也不会让负荷卡中间空出一大块 */
 .drift{font-size:19px;color:#939FAD;line-height:1.6;margin-top:auto;
   padding-top:14px;border-top:1px solid #23364A}
+.drift.power-note{font-size:16px;line-height:1.35;padding-top:10px}
 .foot{font-size:16px;color:#5A6675;text-align:center;letter-spacing:.4px}
 .zhead{font-size:22px;color:#D3DBE4;font-weight:600;display:flex;justify-content:space-between;
   margin-bottom:10px}

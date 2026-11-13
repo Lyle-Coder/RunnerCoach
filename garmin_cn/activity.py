@@ -69,7 +69,7 @@ def _fix_cadence(cad: float | None, dcad: float | None,
     return (v, fixed) if CAD_LO <= v <= CAD_HI else (None, fixed)
 
 
-def build_series(details: dict, *, keep: int | None = None) -> dict:
+def build_series(details: dict, *, keep: int | None = None, sport: str = "") -> dict:
     """把 details 展开并清洗成绘图用的序列。
 
     ``directTimestamp`` 是**毫秒**，这里统一换算成秒（与分圈 startTimeGMT 对齐）。
@@ -85,6 +85,9 @@ def build_series(details: dict, *, keep: int | None = None) -> dict:
     cad_raw = c.get("directRunCadence") or [None] * n
     dcad = c.get("directDoubleCadence") or [None] * n
     pwr = c.get("directPower") or [None] * n
+    from .sports import family
+    bike = family(sport) == "bike" or (not sport and "directBikeCadence" in c)
+    bike_cad = c.get("directBikeCadence") or c.get("directCadence") or [None] * n
     bb = c.get("directBodyBattery") or [None] * n
     gap = c.get("directGradeAdjustedSpeed") or [None] * n
 
@@ -92,10 +95,14 @@ def build_series(details: dict, *, keep: int | None = None) -> dict:
     rescaled = 0
     for i in range(n):
         s = num(spd[i])
-        cad, scaled = _fix_cadence(cad_raw[i], dcad[i], s)
+        if bike:
+            v = num(bike_cad[i])
+            cad, scaled = (v if v is not None and 0 <= v <= 250 else None), False
+        else:
+            cad, scaled = _fix_cadence(cad_raw[i], dcad[i], s)
         rescaled += 1 if scaled else 0
         stride = None
-        if s and cad and s > 0:
+        if not bike and s and cad and s > 0:
             stride = s * 60.0 / cad * 100.0
             if not (STRIDE_LO <= stride <= STRIDE_HI):
                 stride = None
@@ -155,13 +162,15 @@ def _repair_outliers(rows: list[dict], tol: float = 0.30) -> int:
     return fixed
 
 
-def aggregate(points: list[dict]) -> dict:
+def aggregate(points: list[dict], sport: str = "") -> dict:
     """基于清洗后的时序算统计量，只统计「确实在跑」的样本。"""
-    run = [p for p in points if (p["spd"] or 0) >= SPEED_RUN and p["cad"]]
-    cad = [p["cad"] for p in run]
+    from .sports import family
+    bike = family(sport) == "bike"
+    run = points if bike else [p for p in points if (p["spd"] or 0) >= SPEED_RUN and p["cad"]]
+    cad = [p["cad"] for p in run if p.get("cad") is not None]
     stride = [p["stride"] for p in run if p["stride"]]
     hr = [p["hr"] for p in run if p["hr"]]
-    pwr = [p["pwr"] for p in run if p["pwr"]]
+    pwr = [p["pwr"] for p in run if p.get("pwr") is not None]
 
     def _avg(xs):
         return round(statistics.fmean(xs), 1) if xs else None
@@ -209,9 +218,11 @@ def aggregate(points: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------- 分圈
-def build_laps(splits: dict, points: list[dict]) -> list[dict]:
+def build_laps(splits: dict, points: list[dict], sport: str = "") -> list[dict]:
     """分圈距离/用时取服务端，步频与步幅按时间窗从时序重算。"""
     laps: list[dict] = []
+    from .sports import family
+    bike = family(sport) == "bike"
     for l in (splits.get("lapDTOs") or []):
         t0 = _parse_gmt(l.get("startTimeGMT"))
         dur = num(l.get("duration")) or 0
@@ -222,8 +233,9 @@ def build_laps(splits: dict, points: list[dict]) -> list[dict]:
                 t = p["t"]
                 if not t or not (t0 <= t <= t_end):
                     continue
-                if (p["spd"] or 0) >= SPEED_RUN and p["cad"]:
-                    cad.append(p["cad"])
+                if bike or ((p["spd"] or 0) >= SPEED_RUN and p["cad"]):
+                    if p.get("cad") is not None:
+                        cad.append(p["cad"])
                     if p["stride"]:
                         stride.append(p["stride"])
                     if p["hr"]:
@@ -236,10 +248,11 @@ def build_laps(splits: dict, points: list[dict]) -> list[dict]:
             "pace_s": round(dur / (d / 1000)) if d > 50 else None,
             "hr_avg": round(statistics.fmean(hr)) if hr else num(l.get("averageHR")),
             "hr_max": l.get("maxHR"),
-            "cad": round(statistics.fmean(cad), 1) if cad else None,
+            "cad": round(statistics.fmean(cad), 1) if cad else num(l.get("averageBikeCadence")) if bike else None,
             "stride": round(statistics.fmean(stride), 1) if stride else None,
             "ele_gain": num(l.get("elevationGain")),
-            "cad_server": num(l.get("averageRunCadence")),
+            "cad_server": num(l.get("averageBikeCadence" if bike else "averageRunCadence")),
+            "pwr_avg": num(l.get("averagePower")),
             "stride_server": num(l.get("strideLength")),
             "is_partial": d < 100,
         })
@@ -359,7 +372,7 @@ def resolve_training(detail: dict | None, raw) -> dict:
     return cached if isinstance(cached, dict) else {}
 
 
-def fetch(client, activity_id: int | str, *, with_track: bool = True) -> dict:
+def fetch(client, activity_id: int | str, *, with_track: bool = True, sport: str = "") -> dict:
     """抓取并清洗一次活动的完整明细（不落库）。"""
     aid = str(activity_id)
     details = client.get(
@@ -383,20 +396,26 @@ def fetch(client, activity_id: int | str, *, with_track: bool = True) -> dict:
     except Exception:
         training = None
 
-    series_full = build_series(details)
+    sport = sport or (training or {}).get("type") or ""
+    series_full = build_series(details, sport=sport)
     points = series_full["points"]
-    summary = aggregate(points)
+    summary = aggregate(points, sport=sport)
     summary["repaired"] = series_full.get("repaired", 0)
     summary["rescaled"] = series_full.get("rescaled", 0)
     # route 是「几何 + 时序」合体，播放器专用；旧 payload 没有这个键，
     # 需要 route 的调用方自己带 force 重抓一次（见 motion.ensure_route）
     from . import route as route_mod
+    from .sports import family, profile
+    from .cycling import analyze
 
     return {
         "activity_id": aid,
         "fetched_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "summary": summary,
-        "laps": build_laps(splits, points),
+        "laps": build_laps(splits, points, sport=sport),
+        "sport": sport,
+        "adapter_version": 2,
+        **({"cycling": analyze(points, profile("bike").get("ftp_w"))} if family(sport) == "bike" else {}),
         "series": {"points": _thin(points, SERIES_POINTS)},
         "track": build_track(details) if with_track else [],
         "route": route_mod.build(details) if with_track else {},
@@ -416,10 +435,20 @@ def _thin(points: list[dict], keep: int) -> list[dict]:
 def ensure(store, client, activity_id: int | str, *, force: bool = False) -> dict:
     """取明细：库里有就用库里的，没有就抓一次存进去。"""
     aid = str(activity_id)
+    row = store.get_activity(activity_id=aid) or {}
     if not force:
         got = store.get_detail(aid)
         if got:
-            return got
-    payload = fetch(client, aid)
+            from .sports import family
+            if family(row.get("type")) != "bike" or got.get("adapter_version", 0) >= 2:
+                return got
+            try:
+                payload = fetch(client, aid, sport=row.get("type") or "")
+                store.save_detail(aid, payload)
+                return payload
+            except Exception:
+                # Offline old detail remains usable; never invent missing sensor data.
+                return got
+    payload = fetch(client, aid, sport=row.get("type") or "")
     store.save_detail(aid, payload)
     return payload
