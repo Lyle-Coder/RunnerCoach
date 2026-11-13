@@ -1675,6 +1675,61 @@ def run() -> int:
     _its = _RD2.items(6)
     assert len(_its) == len({x["id"] for x in _its}), "首页轮播里出现了重复条目"
 
+    # ---- 赛事：只展示报名窗口内的 --------------------------------------
+    import json as _js3
+
+    _rdir = Path(tempfile.mkdtemp())
+    _today2 = dt.date.today()
+
+    def _dd(n: int) -> str:
+        return (_today2 + dt.timedelta(days=n)).isoformat()
+
+    (_rdir / "races.json").write_text(_js3.dumps({"version": 1, "updated": _dd(0), "items": [
+        {"id": "a", "name": "报名中", "date": _dd(60), "dist_km": 50, "ascent_m": 2000,
+         "place": "云南", "reg_open": _dd(-2), "reg_close": _dd(10), "source": "赛事官网"},
+        {"id": "b", "name": "未开始", "date": _dd(90), "reg_open": _dd(5), "reg_close": _dd(30)},
+        {"id": "c", "name": "已截止", "date": _dd(20), "reg_open": _dd(-60), "reg_close": _dd(-10)},
+        {"id": "d", "name": "窗口不明", "date": _dd(40)},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    _ov_old = _RD2.OVERRIDE
+    _RD2.OVERRIDE = _rdir
+    try:
+        _rs = _RD2.races()
+        assert [x["head"] for x in _rs] == ["报名中"], \
+            f"报名窗口过滤不对：{[x['head'] for x in _rs]}"
+        assert "报名剩 10 天" in _rs[0]["text"], "没写剩余天数"
+        assert _RD2.items(20), "轮播池没把赛事并进去"
+    finally:
+        _RD2.OVERRIDE = _ov_old
+
+    # 窗口顺序写反必须被 validate 拦下（否则「已截止」会被当成长期有效）
+    _bdir = Path(tempfile.mkdtemp())
+    (_bdir / "races.json").write_text(_js3.dumps({"items": [
+        {"id": "x", "name": "反了", "date": "2027-06-01",
+         "reg_open": "2027-02-01", "reg_close": "2027-01-15"}]}, ensure_ascii=False),
+        encoding="utf-8")
+    _b_old = _RD2.BUNDLED
+    _RD2.BUNDLED = _bdir
+    try:
+        assert any("早于" in m for m in _RD2.validate()), "报名窗口顺序错了却没报"
+    finally:
+        _RD2.BUNDLED = _b_old
+
+    # 抓取解析：一行给全 / 分两行 / 只有截止，都要给对结论
+    import importlib.util as _ilu
+
+    _spec = _ilu.spec_from_file_location("races_sync_t", ROOT / "tools" / "races_sync.py")
+    _rsm = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_rsm)
+    assert _rsm.parse_window("报名时间：2026-11-20 至 2026-12-31", 2026) is not None, \
+        "一行给全的报名窗口没解析出来"
+    assert _rsm.parse_window("报名开始 2026-11-20\n报名截止 2026-12-31", 2026) is not None, \
+        "分两行的窗口没解析出来"
+    assert _rsm.parse_window("报名截止：2026-12-31", 2026) is None, \
+        "只有截止没有开始，不该当成完整窗口"
+    assert _rsm.parse_window("比赛日 2027-03-28，领物 3月26日", 2027) is None, \
+        "把比赛日/领物当成报名窗口了"
+
     _ch = _C.build_html(res, "2026-11-13 06:24", "Garmin 国区", "自检点评")
     assert '<div class="m1">' not in _ch, "顶部右上角还留着与主图重复的恢复度数字"
     assert '<div class="rd">' in _ch and "font-style:italic" in _ch, \
