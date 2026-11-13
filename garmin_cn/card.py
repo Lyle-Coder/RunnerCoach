@@ -691,9 +691,16 @@ def build_html(res: dict, sync_at: str | None = None,
     # 就整块不出现——出图不能因为一块可选内容挂掉。
     rd_html = ""
     try:
+        from . import appapi as _A
         from . import reading as _RD
 
-        _rd = _RD.pick()
+        # 简洁模式：赛事不进一图流。这张图是发出去给人扫一眼的，
+        # 「某比赛报名剩 3 天」属于打扰；术语解释留着，那是纯知识。
+        try:
+            _with_races = not _A.simple_mode()
+        except Exception:
+            _with_races = True
+        _rd = _RD.pick(with_races=_with_races)
         if _rd:
             # 不再单起一行写「延伸阅读」标记：术语名直接当引子，
             # 小号斜体、颜色压暗，读起来像一句注解而不是一个栏目。

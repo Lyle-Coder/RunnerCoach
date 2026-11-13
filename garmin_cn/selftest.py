@@ -1928,6 +1928,45 @@ def run() -> int:
     assert 'id="rc-read"' in _home_rd and "—— " in _home_rd, \
         "首页底部没有延伸阅读卡，或没按「内容 / —— 数据源」排版"
 
+    # ---- 简洁模式：赛事不进一图流 ----------------------------------------
+    _sm_dir = Path(tempfile.mkdtemp())
+    (_sm_dir / "races.json").write_text(_js3.dumps({"items": [
+        {"id": f"s{i}", "name": f"赛事{i}", "date": _dd(30 + i),
+         "reg_open": _dd(-1), "reg_close": _dd(2 + i)} for i in range(20)]},
+        ensure_ascii=False), encoding="utf-8")
+    _ov5 = _RD2.OVERRIDE
+    _RD2.OVERRIDE = _sm_dir
+    try:
+        _hit = sum(1 for _ in range(30) if (_RD2.pick() or {}).get("kind") == "race")
+        assert _hit > 0, "对照组没抽到赛事，说明 races 没进池子，后面断言等于没测"
+        for _ in range(30):
+            _r = _RD2.pick(with_races=False)
+            assert not _r or _r.get("kind") != "race", \
+                f"with_races=False 仍返回了赛事：{_r}"
+
+        # 一图流：简洁模式下取注脚必须带 with_races=False
+        _seen = []
+
+        def _spy(**kw):
+            _seen.append(kw)
+            return _RD2._items()[0]
+
+        with _mock.patch.object(_RD2, "pick", _spy), \
+                _mock.patch("garmin_cn.appapi.simple_mode", lambda: True):
+            _C.build_html(res, "2026-11-13 06:24", "Garmin 国区", "自检点评")
+        assert _seen and _seen[0].get("with_races") is False, \
+            f"简洁模式下取注脚没关掉赛事：{_seen}"
+
+        # 关掉简洁模式要恢复（别把开关做成单向的）
+        _seen.clear()
+        with _mock.patch.object(_RD2, "pick", _spy), \
+                _mock.patch("garmin_cn.appapi.simple_mode", lambda: False):
+            _C.build_html(res, "2026-11-13 06:24", "Garmin 国区", "自检点评")
+        assert _seen and _seen[0].get("with_races") is True, \
+            f"完整模式下把赛事也关掉了：{_seen}"
+    finally:
+        _RD2.OVERRIDE = _ov5
+
     _rm = _MT.readiness({"date": "2026-11-13", "sleep_score": 80, "recovery": 55},
                          [])
     _names = [p["name"] for p in _rm["parts"]]
@@ -3347,7 +3386,7 @@ def run() -> int:
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
     # 每次发版要同步改这里（1.1.9 → 128）。
-    assert 'versionCode = 129' in (
+    assert 'versionCode = 130' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -5170,6 +5209,143 @@ def run() -> int:
     _esc = _EV.rename_file("self-2026", "规程.pdf", "../../逃逸")
     assert _esc == "逃逸.pdf" and (_ed / _esc).is_file(), \
         "改名没剥掉路径成分，文件可能被挪出赛事目录"
+
+    # ---- 删除：文字资料要有按钮，附件也要有，且服务端三道关 -------------
+    assert 'aria-label="删除这条资料"' in _eh, "文字资料没有删除按钮"
+    assert "删除附件" in _eh and 'name="act" value="del"' in _eh, \
+        "附件没有删除按钮"
+    assert "confirm(&quot;删掉" in _eh, "删除没带二次确认（误点就真删了）"
+
+    # ⚠ 同名方法会静默互相覆盖：`_event_file` 是 GET 读附件的（收 path），
+    # 写操作必须换个名字，否则 /event-file/... 一律 500（踩过一次）。
+    import inspect as _insp
+
+    from garmin_cn import serve as _SV
+
+    _params = list(_insp.signature(_SV._Handler._event_file).parameters)
+    assert _params == ["self", "path"], \
+        f"`_event_file` 被写操作覆盖了（现在的参数是 {_params}），附件读不出来"
+    assert hasattr(_SV._Handler, "_event_file_op"), "附件写操作的方法名又改了"
+
+    _del_target = _ed / "逃逸.pdf"
+    assert _EV.remove_file("self-2026", "逃逸.pdf") == "逃逸.pdf", "附件删不掉"
+    assert not _del_target.exists(), "删完文件还在"
+    for _bad in ("../event.json", "..", "event.json", "不存在.pdf"):
+        try:
+            _EV.remove_file("self-2026", _bad)
+            raise AssertionError(f"remove_file 没拦住：{_bad}")
+        except ValueError:
+            pass
+    assert (_ed / "event.json").is_file(), "删除顺带把赛事档案删了"
+
+    # ---- GPX：只有路线、没有途经点也要能用（马拉松基本都是这样） ------
+    import math as _mth
+
+    def _mk_gpx(points, wpts=()):
+        body = "".join(
+            f'<trkpt lat="{a}" lon="{b}"><ele>{c}</ele></trkpt>' for a, b, c in points)
+        w = "".join(
+            f'<wpt lat="{a}" lon="{b}"><name>{nm}</name></wpt>'
+            for a, b, nm in wpts)
+        return ('<?xml version="1.0"?><gpx version="1.1" creator="selftest" '
+                'xmlns="http://www.topografix.com/GPX/1/1">' + w
+                + "<trk><trkseg>" + body + "</trkseg></trk></gpx>")
+
+    # 42 km 直线，海拔锯齿状起伏（保证滤波后仍有爬升）
+    _mpts = [(30.0, 0.4376 * i / 299, round(30 + 8 * _mth.sin(i / 9.0), 1))
+             for i in range(300)]
+    (_ed / "track.gpx").write_text(_mk_gpx(_mpts), encoding="utf-8")
+    _mg = _EV.parse_gpx(_ed / "track.gpx", slug="self-2026")
+    assert _mg["waypoints"] == [], "这份 GPX 本来就没有 wpt，不该解出途经点"
+    assert _mg["ascent_m"] > 0, "没有途经点时爬升也要照常算"
+
+    _mh = _EVUI.render_page({"slug": ["self-2026"]})
+    assert "只有路线、没有途经点" in _mh, "无途经点的 GPX 没有给出说明，用户会以为导不进"
+    assert "相差 -42" not in _mh and "相差 -4" not in _mh, \
+        "没有 CP 表时算出了假的里程差异（基准取了 0）"
+    assert 'stroke-dasharray="3 4"' in _mh, "剖面没有里程刻度，长坡看不出在第几公里"
+
+    # 带途经点时不该再提示「只有路线」
+    _mpts2 = [(30.0, 0.4376 * i / 299, round(30 + 8 * _mth.sin(i / 9.0), 1))
+              for i in range(300)]
+    (_ed / "track.gpx").write_text(
+        _mk_gpx(_mpts2, [(30.0, 0.1, "10K"), (30.0, 0.3, "30K")]), encoding="utf-8")
+    _wg = _EV.parse_gpx(_ed / "track.gpx", slug="self-2026")
+    assert len(_wg["waypoints"]) == 2, f"途经点没解析出来：{_wg['waypoints']}"
+    assert "只有路线、没有途经点" not in _EVUI.render_page({"slug": ["self-2026"]}), \
+        "明明有途经点，还在提示「只有路线」"
+
+    # 刻度疏密跟着赛程：全马 5 km、百公里 10 km
+    assert _EVUI._spark([[0, 10], [20, 20], [40, 15]], 5).count('stroke-dasharray') == 7, \
+        "全马该按每 5 km 打刻度"
+    (_ed / "track.gpx").unlink()
+
+    # ---- 行程与预订：分类、跨年、页面渲染 -------------------------------
+    E2 = _EV  # 同一个模块
+    (E2._dir("self-2026") / "docs.json").write_text(_js3.dumps({"items": [
+        {"title": "去程", "kind": "logistics", "at": "", "url": "",
+         "body": "航班 CA1883 3月25日 08:30 首都T3 起飞\n"
+                 "酒店 3月25日 入住 都江堰锦江之星\n"
+                 "高铁 G8712 3月24日 14:05 成都东站"},
+        {"title": "领物", "kind": "rule", "at": "", "url": "",
+         "body": "领物 3月26日 10:00 开始，17:00 截止"},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    _ev2 = E2.load_event("self-2026")
+    _ev2["date"] = "2027-03-27"
+    (E2._dir("self-2026") / "event.json").write_text(
+        _js3.dumps(_ev2, ensure_ascii=False), encoding="utf-8")
+
+    _tp = E2.trips("self-2026", today="2026-11-13")
+    _by_kind = {x["kind"]: x for x in _tp}
+    assert _by_kind.get("flight"), f"航班没识别出来：{_tp}"
+    assert _by_kind.get("train"), f"高铁没识别出来：{_tp}"
+    assert _by_kind.get("stay"), f"住宿没识别出来：{_tp}"
+    assert _by_kind.get("race"), f"领物/开赛没识别出来：{_tp}"
+    # 跨年：资料写「3月25日」，赛事在 2027 —— 不能算成 2026-03-25（已过期）
+    assert _by_kind["stay"]["at"].startswith("2027-03-25"), \
+        f"跨年日期没按赛事年份推：{_by_kind['stay']['at']}"
+    # 分类不能串行：酒店那行不能被当成航班
+    assert _by_kind["stay"]["text"].startswith("酒店"), \
+        f"住宿那条取到了别的行：{_by_kind['stay']['text']}"
+
+    _th = _EVUI.render_page({"slug": ["self-2026"]})
+    assert "行程与预订" in _th, "赛事页没有「行程与预订」区块"
+    assert 'class="tk stay"' in _th and 'class="tk flight"' in _th, "行程标签没渲染"
+
+    # 临期高亮：3 天内标红
+    _soon = E2.trips("self-2026", today="2027-03-24")
+    assert _soon and _soon[0]["days"] == 0, f"当天那件事没排在最前：{_soon[:1]}"
+
+    # ---- CP 表截图识别：解析、校验、不猜 -------------------------------
+    from garmin_cn import cpocr as _CO
+
+    _fake = ('{"segments":[{"idx":1,"name":"CP1 仙山雅宿","km":10.9,"cutoff":"8:05"},'
+             '{"idx":2,"name":"冰川瀑布景区","km":22.3,"cutoff":null},'
+             '{"idx":3,"name":"","km":30.0,"cutoff":"12:00"},'
+             '{"idx":4,"name":"没里程","km":null}]}')
+    _obj = _CO._json_obj(_fake)
+    _segs, _probs = _CO.clean(_obj["segments"], {"distance_km": 105})
+    assert len(_segs) == 2, f"该丢掉没地名/没里程的行，实际留下 {len(_segs)} 条：{_segs}"
+    assert _segs[0]["name"] == "仙山雅宿", "地名前面的 CP1 前缀没清掉"
+    assert _segs[0]["cutoff"] == "08:05", "关门时间没补零成 HH:MM"
+    assert [x["idx"] for x in _segs] == [1, 2], "编号没重排成连续"
+    assert not _probs, f"正常的一批不该有问题：{_probs}"
+
+    # 模型偶尔会把行读乱：clean 按里程重排（宁可按数字排，也不要按错误顺序编号）
+    _ord_segs, _ = _CO.clean(
+        [{"name": "甲", "km": 50}, {"name": "乙", "km": 40}], {"distance_km": 105})
+    assert [x["km"] for x in _ord_segs] == [40, 50], "乱序没按里程重排"
+    # 同一个里程出现两行（表里常有「CP5 / CP5 补给站」）只留一条
+    _dup_segs, _ = _CO.clean(
+        [{"name": "甲", "km": 30}, {"name": "甲补给", "km": 30}], {"distance_km": 105})
+    assert len(_dup_segs) == 1, "同里程的重复行没去掉"
+
+    _none_segs, _ = _CO.clean([{"name": "甲", "km": 9999}], {"distance_km": 42})
+    assert not _none_segs, "超过赛程 1.3 倍的里程该被丢掉（多半是识别错了行）"
+
+    # 页面：赛事页要有识别入口和文字粘贴（建完赛事之后也能补）
+    assert "cpocr:self-2026" in _th, "赛事页没有 CP 表识别入口"
+    assert 'action="/__event/import"' in _th, "赛事页不能粘贴 CP 表文字"
 
     _EV.set_remind("self-2026", "2026-11-18T18:00", "报名截止", True)
     assert _EV.reminders("self-2026"), "提醒没存下来"
