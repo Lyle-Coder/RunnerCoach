@@ -1133,6 +1133,13 @@ def run_server(root: Path, lan: bool = False, port: int = 8765,
         open_any(f"http://127.0.0.1:{port}/{q}")
 
     try:
+        from . import races_fetch
+
+        races_fetch.start_background()
+    except Exception:
+        pass
+
+    try:
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\n已停止")

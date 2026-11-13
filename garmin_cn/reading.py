@@ -20,9 +20,24 @@ from pathlib import Path
 
 PKG = Path(__file__).resolve().parent
 BUNDLED = PKG / "content"
-OVERRIDE = PKG.parent / "data" / "content"
+# 覆盖目录必须跟着 GARMIN_HOME：APK 里 PKG.parent 是 Chaquopy 的解压目录，
+# 每次更新 APK 都会重建，抓来的赛事数据会跟着没（饮食记录踩过同一个坑）。
+# 用 races_fetch 那份常量，免得两处各写各的又漂移。
+try:
+    from .races_fetch import OUT as _RACES_OUT
+
+    OVERRIDE = _RACES_OUT.parent
+except Exception:                              # pragma: no cover
+    _os = __import__("os")
+    _env = (_os.environ.get("GARMIN_HOME") or "").strip()
+    OVERRIDE = ((Path(_env).expanduser() if _env else PKG.parent)
+                / "data" / "content")
 
 FILES = ("terms.json", "quotes.json")
+# 轮播里赛事的两个闸门：参与抽取的「最紧急几场」、以及每次露出几条。
+# 抓来的报名中赛事有一百多场，没有闸门的话术语永远抽不到。
+RACE_SOON = 12
+RACE_PER_SLIDE = 2
 RACES = "races.json"
 
 
@@ -84,6 +99,10 @@ def _race_of(it: dict, today: dt.date) -> dict | None:
     name = str(it.get("name") or "").strip()
     if not name:
         return None
+    # 赛事名普遍很长（「2026黄浦江源第三届全国山地户外运动挑战赛暨小勇士…」），
+    # 一图流只有两行、首页一行，不截断会把「报名剩 N 天」挤没。
+    if len(name) > 18:
+        name = name[:18].rstrip() + "…"
     left = (reg_close - today).days
     bits = [race_day.strftime("%m月%d日")]
     try:
@@ -102,12 +121,12 @@ def _race_of(it: dict, today: dt.date) -> dict | None:
     if str(it.get("note") or "").strip():
         text += "；" + str(it["note"]).strip()
     return {"id": "race-" + str(it.get("id") or name[:8]), "head": name,
-            "text": f"报名剩 {left} 天 · {text}",
+            "text": ("今天截止 · " if left == 0 else f"报名剩 {left} 天 · ") + text,
             "src": str(it.get("source") or "赛事官方").strip(),
             "rel": ["race"], "kind": "race", "_close": reg_close.isoformat()}
 
 
-def races(today: dt.date | None = None) -> list[dict]:
+def races(today: dt.date | None = None, soon: int | None = None) -> list[dict]:
     """报名窗口内的赛事（按截止日升序）。窗口外的、字段不全的都不返回。"""
     today = today or dt.date.today()
     out = []
@@ -118,6 +137,10 @@ def races(today: dt.date | None = None) -> list[dict]:
         if r:
             out.append(r)
     out.sort(key=lambda x: x.get("_close") or "")
+    if soon:
+        # 抓来的「报名中」可能有 160+ 场：全丢进轮播池，术语会被彻底淹没。
+        # 只让最紧急的几场参与轮播，其余仍在文件里（给将来的赛事页用）。
+        out = out[:max(1, int(soon))]
     return out
 
 
@@ -127,7 +150,7 @@ def pick(seed: str | None = None) -> dict | None:
     用户要求「每次随机」——不按日期固定，导两次不一样也算正常。
     传 seed 时变成确定性（selftest 用）。
     """
-    pool = _items() + races()
+    pool = _items() + races(soon=RACE_SOON)
     if not pool:
         return None
     if seed is not None:
@@ -137,23 +160,39 @@ def pick(seed: str | None = None) -> dict | None:
 
 def items(limit: int = 8, seed: str | None = None) -> list[dict]:
     """首页轮播用：取若干条，尽量不重复（同一 id 只出现一次）。"""
-    pool = _items() + races()
-    if not pool:
+    terms = _items()
+    rs = races(soon=RACE_SOON)
+    if not (terms or rs):
         return []
+    pool = terms + rs
     if seed is not None:
-        pool = list(pool)
         rnd = random.Random(seed)
         rnd.shuffle(pool)
     else:
         random.shuffle(pool)
-    out, seen = [], set()
+    # 赛事占名额上限：一堆截止日期挤在一屏，术语就永远轮不到了。
+    # 先把赛事截到 RACE_PER_SLIDE 条，剩下的位置再用术语补满；
+    # 术语不够时才让赛事多占（宁可满，也不要空位）。
+    out, seen, n_race = [], set(), 0
     for it in pool:
         if it["id"] in seen:
             continue
+        if it.get("kind") == "race" and n_race >= RACE_PER_SLIDE:
+            continue
         seen.add(it["id"])
         out.append(it)
+        if it.get("kind") == "race":
+            n_race += 1
         if len(out) >= limit:
             break
+    if len(out) < limit:                      # 术语太少，用被跳过的赛事补满
+        for it in pool:
+            if it["id"] in seen:
+                continue
+            seen.add(it["id"])
+            out.append(it)
+            if len(out) >= limit:
+                break
     return out
 
 

@@ -746,9 +746,16 @@ def _reading_card(limit: int = 8) -> str:
         return ""
     if not items:
         return ""
+    def _line(it: dict) -> str:
+        # 术语的正文就是一句解释，直接用；赛事光有「报名剩 5 天 · 12月06日」
+        # 不知道是哪场比赛，必须把名称带到前面。
+        if it.get("kind") == "race":
+            return f'{it.get("head") or ""} · {it.get("text") or ""}'.strip(" ·")
+        return it.get("text") or ""
+
     slides = "".join(
         f'<div class="rdi{" on" if i == 0 else ""}">'
-        f'<p class="rdt">{esc(it["text"])}</p>'
+        f'<p class="rdt">{esc(_line(it))}</p>'
         f'<p class="rds">—— {esc(it["src"])}</p></div>'
         for i, it in enumerate(items))
     return ('<section class="rc-panel rc-rd-panel" id="rc-read">'

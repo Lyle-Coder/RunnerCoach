@@ -1730,6 +1730,113 @@ def run() -> int:
     assert _rsm.parse_window("比赛日 2027-03-28，领物 3月26日", 2027) is None, \
         "把比赛日/领物当成报名窗口了"
 
+    # ---- 最酷抓取：解析 / 跨年 / 失败不毁数据 / 轮播配额 ------------------
+    from garmin_cn import races_fetch as _RF
+
+    _zc_card = (
+        '<div class="event" style="padding-bottom:10px">'
+        '<h4 class="name"><a href="https://zuicool.com/event/84480" class="event-a">'
+        ' 2026舟山群岛马拉松 </a></h4>'
+        '<div class="info"><p>2026.12.06 &middot; 浙江 舟山市 普陀区 普陀大剧院</p></div>'
+        '<div class="meta"><p><span>报名截止：11-18 12:00</span></p></div></div>'
+    )
+    _zc_up = (
+        '<div class="event">'
+        '<h4 class="name"><a href="https://zuicool.com/event/32833" class="event-a">'
+        ' 丽人18（南京站） </a></h4>'
+        '<div class="info"><p>2026.12.05 &middot; 江苏 南京市 建邺区 江心洲</p></div>'
+        '<div class="meta"><p><span>报名开始：11-13 12:00</span></p></div></div>'
+    )
+    _zc_old = (
+        '<div class="event">'
+        '<h4 class="name"><a href="https://zuicool.com/event/1" class="event-a">'
+        ' 早就截止了 </a></h4>'
+        '<div class="info"><p>2026.11.20 &middot; 北京 海淀区 大觉寺</p></div>'
+        '<div class="meta"><p><span>报名截止：10-01 23:59</span></p></div></div>'
+    )
+    _zc_rows, _zc_st = _RF.parse_list(_zc_card + _zc_up + _zc_old, dt.date(2026, 11, 13))
+    assert len(_zc_rows) == 1, f"只该留下在报名中的那一条，实际 {len(_zc_rows)} 条"
+    _r0 = _zc_rows[0]
+    assert _r0["id"] == "zc-84480" and _r0["reg_close"] == "2026-11-18", _r0
+    assert _r0["place"] == "浙江 舟山", f"地名没去掉「市」：{_r0['place']}"
+    assert _r0["dist_km"] == 42.2, f"「马拉松」没认出 42.2：{_r0['dist_km']}"
+    assert _r0["reg_open_source"] == "inferred", "reg_open 是推的，必须标出来"
+    assert _zc_st["upcoming"] == 1 and _zc_st["skipped"] >= 1, _zc_st
+
+    # 跨年：赛事 2027.01.01，截止写「12-10」——年份要回到 2026
+    _zc_cross = (
+        '<div class="event">'
+        '<h4 class="name"><a href="https://zuicool.com/event/9" class="event-a">'
+        ' 元旦迎新跑 </a></h4>'
+        '<div class="info"><p>2027.01.01 &middot; 江苏 无锡市 滨湖区</p></div>'
+        '<div class="meta"><p><span>报名截止：12-10 23:59</span></p></div></div>'
+    )
+    _cx, _ = _RF.parse_list(_zc_cross, dt.date(2026, 11, 13))
+    assert _cx and _cx[0]["reg_close"] == "2026-12-10", \
+        f"跨年赛事的报名截止年份推错了：{_cx[0]['reg_close'] if _cx else '没解析出'}"
+
+    # 抓取全挂：绝不能把已有数据抹掉
+    _rfdir = Path(tempfile.mkdtemp())
+    _rf_old = _RF.OUT
+    _RF.OUT = _rfdir / "content" / "races.json"
+    try:
+        _RF.OUT.parent.mkdir(parents=True, exist_ok=True)
+        _RF.OUT.write_text(_js3.dumps({"version": 7, "updated": "2026-11-01",
+                                       "items": [{"id": "keep", "name": "旧数据",
+                                                  "date": "2026-12-01",
+                                                  "reg_open": "2026-11-01",
+                                                  "reg_close": "2026-11-30"}]}),
+                           encoding="utf-8")
+
+        def _boom(url):
+            raise OSError("网络断了")
+
+        _bad = _RF.sync(today=dt.date(2026, 11, 13), opener=_boom)
+        assert not _bad.get("ok"), "抓取失败却报成功"
+        _after = _js3.loads(_RF.OUT.read_text(encoding="utf-8"))
+        assert _after["version"] == 7 and _after["items"][0]["id"] == "keep", \
+            "抓取失败把旧赛事数据覆盖掉了"
+
+        # 当天已更新就不再抓
+        _RF.OUT.write_text(_js3.dumps({"updated": "2026-11-13", "items": [{"id": "x"}]}),
+                           encoding="utf-8")
+        _skip = _RF.maybe_update(today=dt.date(2026, 11, 13), opener=_boom)
+        assert _skip.get("skipped") == "今天已更新", f"当天重复抓：{_skip}"
+    finally:
+        _RF.OUT = _rf_old
+
+    # 轮播配额：赛事再多也不能把术语挤出去
+    _many = Path(tempfile.mkdtemp())
+    _many_items = [{"id": f"r{i}", "name": f"赛事{i}", "date": "2026-12-01",
+                    "reg_open": _dd(-1), "reg_close": _dd(5 + i)} for i in range(30)]
+    (_many / "races.json").write_text(_js3.dumps({"items": _many_items}),
+                                      encoding="utf-8")
+    _ov2 = _RD2.OVERRIDE
+    _RD2.OVERRIDE = _many
+    try:
+        _mix = _RD2.items(8)
+        _nrace = sum(1 for x in _mix if x.get("kind") == "race")
+        assert _nrace <= _RD2.RACE_PER_SLIDE, f"轮播里 {_nrace} 条赛事，术语被挤没了"
+        assert len(_mix) == 8, f"轮播没排满：{len(_mix)}"
+        assert len(_RD2.races(soon=5)) == 5, "soon 没限住参与抽取的场次"
+        assert _RD2.races()[0]["text"].startswith("报名剩"), "倒计时文案不对"
+    finally:
+        _RD2.OVERRIDE = _ov2
+
+    # 「今天截止」不能写成「报名剩 0 天」
+    _td = Path(tempfile.mkdtemp())
+    (_td / "races.json").write_text(_js3.dumps({"items": [
+        {"id": "t", "name": "今天最后一天", "date": _dd(10),
+         "reg_open": _dd(-3), "reg_close": _dd(0)}]}), encoding="utf-8")
+    _ov3 = _RD2.OVERRIDE
+    _RD2.OVERRIDE = _td
+    try:
+        _one = _RD2.races()
+        assert _one and _one[0]["text"].startswith("今天截止"), \
+            f"当天截止的文案是「{_one[0]['text'][:12] if _one else ''}」，不该是「剩 0 天」"
+    finally:
+        _RD2.OVERRIDE = _ov3
+
     _ch = _C.build_html(res, "2026-11-13 06:24", "Garmin 国区", "自检点评")
     assert '<div class="m1">' not in _ch, "顶部右上角还留着与主图重复的恢复度数字"
     assert '<div class="rd">' in _ch and "font-style:italic" in _ch, \
