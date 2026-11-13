@@ -756,7 +756,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
   -webkit-font-smoothing:antialiased}}
 .wrap{{width:{W}px;height:{H}px;padding:34px 52px 26px;display:flex;flex-direction:column}}
 .top{{position:relative;display:flex;justify-content:space-between;
-  align-items:flex-start;gap:24px;padding-bottom:16px;
+  align-items:flex-start;gap:24px;padding-bottom:16px;flex:none;
   border-bottom:1px solid #223349}}
 .top::after{{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
   background:linear-gradient(90deg,#3B82F6,rgba(34,211,238,.35),transparent);
@@ -769,9 +769,9 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .meta{{flex:0 1 46%;max-width:46%;text-align:right;font-size:19px;
   color:#8FA4BF;line-height:1.5;word-break:break-word}}
 /* 延伸阅读：贴在同步时间下面。两行封顶，一图流高度是写死的 1080×1920。 */
-.meta .rd{{margin-top:10px;padding-top:9px;border-top:1px solid #223349;
-  font-size:17px;line-height:1.45;color:#9AA5B1;text-align:left;
-  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;
+.meta .rd{{margin-top:8px;padding-top:8px;border-top:1px solid #223349;
+  font-size:16px;line-height:1.5;color:#9AA5B1;text-align:left;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
   overflow:hidden}}
 .meta .rd span{{display:block;font-size:15px;color:#5FA8E0;font-weight:700;
   letter-spacing:.5px;margin-bottom:2px}}
