@@ -730,10 +730,11 @@ class _Handler(SimpleHTTPRequestHandler):
         self._back(slug, err=err, ok=okmsg, anchor="docs")
 
     def _event_trip(self, u) -> None:
-        """行程与住宿：增 / 删 / 补地址 / 改提前量 / 标已订。
+        """行程与住宿：增 / 删 / 补地址 / 改提前量 / 按类型关开提醒。
 
         地址解析走高德 Web 服务，没 Key 或没认出来也照常存文字——
         不能因为定位失败就把用户订好的酒店信息丢掉。
+        「已订」按 kind 提交：待办锚点是比赛日，不绑某条行程。
         """
         if not self._is_loopback():
             return self._json({"ok": False, "error": "只允许本机操作"}, 403)
@@ -770,15 +771,28 @@ class _Handler(SimpleHTTPRequestHandler):
                                            ("flight", "train", "stay")})
                 okmsg = "预订提前量已更新，待办已重算"
             elif act in ("book", "unbook"):
-                if not E.trip_book(slug, int(one("idx") or -1),
-                                   on=(act == "book")):
-                    raise ValueError("这条行程已经不存在了")
-                okmsg = "已标为已订" if act == "book" else "已取消已订"
+                kind = one("kind") or ""
+                if not kind and one("idx"):
+                    # 旧页面缓存还会带 idx：按那条行程的类型还原
+                    try:
+                        _its = E.trip_manual(slug)
+                        _i = int(one("idx") or -1)
+                        if 0 <= _i < len(_its):
+                            kind = str(_its[_i].get("kind") or "")
+                    except (ValueError, TypeError):
+                        pass
+                if kind not in E.BOOKING_KINDS:
+                    raise ValueError("不知道是哪一类预订，刷新页面再试一次")
+                E.set_booking_done(slug, kind, done=(act == "book"))
+                okmsg = ("这一类已标为已订，不再提醒" if act == "book"
+                         else "这一类已恢复提醒")
             else:
                 item = E.trip_add(slug, one("kind") or "other",
                                   one("at") or "", one("label") or "",
                                   one("place") or "", lead=one("lead"))
-                okmsg = "已加进行程，按提前量生成「该订了」待办"
+                okmsg = "已加进行程"
+                if item.get("kind") in E.BOOKING_KINDS:
+                    okmsg += "，对应类型的预订提醒已自动关闭"
                 if one("place") and not item.get("lat"):
                     okmsg += "；地址没定位到（写具体点，或确认已配高德 Key）"
         except ValueError as e:
