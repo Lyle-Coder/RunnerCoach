@@ -3390,6 +3390,21 @@ def run() -> int:
     assert 'versionCode = 131' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
+    # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。
+    # onActivityResult 里 REQ_CP_IMG 分支在前，「传附件」选完文件会直接
+    # 走 importCpImage() → POST /__event/cp_ocr，附件根本没上传；
+    # 若选的是带表格的图片，还可能把识别结果写进赛道数据。
+    _req_pairs = re.findall(
+        r"const val (REQ_\w+)\s*=\s*(\d+)",
+        (KT / "MainActivity.kt").read_text(encoding="utf-8"))
+    assert _req_pairs, "没扫到 startActivityForResult 的请求码常量"
+    _used_req: dict[str, str] = {}
+    for _name, _code in _req_pairs:
+        assert _code not in _used_req, (
+            f"请求码 {_code} 被 {_used_req[_code]} 与 {_name} 同时占用："
+            "onActivityResult 只会命中靠前的分支，另一个功能会静默走错")
+        _used_req[_code] = _name
+
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
     from unittest import mock as _um
     from garmin_cn import appapi as _AP2
