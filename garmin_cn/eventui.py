@@ -74,6 +74,12 @@ CSS = """<style>
 /* 标签在上、输入在下：横排时 input 的 width:100% 会把标签挤成一个字一行 */
 .frow label{display:flex;flex-direction:column;align-items:stretch;gap:3px;
   font-size:11px;color:var(--muted,#7F8A97);flex:1 1 0;min-width:0}
+/* 一个 label 里塞了多个输入（时:分:秒）时必须独占一行：
+   三个 54px 的框 + 冒号 ≈ 180px，按 1/3 平分只有 ~110px，会溢出盖住
+   右边的「状态」下拉。 */
+.frow label.fwide{flex:1 1 100%}
+.frow label.fwide .hms{width:100%}
+.frow label.fwide .hms input{flex:1 1 0;width:auto;max-width:96px}
 .fi{flex:1 1 auto;min-width:0;width:100%;background:rgba(255,255,255,.05);
   border:1px solid rgba(127,138,151,.28);border-radius:7px;color:var(--fg,#E8F0FB);
   font-size:12px;padding:5px 7px;font-variant-numeric:tabular-nums}
@@ -108,12 +114,14 @@ select.fi{cursor:pointer}
 .dg:first-of-type{margin-top:6px}
 .dr{padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04)}
 .dr:last-child{border-bottom:0}
-.drt{display:flex;align-items:baseline;gap:8px}
+.drt{display:flex;align-items:center;gap:8px}
 .drt b{font-size:12.5px;color:var(--fg,#E8F0FB);font-weight:600}
 .dat{margin-left:auto;font-size:10.5px;color:var(--muted,#7F8A97)}
-.dbtn{flex:none;width:24px;height:24px;padding:0;border-radius:7px;cursor:pointer;
-  border:1px solid rgba(224,106,95,.35);background:transparent;color:#E06A5F;
-  font-size:14px;line-height:1}
+/* 删除按钮：视觉上是小字「删」，命中区给到 44×44（手指按得准），
+   多出来的高度用负 margin 吃掉，行高不受影响。 */
+.dbtn{flex:none;min-width:44px;min-height:44px;padding:0;border-radius:9px;
+  cursor:pointer;border:1px solid rgba(224,106,95,.35);background:transparent;
+  color:#E06A5F;font-size:12px;line-height:1;margin:-10px -4px -10px 0}
 .dinline{margin:0}
 .drb{font-size:12px;color:var(--muted,#7F8A97);line-height:1.75;margin-top:3px;
   word-break:break-word}
@@ -133,6 +141,27 @@ select.fi{cursor:pointer}
 .df .dfl{padding:0;border:0}
 .dfa{display:flex;gap:6px;flex:none;margin-left:8px}
 .dfa .dfb{margin-left:0}
+/* 附件里的删除：和「预览 / 系统打开」同排但红一档，误点代价高 */
+.dfa .dfb.danger{color:#E06A5F;border-color:rgba(224,106,95,.42);
+  background:transparent}
+.dfa .dfb.danger:active{background:rgba(224,106,95,.12)}
+/* 行程与预订：一行一件事，左边标签、中间倒计时、右边日期与出处 */
+.trip{display:flex;align-items:baseline;gap:8px;padding:7px 0;
+  border-top:1px solid rgba(255,255,255,.05)}
+.trip:first-of-type{border-top:0}
+.tk{flex:none;font-size:10px;padding:1px 7px;border-radius:99px;
+  border:1px solid rgba(127,138,151,.3);color:var(--muted,#7F8A97);line-height:1.6}
+.tk.flight{color:#8CC2FF;border-color:rgba(140,194,255,.4)}
+.tk.train{color:#9FE7C8;border-color:rgba(79,214,166,.4)}
+.tk.stay{color:#D6A75A;border-color:rgba(214,167,90,.4)}
+.tk.race{color:#E06A5F;border-color:rgba(224,106,95,.4)}
+.td{flex:none;font-size:11px;color:var(--muted,#7F8A97);
+  font-variant-numeric:tabular-nums}
+.td.warn{color:#D6A75A}
+.td.hot{color:#E06A5F;font-weight:700}
+.tt{flex:1;min-width:0;font-size:12.5px;color:var(--fg,#E8F0FB)}
+.tt b{font-variant-numeric:tabular-nums;margin-right:4px}
+.ts{margin-left:6px;font-size:11px;color:var(--faint,#7689A2)}
 .dtimes{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px}
 .dtime{font-size:10.5px;padding:2px 8px;border-radius:99px;color:#9FE7C8;
   background:rgba(79,214,166,.1);border:1px solid rgba(79,214,166,.28)}
@@ -271,8 +300,13 @@ def _fmt_margin(s: float | None) -> tuple[str, str]:
     return txt, "ok"
 
 
-def _spark(profile: list) -> str:
-    """剖面 sparkline（纯 SVG，不依赖外部图表库）。"""
+def _spark(profile: list, tick_km: float = 0) -> str:
+    """剖面 sparkline（纯 SVG，不依赖外部图表库）。
+
+    `tick_km` 给了就每 N 公里画一条竖虚线和里程数字。马拉松的 GPX 通常
+    只有路线、没有途经点，剖面就成了一条没刻度的曲线——加上 5 km 刻度
+    才看得出「30 km 之后那道长坡在哪」。
+    """
     if len(profile) < 3:
         return ""
     xs = [p[0] for p in profile]
@@ -286,13 +320,66 @@ def _spark(profile: list) -> str:
         px = (x - x0) / ((x1 - x0) or 1) * W
         py = H - (y - y0) / span * (H - 10) - 5
         pts.append(f"{px:.1f},{py:.1f}")
+
+    grid = ""
+    if tick_km and tick_km > 0 and x1 > tick_km:
+        k = tick_km
+        marks = []
+        while k < x1 - 0.05:
+            px = (k - x0) / ((x1 - x0) or 1) * W
+            marks.append(
+                f'<line x1="{px:.1f}" y1="0" x2="{px:.1f}" y2="{H - 2:.0f}" '
+                f'stroke="#223349" stroke-width="1" stroke-dasharray="3 4"/>'
+                f'<text x="{px + 2:.1f}" y="{H - 3:.0f}" fill="#5B6775" '
+                f'font-size="9.5">{k:g}</text>')
+            k += tick_km
+        grid = "".join(marks)
+
     return (f'<svg class="prof" viewBox="0 0 {W:.0f} {H:.0f}" '
             f'preserveAspectRatio="none">'
+            + grid +
             f'<polyline points="{" ".join(pts)}" fill="none" stroke="#4FD6A6" '
             f'stroke-width="2.2" stroke-linejoin="round"/>'
             f'<text x="2" y="12" fill="#7F8A97" font-size="11">{y1:.0f} m</text>'
             f'<text x="2" y="{H - 4:.0f}" fill="#7F8A97" font-size="11">{y0:.0f} m</text>'
             f"</svg>")
+
+
+_TRIP_CN = {"flight": "航班", "train": "高铁", "stay": "住宿",
+            "race": "开赛", "other": "其他"}
+
+
+def _trips_html(slug: str) -> str:
+    """「行程与预订」：资料里认出来的航班 / 高铁 / 住宿 / 领物，带倒计时。
+
+    赛前最容易忘的不是比赛本身，而是机票什么时候订、酒店几号入住。
+    这些写进资料后散在正文里，临到头没人想得起来翻——所以单独拎出来，
+    按时间排，3 天内标红、7 天内标黄。
+    """
+    try:
+        items = E.trips(slug)
+    except Exception:
+        return ""
+    if not items:
+        return ""
+    rows = []
+    for x in items:
+        d = x["days"]
+        when = "今天" if d == 0 else ("明天" if d == 1 else f"还有 {d} 天")
+        hh = x["at"][11:16]
+        stamp = x["at"][5:10].replace("-", "/") + ("" if hh == "00:00" else " " + hh)
+        cls = " hot" if d <= 3 else (" warn" if d <= 7 else "")
+        rows.append(
+            '<div class="trip">'
+            f'<span class="tk {x["kind"]}">{_TRIP_CN.get(x["kind"], "其他")}</span>'
+            f'<span class="td{cls}">{when}</span>'
+            f'<span class="tt"><b>{stamp}</b> {ui.esc(x["label"])}'
+            f'<span class="ts">{ui.esc(x["source"])}</span></span></div>')
+    return ('<div class="card">'
+            '<div class="sub2">从「资料」里认出来的时间点。'
+            '航班 / 高铁 / 住宿只要写了日期就会出现在这里，'
+            '<b>3 天内标红</b>，别等出发前才想起来订。</div>'
+            + "".join(rows) + "</div>")
 
 
 def _relief(rows: list) -> str:
@@ -529,12 +616,29 @@ def render_page(qs: dict | None = None) -> str:
         cmp = E.track_compare(slug) if cd["has_course"] else {"rows": []}
         ref = (course.get("reference") or {}).get("track") or {}
         edition = ref.get("edition") or ""
-        d_km = (cmp.get("track_km") or 0) - ev["distance_km"]
-        d_up = (cmp.get("track_ascent") or 0) - ev["ascent_m"]
-        warn = (f'<div class="sub2 warnbox">轨迹与 2027 官方相差 '
-                f'{d_km:+.1f} km / {d_up:+d} m'
-                + ("；中间几段是改线区，<b>CP 里程与关门以海报为准</b>，轨迹只作地形参考"
-                   if not cmp.get("same_course", True) else "") + "</div>")
+        # 差异一律拿「轨迹实测」跟「赛事标注」比。原先取 cmp["track_km"]，
+        # 而没有 course.json 时（马拉松基本都没有 CP 表）它是 None，于是
+        # 一律算成「相差 -42.2 km」——一句凭空冒出来的假话。
+        _total = stats.get("total_km") or 0
+        _dist0 = ev.get("distance_km") or 0
+        _asc0 = ev.get("ascent_m") or 0
+        d_km = _total - _dist0
+        d_up = (stats.get("ascent_m") or 0) - _asc0
+        # 刻度疏密跟着赛程走：全马 5 km、百公里 10 km、168 用 20 km
+        _tick = 5 if _total <= 45 else (10 if _total <= 120 else 20)
+        _ed = f"{edition} 官方" if edition else "赛事标注"
+        _deviated = cd["has_course"] and not cmp.get("same_course", True)
+        warn = ""
+        if abs(d_km) >= 0.3 or abs(d_up) > max(50, _asc0 * 0.3):
+            warn = (f'<div class="sub2 warnbox">轨迹与{_ed}相差 '
+                    f'{d_km:+.1f} km / {d_up:+d} m'
+                    + ("；中间几段是改线区，<b>CP 里程与关门以海报为准</b>，"
+                       "轨迹只作地形参考" if _deviated else "") + "</div>")
+        # 没有途经点不是错：马拉松的官方 GPX 通常只给路线，不给 CP 标注
+        note = "" if (stats.get("waypoints") or []) else (
+            '<div class="sub2">只有路线、没有途经点：距离与海拔照常计算，'
+            f'剖面按每 {_tick:g} km 打了刻度；CP 里程对照做不了'
+            "（马拉松一般就是这样，不影响其他计算）。</div>")
         rows_cmp = []
         for x in (cmp.get("rows") or []):
             if x.get("km_gpx") is None:
@@ -558,7 +662,7 @@ def render_page(qs: dict | None = None) -> str:
             f'<span>滤波爬升 +{stats["ascent_m"]:,} m / -{stats["descent_m"]:,} m</span>'
             f'<span>{stats["points"]} 点 · 海拔 {stats["min_ele"]}–{stats["max_ele"]} m</span>'
             + (f'<span class="tag">{edition} 届参考</span>' if edition else "")
-            + "</div>" + warn + _spark(stats.get("profile") or [])
+            + "</div>" + warn + note + _spark(stats.get("profile") or [], _tick)
             + (('<div class="cmptitle">CP 里程对照（官方 vs 轨迹）</div>' + cmp_tbl)
                if cmp_tbl else "")
             + '<div class="pager"><div class="btn" data-act="gpx">换一条 GPX</div></div></div>')
@@ -568,7 +672,8 @@ def render_page(qs: dict | None = None) -> str:
             + ("官方 GPX 从「柴古唐斯」小程序下载后，用下面的按钮选中即可，"
                "会自动算出滤波爬升与海拔剖面（GPX 是 3D 赛道视频的前提）。"
                if cd["has_course"] else
-               "有官方 GPX 的话可以导入，会画出海拔剖面；没有也不影响余量之外的各项计算。")
+               "官方 GPX 如果是「只有路线、没有途经点」的也没关系："
+               "会算出距离、滤波爬升和带里程刻度的海拔剖面，只是做不了 CP 对照。")
             + "</div>"
             + (_relief(rows) if cd["has_course"] else "")
             + '<div class="pager"><div class="btn primary" data-act="gpx">选择 GPX 文件</div>'
@@ -770,12 +875,15 @@ def render_page(qs: dict | None = None) -> str:
             body = ui.esc(it["body"]).replace("\n", "<br>")
             link = (f'<a class="dlink" href="{ui.esc(it["url"])}">{ui.esc(it["url"])}</a>'
                     if it.get("url") else "")
+            # 删除按钮写成「删」而不是一个 ×：× 太像「关闭」，
+            # 24px 的小图标在手机上也不容易点中（会误触成打开链接）。
             del_btn = ("" if it.get("locked") else
                        '<form class="dinline" method="post" action="/__event/doc" '
-                       'onsubmit="return confirm(&quot;删掉这条资料？&quot;)">'
+                       'onsubmit="return confirm(&quot;删掉这条资料？删了要重新加&quot;)">'
                        + HID + f'<input type="hidden" name="act" value="del">'
                        f'<input type="hidden" name="idx" value="{i_now}">'
-                       '<button class="dbtn" type="submit" aria-label="删除">×</button></form>')
+                       '<button class="dbtn" type="submit" aria-label="删除这条资料">'
+                       "删</button></form>")
             # 时间点：正文里认出来的日期/时刻，带提醒标记，一眼知道什么时候截止
             _times = ""
             try:
@@ -829,13 +937,20 @@ def render_page(qs: dict | None = None) -> str:
                 f'value="{ui.esc(stem)}"></label></div>'
                 '<div class="fbtns"><button class="btn" type="submit">保存</button>'
                 '<span class="fhint">扩展名自动保留</span></div></form></details>')
+            del_form = (
+                '<form class="dinline" method="post" action="/__event/file" '
+                'onsubmit="return confirm(&quot;删掉这个附件？删了要重新上传&quot;)">'
+                + HID + '<input type="hidden" name="act" value="del">'
+                f'<input type="hidden" name="name" value="{ui.esc(f["name"])}">'
+                '<button class="dfb danger" type="submit" '
+                f'aria-label="删除附件 {ui.esc(f["name"])}">删</button></form>')
             rows_f.append(
                 f'<div class="df"><div class="dfl">'
                 f'<a class="dfn" href="{prev}">{ui.esc(f["name"])}</a>'
                 f'<span class="dfs">{size}</span></div>'
                 f'<div class="dfa"><a class="dfb" href="{prev}">预览</a>'
                 f'<button class="dfb" data-act="openUrl:{url}" type="button">系统打开</button>'
-                "</div>" + rename_form + "</div>")
+                + del_form + "</div>" + rename_form + "</div>")
         files_html = ('<div class="dg">附件 · 点名字在软件内预览；PDF / Office 走系统应用</div>'
                       + "".join(rows_f))
 
@@ -907,7 +1022,7 @@ def render_page(qs: dict | None = None) -> str:
         + HID +
         # 目标完赛：时/分/秒三个框。以前是一个小数（12.5），跑者脑子里是
         # 「12 小时 30 分」，换算成小数既不好填也不好核对。
-        f'<div class="frow"><label>目标完赛（时:分:秒）<span class="hms">'
+        f'<div class="frow"><label class="fwide">目标完赛（时:分:秒）<span class="hms">'
         f'<input class="fi" name="goal_hh" type="number" min="0" max="48" '
         f'value="{_hms(ev["goal_s"]).split(":")[0]}">:'
         f'<input class="fi" name="goal_mm" type="number" min="0" max="59" '
@@ -921,12 +1036,30 @@ def render_page(qs: dict | None = None) -> str:
         '<div class="fbtns"><button class="btn primary" type="submit">保存</button>'
         '<span class="fhint">改目标会立刻重算余量与补给</span></div></form></details>'
         '<details class="fold"><summary>CP 表 · 里程必须递增，否则整表不保存</summary>'
+        # 建完赛事之后也得能补 CP 表：原来只有「新建」视图里有粘贴入口，
+        # 建完就再也找不到地方贴了（用户反馈）。这里给两条路——
+        # 截图识别（大模型）和粘贴文字（规则解析），写盘走同一条链路。
+        '<div class="pager" style="margin:0 0 10px">'
+        f'<button class="btn primary" data-act="cpocr:{slug}" type="button">'
+        "识别 CP 表截图</button>"
+        '<span class="fhint" style="margin-left:8px">'
+        "拍 / 选规程里的表格，自动填进下面；识别结果会先过校验</span></div>"
         '<form class="frm" method="post" action="/__event/course">'
         + HID +
         '<div class="cpe head"><span>CP</span><span>地点</span><span>km</span><span>关门</span></div>'
         + "".join(cp_rows) +
         '<div class="fbtns"><button class="btn primary" type="submit">保存 CP 表</button>'
-        '<span class="fhint">里程必须递增，否则整表不保存</span></div></form></details>'
+        '<span class="fhint">里程必须递增，否则整表不保存</span></div></form>'
+        '<details class="fold"><summary>或者粘贴规程里的表格文字</summary>'
+        '<p class="hint">每行一个「CPn 地名 里程 关门」，制表符 / 全角 / 时长制都能认。</p>'
+        '<form class="frm" method="post" action="/__event/import">'
+        + HID +
+        '<textarea class="ta" name="text" rows="5" placeholder='
+        '"CP1 仙山雅宿 10.9km 关门 08:05&#10;CP2 冰川瀑布景区 22.3km 关门 10:10">'
+        "</textarea>"
+        '<div class="fbtns"><button class="btn" type="submit">解析并写入</button>'
+        '<span class="fhint">有错不会覆盖现有数据</span></div></form></details>'
+        "</details>"
         "</div>")
 
     err = (qs or {}).get("err", [""])[0] if qs else ""
@@ -1082,6 +1215,8 @@ def render_page(qs: dict | None = None) -> str:
             + review_sec
             + ui.sec("补给与换装", _bar("fuel") + fuel_card, anchor="fuel")
             + ui.sec("强制装备", _bar("gear") + gears, anchor="gear")
+            + (ui.sec("行程与预订", _bar("trip") + _trips_html(slug), anchor="trip")
+               if E.trips(slug) else "")
             + ui.sec("资料", _bar("docs") + docs_card, anchor="docs")
             + ui.sec("调整", _bar("adjust") + edit_card + danger_card, anchor="adjust"))
 
