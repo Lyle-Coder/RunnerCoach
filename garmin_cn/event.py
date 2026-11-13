@@ -1514,6 +1514,37 @@ def gear_progress(slug: str | None = None) -> dict:
     return {"done": done, "total": total, "missing": missing}
 
 
+# 赛道俯视图的画幅（2x 屏）。定成常量是因为底图缓存的文件名带着它，
+# 渲染页和导入时的预取必须用同一组数字，否则永远命中不了缓存。
+MAP_W, MAP_H = 720, 360
+
+
+def map_ident(slug: str | None = None) -> str:
+    """底图缓存的 ident：`ev-<slug>`，只留文件名安全的字符。
+
+    这里**不校验赛事是否真的存在**：它只负责拼一个文件名，校验是 _dir 的事。
+    顺手也不依赖调用上下文（不传 slug 时才去问 active_slug）。
+    """
+    raw = str(slug or "") or str(active_slug(None))
+    return "ev-" + re.sub(r"[^A-Za-z0-9._-]+", "-", raw)[:40]
+
+
+def thin_track(rows: list, n: int = 240) -> list:
+    """把 GPS 点抽稀成平面轨迹（[[lat, lon], ...]）。
+
+    240 点足够画出弯道和折返——马拉松全程也就 42 km。不抽稀的话，一个
+    5 万点的 GPX 塞进 track_stats.json 就是几 MB，而页面每次渲染都要读它。
+    """
+    if len(rows) < 2:
+        return []
+    if len(rows) <= n:
+        pick = rows
+    else:
+        step = (len(rows) - 1) / (n - 1)
+        pick = [rows[int(round(i * step))] for i in range(n)]
+    return [[round(float(a), 5), round(float(b), 5)] for a, b, _ in pick]
+
+
 # ---------------------------------------------------------------- GPX
 
 def parse_gpx(path: str | Path, slug: str | None = None,
@@ -1658,6 +1689,8 @@ def parse_gpx(path: str | Path, slug: str | None = None,
         ascent_m=int(ascent), descent_m=int(descent),
         max_ele=round(max(sm)), min_ele=round(min(sm)),
         profile=profile, waypoints=wpts,
+        # 俯视图用：抽稀后的平面轨迹。老数据没有这个字段，渲染时补一次
+        polyline=thin_track(pts),
     )
     if save:
         import shutil
@@ -1667,6 +1700,16 @@ def parse_gpx(path: str | Path, slug: str | None = None,
         if Path(path).resolve() != dst.resolve():
             shutil.copy(path, dst)
         _write(slug, "track_stats.json", out)
+        # 趁用户还在等导入结果，顺手把底图取回来：渲染时才去联网的话，
+        # 打开赛事页会白等几秒（而且失败还不知道为什么）。
+        try:
+            from . import basemap as _BM
+
+            if _BM.available() and out["polyline"]:
+                _BM.ensure(out["polyline"], MAP_W, MAP_H,
+                           ident=map_ident(slug), timeout=8)
+        except Exception:
+            pass
     return out
 
 

@@ -350,7 +350,8 @@ def _pins(pts: list, r: float = PIN_R) -> str:
     return disc(sx, sy, "#4FD6A6") + block(ex, ey, "#E05555", side)
 
 
-def _track_on_map(track: list, w: int, h: int, bm: dict, theme: dict | None = None) -> str:
+def _track_on_map(track: list, w: int, h: int, bm: dict, theme: dict | None = None,
+                  href: str | None = None) -> str:
     """底图版轨迹：底图当背景，折线仍由我们画。
 
     取景是我们自己用 location+zoom 定的（见 basemap.fit），并且那张图是按
@@ -398,7 +399,7 @@ def _track_on_map(track: list, w: int, h: int, bm: dict, theme: dict | None = No
   </defs>
   <g clip-path="url(#trkclip)">
     <g transform="{tf}">
-      <image href="{esc(bm['png'])}" x="0" y="0" width="{iw}" height="{ih}"
+      <image href="{esc(href if href else bm['png'])}" x="0" y="0" width="{iw}" height="{ih}"
              preserveAspectRatio="none" filter="url(#mapdim)"/>
     </g>
     <rect x="0" y="0" width="{w}" height="{h}" fill="url(#mapVeil)"/>
@@ -415,10 +416,13 @@ def _track_on_map(track: list, w: int, h: int, bm: dict, theme: dict | None = No
 
 
 def track_svg(track: list, w: int, h: int, photo: str | None = None,
-              basemap: dict | None = None, theme: dict | None = None) -> str:
+              basemap: dict | None = None, theme: dict | None = None,
+              href: str | None = None) -> str:
     th = theme or theme_for(None)
     if basemap:
-        return _track_on_map(track, w, h, basemap, th)
+        # href 给的是「服务端能取到这张图」的 URL：WebView 里 file:// 会被拦，
+        # 页面必须走同源的 /basemap/xxx.png
+        return _track_on_map(track, w, h, basemap, th, href=href)
 
     pts = project(track, w, h, pad=16)
     if len(pts) < 2:

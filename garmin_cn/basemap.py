@@ -325,7 +325,8 @@ def probe(k: str | None = None, save: Path | None = None) -> tuple[bool, str]:
     return False, f"{_ERR.get(code, j.get('info') or '未知错误')}（infocode={code}）"
 
 
-def ensure(track: list[list[float]], w: int, h: int, ident: str = "act") -> dict | None:
+def ensure(track: list[list[float]], w: int, h: int, ident: str = "act",
+           timeout: float = 25) -> dict | None:
     """拿一张底图 + 它的取景参数：先看缓存，再打接口。
 
     返回 `{"png": 路径, "meta": {...}}`；任何一步不顺返回 None，调用方回落到
@@ -356,7 +357,7 @@ def ensure(track: list[list[float]], w: int, h: int, ident: str = "act") -> dict
     try:
         req = urllib.request.Request(static_url(meta, k), headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = resp.read()
     except Exception:
         return None

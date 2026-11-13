@@ -5378,6 +5378,28 @@ def run() -> int:
     except ValueError:
         pass
 
+    # ---- 赛道俯视图：抽稀、底图 URL、页面渲染 -------------------------
+    assert len(_EV.thin_track([(30.0, 120.0, 10)] * 5000)) == 240, "抽稀没按 240 点收口"
+    _th_small = _EV.thin_track([(30.0, 120.0, 10), (30.1, 120.1, 12)])
+    assert _th_small == [[30.0, 120.0], [30.1, 120.1]], f"少点数被改动了：{_th_small}"
+    assert _EV.thin_track([(30.0, 120.0, 10)]) == [], "只有 1 个点时不该算轨迹"
+    assert _EV.map_ident("panda-105k-2027") == "ev-panda-105k-2027"
+    # slug 由 _dir/active_slug 保证合法，这里只确认前缀和字符集
+    assert _EV.map_ident("mar-2026").startswith("ev-")
+
+    # 页面里必须有俯视图；这里把底图关掉，保证测试不联网
+    from garmin_cn import basemap as _BM2
+
+    _mk = [(30.0 + i * 0.0002, 120.0 + i * 0.0003, 20) for i in range(240)]
+    _st = E2._read("self-2026", "track_stats.json") or {}
+    _st = dict(_st)
+    _st["polyline"] = _EV.thin_track(_mk)
+    E2._write("self-2026", "track_stats.json", _st)
+    with _mock.patch.object(_BM2, "available", lambda: False):
+        _mh2 = _EVUI.render_page({"slug": ["self-2026"]})
+    assert 'class="cmap"' in _mh2, "赛事页没有赛道俯视图"
+    assert "矢量轨迹" in _mh2, "没配底图时该说明可以配 Key"
+
     # 预览页：图片必须带「缩到一屏」的样式（否则长截图把整页拉长，像没加载出来）
     (_ed / "海报.png").write_bytes(b"\x89PNG\r\n")
     _pv = _EVUI.render_doc_page({"slug": ["self-2026"], "name": ["海报.png"]})
