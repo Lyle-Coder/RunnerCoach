@@ -9,7 +9,7 @@
 
 三条硬规则
 ----------
-1. **只读**：只服务 output/ 下已生成的文件，没有任何写入口。
+1. **局域网只读**：只读页面与产物；设置及高驰训练写入仅供本机、需页面令牌。
 2. **默认只听 127.0.0.1**：本机看不需要暴露端口；`--lan` 才绑 0.0.0.0。
 3. **绑 0.0.0.0 必须有访问码**：output/ 里是健康数据、体重、轨迹。
    同一 WiFi 不等于可信网络（宿舍、共享办公、咖啡馆都算）。
@@ -137,6 +137,15 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._html(ui.sports_page(self.server.sports_token))
         if u.path in ("/plan", "/plan.html"):
             return self._html(ui.plan_page(parse_qs(u.query)))
+        if u.path in ("/training", "/__training/status"):
+            if not self._is_loopback():
+                return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+            from . import trainingui
+            if u.path.endswith("/status"):
+                return self._json(trainingui.auth_status())
+            if not getattr(self.server, "training_token", ""):
+                self.server.training_token = secrets.token_urlsafe(32)
+            return self._html(trainingui.render(parse_qs(u.query), self.server.training_token))
         if u.path in ("/files", "/files.html"):
             return self._html(ui.files_page(root))
         if u.path in ("/privacy", "/privacy.html"):
@@ -900,6 +909,27 @@ class _Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         u = urlparse(self.path)
+        if u.path.startswith("/__training/"):
+            if not self._is_loopback():
+                return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                if not 0 < n <= 4096:
+                    raise ValueError("参数过大或为空")
+                values = json.loads(self.rfile.read(n).decode("utf-8"))
+                token = getattr(self.server, "training_token", "")
+                if not isinstance(values, dict) or not token or not isinstance(values.get("token"), str) or not hmac.compare_digest(values["token"], token):
+                    return self._json({"ok": False, "error": "页面已过期，请重新打开训练导入"}, 403)
+                from . import appapi as A, trainingui
+                if u.path == "/__training/auth":
+                    return self._json(trainingui.start_auth())
+                if u.path == "/__training/recheck":
+                    return self._json(A.coros_workout_check(str(values.get("import_key") or "")))
+                if u.path not in ("/__training/submit", "/__training/check"):
+                    return self._json({"ok": False, "error": "不支持的操作"}, 404)
+                return self._json(A.coros_workout_submit(str(values.get("preview_id") or ""), u.path.endswith("/check")))
+            except (ValueError, OSError) as e:
+                return self._json({"ok": False, "error": str(e)}, 400)
         if u.path == "/__sports":
             if not self._is_loopback():
                 return self._json({"ok": False, "error": "只允许本机操作"}, 403)
