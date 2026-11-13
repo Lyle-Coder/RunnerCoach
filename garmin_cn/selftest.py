@@ -4824,6 +4824,65 @@ def run() -> int:
     except ImportError:
         pass
 
+    # ---- 赛事资料：改名 / 编辑 / 时间点 / 软件内预览 / 首页临近提醒 -------
+    import json as _js2
+    from garmin_cn import event as _EV
+    from garmin_cn import eventui as _EVUI
+
+    _etmp = Path(tempfile.mkdtemp())
+    _EV.EVENTS = _etmp
+    _ed = _etmp / "self-2026"
+    _ed.mkdir()
+    (_ed / "event.json").write_text(_js2.dumps({
+        "slug": "self-2026", "name": "自检赛", "short": "自检", "date": "2026-11-20",
+        "start_time": "08:00", "status": "confirmed", "distance_km": 42.2,
+        "ascent_m": 120, "duration_h": 6, "goal_s": 13500}, ensure_ascii=False),
+        encoding="utf-8")
+    _EV.add_doc("self-2026", "rule", "关门与罚则",
+                "报名截止 2026-11-18 18:00，领物 11月19日 10:00-20:00")
+    _tl = _EV.timeline("self-2026")
+    _ats = [(x["at"], x["label"]) for x in _tl]
+    assert ("2026-11-18T18:00", "报名截止") in _ats, f"资料里的报名截止没认出来：{_ats}"
+    assert ("2026-11-19T10:00", "领物") in _ats, f"中文日期没认出来：{_ats}"
+    assert ("2026-11-20T08:00", "开赛") in _ats, "赛事开赛时间没进时间线"
+    assert _EV.parse_times("配速 4-5 分，心率 150-160", 2026) == [], \
+        "把配速/心率区间当成日期了"
+
+    _EV.update_doc("self-2026", 0, title="关门与罚则（改）")
+    assert _EV.docs("self-2026")["items"][0]["title"] == "关门与罚则（改）", "改标题没生效"
+    (_ed / "参赛号.png").write_bytes(b"\x89PNG\r\n")
+    assert _EV.rename_file("self-2026", "参赛号.png", "号码布") == "号码布.png", "附件改名失败"
+    assert not (_ed / "参赛号.png").exists(), "改名后旧文件还在"
+
+    _eh = _EVUI.render_page({"slug": ["self-2026"]})
+    assert 'value="edit"' in _eh, "资料页没有「改」表单，名称改不了"
+    assert 'class="dtime"' in _eh, "资料页没把识别到的时间点显示出来"
+    assert "/event-doc?slug=self-2026" in _eh, "附件没有软件内预览入口"
+    assert 'action="/__event/file"' in _eh, "附件没有改名入口"
+    assert 'class="dimg"' in _EVUI.render_doc_page(
+        {"slug": ["self-2026"], "name": ["号码布.png"]}), "图片预览打不开"
+    (_ed / "规程.pdf").write_bytes(b"%PDF-1.4")
+    assert "系统应用打开" in _EVUI.render_doc_page(
+        {"slug": ["self-2026"], "name": ["规程.pdf"]}), "PDF 没给系统打开的兜底"
+    # 改名把路径成分剥掉（不报错，但绝不能把文件挪出赛事目录）
+    _esc = _EV.rename_file("self-2026", "规程.pdf", "../../逃逸")
+    assert _esc == "逃逸.pdf" and (_ed / _esc).is_file(), \
+        "改名没剥掉路径成分，文件可能被挪出赛事目录"
+
+    _EV.set_remind("self-2026", "2026-11-18T18:00", "报名截止", True)
+    assert _EV.reminders("self-2026"), "提醒没存下来"
+    _EV.set_remind("self-2026", "2026-11-18T18:00", "报名截止", False)
+    assert not _EV.reminders("self-2026"), "关掉提醒后还留着键"
+
+    # 首页「临近」：有 30 天内的时间点时出现，且带提醒开关
+    _EV.EVENTS = Path(ROOT) / "data" / "events"
+    _up_html = _EVUI and U.home_page()
+    if _EV.upcoming(days=30):
+        assert '<section class="rc-panel rc-up-panel">' in _up_html, \
+            "有临近时间点，首页却没出现「临近」块"
+    assert "action=\"/__event/remind\"" in _up_html or not _EV.upcoming(days=30), \
+        "首页临近块没有提醒开关"
+
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
     for p in (tmp_db, tmp_html):

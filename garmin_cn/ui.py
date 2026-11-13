@@ -687,6 +687,51 @@ def _vital(label: str, value, unit: str, sub: str, spark: str,
             f'<div class="sub">{esc(sub)}</div>{_s2}{spark}</div>')
 
 
+def _upcoming_html(days: int = 30, limit: int = 3) -> str:
+    """首页「临近」：未来 N 天里赛事时间线的下几个点（领物、报名截止、开赛）。
+
+    只显示最近 limit 条；一条都没有就整块不出现，不留空盒子。
+    提醒开关走表单（/__event/remind），不依赖 JS。
+    """
+    try:
+        from . import event as E
+
+        rows = E.upcoming(days=days)[:limit]
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    out = []
+    for r in rows:
+        slug = r.get("slug") or ""
+        try:
+            on = bool((E.reminders(slug) or {}).get("%s|%s" % (r["at"], r["label"])))
+        except Exception:
+            on = False
+        d = r.get("days")
+        when = "今天" if d == 0 else ("明天" if d == 1 else f"T-{d}")
+        hh = r["at"][11:16] if r["at"][11:16] != "00:00" else ""
+        stamp = r["at"][5:10].replace("-", "/") + (f" {hh}" if hh else "")
+        label = r.get("label") or "时间点"
+        out.append(
+            '<div class="rc-up">'
+            f'<span class="rc-up-d{" hot" if (d or 0) <= 2 else ""}">{esc(when)}</span>'
+            f'<span class="rc-up-t"><b>{esc(stamp)}</b> {esc(label)}'
+            f'<span class="rc-up-e">{esc(r.get("event") or "")}</span></span>'
+            '<form method="post" action="/__event/remind" style="margin:0">'
+            f'<input type="hidden" name="slug" value="{esc(slug)}">'
+            f'<input type="hidden" name="at" value="{esc(r["at"])}">'
+            f'<input type="hidden" name="label" value="{esc(label)}">'
+            f'<input type="hidden" name="on" value="{"0" if on else "1"}">'
+            f'<button class="rc-bell{" on" if on else ""}" type="submit" '
+            f'aria-label="{"取消提醒" if on else "设为提醒"}">'
+            f'{"🔔" if on else "🔕"}</button></form></div>')
+    return ('<section class="rc-panel rc-up-panel">'
+            '<div class="rc-panel-hd"><span class="rc-eyebrow">临近</span>'
+            f'<span class="rc-win">未来 {days} 天</span></div>'
+            + "".join(out) + "</section>")
+
+
 def home_page() -> str:
     """「今日」tab：首屏即一页式大屏（0.6.7）。
 
@@ -948,7 +993,8 @@ def home_page() -> str:
                  f'<div class="rc-samples">{samples}</div></div></section>')
 
     body_html_all = ('<div class="rc-screen">' + verdict + hero + load_html
-                     + body_html + plan_html + week_html + '</div>')
+                     + body_html + plan_html + _upcoming_html()
+                     + week_html + '</div>')
     # 只留两个数据胶囊：宽屏自动铺成大屏，不再需要第三个按钮。
     # 一图流也不再挂页头：那枚胶囊在横屏大屏里孤零零地压着结论条，
     # 0.6.13 起统一收进「我的」页的低频动作列表。

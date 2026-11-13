@@ -138,6 +138,9 @@ class _Handler(SimpleHTTPRequestHandler):
         if u.path in ("/event", "/event.html"):
             from . import eventui
             return self._html(eventui.render_page(parse_qs(u.query)))
+        if u.path in ("/event-doc", "/event-doc.html"):
+            from . import eventui
+            return self._html(eventui.render_doc_page(parse_qs(u.query)))
         if u.path in ("/posture", "/posture.html"):
             # 和 AI 页面同一条闸门：它会把照片发给模型服务商，只许本机打开
             if not self._is_loopback():
@@ -652,7 +655,12 @@ class _Handler(SimpleHTTPRequestHandler):
         slug = one("slug")
         err, okmsg = "", ""
         try:
-            if (one("act") or "add") == "del":
+            if (one("act") or "add") == "edit":
+                idx = int(one("idx") or -1)
+                E.update_doc(slug, idx, title=one("title") or "",
+                             body=one("body") or "", url=one("url") or "")
+                okmsg = "已保存"
+            elif (one("act") or "add") == "del":
                 idx = int(one("idx") or -1)
                 if not E.del_doc(slug, idx):
                     raise ValueError("这条资料已经不存在了")
@@ -666,6 +674,61 @@ class _Handler(SimpleHTTPRequestHandler):
         except Exception as e:
             err = "保存失败：%s" % e
         self._back(slug, err=err, ok=okmsg, anchor="docs")
+
+    def _event_file(self, u) -> None:
+        """附件改名。名字只能改主干，扩展名由服务端保留。"""
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 8 * 1024:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+
+        def one(k: str) -> str:
+            return ((qs.get(k) or [""])[0] or "").strip()
+
+        from . import event as E
+
+        slug = one("slug")
+        err = ""
+        try:
+            if one("act") != "rename":
+                raise ValueError("不认识的操作")
+            E.rename_file(slug, one("name"), one("new_name"))
+        except ValueError as e:
+            err = str(e)
+        except Exception as e:
+            err = "改名失败：%s" % e
+        self._back(slug, err=err, ok="" if err else "已改名", anchor="docs")
+
+    def _event_remind(self, u) -> None:
+        """首页「临近」里的提醒开关。开关是首页的，所以回到 / 而不是 /event。"""
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 4 * 1024:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+
+        def one(k: str) -> str:
+            return ((qs.get(k) or [""])[0] or "").strip()
+
+        from . import event as E
+
+        try:
+            E.set_remind(one("slug"), one("at"), one("label"), one("on") == "1")
+        except Exception:
+            pass
+        self.send_response(303)
+        self.send_header("Location", "/")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _back(self, slug: str | None, err: str = "", ok: str = "",
               anchor: str = "") -> None:
@@ -913,6 +976,10 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._event_doc(u)
         if u.path == "/__event/attach":
             return self._event_attach(u)
+        if u.path == "/__event/file":
+            return self._event_file(u)
+        if u.path == "/__event/remind":
+            return self._event_remind(u)
         if u.path == "/__posture/assess":
             return self._posture_assess(u)
         if u.path == "/__posture/plan":
