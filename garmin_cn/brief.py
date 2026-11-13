@@ -134,7 +134,8 @@ def _main(row: dict) -> str:
     th = theme_for(row.get("type"))
     dist = (num(row.get("distance_m")) or 0) / 1000
     dur = num(row.get("duration_s")) or 0
-    pace = num(row.get("pace_s_km")) or (dur / dist if dist else None)
+    from .sports import pace_seconds
+    pace = pace_seconds(row)
     kind = th["kind"]
 
     if kind == "duration":
@@ -212,6 +213,7 @@ def one(row: dict, detail: dict, *, place: str = "") -> str:
     `place` 传空时自动读底图缓存里的省市。图片**不写进正文**：正文是给人看的，
     一个文件名对它没意义；图由调用方单独附上（`--json` 的 `image` 字段给机器人用）。
     """
+    row = {**row, **(detail.get("row_metrics") or {})}
     lines = []
     head = _heading(row)
     loc = place if place else region(row.get("activity_id"))

@@ -17,7 +17,7 @@ lap 的**厘米**值直接当米用，时序 distance 也没换算，速度被�
 import json
 import unittest
 
-from garmin_cn import actcard
+from garmin_cn import actcard, brief, sports
 from garmin_cn import coros as C
 from garmin_cn import coros_activity as CA
 
@@ -226,6 +226,88 @@ class ActivityListTest(unittest.TestCase):
         self.assertEqual(row["calories"], 249.0)        # 卡 → 千卡
         self.assertEqual(row["load"], 36.0)
         self.assertEqual(row["pace_s_km"], round(1632 / 3.81))
+
+
+class BikeSpeedUnitsTest(unittest.TestCase):
+    """Regression for native cycling km/h*100 being inverted as running pace."""
+
+    def raw(self, **changes):
+        return {"labelId": "bike-speed", "sportType": 200,
+                "distance": 25000, "totalTime": 4500, "workoutTime": 3600,
+                "speedUnit": 1, "avgSpeed": 2500, **changes}
+
+    def row(self, **changes):
+        return C.CorosCloud._parse_activity(None, self.raw(**changes))
+
+    def test_native_bike_average_wins_over_total_duration(self):
+        row = self.row()
+        self.assertEqual(row["duration_s"], 4500)
+        self.assertEqual(sports.metric_text(row), "25.0 km/h")
+        self.assertAlmostEqual(row["pace_s_km"], 144)
+        self.assertNotEqual(sports.metric_text(row), "20.0 km/h")
+
+    def test_list_v2_is_speed_even_without_speed_unit(self):
+        row = self.row(avgSpeed=144, avgSpeedV2=2500, speedUnit=None)
+        self.assertEqual(sports.metric_text(row), "25.0 km/h")
+
+    def test_old_history_raw_is_repaired_offline_without_reimport(self):
+        row = self.row()
+        # Old databases may contain either total-time pace or a misread avgSpeed.
+        for old_pace in (180, 2500):
+            row["pace_s_km"] = old_pace
+            self.assertEqual(sports.metric_text(row), "25.0 km/h")
+            self.assertIn("25.0 km/h", brief._main(row))
+            html = actcard.build_html(row, {"source": "coros"})
+            self.assertIn("25.0", html)
+
+    def test_effective_time_fallback_and_short_distance(self):
+        row = self.row(avgSpeed=None)
+        self.assertEqual(sports.metric_text(row), "25.0 km/h")
+        row = self.row(avgSpeed=None, workoutTime=None)
+        self.assertEqual(sports.metric_text(row), "20.0 km/h")
+        row = self.row(avgSpeed=None, workoutTime=60, totalTime=90, distance=500)
+        self.assertEqual(sports.metric_text(row), "30.0 km/h")
+
+    def test_detail_average_maximum_and_series_use_explicit_unit(self):
+        data = {"sportType": 200,
+                "summary": {"sportType": 200, "speedUnit": 1,
+                            "avgSpeed": 2500, "maxSpeed": 4500,
+                            "distance": 2500000, "totalTime": 450000, "workoutTime": 360000},
+                "frequencyList": [sample(i, i * 500, v) for i, v in enumerate((0, 2500, 4500))]}
+        p = CA.normalize(data, "bike-speed")
+        self.assertAlmostEqual(p["row_metrics"]["avg_speed_mps"], 25 / 3.6)
+        self.assertAlmostEqual(p["row_metrics"]["pace_s_km"], 144)
+        self.assertEqual(p["row_metrics"]["max_speed_mps"], 12.5)
+        pts = p["series"]["points"]
+        self.assertEqual(pts[0]["spd"], 0)
+        self.assertAlmostEqual(pts[1]["spd"], 25 / 3.6)
+        self.assertEqual(pts[2]["spd"], 12.5)
+
+    def test_card_and_brief_prefer_detail_native_average(self):
+        row = self.row(avgSpeed=2400)
+        p = {"source": "coros", "row_metrics": {"avg_speed_mps": 25 / 3.6, "pace_s_km": 144}}
+        self.assertIn("25.0", actcard.build_html(row, p))
+        self.assertIn("25.0 km/h", brief.one(row, p))
+        self.assertNotIn("24.0 km/h", brief.one(row, p))
+
+    def test_other_units_and_invalid_values(self):
+        self.assertAlmostEqual(C.speed_mps(2500, 1), 25 / 3.6)
+        self.assertEqual(C.speed_mps(300, 3), 1000 / 300)
+        self.assertEqual(C.speed_mps(100, 4), 1)
+        for value in (None, -1, 65535, float('nan'), float('inf')):
+            self.assertIsNone(C.speed_mps(value, 1))
+        self.assertIsNone(C.speed_mps(2500, 99))
+
+    def test_running_pace_and_garmin_speed_are_unchanged(self):
+        running = {**self.row(), "type": "running", "pace_s_km": 300}
+        self.assertEqual(sports.metric_text(running), "5′00″/km")
+        garmin = {"type": "road_biking", "source": "garmin", "pace_s_km": 120,
+                  "raw": {"averageSpeed": 30 / 3.6}}
+        self.assertEqual(sports.metric_text(garmin), "30.0 km/h")
+
+    def test_old_bike_detail_cache_is_invalidated(self):
+        p = {"source": "coros", "adapter_version": 13, "laps_absent_ok": True}
+        self.assertFalse(CA.is_current(p))
 
 
 class CardRenderTest(unittest.TestCase):
