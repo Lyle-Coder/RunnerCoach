@@ -681,8 +681,12 @@ class _Handler(SimpleHTTPRequestHandler):
             err = "保存失败：%s" % e
         self._back(slug, err=err, ok=okmsg, anchor="docs")
 
-    def _event_file(self, u) -> None:
-        """附件改名。名字只能改主干，扩展名由服务端保留。"""
+    def _event_file_op(self, u) -> None:
+        """附件的写操作（改名 / 删除）。
+
+        ⚠ 方法名不能叫 `_event_file`：同名会把上面那个 GET 读附件的
+        `_event_file(path)` 整个覆盖掉，`/event-file/...` 一律 500。
+        """
         if not self._is_loopback():
             return self._json({"ok": False, "error": "只允许本机操作"}, 403)
         try:
@@ -699,16 +703,22 @@ class _Handler(SimpleHTTPRequestHandler):
         from . import event as E
 
         slug = one("slug")
-        err = ""
+        act = one("act")
+        err, okmsg = "", ""
         try:
-            if one("act") != "rename":
+            if act == "rename":
+                E.rename_file(slug, one("name"), one("new_name"))
+                okmsg = "已改名"
+            elif act == "del":
+                E.remove_file(slug, one("name"))
+                okmsg = "已删除附件"
+            else:
                 raise ValueError("不认识的操作")
-            E.rename_file(slug, one("name"), one("new_name"))
         except ValueError as e:
             err = str(e)
         except Exception as e:
-            err = "改名失败：%s" % e
-        self._back(slug, err=err, ok="" if err else "已改名", anchor="docs")
+            err = ("改名失败：%s" % e) if act == "rename" else ("删除失败：%s" % e)
+        self._back(slug, err=err, ok=okmsg, anchor="docs")
 
     def _event_remind(self, u) -> None:
         """首页「临近」里的提醒开关。开关是首页的，所以回到 / 而不是 /event。"""
@@ -1002,7 +1012,7 @@ class _Handler(SimpleHTTPRequestHandler):
         if u.path == "/__event/attach":
             return self._event_attach(u)
         if u.path == "/__event/file":
-            return self._event_file(u)
+            return self._event_file_op(u)
         if u.path == "/__event/remind":
             return self._event_remind(u)
         if u.path == "/__posture/assess":
