@@ -37,6 +37,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# 直接 `python tools/races_sync.py` 时 cwd 未必是项目根，解析器在包内
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 DEFAULT_SOURCES = ROOT / "data" / "races_sources.json"
 DEFAULT_OUT = ROOT / "data" / "content" / "races.json"
 
@@ -167,6 +170,25 @@ def build_record(src: dict, today: dt.date) -> tuple[dict | None, str]:
     }, note
 
 
+# ---------------------------------------------------------------- 最酷 zuicool
+#
+# 解析与抓取放在 garmin_cn/races_fetch.py（App 里也要用同一份），这里只适配
+# sources 配置并合并输出。两处各写一遍必然漂移，改一处忘一处最难查。
+
+
+def fetch_zuicool(src: dict, today: dt.date) -> tuple[list[dict], str]:
+    from garmin_cn import races_fetch as RF
+
+    rows, st = RF.fetch(pages=int(src.get("pages") or RF.PAGES),
+                        per_page=int(src.get("per_page") or RF.PER_PAGE),
+                        today=today)
+    msg = (f"zuicool: {len(rows)} 场在报名中（跳过 {st['upcoming']} 场未开报 / "
+           f"{st['skipped']} 场解析不了，抓了 {st['pages']} 页）")
+    if st.get("error"):
+        msg += "；" + str(st["error"])
+    return rows, msg
+
+
 def load_json(path: Path, default):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -233,9 +255,19 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     today = dt.date.today()
-    records, problems = [], []
+    records, problems, failed_via = [], [], set()
     for src in srcs:
         if not isinstance(src, dict):
+            continue
+        if str(src.get("mode") or "").lower() == "zuicool":
+            rows, msg = fetch_zuicool(src, today)
+            print(f"  {'✓' if rows else '×'} {msg}")
+            if rows:
+                records.extend(rows)
+            else:
+                # 一条都没拿到：别让「抓取失败」变成「赛事全被删掉」
+                failed_via.add("zuicool")
+                problems.append(msg)
             continue
         rec, note = build_record(src, today)
         if rec:
@@ -245,16 +277,40 @@ def main(argv: list[str] | None = None) -> int:
             problems.append(f"{src.get('name') or src.get('id')}: {note}")
             print(f"  × {src.get('name')}: {note}")
 
+    # 两页之间可能重复（运营把同一场挂了两次），按 id 去重，先到的为准
+    seen, uniq = set(), []
+    for r in records:
+        if r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        uniq.append(r)
+    records = uniq
+
+    old = load_json(args.out, {})
+    if failed_via:
+        kept = [i for i in old.get("items") or []
+                if isinstance(i, dict) and i.get("via") in failed_via
+                and str(i.get("id")) not in seen]
+        if kept:
+            records.extend(kept)
+            print(f"! {len(kept)} 场沿用上次抓到的数据（这次没抓成功）")
+
     if not records:
         print("× 一条都没建成，保留旧数据不写盘")
         return 1
 
-    old = load_json(args.out, {})
     old_by = {str(i.get("id")): i for i in old.get("items") or [] if isinstance(i, dict)}
     added = [r["id"] for r in records if r["id"] not in old_by]
+    # 抓来的赛事 reg_open 是用抓取日推的，每天都变；checked_at 同理。
+    # 不算进「变化」，否则每次都是「165 场全变了」，等于没报。
+    _volatile = {"checked_at", "reg_open"}
+
+    def _sig(r: dict) -> dict:
+        # 值为 None 的键视同缺失（不同 adapter 产出的字段集合本来就不一样）
+        return {k: v for k, v in r.items() if k not in _volatile and v is not None}
+
     changed = [r["id"] for r in records
-               if r["id"] in old_by and {k: v for k, v in r.items() if k != "checked_at"}
-               != {k: v for k, v in old_by[r["id"]].items() if k != "checked_at"}]
+               if r["id"] in old_by and _sig(r) != _sig(old_by[r["id"]])]
     gone = [i for i in old_by if i not in {r["id"] for r in records}]
     print(f"\n新增 {len(added)} · 变化 {len(changed)} · 源里已移除 {len(gone)}")
     if changed:

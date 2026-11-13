@@ -3166,6 +3166,14 @@ def start_server(port: int = 0) -> dict:
     srv.daemon_threads = True
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
+    # 赛事数据每天抓一次（后台线程，失败静默）。放在这里而不是首页渲染里：
+    # 服务起来就说明用户在用，晚 6 秒抓不会和首屏抢带宽。
+    try:
+        from . import races_fetch as _RF
+
+        _RF.start_background()
+    except Exception:
+        pass
     return {"ok": True, "port": srv.server_address[1],
             "url": f"http://127.0.0.1:{srv.server_address[1]}/"}
 
