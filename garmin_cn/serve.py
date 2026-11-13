@@ -144,6 +144,12 @@ class _Handler(SimpleHTTPRequestHandler):
         if u.path in ("/event", "/event.html"):
             from . import eventui
             return self._html(eventui.render_page(parse_qs(u.query)))
+        if u.path in ("/posture", "/posture.html"):
+            # 和 AI 页面同一条闸门：它会把照片发给模型服务商，只许本机打开
+            if not self._is_loopback():
+                return self._json({"ok": False, "error": "姿态评估只允许本机打开"}, 403)
+            from . import postureui
+            return self._html(postureui.render())
         if u.path.startswith("/event-file/"):
             return self._event_file(u.path)
         if u.path.startswith("/basemap/"):
@@ -416,7 +422,16 @@ class _Handler(SimpleHTTPRequestHandler):
         err = ""
         try:
             if u.path == "/__event/target":
-                E.set_target(slug, goal_h=one("goal_h"), status=one("status"),
+                # 表单已改成时/分/秒三个框；goal_h 留给旧页面与 CLI
+                _gh = one("goal_h")
+                if not _gh and (one("goal_hh") or one("goal_mm") or one("goal_ss")):
+                    try:
+                        _gh = str(float(one("goal_hh") or 0)
+                                  + float(one("goal_mm") or 0) / 60
+                                  + float(one("goal_ss") or 0) / 3600)
+                    except ValueError:
+                        raise ValueError("目标完赛要填数字") from None
+                E.set_target(slug, goal_h=_gh, status=one("status"),
                              start_time=one("start_time"))
             elif u.path == "/__event/fuel":
                 E.set_fuel(slug, carb_g_h=one("carb_g_h"), fluid_ml_h=one("fluid_ml_h"),
@@ -534,6 +549,94 @@ class _Handler(SimpleHTTPRequestHandler):
                           ok="已添加附件 %s（%s）"
                              % (dst.name, E.human_size(dst.stat().st_size)))
 
+    def _posture_assess(self, u) -> None:
+        """一张照片 + 一个动作 → 判读 + 方案。返回 JSON，由页面自己插进 DOM。
+
+        照片只在内存里过一遍：base64 之后交给 llm，不落盘。姿态照片比附件敏感，
+        留在磁盘上没有任何必要——用户要留证据的话，相册里有原图。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        import base64
+        from . import posture as P
+
+        qs = parse_qs(u.query)
+        move = (qs.get("move") or [""])[0].strip()
+        if move not in P.MOVES:
+            return self._json({"ok": False, "error": "未知动作"}, 400)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        # 先读掉 body 再校验：提前 return 会让 keep-alive 里残留一段没消费的数据，
+        # 下一次请求直接 IncompleteRead（附件上传踩过同一个坑）
+        data = self.rfile.read(n) if 0 < n <= 12 * 1024 * 1024 else b""
+        if not data:
+            return self._json({"ok": False, "error": "没收到照片，或文件超过 12 MB"}, 400)
+        mime = (self.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
+        if not mime.startswith("image/"):
+            mime = "image/jpeg"
+        from . import llm as _llm
+
+        try:
+            res = P.assess(base64.b64encode(data).decode(), move, mime=mime)
+        except ValueError as e:
+            # 判读内容的问题（JSON 被截断、照片没传等）：原样给，别扯模型能力
+            return self._json({"ok": False, "error": str(e)}, 502)
+        except _llm.LLMError as e:
+            d = e.as_dict()
+            d["error"] = (d.get("error") or "模型调用失败") + \
+                "。确认这个模型支持图片输入（deepseek-v4.1-flash / mimo-v2.5 / kimi-k3）"
+            return self._json(d, 502)
+        except Exception as e:                    # noqa: BLE001
+            return self._json(
+                {"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+        # 判读结果落盘：切出页面再回来要能接着看（照片本身不进磁盘）
+        try:
+            from . import posturestore as _PS
+            _PS.save_result(move, res)
+        except Exception:                          # noqa: BLE001
+            pass                                   # 存历史失败不该让判读白跑
+        return self._json({"ok": True, "result": res})
+
+    def _posture_clear(self, u) -> None:
+        """清空本机的判读记录（照片本来就没存）。"""
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        from . import posturestore as PS
+
+        PS.clear()
+        return self._json({"ok": True})
+
+    def _posture_plan(self, u) -> None:
+        """把已完成的几张判读合成一页：逐项摘要 + 一份统一方案。
+
+        为什么不每张各出一份方案：同一块薄弱项（比如两侧都膝内扣）会被
+        重复安排三遍，用户还得自己合并。`posture.plan()` 本来就接多份结果，
+        按命中次数排序，这里只负责把前端攒的结果传进去。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 256 * 1024:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        try:
+            payload = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+        except Exception:
+            return self._json({"ok": False, "error": "参数不是合法 JSON"}, 400)
+        from . import posture as P, postureui
+
+        raw = payload.get("results")
+        if not isinstance(raw, list):
+            return self._json({"ok": False, "error": "缺少 results"}, 400)
+        # 结果来自前端，只用于渲染；仍然只接受本模块认识的动作 id
+        clean = [r for r in raw[:8]
+                 if isinstance(r, dict) and r.get("move") in P.MOVES]
+        return self._json({"ok": True, "html": postureui.summary_html(clean)})
+
     def _event_doc(self, u) -> None:
         """资料条目：加一条 / 删一条。"""
         if not self._is_loopback():
@@ -590,6 +693,34 @@ class _Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _event_delete(self, u) -> None:
+        """删除整场赛事（目录连同附件一起）。
+
+        不可逆，页面那侧有两步确认；这里只做服务端校验——确认是 UI 的礼貌，
+        真正的安全边界在这：非本机、slug 不合法、目录不在 EVENTS 下一层、
+        没有 event.json，全部拒绝。
+        """
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 4096:
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        qs = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+        slug = (qs.get("slug") or [""])[0].strip()
+        from . import event as E
+
+        try:
+            gone = E.delete_event(slug)
+        except ValueError as e:
+            return self._back(slug or None, err=str(e))
+        rest = E.list_events()
+        # 删完跳到剩下的最近一场；一场不剩就回 /event，那边会渲染「建第一场」
+        return self._back(rest[0]["slug"] if rest else None,
+                          ok="已删除「%s」" % gone["short"])
+
     def _event_ingest(self, u) -> None:
         """新建赛事 / 粘贴规程导入 CP 表 / 沿用上一届。
 
@@ -620,7 +751,8 @@ class _Handler(SimpleHTTPRequestHandler):
                                  float(one("distance_km") or 0),
                                  ascent_m=int(float(one("ascent_m") or 0)),
                                  start_time=one("start_time") or "08:00",
-                                 priority=one("priority") or "C")
+                                 priority=one("priority") or "C",
+                                 kind=one("kind") or "trail")
                 return self._back(ev["slug"], anchor="import",
                                   ok="已建好「%s」，接着可以粘贴 CP 表" % ev["name"])
             if u.path == "/__event/prev":
@@ -800,10 +932,18 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._event_race(u)
         if u.path in ("/__event/new", "/__event/import", "/__event/prev"):
             return self._event_ingest(u)
+        if u.path == "/__event/delete":
+            return self._event_delete(u)
         if u.path == "/__event/doc":
             return self._event_doc(u)
         if u.path == "/__event/attach":
             return self._event_attach(u)
+        if u.path == "/__posture/assess":
+            return self._posture_assess(u)
+        if u.path == "/__posture/plan":
+            return self._posture_plan(u)
+        if u.path == "/__posture/clear":
+            return self._posture_clear(u)
         if u.path == "/__files/delete":
             # 产物页的批量删除。放在 gate 之前反而更安全：这里自己做本机校验，
             # 不带访问码的局域网访客一律 403。

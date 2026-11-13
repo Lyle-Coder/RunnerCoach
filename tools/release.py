@@ -580,6 +580,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
             f"{remote} 远端还没有 {tag}，先跑：git push {remote} {tag}")
     release_id = gitee_ensure_release(owner, repo, tag, notes_path.read_text(encoding="utf-8"), token)
     have = gitee_asset_names(owner, repo, release_id, token)
+    failed: list[str] = []
     for p in assets:
         if p.stat().st_size > MAX_ASSET:
             print(f"! 跳过 {p.name}：超过 Gitee 附件上限 {human(MAX_ASSET)}")
@@ -587,7 +588,20 @@ def cmd_upload(args: argparse.Namespace) -> int:
         if p.name in have:
             print(f"· {p.name} 已在 release 上，跳过（避免重复占配额）")
             continue
-        gitee_upload(owner, repo, release_id, p, token)
+        try:
+            gitee_upload(owner, repo, release_id, p, token)
+        except ReleaseError as e:
+            # 配额满是最常见的中断点：前面几个附件已经传上去了，这里不能
+            # 直接抛出去让人以为整个发布失败，要明确告诉他下一步敲什么。
+            if "配额" in str(e) or "size" in str(e).lower():
+                print(f"× {p.name} 传不上去：仓库附件配额满了")
+                print("  腾空间后重跑 upload（已传的会自动跳过）：")
+                print("    python tools/release.py clean-remote --keep 4")
+                failed.append(p.name)
+                continue
+            raise
+    if failed:
+        raise ReleaseError(f"{len(failed)} 个附件没传上去：{', '.join(failed)}")
     print(f"√ 发布完成：{RELEASE_PAGE}")
     return 0
 
@@ -716,6 +730,79 @@ def _rewrite_sums() -> None:
         pass
 
 
+def gitee_releases(owner: str, repo: str, token: str) -> list[dict]:
+    """列出全部 Release，新的在前。
+
+    按 created_at 排而不是版本号字符串：`v1.0.10` 和 `v1.0.9` 按字符串比会
+    排反，而 Release 本身是时间顺序的，用时间最不会错。
+    """
+    base = f"{API}/repos/{owner}/{repo}"
+    q = urllib.parse.quote(token, safe="")
+    out: list[dict] = []
+    for page in range(1, 21):
+        batch = json.loads(
+            http(f"{base}/releases?page={page}&per_page=50&access_token={q}",
+                 token=token)) or []
+        if not batch:
+            break
+        out.extend(batch)
+        if len(batch) < 50:
+            break
+    out.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    return out
+
+
+def gitee_delete_release(owner: str, repo: str, rid, token: str) -> None:
+    """删一个 Release。**tag 不删**，源码仍可下载，回收的只是附件配额。
+
+    必须走 Authorization 头：同一个令牌，DELETE 用 `?access_token=` 会返回
+    401，而 POST 上传用 query 参数却是好的。这是 Gitee 的接口怪癖，
+    别照着 upload 的写法抄。
+    """
+    http(f"{API}/repos/{owner}/{repo}/releases/{rid}", method="DELETE",
+         headers={"Authorization": f"token {token}"}, token=token)
+
+
+def cmd_clean_remote(args: argparse.Namespace) -> int:
+    """按「保留最新 N 个」清理远端 Release，给附件配额腾地方。
+
+    为什么按个数而不是按体积：Gitee 的 assets JSON 只有 name/url，
+    没有 size 字段，拿不到每个版本实际占了多少。而每个版本的结构是固定的
+    （源码包 + 两个 APK + 自动源码包），按个数控制反而更可预测。
+    """
+    token = os.environ.get(TOKEN_ENV, "").strip()
+    if not token:
+        raise ReleaseError(f"未设置 {TOKEN_ENV}（列出版本也要令牌）")
+    owner, repo = repo_slug()
+    keep = max(1, args.keep)
+    rels = gitee_releases(owner, repo, token)
+    print(f"Gitee Release 共 {len(rels)} 个，保留最新 {keep} 个")
+    if len(rels) <= keep:
+        print("√ 不需要清理")
+        return 0
+    for r in rels[:keep]:
+        print(f"  保留 {r.get('tag_name')}")
+    bad = 0
+    for r in rels[keep:]:
+        tag = r.get("tag_name") or "?"
+        if args.dry_run:
+            print(f"  将删 {tag}（id {r.get('id')}）")
+            continue
+        try:
+            gitee_delete_release(owner, repo, r.get("id"), token)
+            print(f"  已删 {tag}（tag 保留，源码仍可下）")
+        except ReleaseError as e:
+            bad += 1
+            print(f"  × {tag} 删除失败：{e}")
+    if args.dry_run:
+        print("· 演练完成，没有删除任何东西；确认后去掉 --dry-run")
+    elif bad:
+        print(f"· 完成，{bad} 个失败")
+    else:
+        print("√ 清理完成")
+    return 1 if bad else 0
+
+
 def cmd_prune(args: argparse.Namespace) -> int:
     r = prune_dist(keep_versions=args.keep, keep_snaps=args.keep_snap,
                    apply=not args.dry_run)
@@ -786,6 +873,12 @@ def main() -> int:
     q.add_argument("--tag", required=True, help="如 v0.1.5，必须与 __version__ 一致")
     q.add_argument("--dry-run", action="store_true", help="只打印计划，不联网")
     q.set_defaults(func=cmd_upload)
+
+    q = sub.add_parser("clean-remote",
+                       help="删最老的 Release 腾附件配额（tag 保留，源码仍可下）")
+    q.add_argument("--keep", type=int, default=4, help="保留最新几个版本，默认 4")
+    q.add_argument("--dry-run", action="store_true", help="只列出会删哪些")
+    q.set_defaults(func=cmd_clean_remote)
     q = sub.add_parser("selftest", help="脚本自身离线自检")
     q.set_defaults(func=cmd_selftest)
     args = p.parse_args()

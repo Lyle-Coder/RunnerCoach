@@ -30,6 +30,8 @@ CSS = """<style>
 .tag{font-size:10.5px;color:#7F8A97;border:1px solid rgba(127,138,151,.4);
   border-radius:5px;padding:1px 5px}
 .warnbox{color:#D6A75A}
+.hms{display:inline-flex;align-items:center;gap:3px}
+.hms input{width:54px;text-align:center;flex:0 0 auto}
 .cmptitle{font-size:11.5px;color:var(--muted,#7F8A97);margin:10px 0 2px}
 .cmphead,.cmp{display:grid;grid-template-columns:30px minmax(0,1fr) 42px 42px 42px;
   gap:4px;align-items:center;font-size:11.5px;padding:5px 0;
@@ -405,8 +407,52 @@ def _event_bar(cur: str) -> str:
             f'<a class="ev{on}" href="/event?slug={e["slug"]}">'
             f'<b>{ui.esc(e["short"])}</b>'
             f'<span>{dtxt}{(" · " + tag) if tag else ""}</span></a>')
-    items.append('<a class="ev add" href="#import"><b>＋</b><span>新建 / 导入</span></a>')
+    # 新建/导入是独立流程，不塞在赛事详情页底部：这里跳出去，详情页只讲「这一场」
+    items.append('<a class="ev add" href="/event?new=1"><b>＋</b><span>新建 / 导入</span></a>')
     return '<div class="evbar">' + "".join(items) + "</div>"
+
+
+def _first_run() -> str:
+    """一条赛事都没有时的首屏。
+
+    种子赛事不再随安装包生成（2026-11-12 用户反馈：所有用户都能看到作者的
+    4 场比赛），所以新用户第一次进来就是空库。这里不摆 7 个只有「—」的区块，
+    只回答一个问题：先建一场。
+    """
+    body = (
+        CSS
+        + '<p class="hint">还没有赛事。建一场之后，这里会算出每个 CP 的关门余量、'
+          '分段补给计划和装备清单。</p>'
+        + '<div class="card"><form class="frm" method="post" action="/__event/new">'
+        '<div class="frow"><label>赛事名<input class="fi" name="name" '
+        'placeholder="例：2027 崇礼 168 · 70K"></label></div>'
+        '<div class="frow"><label>日期<input class="fi" name="date" '
+        'placeholder="2027-07-10" inputmode="numeric"></label>'
+        '<label>距离 km<input class="fi" name="distance_km" type="number" '
+        'step="0.1" min="1" max="400" placeholder="70"></label></div>'
+        '<div class="frow"><label>爬升 m<input class="fi" name="ascent_m" type="number" '
+        'step="10" min="0" placeholder="3200"></label>'
+        '<label>起跑<input class="fi" name="start_time" value="08:00"></label></div>'
+        '<div class="frow"><label>类型<select class="fi" name="kind">'
+        '<option value="trail" selected>越野</option>'
+        '<option value="road">路跑</option></select></label>'
+        '<label>级别<select class="fi" name="priority">'
+        '<option value="A">A · 主赛</option><option value="B">B · 有成绩要求</option>'
+        '<option value="C" selected>C · 训练赛</option></select></label></div>'
+        '<div class="fbtns"><button class="btn primary" type="submit">建好这一场</button>'
+        '<span class="fhint">目标时间按距离与类型先给个初值，之后能改</span></div>'
+        '</form></div>'
+        + '<p class="sub2">建好之后，把规程里的 CP 表贴进「新建 / 导入」，余量表就活了。'
+          '路线有官方 GPX 的话，在赛事页点「导入轨迹」即可。</p>')
+    return ui.page("EVENT · 赛事", "建第一场赛事",
+                   "只要名字、日期、距离，其它能推就推", body,
+                   back=("AI 教练", "/ai"))
+
+
+def _hms(sec) -> str:
+    """秒 → H:MM:SS。目标完赛以前显示成 12.5h 这种小数，不好读也不好核对。"""
+    t = int(round(float(sec or 0)))
+    return "%d:%02d:%02d" % (t // 3600, t % 3600 // 60, t % 60)
 
 
 def render_page(qs: dict | None = None) -> str:
@@ -419,6 +465,9 @@ def render_page(qs: dict | None = None) -> str:
     try:
         ev = E.load_event(_q("slug"))
     except ValueError:
+        # slug 无效就回落到「下一场」；真的一个赛事都没有才走首建页
+        if not E.list_events():
+            return _first_run()
         ev = E.load_event()
     slug = ev["slug"]
     course = E.load_course(slug)
@@ -428,13 +477,12 @@ def render_page(qs: dict | None = None) -> str:
     # 所有表单都要带上 slug：页面能切赛事后，任何一个表单少这一行都会改错档案
     HID = f'<input type="hidden" name="slug" value="{ui.esc(slug)}">'
 
-    goal_h = (ev.get("goal_s") or 0) / 3600
     dur_txt = ("%gh" % ev["duration_h"]) if ev.get("duration_h") else "—"
     chips = (ui.chip(cd["status_cn"], "ok")
              + (ui.chip(f'倒计时 {cd["days"]} 天') if cd["days"] >= 0
                 else ui.chip(f'已过 {abs(cd["days"])} 天', "gray"))
-             + ui.chip(f'目标 {goal_h:g}h / 关门 {dur_txt}'
-                       if ev.get("duration_h") else f'目标 {goal_h:g}h'))
+             + ui.chip(f'目标 {_hms(ev.get("goal_s"))} / 关门 {dur_txt}'
+                       if ev.get("duration_h") else f'目标 {_hms(ev.get("goal_s"))}'))
 
     # ---- 概览
     overview = (
@@ -540,7 +588,7 @@ def render_page(qs: dict | None = None) -> str:
             if rf is None:
                 need = '<span class="cpm bad">目标已保不住，按关门跑</span>'
             elif rf > 1.05:
-                need = (f'<span class="cpm warn">保 {ev["goal_s"]//3600}h 需提速 {int((rf-1)*100)}%</span>')
+                need = (f'<span class="cpm warn">保 {_hms(ev["goal_s"])} 需提速 {int((rf-1)*100)}%</span>')
             else:
                 need = f'<span class="cpm ok">按现节奏可保目标（需 {rf:.2f}× 配速）</span>'
             head = (f'<span class="rt">已用时 {el}</span>'
@@ -791,8 +839,16 @@ def render_page(qs: dict | None = None) -> str:
         '<details class="fold"><summary>调整目标、状态与起跑时间</summary>'
         '<form class="frm" method="post" action="/__event/target">'
         + HID +
-        '<div class="frow"><label>目标完赛<input class="fi" name="goal_h" type="number" '
-        f'step="0.5" min="10" max="34" value="{ev["goal_s"]/3600:g}"></label>'
+        # 目标完赛：时/分/秒三个框。以前是一个小数（12.5），跑者脑子里是
+        # 「12 小时 30 分」，换算成小数既不好填也不好核对。
+        f'<div class="frow"><label>目标完赛（时:分:秒）<span class="hms">'
+        f'<input class="fi" name="goal_hh" type="number" min="0" max="48" '
+        f'value="{_hms(ev["goal_s"]).split(":")[0]}">:'
+        f'<input class="fi" name="goal_mm" type="number" min="0" max="59" '
+        f'value="{_hms(ev["goal_s"]).split(":")[1]}">:'
+        f'<input class="fi" name="goal_ss" type="number" min="0" max="59" '
+        f'value="{_hms(ev["goal_s"]).split(":")[2]}">'
+        '</span></label>'
         f'<label>状态<select class="fi" name="status">{status_opts}</select></label>'
         '<label>起跑<input class="fi" name="start_time" value="'
         f'{ui.esc(ev["start_time"])}"></label></div>'
@@ -902,6 +958,11 @@ def render_page(qs: dict | None = None) -> str:
         'value="08:00"></label><label>级别<select class="fi" name="priority">'
         '<option value="A">A · 主赛</option><option value="B">B · 有成绩要求</option>'
         '<option value="C" selected>C · 训练赛</option></select></label></div>'
+        # 类型决定默认装备清单和目标配速：路跑给「号码布+鞋+胶+壶」，
+        # 越野给「头灯+保温毯+水袋+换装包」，塞错了等于让人背一堆没用的东西
+        '<div class="frow"><label>类型<select class="fi" name="kind">'
+        '<option value="trail" selected>越野（爬升大、有 CP 与换装）</option>'
+        '<option value="road">路跑（公路 / 城市马）</option></select></label></div>'
         '<div class="fbtns"><button class="btn primary" type="submit">建好这一场</button>'
         '<span class="fhint">目标时间按距离先给个初值，之后能改</span></div></form></details>'
 
@@ -921,6 +982,33 @@ def render_page(qs: dict | None = None) -> str:
         + prev_block + "</details>")
 
     top_bar = "" if at else (err_bar or ok_bar)
+    # 删除整场：压在「调整」区块最底部，和保存类动作隔开一段。
+    # 两步确认（4 秒内再点一次），不用 confirm()——WebView 有的机型不弹窗，
+    # 点了像没反应，这种不可逆操作不能赌弹窗存在。
+    _slug_js = '"' + slug.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    danger_card = (
+        '<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--line)">'
+        '<button class="btn" type="button" id="delEvBtn">删除这一场赛事</button>'
+        '<p class="hint" style="margin-top:8px">会连同 CP 表、补给配置、装备勾选、'
+        "资料附件和轨迹一起删掉，不可恢复。导出数据包里的那份还在。</p></div>"
+        '<script>(function(){var b=document.getElementById("delEvBtn");if(!b)return;'
+        'var arm=0;b.onclick=function(){'
+        'if(Date.now()>arm){arm=Date.now()+4000;b.textContent="再点一次确认删除";'
+        'b.style.color="#E06A5F";setTimeout(function(){if(Date.now()>arm){'
+        'b.textContent="删除这一场赛事";b.style.color="";}},4200);return;}'
+        'var f=document.createElement("form");f.method="post";'
+        'f.action="/__event/delete";var i=document.createElement("input");'
+        'i.type="hidden";i.name="slug";i.value=' + _slug_js + ';'
+        'f.appendChild(i);document.body.appendChild(f);f.submit();};})();</script>')
+
+    # 新建 / 导入是独立视图：赛事详情页只回答「这一场怎么样」，
+    # 建新赛事不该垫在已有赛事的一堆区块下面（2026-11-12 用户反馈）。
+    if _q("new"):
+        return ui.page("EVENT · 新建", "新建赛事 / 导入赛道",
+                       "从零建一场，或者把规程里的 CP 表贴进来。",
+                       import_card,
+                       back=("返回赛事", "/event?slug=" + slug))
+
     body = (CSS + _event_bar(slug) + top_bar + ui.sec("赛事", overview)
             + ui.sec("赛道轨迹", _bar("track") + track, anchor="track")
             + ui.sec("赛况与余量" if cd["has_course"] else "赛况",
@@ -929,8 +1017,7 @@ def render_page(qs: dict | None = None) -> str:
             + ui.sec("补给与换装", _bar("fuel") + fuel_card, anchor="fuel")
             + ui.sec("强制装备", _bar("gear") + gears, anchor="gear")
             + ui.sec("资料", _bar("docs") + docs_card, anchor="docs")
-            + ui.sec("调整", _bar("adjust") + edit_card, anchor="adjust")
-            + ui.sec("新建与导入", _bar("import") + import_card, anchor="import"))
+            + ui.sec("调整", _bar("adjust") + edit_card + danger_card, anchor="adjust"))
 
     subtitle = ev.get("short") or ev.get("name") or "赛事"
     sub3 = ("看余量 · 赛中打点 · 勾装备 · 每一块都能改"
@@ -938,7 +1025,7 @@ def render_page(qs: dict | None = None) -> str:
             "本场没有 CP 表：只看总用时、补给与装备（可粘贴规程补上）")
     return ui.page("EVENT · 赛事", subtitle,
                    sub3,
-                   body + SWIPE_JS, chips=chips, back=("返回今日", "/"))
+                   body + SWIPE_JS, chips=chips, back=("AI 教练", "/ai"))
 
 
 # ---------------------------------------------------------------- CLI
@@ -1078,7 +1165,7 @@ def cmd(args) -> int:
     dur = ("%g h" % ev["duration_h"]) if ev.get("duration_h") else "未公布"
     print(f"{ev['distance_km']} km / +{ev['ascent_m']:,} m · 总关门 {dur}"
           f" · 倒计时 {(race - today).days} 天")
-    print(f"目标 {(ev.get('goal_s') or 0)/3600:g} h · 装备 {cd['gear_done']}/{cd['gear_total']}")
+    print(f"目标 {_hms(ev.get('goal_s'))} · 装备 {cd['gear_done']}/{cd['gear_total']}")
     print()
     print(E.margins_report(slug))
     return 0
