@@ -1824,6 +1824,75 @@ def run() -> int:
         _RD2.OVERRIDE = _ov2
 
     # 「今天截止」不能写成「报名剩 0 天」
+
+    # ---- 过期清理：文件里的条目要真被删，不能只在展示时过滤 --------------
+    _prdir = Path(tempfile.mkdtemp())
+    _pr_old = _RF.OUT
+    _RF.OUT = _prdir / "content" / "races.json"
+    try:
+        _RF.OUT.parent.mkdir(parents=True, exist_ok=True)
+        _RF.OUT.write_text(_js3.dumps({"version": 3, "updated": _dd(-3), "items": [
+            {"id": "a", "name": "还在报", "date": _dd(60),
+             "reg_open": _dd(-1), "reg_close": _dd(5), "via": "zuicool"},
+            {"id": "b", "name": "今天最后一天", "date": _dd(30),
+             "reg_open": _dd(-5), "reg_close": _dd(0), "via": "zuicool"},
+            {"id": "c", "name": "昨天截止", "date": _dd(20),
+             "reg_open": _dd(-30), "reg_close": _dd(-1), "via": "zuicool"},
+            {"id": "d", "name": "自动源没窗口", "date": _dd(40), "via": "zuicool"},
+            {"id": "e", "name": "人工没窗口", "date": _dd(40), "via": "manual"},
+            {"id": "f", "name": "人工过期", "date": _dd(10),
+             "reg_close": _dd(-7), "via": "manual"},
+        ]}, ensure_ascii=False), encoding="utf-8")
+
+        _pr = _RF.prune(dt.date.today())
+        assert _pr.get("removed") == 3, f"该清 3 条（昨天截止/自动源无窗口/人工过期），实际 {_pr}"
+        _left = {i["id"] for i in _js3.loads(_RF.OUT.read_text(encoding="utf-8"))["items"]}
+        assert _left == {"a", "b", "e"}, f"清理后剩下的不对：{_left}"
+        assert "b" in _left, "今天截止的不能清掉（当天还能报）"
+        assert "e" in _left, "人工填的条目即便缺窗口也不该被自动清掉"
+
+        # 没有变化时不重写文件（避免每次启动都动盘）
+        _mt = _RF.OUT.stat().st_mtime_ns
+        assert _RF.prune(dt.date.today()).get("removed") == 0, "二次清理不该再删"
+        assert _RF.OUT.stat().st_mtime_ns == _mt, "没有变化却重写了文件"
+
+        # sync 覆盖写：手工条目要保住，过期的要清掉
+        _RF.OUT.write_text(_js3.dumps({"version": 9, "updated": _dd(-1), "items": [
+            {"id": "old", "name": "上次抓的", "date": _dd(20),
+             "reg_open": _dd(-3), "reg_close": _dd(2), "via": "zuicool"},
+            {"id": "keep", "name": "手工维护", "date": _dd(50),
+             "reg_open": _dd(-1), "reg_close": _dd(9), "via": "manual"},
+            {"id": "dead", "name": "人工但过期", "date": _dd(5),
+             "reg_close": _dd(-2), "via": "manual"},
+        ]}, ensure_ascii=False), encoding="utf-8")
+        _card = ('<div class="event"><h4 class="name">'
+                 '<a href="https://zuicool.com/event/777" class="event-a"> 新抓到的 </a></h4>'
+                 '<div class="info"><p>2027.12.20 &middot; 浙江 杭州市 西湖区</p></div>'
+                 '<div class="meta"><p><span>报名截止：12-01 23:59</span></p></div></div>')
+        _sr = _RF.sync(opener=lambda url: _card)
+        assert _sr.get("ok"), f"sync 失败：{_sr}"
+        _ids = {i["id"] for i in _js3.loads(_RF.OUT.read_text(encoding="utf-8"))["items"]}
+        assert "keep" in _ids, "每日覆盖抓取把手工维护的赛事抹掉了"
+        assert "dead" not in _ids, "手工条目过期了还留在文件里"
+        assert "old" not in _ids and "zc-777" in _ids, "旧的抓取结果没被替换"
+
+        # 「今天已更新」时也要清：过期清理和今天抓没抓无关
+        _RF.OUT.write_text(_js3.dumps({"version": 11, "updated": dt.date.today().isoformat(),
+                                       "items": [{"id": "gone", "name": "过期了",
+                                                  "date": _dd(5), "reg_close": _dd(-2),
+                                                  "via": "zuicool"}]},
+                                      ensure_ascii=False), encoding="utf-8")
+
+        def _no_net(url):
+            raise OSError("不该联网")
+
+        _mu = _RF.maybe_update(today=dt.date.today(), opener=_no_net)
+        assert _mu.get("skipped") == "今天已更新", _mu
+        assert _mu.get("pruned") == 1, f"就算今天已更新，过期条目也该被清：{_mu}"
+        assert not _js3.loads(_RF.OUT.read_text(encoding="utf-8"))["items"], \
+            "过期条目没被清掉"
+    finally:
+        _RF.OUT = _pr_old
     _td = Path(tempfile.mkdtemp())
     (_td / "races.json").write_text(_js3.dumps({"items": [
         {"id": "t", "name": "今天最后一天", "date": _dd(10),

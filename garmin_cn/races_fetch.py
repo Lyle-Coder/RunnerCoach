@@ -224,6 +224,66 @@ def fetch(pages: int = PAGES, per_page: int = PER_PAGE,
     return uniq, stat
 
 
+AUTO_SOURCES = ("zuicool",)      # 自动抓来的条目：缺窗口就是脏数据，直接扔
+
+
+def _load() -> dict:
+    try:
+        data = json.loads(OUT.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _close_of(it: dict) -> dt.date | None:
+    try:
+        return dt.date.fromisoformat(str(it.get("reg_close") or "")[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def keep(it: dict, today: dt.date) -> bool:
+    """这条还该不该留在文件里。
+
+    退出窗口（reg_close 早于今天）一律不留——展示层虽然也过滤，但文件
+    越攒越多不是好事：一次抓取失败留下的旧条目会一直躺着，没人知道它
+    已经没用了。
+
+    窗口缺失的：自动抓来的直接扔（本来就不该出现）；人工维护的留着，
+    可能是正在补数据，删了等于让人白填。
+    """
+    if not isinstance(it, dict):
+        return False
+    c = _close_of(it)
+    if c is None:
+        return str(it.get("via") or "") not in AUTO_SOURCES
+    return c >= today
+
+
+def prune(today: dt.date | None = None) -> dict:
+    """把已经出了报名窗口的条目从磁盘上删掉。没有变化就不写盘。"""
+    today = today or dt.date.today()
+    data = _load()
+    items = data.get("items") or []
+    kept = [i for i in items if keep(i, today)]
+    removed = len(items) - len(kept)
+    if removed <= 0:
+        return {"ok": True, "removed": 0, "kept": len(kept)}
+    data["items"] = kept
+    try:
+        _write(data)
+    except OSError as e:
+        return {"ok": False, "removed": 0, "error": str(e)}
+    return {"ok": True, "removed": removed, "kept": len(kept)}
+
+
+def _write(data: dict) -> None:
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    tmp = OUT.with_name(OUT.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(OUT)
+
+
 def sync(today: dt.date | None = None, pages: int = PAGES,
          opener=None) -> dict:
     """抓一轮并原子写入。失败时**不动**磁盘上的旧文件。"""
@@ -231,16 +291,26 @@ def sync(today: dt.date | None = None, pages: int = PAGES,
     rows, stat = fetch(pages=pages, today=today, opener=opener)
     if not rows:
         return {"ok": False, "error": stat.get("error") or "一场都没抓到", **stat}
-    data = {"version": 1, "updated": today.isoformat(),
-            "source": "zuicool", "items": rows}
+
+    # 保留旧文件里「不是这个源抓来的」条目（手工维护的、别的 adapter 的）：
+    # App 每天跑一次 sync，不这么做会把人工填的赛事整体抹掉。
+    old = _load()
+    got = {r["id"] for r in rows}
+    manual = [i for i in old.get("items") or []
+              if isinstance(i, dict) and str(i.get("id")) not in got
+              and str(i.get("via") or "") not in AUTO_SOURCES
+              and keep(i, today)]
+    items = [i for i in rows if keep(i, today)] + manual
+    gone = len(old.get("items") or []) + len(rows) - len(items)
+    data = {"version": int(old.get("version") or 0) + 1,
+            "updated": today.isoformat(), "source": "zuicool", "items": items}
     try:
-        OUT.parent.mkdir(parents=True, exist_ok=True)
-        tmp = OUT.with_name(OUT.name + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(OUT)
+        _write(data)
     except OSError as e:
         return {"ok": False, "error": f"写不进 {OUT}：{e}", **stat}
-    return {"ok": True, "updated": today.isoformat(), **stat}
+    return {"ok": True, "updated": today.isoformat(), "version": data["version"],
+            "kept": len(items), "manual": len(manual),
+            "pruned": max(0, gone), **stat}
 
 
 def _last_updated() -> str:
@@ -256,16 +326,20 @@ def maybe_update(force: bool = False, today: dt.date | None = None,
     global _last_try
     today = today or dt.date.today()
     now = time.time()
-    if not force:
-        if _last_updated()[:10] == today.isoformat():
-            return {"ok": True, "skipped": "今天已更新"}
-        if now - _last_try < GAP_HOURS * 3600:
-            return {"ok": True, "skipped": "刚试过"}
     with _LOCK:
-        if not force and _last_updated()[:10] == today.isoformat():
-            return {"ok": True, "skipped": "今天已更新"}
+        # 清理必须在所有「跳过」判断之前：过期条目跟「今天抓没抓」无关，
+        # 连续几天抓取失败时，文件里积的旧比赛也得有人清。这一步不联网。
+        pruned = prune(today)
+        if not force:
+            if _last_updated()[:10] == today.isoformat():
+                return {"ok": True, "skipped": "今天已更新",
+                        "pruned": pruned.get("removed", 0)}
+            if now - _last_try < GAP_HOURS * 3600:
+                return {"ok": True, "skipped": "刚试过",
+                        "pruned": pruned.get("removed", 0)}
         _last_try = now
         r = sync(today=today, opener=opener)
+        r["pruned"] = r.get("pruned", 0) + pruned.get("removed", 0)
     if not r.get("ok"):
         try:
             from . import diag as _dg
