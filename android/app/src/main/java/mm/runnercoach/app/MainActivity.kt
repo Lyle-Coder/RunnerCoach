@@ -495,6 +495,7 @@ class MainActivity : Activity() {
                     "mealShot" -> askMealPhoto()
                     "aiSettings" -> openAiSettings()
                     "aiToggle" -> toggleAi()
+                    "simpleToggle" -> toggleSimple()
                     "corosSleep" -> askCorosSleep()
                     "login" -> showLoginPicker()
                     "mi" -> showMiPanel()
@@ -1330,6 +1331,21 @@ class MainActivity : Activity() {
             return
         }
         web.loadUrl("http://127.0.0.1:$port/ai#settings")
+    }
+
+    /** 「我的 → 简洁模式」：先把不用的模块藏起来，随时可以关回来。 */
+    private fun toggleSimple() {
+        thread {
+            val r = apiCall("simple_toggle")
+            ui {
+                if (!r.optBoolean("ok")) {
+                    toast("切换失败：${r.optString("error")}")
+                    return@ui
+                }
+                toast(if (r.optBoolean("simple_mode")) "已切到简洁模式" else "已恢复完整模式")
+                reload()
+            }
+        }
     }
 
     /** 行尾开关：只翻 AI 总开关，不动 provider / key，改完刷新当前页。 */

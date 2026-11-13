@@ -2898,7 +2898,9 @@ def run() -> int:
     # 「我的」页压缩：竖排行 ≤6 条（账号 4 + 诊断 1），其余走 2 列网格；
     # 三个体重行合并成一行，登录入口放进来源选择器。
     _me = U.me_page()
-    assert _me.count('class="row') <= 6, f"我的页还是长列表：{_me.count('class=\"row')} 行"
+    # 6 → 7：多出来的是「简洁模式」开关。两个开关（AI 服务 / 简洁模式）都
+    # 必须常驻可见，再往上加行得先想清楚是不是该并进别的地方。
+    assert _me.count('class="row') <= 7, f"我的页还是长列表：{_me.count('class=\"row')} 行"
     assert _me.count('class="acts"') == 2, "常用/数据两组没有排成网格"
     assert "体重数据" in _me and ">小米体重<" not in _me, "体重三行没有合并"
     # AI 模型服务从「只读卡片」升级成可点的行（行尾带开关），所以网格里不该
@@ -4268,6 +4270,32 @@ def run() -> int:
         "App 没接「打开配置」和「开关」两个动作"
     assert 'id="aiSeg"' in (ROOT / "garmin_cn/aiui.py").read_text(encoding="utf-8"), \
         "配置抽屉里没有 AI 开关"
+
+    # ---- 简洁模式：只留首页/历史 + 教练的今日与体重 ---------------------
+    from garmin_cn import appapi as _AP2
+    from garmin_cn import aiui as _AIUI
+
+    _cfgpath = Path(tempfile.mkdtemp()) / "config.json"
+    _old_cfg = _AP2.CONFIG
+    _AP2.CONFIG = _cfgpath
+    try:
+        assert _AP2.simple_mode() is False, "简洁模式默认应该是关的"
+        assert _AP2.simple_toggle().get("simple_mode") is True, "开关没翻过去"
+        _simple_html = _AIUI.render()
+        assert _simple_html.count("<button data-v=") == 2, \
+            f"简洁模式还有多余标签：{_simple_html.count('<button data-v=')} 个"
+        assert ">今日<" in _simple_html and ">体重<" in _simple_html, "今日/体重被误删"
+        for _gone in (">对话<", ">备赛<", ">力量<"):
+            assert _gone not in _simple_html, f"简洁模式没关掉 {_gone}"
+        _AP2.simple_toggle()
+        assert _AIUI.render().count("<button data-v=") == 5, "关掉简洁模式后模块没回来"
+    finally:
+        _AP2.CONFIG = _old_cfg
+
+    _me_simple = U.me_page()
+    assert 'data-act="simpleToggle"' in _me_simple, "「我的」页没有简洁模式开关"
+    assert 'data-act="simpleToggle"' in _kt7 or '"simpleToggle" -> toggleSimple()' in _kt7, \
+        "App 侧没接简洁模式开关"
 
     # ---- 素材批量删除：删不掉的不能从列表里消失 ----------------------
     _cdir = Path(tempfile.mkdtemp())
