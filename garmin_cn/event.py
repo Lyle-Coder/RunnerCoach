@@ -1522,6 +1522,102 @@ def upcoming(days: int = 45, today: str | None = None) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------- 系统日历
+# 交给 Kotlin 写进系统日历的清单。Python 只算「哪天、提醒什么、提前多久」，
+# 原生只管按 uid 增删改事件——倒推规则绝不在两端各写一遍。
+# 系统日历负责真正弹出通知：不需要后台常驻、不需要精确闹钟权限，
+# 也不会被国产 ROM 的电池优化掐掉。
+CAL_MARK = "#RunnerCoach"
+CAL_UID_KEY = "rcuid="
+CAL_DEFAULT_HH = "09:00"      # 只填日期没填时刻，别把提醒定在半夜
+CAL_TRIP_MINUTES = {"flight": [1440, 180], "train": [180],
+                    "stay": [180], "race": [1440, 120],
+                    "other": [120]}
+
+
+def _cal_uid(prefix: str, *parts: str) -> str:
+    """稳定 id：内容变了就是另一件事（旧事件会被删、新事件会建）。
+
+    不用数组下标：删掉前面一条行程，后面所有下标都会漂，同步时就会把
+    整个日历删一遍再建一遍。用内容 hash，改期/改说明才换 id。
+    """
+    import hashlib
+
+    raw = "|".join(str(p) for p in parts).encode("utf-8")
+    return prefix + hashlib.sha1(raw).hexdigest()[:16]
+
+
+def calendar_items(today: str | None = None) -> list[dict]:
+    """所有赛事里要写进系统日历的事件清单。
+
+    两类：① 未订的「该订了」待办（截止日当天 09:00 提醒）；
+    ② 已确定下来的手填行程本身（航班/高铁/住宿/开赛，按类型提前提醒）。
+    过期的待办不写——往过去插事件最多弹一次骚扰通知，交给赛事页去催；
+    已订的待办不写，标「已订」时同步会把对应日历事件删掉。
+    """
+    t0 = dt.date.fromisoformat(today) if today else dt.date.today()
+    out, seen = [], set()
+
+    def add(item: dict) -> None:
+        if item["uid"] not in seen:
+            seen.add(item["uid"])
+            out.append(item)
+
+    for e in list_events(today=t0):
+        slug = e.get("slug")
+        if not slug:
+            continue
+        name = str(e.get("short") or e.get("name") or slug)[:16]
+        try:
+            bks = bookings(slug, today=t0.isoformat(), include_booked=False)
+        except Exception:
+            bks = []
+        for b in bks:
+            if b["days"] < 0:
+                continue
+            uid = _cal_uid("bk:", slug, b["kind"], b["label"], b["due"], b["at"])
+            desc = (f"{name} · 预订截止 {b['due']}\n"
+                    f"{b['label']}（提前 {b['lead']} 天该订）\n"
+                    "在 RunnerCoach 赛事页标为「已订」后，这条会自动从日历移除。\n"
+                    f"{CAL_MARK} {CAL_UID_KEY}{uid}")
+            add({"uid": uid, "type": "booking", "kind": b["kind"],
+                 "title": f"该订 · {name} · {b['label']}"[:70],
+                 "desc": desc, "at": b["at"], "minutes": [0],
+                 "duration": 30, "slug": slug, "event": name})
+        try:
+            manual = trip_manual(slug)
+        except Exception:
+            manual = []
+        for it in manual:
+            raw_at = str(it.get("at") or "")[:16]
+            try:
+                when = dt.datetime.strptime(raw_at, _TRIP_AT)
+            except ValueError:
+                continue
+            if when.date() < t0:
+                continue
+            kind = it.get("kind") if it.get("kind") in TRIP_KINDS else "other"
+            label = str(it.get("label") or "行程")[:40]
+            at = when.strftime(_TRIP_AT)
+            hint = ""
+            if at[11:16] == "00:00":
+                at = at[:11] + CAL_DEFAULT_HH
+                hint = "（只填了日期，按 09:00 记）"
+            uid = _cal_uid("tp:", slug, kind, raw_at, label)
+            place = str(it.get("place") or "").strip()[:60]
+            desc = (f"{name} · {TRIP_KINDS.get(kind, '行程')}\n"
+                    f"{label}\n行程时间 {raw_at.replace('T', ' ')}{hint}"
+                    + (f"\n地点 {place}" if place else "")
+                    + f"\n{CAL_MARK} {CAL_UID_KEY}{uid}")
+            add({"uid": uid, "type": "trip", "kind": kind,
+                 "title": f"{TRIP_KINDS.get(kind, '行程')} · {name} · {label}"[:70],
+                 "desc": desc, "at": at,
+                 "minutes": list(CAL_TRIP_MINUTES.get(kind, [120])),
+                 "duration": 60, "slug": slug, "event": name})
+    out.sort(key=lambda x: (x["at"], x["uid"]))
+    return out
+
+
 def reminders(slug: str | None = None) -> dict:
     """已设提醒：{"<at>|<label>": true}。关掉就删键，不留空壳。"""
     slug = active_slug(slug)

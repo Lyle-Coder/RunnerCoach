@@ -1540,6 +1540,7 @@ def me_page() -> str:
             action="amap"),
         act("⚙", "运动设置", "跑步 / 骑行 · FTP", href="/sports"),
         act("⇧", "高驰训练", "跑步 / 骑行 · 预览导入", href="/training"),
+        act("▦", "日历提醒", "「该订了」写进系统日历", action="calendarSync"),
     ])
     # 数据与备份：导出/导入是「换手机保命」的两个动作，放同一排最显眼
     data_tiles = acts_grid([

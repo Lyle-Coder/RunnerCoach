@@ -3239,9 +3239,10 @@ def run() -> int:
     assert re.search(r"\.me \.grid\.three \.card\{[^}]*height:88px", _ucss, re.S), \
         "三张数值卡没固定高度"
     _ads = re.findall(r'<span class="ad">([^<]*)</span>', _me)
-    # 运动设置与高驰训练导入分别有独立入口；副标题仍保持单行。
-    assert len(_ads) == 9 and all(len(a) <= 14 for a in _ads), \
+    # 运动设置、高驰训练导入、日历提醒分别有独立入口；副标题仍保持单行。
+    assert len(_ads) == 10 and all(len(a) <= 14 for a in _ads), \
         f"网格卡数量或说明长度不对：{_ads}"
+    assert any("系统日历" in a for a in _ads), "「我的」页没有日历提醒入口"
 
     # ---- 0.6.6：品牌图标统一到开屏 / 角标 / 三张出图 / 完整看板 ------------
     from garmin_cn import brand as _BR
@@ -5522,6 +5523,48 @@ def run() -> int:
     for _txt in ("该订了", "改预订提前量", "标为已订", "取消已订"):
         assert _txt in _bk_html, f"赛事页缺了「{_txt}」"
     assert "提前量" in _bk_html, "添加表单里没有单条提前量入口"
+    assert 'data-act="calendarSync"' in _bk_html, \
+        "赛事页没有「同步到系统日历」入口"
+
+    # ---- 系统日历清单：过期/已订不写、uid 稳定、原生能认回自己 ---------
+    _ci = [x for x in _EV.calendar_items(today="2027-01-01")
+           if x["slug"] == "self-2026"]
+    assert _ci, "日历清单为空"
+    _cbk = [x for x in _ci if x["type"] == "booking"]
+    _ctp = [x for x in _ci if x["type"] == "trip"]
+    assert _cbk and _ctp, f"预订或行程没进日历清单：{[x['type'] for x in _ci]}"
+    assert all("入住 都江堰" not in x["title"] for x in _cbk), \
+        "标了已订还往系统日历写提醒"
+    assert all(x["at"].endswith("09:00") and x["minutes"] == [0]
+               for x in _cbk), "预订提醒该在截止日 09:00 弹"
+    assert all(isinstance(x["minutes"], list) and x["minutes"] and
+               all(isinstance(m, int) for m in x["minutes"]) for x in _ci), \
+        "提醒分钟数格式不对，原生会插出 0 分钟外的怪提醒"
+    assert all(("rcuid=" + x["uid"]) in x["desc"] and
+               x["desc"].count("#RunnerCoach") == 1 for x in _ci), \
+        "描述缺 uid 标记，下次同步会认不出自己写的事件"
+    assert len({x["uid"] for x in _ci}) == len(_ci), "uid 撞了"
+    assert _EV.calendar_items(today="2027-01-01") == \
+        _EV.calendar_items(today="2027-01-01"), \
+        "同一天的清单每次生成不同 id，日历会被反复删建"
+    # 只填日期没填时刻：不能把事件定在 00:00 半夜弹
+    _EV.trip_add("self-2026", "other", "2027-03-24", "领物")
+    _ci2 = [x for x in _EV.calendar_items(today="2027-01-01")
+            if x["slug"] == "self-2026"]
+    _ling = [x for x in _ci2 if "领物" in x["title"]]
+    assert len(_ling) == 1 and _ling[0]["at"].endswith("09:00"), \
+        "只填日期的行程没归一到 09:00"
+    assert not any(x["type"] == "booking"
+                   for x in _EV.calendar_items(today="2027-04-01")), \
+        "过期的待办还往过去插日历事件，只会补一条骚扰通知"
+    import json as _json
+    from garmin_cn import appapi as _AP
+
+    _ap = _json.loads(_AP.call("calendar_list"))
+    assert _ap["ok"] and _ap["count"] == len(_ap["items"]), \
+        "App 桥没拿到日历清单"
+    assert all({"uid", "at", "title", "desc", "minutes"} <= set(x)
+               for x in _ap["items"]), "清单字段缺了，原生会跳过这些事件"
 
     # ---- CP 表截图识别：解析、校验、不猜 -------------------------------
     from garmin_cn import cpocr as _CO
