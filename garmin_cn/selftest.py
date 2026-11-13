@@ -3386,8 +3386,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.3.1 → 132）。
-    assert 'versionCode = 132' in (
+    # 每次发版要同步改这里（本次 1.3.2 → 133）。
+    assert 'versionCode = 133' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。
@@ -5439,6 +5439,20 @@ def run() -> int:
     _elon, _elat = _BM3.wgs84_to_gcj02(120.0, 30.0)
     assert abs(_plon - _elon) < 1e-5 and abs(_plat - _elat) < 1e-5, \
         "高德 URI 传了 WGS 坐标，导航会偏到隔壁街"
+    # 原生直达：网页 URI 只作兜底，App 里点标注必须发 androidamap://
+    _an = _EVUI._amap_act(30.0, 120.0, "测试,起点")
+    _av = _EVUI._amap_act(30.0, 120.0, "测试,起点", nav=False)
+    assert _an.startswith("amapNav:") and _av.startswith("amapView:"), \
+        "高德直达动作名不对，Kotlin 侧收不到"
+    _ap = _an.split(":", 1)[1].split(",")
+    assert len(_ap) == 3, "载荷必须是 经度,纬度,名称 三段"
+    assert abs(float(_ap[0]) - _elon) < 1e-5 and \
+           abs(float(_ap[1]) - _elat) < 1e-5, \
+        "原生动作传了 WGS 坐标；高德 dev=0 会偏 400~500 m"
+    assert _upx.unquote(_ap[2]) == "测试 起点", \
+        "地名里的逗号没清掉，Kotlin split 会切错载荷"
+    assert all(p.get("act", "").startswith("amapNav:") for p in _pins), \
+        "赛道图标注没带原生导航动作，点了还是开网页"
     assert _EVUI._pin_tag([]) == ""
     assert _EVUI._pin_tag([[30.67, 104.06]]) == \
            _EVUI._pin_tag([[30.67, 104.06]]), "同样的 POI 每次换缓存名会反复取图"
@@ -5456,6 +5470,8 @@ def run() -> int:
         "矢量俯视图上的起终点标注没渲染"
     assert _svg_pins.count("<a href=") >= 3, \
         "三个点都得能点，不能只画个圆"
+    assert _svg_pins.count('data-act="amapNav:') >= 3, \
+        "SVG 标注没带原生动作，手机上点标注仍会跳网页"
     # 图上圆点太小，还得有一排大按钮兜底
     with _mock.patch.object(_BM3, "available", lambda: False):
         _map_html = _EVUI._course_map(
@@ -5465,6 +5481,31 @@ def run() -> int:
     assert "导航到住宿" in _map_html, "住宿没进赛道图的导航按钮"
     assert "导航到高铁" not in _map_html and "导航到航班" not in _map_html, \
         "机场/车站又混进赛道图导航按钮了"
+    assert 'data-act="amapNav:' in _map_html, \
+        "赛道图快捷导航按钮没接原生动作"
+    _trip_html_amap = _EVUI._trips_html("self-2026", "")
+    assert 'data-act="amapNav:' in _trip_html_amap and \
+           'data-act="amapView:' in _trip_html_amap, \
+        "行程列表的「导航 / 看位置」还是纯网页链接"
+    assert 'href="https://uri.amap.com/' in _trip_html_amap, \
+        "网页兜底链接被删了，桌面浏览器和没装高德的手机会点不动"
+    _kt_amap = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert 'name.startsWith("amapNav:")' in _kt_amap and \
+           'name.startsWith("amapView:")' in _kt_amap, \
+        "JS 桥没接高德直达动作"
+    assert 'androidamap://navi?' in _kt_amap and \
+           'androidamap://viewMap?' in _kt_amap and 'dev=0' in _kt_amap, \
+        "没按官方 scheme 唤起高德 App（或坐标偏移标记不对）"
+    assert 'setPackage(AMAP_PKG)' in _kt_amap and \
+           'const val AMAP_PKG = "com.autonavi.minimap"' in _kt_amap, \
+        "没限定高德包名，可能弹应用选择框或被别的 App 截走"
+    _mf_amap = (ROOT / "android/app/src/main/AndroidManifest.xml").read_text(
+        encoding="utf-8")
+    assert "<queries>" in _mf_amap and "com.autonavi.minimap" in _mf_amap, \
+        "Android 11+ 没声明包可见性：装了高德也会被 resolveActivity 判成没装"
+    from garmin_cn import ui as _UI_AMAP
+    assert "e.preventDefault()" in _UI_AMAP.BRIDGE_JS, \
+        "没拦掉 <a href> 默认跳转，会既唤起 App 又开一次网页"
     # 空行程时「行程与预订」区块必须还在，且添加入口默认展开
     with _mock.patch.object(E2, "trips", lambda *a, **k: []), \
             _mock.patch.object(_BM3, "available", lambda: False):
@@ -5484,60 +5525,84 @@ def run() -> int:
     assert _EV.trip_del("self-2026", 0), "手填行程删不掉"
     assert not _EV.trip_manual("self-2026"), "删完还留着空壳"
 
-    # ---- 预订提前量：倒推、可改、单条覆盖、过期不消失、已订 -------------
+    # ---- 预订提醒：按比赛日倒推、填行程自动已订、手动覆盖 --------------
     assert _EV.BOOKING_LEAD == {"flight": 60, "train": 15, "stay": 45,
                                 "race": 0, "other": 0}, "默认提前量被改了"
-    _EV.trip_add("self-2026", "flight", "2027-03-25 08:30", "CA1883 起飞")
-    _EV.trip_add("self-2026", "train", "2027-03-25 14:05", "G8712 成都东")
-    _EV.trip_add("self-2026", "stay", "2027-03-26 15:00", "入住 都江堰")
+    # 赛事日 2027-03-27。建好赛事、一条行程都没填，就该有这三条提醒——
+    # 1.3.1 前反过来，必须先填好「订了哪趟航班」才生成待办。
     _bk = _EV.bookings("self-2026", today="2027-01-01")
-    assert len(_bk) == 3, f"该有三条待办：{_bk}"
+    assert len(_bk) == 3, f"建好赛事就该有三条预订提醒：{_bk}"
+    assert all(b["race"] == "2027-03-27" for b in _bk), "锚点不是比赛日期"
     _due = {b["kind"]: b["due"] for b in _bk}
-    assert _due == {"flight": "2027-01-24", "train": "2027-03-10",
-                    "stay": "2027-02-09"}, f"提前量倒推错了：{_due}"
+    assert _due == {"flight": "2027-01-26", "stay": "2027-02-10",
+                    "train": "2027-03-12"}, f"按比赛日倒推错了：{_due}"
     assert [b["kind"] for b in _bk] == ["flight", "stay", "train"], \
-        "待办该按截止日排，不是按行程日"
+        "待办该按截止日排"
+    assert all(not b["booked"] for b in _bk), \
+        "资料里认出来的推荐航班/酒店不该被当成用户已订"
+    assert all(b["label"] == _EV.BOOKING_LABELS[b["kind"]] for b in _bk), \
+        "待办该是「订机票」这类通用提醒，不该绑具体行程"
     # 赛事级可改：只改航班，其它两项保持
     assert _EV.set_booking_rules("self-2026", {"flight": "10"})["flight"] == 10
     assert _EV.booking_rules("self-2026")["stay"] == 45, "改航班把住宿也改了"
     assert {b["kind"]: b["due"] for b in
             _EV.bookings("self-2026", today="2027-01-01")}["flight"] == \
-        "2027-03-15", "改完规则待办没重算"
+        "2027-03-17", "改完规则没按比赛日重算"
     try:
         _EV.set_booking_rules("self-2026", {"train": "-3"})
         raise AssertionError("负的提前量居然收下了")
     except ValueError:
         pass
-    # 单条覆盖：0 表示这条不生成待办
-    _EV.trip_add("self-2026", "flight", "2027-03-27 18:00", "返程航班",
-                 lead="0")
-    assert len(_EV.bookings("self-2026", today="2027-01-01")) == 3, \
-        "单条填 0 还是生成了待办"
-    # 过期不消失：最该催的就是这一条
-    _late = _EV.bookings("self-2026", today="2027-04-01")
+    # 填了对应类型的预订信息 → 自动视为已订，不用再手点一次
+    _EV.trip_add("self-2026", "flight", "2027-03-25 08:30", "CA1883 起飞")
+    _EV.trip_add("self-2026", "train", "2027-03-25 14:05", "G8712 成都东")
+    _EV.trip_add("self-2026", "stay", "2027-03-26 15:00", "入住 都江堰")
+    _auto = {b["kind"]: b
+             for b in _EV.bookings("self-2026", today="2027-01-01")}
+    assert all(b["booked"] and b["auto"] for b in _auto.values()), \
+        "填了预订信息没自动视为已订"
+    assert "自动视为已订" in _auto["stay"]["reason"], "没说明为什么停了提醒"
+    assert not _EV.bookings("self-2026", today="2027-01-01",
+                            include_booked=False), "自动已订了还在催"
+    # 手动覆盖：填了但只是计划 → 仍需提醒；没填也能直接关掉
+    _EV.set_booking_done("self-2026", "stay", done=False)
+    assert [b["kind"] for b in _EV.bookings(
+        "self-2026", today="2027-01-01", include_booked=False)] == ["stay"], \
+        "手动「仍需提醒」没盖掉自动已订"
+    _EV.set_booking_done("self-2026", "stay", done=True)
+    assert not _EV.bookings("self-2026", today="2027-01-01",
+                            include_booked=False), "标「不用提醒」没生效"
+    _EV.set_booking_rules("self-2026", {"flight": "60"})
+    assert "stay" in _EV._booking_prefs("self-2026")["done"], \
+        "改提前量把手动覆盖抹掉了"
+    # 过期不消失（最该催的就是这条），但比赛结束后不再催
+    _late = _EV.bookings("self-2026", today="2027-03-20")
     assert len(_late) == 3 and all(b["overdue"] and b["days"] < 0
                                    for b in _late), \
         "截止日过了待办就消失，等于白提醒"
-    # 标已订：默认仍可见（能取消），但首页「临近」不再推
-    _idx = next(b["idx"] for b in _late if b["kind"] == "stay")
-    assert _EV.trip_book("self-2026", _idx, True)["booked"] is True
-    _all_bk = _EV.bookings("self-2026", today="2027-01-01")
-    assert all(b["kind"] != "stay" for b in
-               _EV.bookings("self-2026", today="2027-01-01",
-                            include_booked=False)), "标了已订还在催"
-    assert _all_bk[-1]["booked"] and _all_bk[-1]["kind"] == "stay", \
-        "已订的该沉到底且仍可见，免得误点后找不回来"
+    assert _EV.bookings("self-2026", today="2027-04-01") == [], \
+        "比赛都过了还在催订机票"
+    # 只留住宿行程 → 航班/高铁该催，住宿自动已订
+    _EV._write("self-2026", _EV.BOOKING_FILE,
+               {"lead": dict(_EV.BOOKING_LEAD)})
+    _EV._trip_save("self-2026",
+                   [x for x in _EV.trip_manual("self-2026")
+                    if x["kind"] == "stay"])
     _up = [r for r in _EV.upcoming(days=80, today="2027-01-01")
            if r.get("slug") == "self-2026" and r.get("booking")]
-    assert _up and all("入住 都江堰" not in r["label"] for r in _up), \
+    assert {r["kind"] for r in _up} == {"flight", "train"}, \
+        "首页「临近」没按自动已订过滤"
+    assert all(r["label"] in ("订机票", "订高铁票") for r in _up), \
         "首页「临近」还在推已订的住宿"
-    assert any(r["label"] == "CA1883 起飞" for r in _up), \
-        "首页「临近」没带上待订的航班"
     with _mock.patch.object(_BM3, "available", lambda: False):
         _bk_html = _EVUI.render_page({"slug": ["self-2026"]})
-    for _txt in ("该订了", "改预订提前量", "标为已订", "取消已订"):
+    for _txt in ("该订了", "改预订提前量", "按比赛日", "自动视为已订",
+                 "已订 / 不用提醒", "仍需提醒"):
         assert _txt in _bk_html, f"赛事页缺了「{_txt}」"
-    assert "提前量" in _bk_html, "添加表单里没有单条提前量入口"
+    assert 'name="kind" value="flight"' in _bk_html, \
+        "按钮没按类型提交（待办已不绑行程下标）"
+    assert "单条行程也能在添加时" not in _bk_html, \
+        "单条提前量输入已废弃，文案还在误导"
     assert 'data-act="calendarSync"' in _bk_html, \
         "赛事页没有「同步到系统日历」入口"
 
@@ -5548,8 +5613,9 @@ def run() -> int:
     _cbk = [x for x in _ci if x["type"] == "booking"]
     _ctp = [x for x in _ci if x["type"] == "trip"]
     assert _cbk and _ctp, f"预订或行程没进日历清单：{[x['type'] for x in _ci]}"
-    assert all("入住 都江堰" not in x["title"] for x in _cbk), \
-        "标了已订还往系统日历写提醒"
+    assert {x["kind"] for x in _cbk} == {"flight", "train"}, \
+        "自动已订的住宿还往系统日历写提醒"
+    assert "2027-03-27" in _cbk[0]["desc"], "日历描述没写清是按比赛日倒推"
     assert all(x["at"].endswith("09:00") and x["minutes"] == [0]
                for x in _cbk), "预订提醒该在截止日 09:00 弹"
     assert all(isinstance(x["minutes"], list) and x["minutes"] and
@@ -5570,7 +5636,7 @@ def run() -> int:
     assert len(_ling) == 1 and _ling[0]["at"].endswith("09:00"), \
         "只填日期的行程没归一到 09:00"
     assert not any(x["type"] == "booking"
-                   for x in _EV.calendar_items(today="2027-04-01")), \
+                   for x in _EV.calendar_items(today="2027-03-20")), \
         "过期的待办还往过去插日历事件，只会补一条骚扰通知"
     import json as _json
     from garmin_cn import appapi as _AP

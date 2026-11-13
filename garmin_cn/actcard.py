@@ -378,7 +378,8 @@ def _poi_pins(pins: list, xy, w: int, h: int) -> str:
         pts = [x for x in pts if x[2].get("kind") not in ("start", "end")]
         pts.append((merged[0], merged[1], {
             "kind": "start", "label": "起 / 终",
-            "url": st[0][2].get("url") or en[0][2].get("url")}))
+            "url": st[0][2].get("url") or en[0][2].get("url"),
+            "act": st[0][2].get("act") or en[0][2].get("act")}))
 
     out = []
     for x, y, p in pts:
@@ -399,8 +400,14 @@ def _poi_pins(pins: list, xy, w: int, h: int) -> str:
              f'font-weight="700" text-anchor="{anchor}" paint-order="stroke" '
              f'stroke="#0B111A" stroke-width="4">{esc(label)}</text>')
         url = p.get("url")
-        if url:
-            g = f'<a href="{esc(url)}">{g}</a>'
+        act = p.get("act") or ""
+        # href 是桌面浏览器 / 没装高德时的网页兜底；data-act 让 App 里的
+        # JS 桥直接发 androidamap:// Intent（BRIDGE_JS 会 preventDefault）。
+        if url or act:
+            attrs = f' href="{esc(url)}"' if url else ""
+            if act:
+                attrs += f' data-act="{esc(act)}"'
+            g = f"<a{attrs}>{g}</a>"
         out.append(g)
     return "".join(out)
 
