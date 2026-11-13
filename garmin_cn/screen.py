@@ -134,6 +134,21 @@ _BASE = """
   display:inline-flex;align-items:center;min-height:44px;padding:0 2px}
 
 /* 最近 7 天 ≈300：一个大数 + 7 根柱 + 3 条样本 */
+.rc-up{display:flex;align-items:center;gap:8px;padding:6px 2px;
+  border-top:1px solid rgba(148,163,184,.14)}
+.rc-up:first-of-type{border-top:0}
+.rc-up-d{flex:none;min-width:42px;font-size:11px;color:var(--muted,#8A93A6);
+  font-variant-numeric:tabular-nums}
+.rc-up-d.hot{color:#F5A524;font-weight:700}
+.rc-up-t{flex:1;min-width:0;font-size:12.5px;color:var(--ink,#E8F0FB);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rc-up-e{margin-left:6px;color:var(--faint,#7689A2);font-size:11px}
+/* 视觉上只是个 15px 的铃铛，但命中区必须 44×44（手指按不准），
+   用负 margin 把多出来的高度吃掉，行高不受影响。 */
+.rc-bell{background:none;border:0;width:44px;height:44px;padding:0;
+  display:flex;align-items:center;justify-content:center;
+  margin:-9px -6px -9px 0;font-size:15px;cursor:pointer;opacity:.5;line-height:1}
+.rc-bell.on{opacity:1}
 .rc-week-hd{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
 .rc-week-hd .big-num{font-size:26px;line-height:1.15}
 .rc-week-hd .big-num small{font-size:12.5px;font-weight:500;margin-left:4px;
@@ -200,6 +215,9 @@ _BIG = """
 {p}.rc-load{grid-area:l}
 {p}.rc-body-panel{grid-area:b}
 {p}.rc-week-panel{grid-area:w}
+/* 临近块只在竖屏出现：宽屏是写死的 6 区栅格（1280×800 不许滚动），
+   再塞一块会把固定行高挤破；横屏本来也不适合「今天要记得什么」。 */
+{p}.rc-up-panel{display:none}
 {p}.rc-plan-panel{grid-area:p}
 /* 面板内部可滚，页面本身不滚；1280×800 无页面滚动、无面板截断 */
 {p}.rc-panel{overflow:auto}
