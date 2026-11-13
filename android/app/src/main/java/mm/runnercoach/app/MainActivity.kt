@@ -1461,12 +1461,14 @@ class MainActivity : Activity() {
         }
         AlertDialog.Builder(this)
             .setTitle("补充一句（可选）")
-            .setMessage("照片看不清份量时写一句更准：主食多少、有没有喝汤、几个鸡蛋。")
+            .setMessage("照片看不清份量时写一句更准：主食多少、有没有喝汤、几个鸡蛋。留空就直接按照片估。")
             .setView(wrap)
+            // 只留一个识别按钮：输入框留空时，「识别」和原来的「直接识别」
+            // 走的是同一条路径，两个按钮只是让人犹豫点哪个。
             .setPositiveButton("识别") { _, _ ->
                 doMealEstimate(uri, input.text.toString().trim())
             }
-            .setNegativeButton("直接识别") { _, _ -> doMealEstimate(uri, "") }
+            .setNegativeButton("取消", null)
             .show()
     }
 

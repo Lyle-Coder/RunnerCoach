@@ -1360,6 +1360,8 @@ def run() -> int:
     assert _AAI._mask_mail("a@qq.com") == "a*@qq.com"
     assert _AAI._mask_mail(None) == ""
     _kt7 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert 'setNegativeButton("直接识别"' not in _kt7, \
+        "拍照识别又出现了两个功能相同的按钮（识别 / 直接识别）"
     assert '"login:garmin" -> openAccount("garmin")' in _kt7, "已登录仍直接弹登录框"
     assert '"login:coros" -> openAccount("coros")' in _kt7
     assert "点击可重新登录" not in _kt7, "文案还写着「点击可重新登录」"
