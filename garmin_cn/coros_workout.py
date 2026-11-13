@@ -223,14 +223,40 @@ def _json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+_SCHEMA = ("CREATE TABLE IF NOT EXISTS imports (key TEXT PRIMARY KEY, "
+           "state TEXT NOT NULL, tool TEXT NOT NULL, arguments TEXT NOT NULL, "
+           "result TEXT NOT NULL, updated REAL NOT NULL)")
+
+
 def _db(home):
+    """开一个连接并保证表存在。
+
+    Windows 上两个线程同时**首次**建这个库时，SQLite 偶尔会把刚创建的
+    文件按只读打开（`attempt to write a readonly database`）——并发提交的
+    测试 8 次里红了 7 次。建表本身是幂等的，所以这里对 readonly/locked
+    退一步重试；其它 OperationalError 照旧抛出，不掩盖真的写不进去。
+    """
     path = Path(home) / "data" / "coros_workouts.sqlite3"
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE IF NOT EXISTS imports (key TEXT PRIMARY KEY, state TEXT NOT NULL, tool TEXT NOT NULL, arguments TEXT NOT NULL, result TEXT NOT NULL, updated REAL NOT NULL)")
-    conn.commit()
-    return conn
+    last = None
+    for attempt in range(4):
+        try:
+            conn = sqlite3.connect(str(path), timeout=10)
+            conn.row_factory = sqlite3.Row
+            conn.execute(_SCHEMA)
+            conn.commit()
+            return conn
+        except sqlite3.OperationalError as e:      # noqa: PERF203
+            last = e
+            msg = str(e).lower()
+            if "readonly" not in msg and "locked" not in msg and "busy" not in msg:
+                raise
+            try:
+                conn.close()                       # type: ignore[possibly-undefined]
+            except Exception:
+                pass
+            time.sleep(0.05 * (attempt + 1))
+    raise last  # type: ignore[misc]
 
 
 def prepare(home, courses, cloud, *, date="", warnings=None, today=None):
