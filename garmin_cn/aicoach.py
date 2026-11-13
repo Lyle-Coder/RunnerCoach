@@ -742,6 +742,8 @@ def activity_review(activity_id: str, date: str | None = None) -> dict:
     except Exception:
         pass
 
+    if bike and (_detail.get("row_metrics") or {}).get("avg_speed_mps") is not None:
+        act = {**act, **_detail["row_metrics"]}
     pace = act.get("pace_s_km")
     ctx = {
         "date": (act.get("date") or "")[:10],
