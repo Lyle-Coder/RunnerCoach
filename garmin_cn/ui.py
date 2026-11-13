@@ -1172,8 +1172,7 @@ def _today_plan_card(pl: dict) -> str:
 def plan_page(qs: dict | None = None) -> str:
     """训练计划二级页（属「今日」tab）：今日课表 + 本周 7 天 + 计划信息。
 
-    数据来自佳明教练计划（同步时落的 `data/plan.json`）；高驰没有对外计划接口，
-    这里不做兜底，没有计划就明确说「没读到」并给一个重新读取的按钮。
+    数据来自佳明计划快照或本地教练建议；本地生成内容可预览后导入高驰。
     """
     from . import appapi as A
 
@@ -1277,7 +1276,8 @@ def plan_page(qs: dict | None = None) -> str:
                      else f"FTP {step['ftp_low'] * 100:.0f}–{step['ftp_high'] * 100:.0f}%（未设置 FTP）")
             steps_html += f'<div class="kvline"><span>{esc(step["name"])} · {step["seconds"] / 60:g} 分钟</span><b>{esc(power)}</b></div>'
     steps_section = sec("骑行步骤", '<div class="card">' + steps_html + '</div>') if steps_html else ""
-    body = (sec("今日", _today_plan_card(r)) + steps_section +
+    import_link = '<div class="pager"><a class="btn" href="/training">导入本地训练到高驰</a></div>'
+    body = (sec("今日", _today_plan_card(r)) + steps_section + import_link +
             sec("本周", f'<div class="wk">{rows}</div>') +
             next_sec +
             sec("计划信息", info) +
@@ -1437,6 +1437,7 @@ def me_page() -> str:
             "已配置 · 带底图" if _map_on() else "未配置 · 矢量轨迹",
             action="amap"),
         act("⚙", "运动设置", "跑步 / 骑行 · FTP", href="/sports"),
+        act("⇧", "高驰训练", "跑步 / 骑行 · 预览导入", href="/training"),
     ])
     # 数据与备份：导出/导入是「换手机保命」的两个动作，放同一排最显眼
     data_tiles = acts_grid([

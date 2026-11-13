@@ -1,0 +1,252 @@
+[
+  {
+    "name": "createScheduledWorkout",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string"
+        },
+        "course": {
+          "type": "object",
+          "properties": {
+            "courseDescription": {
+              "type": "string"
+            },
+            "courseName": {
+              "type": "string"
+            },
+            "dayNo": {
+              "type": "integer"
+            },
+            "sections": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Section"
+              }
+            },
+            "sportType": {
+              "type": "integer"
+            },
+            "strengthBodypart": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "courseDescription",
+            "courseName",
+            "sections",
+            "sportType"
+          ]
+        }
+      },
+      "required": [
+        "date",
+        "course"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "Section": {
+          "type": "object",
+          "properties": {
+            "intensityPercentEnd": {
+              "type": "integer"
+            },
+            "intensityPercentStart": {
+              "type": "integer"
+            },
+            "intensityType": {
+              "type": "integer"
+            },
+            "intensityValueEnd": {
+              "type": "integer"
+            },
+            "intensityValueStart": {
+              "type": "integer"
+            },
+            "intervalGroup": {
+              "type": "boolean"
+            },
+            "repeats": {
+              "type": "integer"
+            },
+            "sectionIntensity": {
+              "type": "integer"
+            },
+            "sectionType": {
+              "type": "integer"
+            },
+            "sets": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Section"
+              }
+            },
+            "targetType": {
+              "type": "integer"
+            },
+            "targetValue": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "queryScheduledWorkoutDetails",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string"
+        },
+        "idInPlan": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "date",
+        "idInPlan"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "queryTrainingSchedule",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "startDate": {
+          "type": "string"
+        },
+        "endDate": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "createSingleWorkout",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "course": {
+          "type": "object",
+          "properties": {
+            "courseDescription": {
+              "type": "string"
+            },
+            "courseName": {
+              "type": "string"
+            },
+            "dayNo": {
+              "type": "integer"
+            },
+            "sections": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Section"
+              }
+            },
+            "sportType": {
+              "type": "integer"
+            },
+            "strengthBodypart": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "courseDescription",
+            "courseName",
+            "sections",
+            "sportType"
+          ]
+        }
+      },
+      "required": [
+        "course"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "Section": {
+          "type": "object",
+          "properties": {
+            "intensityPercentEnd": {
+              "type": "integer"
+            },
+            "intensityPercentStart": {
+              "type": "integer"
+            },
+            "intensityType": {
+              "type": "integer"
+            },
+            "intensityValueEnd": {
+              "type": "integer"
+            },
+            "intensityValueStart": {
+              "type": "integer"
+            },
+            "intervalGroup": {
+              "type": "boolean"
+            },
+            "repeats": {
+              "type": "integer"
+            },
+            "sectionIntensity": {
+              "type": "integer"
+            },
+            "sectionType": {
+              "type": "integer"
+            },
+            "sets": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Section"
+              }
+            },
+            "targetType": {
+              "type": "integer"
+            },
+            "targetValue": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "queryWorkoutDetails",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workoutId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workoutId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "queryWorkoutLibrary",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sportType": {
+          "type": "integer"
+        },
+        "courseType": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  }
+]
