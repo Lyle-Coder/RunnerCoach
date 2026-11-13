@@ -402,7 +402,12 @@ def _pin_tag(coords: list) -> str:
 
 
 def _course_pins(slug: str, line: list) -> list[dict]:
-    """赛道图上要标的三个点：起点、终点、以及定好位置的住宿/行程点。"""
+    """赛道图上要标的三个点：起点、终点、住宿。
+
+    只认 `stay`：机票 / 高铁 / 领物虽然也有坐标，但它们在几十公里外的
+    机场和车站，一起塞进取景会把 105K 赛道压成画幅一角的一小团。
+    那些点在「行程与预订」列表里各自带导航按钮，不往赛道图上画。
+    """
     pins = []
     try:
         ev = E._read(slug, "event.json") or {}
@@ -420,9 +425,10 @@ def _course_pins(slug: str, line: list) -> list[dict]:
     except Exception:
         pois = []
     for p in pois:
+        if p["kind"] != "stay":
+            continue
         # 标签只留几个字：酒店全名铺在 720×360 的图上会把轨迹盖住
-        label = ("住宿" if p["kind"] == "stay"
-                 else _TRIP_CN.get(p["kind"], "行程"))
+        label = "住宿"
         short_name = str(p.get("label") or p.get("place") or label)[:6]
         pins.append({"kind": p["kind"], "label": short_name,
                      "lat": p["lat"], "lon": p["lon"],
@@ -486,18 +492,20 @@ def _course_map(slug: str, stats: dict) -> str:
                 "在「我的 → 地图底图」配 Key 后可叠底图")
     legend = ('<div class="maplg"><span class="s"><i></i>起点</span>'
               '<span class="e"><i></i>终点</span>'
-              + ('<span class="h"><i></i>住宿 / 行程</span>'
-                 if any(p["kind"] not in ("start", "end") for p in pins) else "")
+              + ('<span class="h"><i></i>住宿</span>'
+                 if any(p["kind"] == "stay" for p in pins) else "")
               + "</div>")
     # SVG 里的圆点在手机上只有几像素，旁边再给一排 40px 高的按钮兜底：
     # 手指点不准标注时，照样能一键导航到起点 / 终点 / 住处。
+    # 住处多填了几家时按钮只留第一家（按钮写死「住宿」，重复三份没意义），
+    # 其余的仍能在图上点开。
     quick = ([p for p in pins if p["kind"] in ("start", "end")]
-             + [p for p in pins if p["kind"] not in ("start", "end")][:2])
+             + [p for p in pins if p["kind"] == "stay"][:1])
     navs = ('<div class="pager cmapnav">'
             + "".join(
                 f'<a class="btn" href="{ui.esc(p["url"])}">导航到'
                 + ui.esc(p["label"] if p["kind"] in ("start", "end")
-                         else _TRIP_CN.get(p["kind"], "行程")) + "</a>"
+                         else "住宿") + "</a>"
                 for p in quick if p.get("url"))
             + "</div>")
     return ('<div class="cmap">' + svg + "</div>" + legend + navs
@@ -567,7 +575,8 @@ def _trips_html(slug: str, hid: str = "") -> str:
             f'<span class="tt"><b>{stamp}</b> {ui.esc(x["label"])}'
             f'<span class="ts">{ui.esc(x["source"])}</span>'
             + (f'<span class="tplace">📍 {ui.esc(place)}'
-               + (" · 已在赛道图标注" if nav else " · 未定位")
+               + (" · 已在赛道图标注" if nav and x["kind"] == "stay"
+                  else " · 已定位，可导航" if nav else " · 未定位")
                + "</span>" if place else "")
             + geo_form + "</span>" + nav + del_btn + "</div>")
 
@@ -579,7 +588,9 @@ def _trips_html(slug: str, hid: str = "") -> str:
         '<summary>＋ 加一条行程 / 住宿（入口就在这里）</summary>'
         '<p class="hint">机票、高铁、酒店、领物都能加。'
         '<b>住宿填酒店全名或地址</b>，会自动定位并标到赛道俯视图上，'
-        '点标注可跳高德导航；同时进首页「临近」提醒。</p>'
+        '点标注可跳高德导航；航班 / 高铁在下面列表里各自带导航按钮，'
+        '不标到赛道图上（离赛道几十公里，画上去会把赛道挤成一小团）。'
+        '所有条目同时进首页「临近」提醒。</p>'
         '<form class="frm" method="post" action="/__event/trip">' + hid
         + '<input type="hidden" name="act" value="add">'
         '<div class="frow"><label>类型<select class="fi" name="kind">'

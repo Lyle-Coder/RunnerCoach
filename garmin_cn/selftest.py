@@ -5399,6 +5399,19 @@ def run() -> int:
         f"起终点没标上：{_pins[:2]}"
     assert len(_pins) == 3 and _pins[2]["kind"] == "stay", \
         f"住宿没标上：{_pins}"
+    # 机场 / 车站虽然也有坐标，但不能上赛道图：几十公里外会把 105K 赛道
+    # 挤成画幅一角的一小团。它们只在行程列表里各自带导航按钮。
+    _raw_pois = _EV.trip_pins("self-2026")
+    with _mock.patch.object(
+            _EV, "trip_pins",
+            lambda *a, **k: _raw_pois + [
+                {"kind": "flight", "label": "返程航班", "place": "机场",
+                 "lat": 30.5, "lon": 120.5, "at": ""}]):
+        _pins_far = _EVUI._course_pins(
+            "self-2026", [[30.0, 120.0], [30.1, 120.1]])
+    assert len(_pins_far) == 3 and all(
+        p["kind"] != "flight" for p in _pins_far), \
+        "机场被画进赛道图，底图取景会被拉到整个城市"
     assert all("uri.amap.com/navigation" in p["url"] for p in _pins), \
         "标注点没有高德导航链接"
     assert "uri.amap.com/marker" in _EVUI._amap_url(30.0, 120.0, "测试", nav=False), \
@@ -5434,6 +5447,8 @@ def run() -> int:
     assert "导航到起点" in _map_html and "导航到终点" in _map_html, \
         "赛道图旁边没有起终点导航按钮"
     assert "导航到住宿" in _map_html, "住宿没进赛道图的导航按钮"
+    assert "导航到高铁" not in _map_html and "导航到航班" not in _map_html, \
+        "机场/车站又混进赛道图导航按钮了"
     # 空行程时「行程与预订」区块必须还在，且添加入口默认展开
     with _mock.patch.object(E2, "trips", lambda *a, **k: []), \
             _mock.patch.object(_BM3, "available", lambda: False):
