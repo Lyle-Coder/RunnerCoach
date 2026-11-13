@@ -264,6 +264,28 @@ class AppTest(unittest.TestCase):
         self.assertIn("骑行步骤", doc)
         self.assertIn("180–200 W", doc)
 
+    def test_bundle_round_trip_preserves_all_feature_extras(self):
+        data = self.root / "data"
+        data.mkdir(exist_ok=True)
+        extras = {
+            "ai_chat.json": {"v": 1, "messages": [{"role": "user", "content": "synthetic question"}]},
+            "posture.json": {"v": 1, "current": {}, "history": [{"move_id": "synthetic"}]},
+        }
+        for name, value in extras.items():
+            (data / name).write_text(json.dumps(value), "utf-8")
+        sports.save_settings({"preferred_sport": "bike", "bike_ftp_w": "200"})
+        exported = appapi.db_export()
+        self.assertTrue(exported["ok"], exported)
+        destination = self.root / "restored"
+        (destination / "data").mkdir(parents=True)
+        with patch.object(appapi, "HOME", destination), patch.object(appapi, "DB", destination / "data" / "garmin.db"), patch.object(sports, "HOME", destination):
+            restored = appapi.db_import(exported["path"])
+            self.assertTrue(restored["ok"], restored)
+            self.assertTrue({"sports.json", "ai_chat.json", "posture.json"} <= set(restored["restored"]))
+            self.assertEqual(sports.profile("bike")["ftp_w"], 200)
+            for name, value in extras.items():
+                self.assertEqual(json.loads((destination / "data" / name).read_text("utf-8")), value)
+
     def test_export_preserves_profiles_without_credentials(self):
         import zipfile
         (self.root / "data").mkdir(exist_ok=True)

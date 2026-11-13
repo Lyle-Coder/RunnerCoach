@@ -3049,8 +3049,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（1.0.13 → 118）。
-    assert 'versionCode = 118' in (
+    # 每次发版要同步改这里（1.1.9 → 128）。
+    assert 'versionCode = 128' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # ---- 0.6.9：按钮收敛 / 今天优先 / 胶囊压薄 / 两张一图流配色 -----
@@ -4575,38 +4575,42 @@ def run() -> int:
     try:
         from garmin_cn import event as _EV
 
-        if len(_EV.EVENT_SEEDS) >= 2:
-            _evs = _EV.list_events()
-            assert len(_evs) >= 2, "赛事列表少于 2 场，多赛事没生效"
-            _slugs = [e["slug"] for e in _evs]
-            assert len(_slugs) == len(set(_slugs)), "赛事列表里有重复 slug"
-            assert [e["date"] for e in _evs] == sorted(e["date"] for e in _evs), \
-                "赛事列表没按日期排序"
-            # 每场都有自己的名字与装备清单：串档时这里会先是同一个名字
-            _names = {_EV.load_event(_s)["name"] for _s in _slugs}
-            assert len(_names) == len(_slugs), "不同赛事拿到了同一个名字（档案串了）"
-            for _s in _slugs:
-                assert (_EV._dir(_s) / "gear.md").exists(), f"{_s} 没有装备清单"
-                _c = _EV.load_course(_s)
-                assert _c["segments"], f"{_s} 的赛道是空的"
-                _e = _EV.load_event(_s)
-                assert abs(_c["distance_km"] - _e["distance_km"]) < 0.01, \
-                    f"{_s} 的 course 与 event 距离不一致"
-                if not _EV.list_events()[_slugs.index(_s)]["has_course"]:
-                    assert len(_c["segments"]) == 1, f"{_s} 不该有多个 CP"
-                    for _r in _EV.plan_and_margin(_s):
-                        # 没有关闭就没有余量，绝不能凑一个数出来
-                        assert _r["margin_s"] is None or _r["cutoff"], \
-                            f"{_s} 没有关门却算出了余量"
-            _nxt = _EV.nearest_upcoming()
-            assert _nxt and _nxt["days"] >= 0, "下一场取到了已过期的赛事"
-            assert _EV.active_slug() == _nxt["slug"], "默认赛事不是「下一场」"
-            # 陌生 slug 必须报错，不能凭空造一份只有 slug 的空档案
-            try:
-                _EV.load_event("no-such-race-xyz")
-                raise AssertionError("陌生 slug 被当成了合法赛事")
-            except ValueError:
-                pass
+        with tempfile.TemporaryDirectory() as _event_fixture, \
+                _mock.patch.object(_EV, "EVENTS", Path(_event_fixture)):
+            assert _EV.list_events() == [], "新用户不能自动出现作者的赛事"
+            _EV.ensure_seeds()  # 显式创建本测试需要的多赛事夹具。
+            if len(_EV.EVENT_SEEDS) >= 2:
+                _evs = _EV.list_events()
+                assert len(_evs) >= 2, "赛事列表少于 2 场，多赛事没生效"
+                _slugs = [e["slug"] for e in _evs]
+                assert len(_slugs) == len(set(_slugs)), "赛事列表里有重复 slug"
+                assert [e["date"] for e in _evs] == sorted(e["date"] for e in _evs), \
+                    "赛事列表没按日期排序"
+                # 每场都有自己的名字与装备清单：串档时这里会先是同一个名字
+                _names = {_EV.load_event(_s)["name"] for _s in _slugs}
+                assert len(_names) == len(_slugs), "不同赛事拿到了同一个名字（档案串了）"
+                for _s in _slugs:
+                    assert (_EV._dir(_s) / "gear.md").exists(), f"{_s} 没有装备清单"
+                    _c = _EV.load_course(_s)
+                    assert _c["segments"], f"{_s} 的赛道是空的"
+                    _e = _EV.load_event(_s)
+                    assert abs(_c["distance_km"] - _e["distance_km"]) < 0.01, \
+                        f"{_s} 的 course 与 event 距离不一致"
+                    if not _EV.list_events()[_slugs.index(_s)]["has_course"]:
+                        assert len(_c["segments"]) == 1, f"{_s} 不该有多个 CP"
+                        for _r in _EV.plan_and_margin(_s):
+                            # 没有关闭就没有余量，绝不能凑一个数出来
+                            assert _r["margin_s"] is None or _r["cutoff"], \
+                                f"{_s} 没有关门却算出了余量"
+                _nxt = _EV.nearest_upcoming()
+                assert _nxt and _nxt["days"] >= 0, "下一场取到了已过期的赛事"
+                assert _EV.active_slug() == _nxt["slug"], "默认赛事不是「下一场」"
+                # 陌生 slug 必须报错，不能凭空造一份只有 slug 的空档案
+                try:
+                    _EV.load_event("no-such-race-xyz")
+                    raise AssertionError("陌生 slug 被当成了合法赛事")
+                except ValueError:
+                    pass
     except ImportError:
         pass
 
@@ -4624,6 +4628,56 @@ def run() -> int:
     except ImportError:
         pass
 
+    # ---- AI 对话历史：落盘、滑动窗口、摘要归档 ----
+    # 用户的诉求是「切页面回来还能看到之前问过什么」，所以原文一条都不能删；
+    # 只把窗口外的部分压成摘要，避免上下文越滚越大。
+    try:
+        from unittest import mock as _umCS
+        from . import chatstore as _CS
+
+        _cd = Path(tempfile.mkdtemp())
+        with _umCS.patch.object(_CS, "PATH", _cd / "ai_chat.json"):
+            _CS.clear()
+            assert _CS.context() == [], "空历史不该有上下文"
+            for _i in range(3):
+                _CS.append("user", f"问{_i}")
+                _CS.append("assistant", f"答{_i}")
+            assert len(_CS.load()["messages"]) == 6
+            assert len(_CS.context()) == 6
+            assert not _CS.should_archive(), "6 条就触发归档，窗口太小"
+
+            for _i in range(20):
+                _CS.append("user", f"追{_i}")
+                _CS.append("assistant", f"回{_i}")
+            _n = len(_CS.load()["messages"])
+            assert _CS.should_archive(), "超出窗口却没触发归档"
+            _r = _CS.archive(lambda old, b: f"摘要{len(b)}条")
+            assert _r and _r["upto"] == _CS.CHUNK
+            assert len(_CS.load()["messages"]) == _n, "归档把原文删了（历史不该丢）"
+            _ctx = _CS.context()
+            assert _ctx[0]["role"] == "system" and "摘要" in _ctx[0]["content"]
+            assert len(_ctx) == _CS.KEEP + 1, "上下文条数不对（摘要 + 窗口）"
+
+            _CS.append("user", "这一句要撤掉")
+            _CS.drop_last_user()
+            assert _CS.load()["messages"][-1]["content"] != "这一句要撤掉"
+
+            # 「加载更早」：offset 的语义是「从最新往回跳过多少条」
+            for _i in range(60):
+                _CS.append("user", f"分页{_i}")
+            from . import aiapi as _AP
+            _p1 = _AP.dispatch("chat_history", {"limit": 80, "offset": 0})
+            assert len(_p1["messages"]) == 80 and _p1["has_more"] is True
+            _p2 = _AP.dispatch("chat_history", {"limit": 80, "offset": _p1["offset"]})
+            assert _p2["offset"] > _p1["offset"], "翻页后 offset 没往前走"
+            assert _p2["messages"][0] != _p1["messages"][0], "翻页拿到的是同一批"
+
+            (_cd / "ai_chat.json").write_text("{坏掉的 json", encoding="utf-8")
+            assert _CS.load()["messages"] == [], "历史文件损坏时没有兜底"
+        shutil.rmtree(_cd, ignore_errors=True)
+    except ImportError:
+        pass
+
     # ---- 有分段但关门未公布：海拔剖面不能崩 ----
     # 真机踩过：路跑赛事按补给站建了分段、官方关门还没公布，margin_s 全是 None，
     # _relief 里拿 None 和 0 比大小直接 TypeError，整页 500。
@@ -4638,6 +4692,74 @@ def run() -> int:
         _rel[0]["margin_s"], _rel[1]["margin_s"] = 600, -60
         assert "灰点" not in _EUI2._relief(_rel), "全是有关门的点却挂了灰点图例"
     except (ImportError, AttributeError):
+        pass
+
+    # ---- 可达性：注册了路由 ≠ 用户能进来 ----
+    # 2026-11-12 连续踩两次：/event 和 /posture 都能渲染、URL 直开也正常，
+    # 但页面上没有任何入口，用户装完发现「我们做的东西去哪了」。
+    # 这里检查的是**跳转语句**，不是路由注册——路由在 serve.py 里永远都有。
+    for _f, _needle, _what in (
+        ("garmin_cn/aiui.py", "location.href = '/event'", "备赛页"),
+        ("garmin_cn/aiui.py", "location.href = '/posture'", "姿态评估"),
+        ("android/app/src/main/java/mm/runnercoach/app/MainActivity.kt",
+         '"/ai"', "教练 tab"),
+    ):
+        assert _needle in (ROOT / _f).read_text(encoding="utf-8"), \
+            f"{_what} 没有入口：页面能渲染，但用户点不进去"
+
+    # ---- 删除赛事：只认 EVENTS 下一层、且确实有 event.json ----
+    # 删除是不可逆的，服务端这几个拒绝条件不能只靠 UI 那层两步确认。
+    try:
+        from . import event as _EVD
+        for _bad in ("..", "a/b", "", "a\\b", "."):
+            try:
+                _EVD.delete_event(_bad)
+                raise AssertionError(f"delete_event 没拦住 {_bad!r}")
+            except ValueError:
+                pass
+    except ImportError:
+        pass
+
+    # ---- 姿态评估历史：落盘、按动作替换、可清空 ----
+    try:
+        from unittest import mock as _umPT
+        from . import posturestore as _PS
+
+        _pd = Path(tempfile.mkdtemp())
+        with _umPT.patch.object(_PS, "PATH", _pd / "posture.json"):
+            _PS.clear()
+            assert _PS.current() == [], "空库不该有当前结果"
+            _PS.save_result("sls_left", {"move": "sls_left", "name": "左", "checks": {}})
+            _PS.save_result("sls_right", {"move": "sls_right", "name": "右", "checks": {}})
+            assert len(_PS.current()) == 2
+            _PS.save_result("sls_left", {"move": "sls_left", "name": "左2", "checks": {}})
+            assert len(_PS.current()) == 2, "同动作重拍应替换，不该叠加"
+            assert _PS.load()["history"][0]["name"] == "左2", "历史没记最新一次"
+            assert len(_PS.load()["history"]) == 3, "历史应该每次都追加"
+            _PS.clear()
+            assert _PS.current() == [], "清空后还有残留"
+        shutil.rmtree(_pd, ignore_errors=True)
+    except ImportError:
+        pass
+
+    # ---- 趋势：多弱项按时间聚合、按严重度排序 ----
+    try:
+        from . import posture as _PT
+
+        _th = [
+            {"at": "2026-11-13 07:00",
+             "result": {"checks": {"knee_valgus": {"state": "mild"},
+                                   "heel_lift": {"state": "ok"}}}},
+            {"at": "2026-10-16 07:00",
+             "result": {"checks": {"knee_valgus": {"state": "clear"},
+                                   "heel_lift": {"state": "mild"}}}},
+        ]
+        _tr = _PT.trend(_th)
+        _ids = [x["id"] for x in _tr]
+        assert "hip_abduct" in _ids and "ankle_rom" in _ids, "趋势没按弱项聚合"
+        _hip = [x for x in _tr if x["id"] == "hip_abduct"][0]
+        assert [p["score"] for p in _hip["points"]] == [2, 1], "趋势点没按时间升序"
+    except ImportError:
         pass
 
     # ---- 姿态评估：模板自洽 + 模型输出收敛 ----
@@ -4658,12 +4780,12 @@ def run() -> int:
 
         # 模型爱自由发挥：别名、非法状态、多编的观察点、缺失的观察点
         raw = {"checks": {"knee_valgus": {"state": "clear", "evidence": "膝往里塌"},
-                          "pelvis_drop": {"state": "UNKNOWN", "evidence": "被挡住"},
+                          "heel_lift": {"state": "UNKNOWN", "evidence": "被挡住"},
                           "bogus_item": {"state": "clear", "evidence": "编的"}},
                "shot_quality": "weird"}
-        n = _PO.normalize(raw, "sls_front")
+        n = _PO.normalize(raw, "sls_left")
         assert n["checks"]["knee_valgus"]["state"] == "clear"
-        assert n["checks"]["pelvis_drop"]["state"] == "unclear", "非法状态没折成 unclear"
+        assert n["checks"]["heel_lift"]["state"] == "unclear", "非法状态没折成 unclear"
         assert n["checks"]["trunk_lateral"]["state"] == "unclear", "缺失的观察点没兜底"
         assert "bogus_item" not in n["checks"], "模型多编的观察点没被丢掉"
         assert n["extra_ignored"] == ["bogus_item"]

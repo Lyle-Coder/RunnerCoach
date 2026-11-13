@@ -818,12 +818,19 @@ def activity_review(activity_id: str, date: str | None = None) -> dict:
 
 
 # ---------------------------------------------------------------- 对话
-MAX_TURNS = 16          # 上下文窗口：只带最近 8 轮，再长就截断，省 token
-MAX_CHARS = 6000
+# 上下文窗口不在这里定义：条数与摘要都在 chatstore（KEEP / digest）。
+# 以前这里是 MAX_TURNS=16，和 chatstore 的窗口并存会出现两套口径，
+# 一个改了另一个没改，上下文就会悄悄变短——所以只留一份。
 
 
-def chat(messages: list[dict], date: str | None = None) -> dict:
-    """自由对话。系统提示里塞一份「今日简报」摘要，模型不用每次都问数据。"""
+def chat(messages: list[dict] | None = None, date: str | None = None,
+         text: str | None = None) -> dict:
+    """自由对话。系统提示里塞一份「今日简报」摘要，模型不用每次都问数据。
+
+    历史的唯一真相在服务端（`chatstore`）：前端传的 messages 只用来取「这一句
+    新问题」，不再作为上下文来源——否则切一次 tab 就断片，而且客户端能随意
+    篡改历史。落盘先于调用，模型失败再把这句撤回去。
+    """
     d = date or dt.date.today().isoformat()
     brief_txt = ""
     try:
@@ -847,14 +854,20 @@ def chat(messages: list[dict], date: str | None = None) -> dict:
     except Exception:
         brief_txt = f"今天是 {d}。（数据读取失败，只做通用建议）"
 
-    hist = []
-    for m in (messages or [])[-MAX_TURNS:]:
-        role = m.get("role")
-        content = (m.get("content") or "").strip()
-        if role in ("user", "assistant") and content:
-            hist.append({"role": role, "content": content[:MAX_CHARS]})
-    if not hist or hist[-1]["role"] != "user":
+    # 新问题：优先 text（新前端只发这一句），退回 messages 的最后一条用户消息
+    q = (text or "").strip()
+    if not q:
+        for m in reversed(messages or []):
+            if m.get("role") == "user" and (m.get("content") or "").strip():
+                q = (m.get("content") or "").strip()
+                break
+    if not q:
         return {"ok": False, "kind": "input", "error": "没有要回答的问题"}
+
+    from . import chatstore as CS
+
+    CS.append("user", q)
+    hist = CS.context()
 
     system = SYSTEM + "\n\n【今日简报】\n" + brief_txt + \
         "\n\n用户问的数据如果简报里没有，就明说「今天的数据里没有这一项」，不要猜。"
@@ -863,8 +876,19 @@ def chat(messages: list[dict], date: str | None = None) -> dict:
         r = llm.chat([{"role": "system", "content": system}] + hist,
                      max_tokens=1000, temperature=0.65)
     except llm.LLMError as e:
+        CS.drop_last_user()          # 没答上就撤掉，别在历史里留孤立的提问
         return e.as_dict()
-    return {"ok": True, "reply": r["text"], "model": r["model"], "elapsed": r["elapsed"]}
+    CS.append("assistant", r["text"])
+    # 超出窗口就把最老的一批压进摘要。失败不影响这次回答——
+    # 摘要只是让下次接得上话，不是对话本身的一部分。
+    archived = False
+    try:
+        if CS.should_archive():
+            archived = bool(CS.archive(CS.model_gen))
+    except Exception:
+        archived = False
+    return {"ok": True, "reply": r["text"], "model": r["model"],
+            "elapsed": r["elapsed"], "archived": archived}
 
 
 # ---------------------------------------------------------------- 状态

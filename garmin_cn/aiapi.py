@@ -25,8 +25,10 @@ _WRITABLE = ("mode", "provider", "base_url", "model", "api_key",
              "platform_base", "platform_auto", "platform_token",
              "temperature", "auto_advice", "auth_style", "ai_enabled")
 
-# 关掉 AI 后仍要能读/改配置，否则开关本身点不动
-_ALWAYS = ("config.get", "config.set", "test", "status")
+# 关掉 AI 后仍要能读/改配置，否则开关本身点不动。
+# 历史是用户资产：AI 关着也该能翻、能清，所以这两个动作不进闸门。
+_ALWAYS = ("config.get", "config.set", "test", "status",
+           "chat_history", "chat_clear")
 
 
 def _truthy(v) -> bool:
@@ -99,9 +101,35 @@ def dispatch(action: str, payload: dict | None = None) -> dict:
 
         if action == "chat":
             msgs = p.get("messages")
-            if not isinstance(msgs, list) or not msgs:
+            txt = str(p.get("text") or "").strip()
+            if not txt and (not isinstance(msgs, list) or not msgs):
                 return {"ok": False, "kind": "input", "error": "没有要问的内容"}
-            return aicoach.chat(msgs)
+            return aicoach.chat(msgs if isinstance(msgs, list) else None, text=txt)
+
+        if action == "chat_history":
+            # 历史存在服务端，切页面回来还能接着看。
+            # offset = 从最新往回跳过多少条（前端「加载更早」传上一次的 offset），
+            # 所以这批拿到的是 [total-offset-limit, total-offset)。
+            from . import chatstore as CS
+
+            try:
+                lim = max(10, min(500, int(p.get("limit") or 80)))
+                off = max(0, int(p.get("offset") or 0))
+            except Exception:
+                lim, off = 80, 0
+            d = CS.load()
+            allm = d["messages"]
+            end = max(0, len(allm) - off)
+            start = max(0, end - lim)
+            return {"ok": True, "messages": allm[start:end], "digest": d["digest"],
+                    "total": len(allm), "offset": off + (end - start),
+                    "has_more": start > 0, "from": start}
+
+        if action == "chat_clear":
+            from . import chatstore as CS
+
+            CS.clear()
+            return {"ok": True}
 
         if action == "balance":
             return llm.balance()
