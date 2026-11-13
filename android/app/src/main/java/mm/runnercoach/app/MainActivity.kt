@@ -1,12 +1,15 @@
 package mm.runnercoach.app
 
+import android.Manifest
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.Dialog
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -17,6 +20,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.os.SystemClock
+import android.provider.CalendarContract
 import android.provider.MediaStore
 import android.provider.DocumentsContract
 import android.system.Os
@@ -249,6 +253,10 @@ class MainActivity : Activity() {
                         // 会在栈里堆三层，返回键就在 tab 之间来回跳。
                         if (isTabRoot(u)) v.clearHistory()
                         hideSplash()          // 首屏出来了，开屏可以退场
+                        // 日历提醒开过后静默跟上：改期 / 标已订 / 删行程都会
+                        // 重载页面，趁这一次把系统日历同步掉。两分钟节流，
+                        // 免得来回切 tab 反复读写 CalendarProvider。
+                        if (calAutoSyncDue()) startCalendarSync(true)
                     }
                 }
 
@@ -516,6 +524,7 @@ class MainActivity : Activity() {
                     "dbExport" -> doExportData()
                     "dbImport" -> doImportData()
                     "diag" -> showDiag()
+                    "calendarSync" -> showCalendarDialog()
                     // 带参数的动作放最后：`else` 必须是 when 的最后一个分支
                     else -> if (name.startsWith("attach:")) {
                         pickAttachment(name.removePrefix("attach:"))
@@ -4748,6 +4757,274 @@ class MainActivity : Activity() {
 
     private fun ui(block: () -> Unit) = runOnUiThread(block)
 
+    // ------------------------------------------------------------ 系统日历提醒
+    /**
+     * 「到点通知」交给系统日历：不用常驻后台、不用精确闹钟权限，国产 ROM
+     * 的电池优化也掐不掉日历自己的提醒。
+     *
+     * Python 侧 `calendar_list` 已经算好本地时间、提前分钟数和 uid，这里只做
+     * 增删改：按 DESCRIPTION 里的 `#RunnerCoach rcuid=xxx` 找回自己建过的事件
+     * （App 数据被清掉也不会留下一堆孤儿），清单里没有的就删掉——标「已订」、
+     * 改期、删行程都会自然收敛，不需要两端各维护一份状态表。
+     */
+    private val CAL_UID_RE = Regex("rcuid=([A-Za-z0-9:]+)")
+    private val CAL_AUTO_GAP = 2 * 60 * 1000L
+
+    private fun calPrefs() = getSharedPreferences("runnercoach_calendar", MODE_PRIVATE)
+
+    private fun hasCalendarPermission(): Boolean =
+        checkSelfPermission(Manifest.permission.READ_CALENDAR) ==
+            PackageManager.PERMISSION_GRANTED &&
+        checkSelfPermission(Manifest.permission.WRITE_CALENDAR) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun calAutoSyncDue(): Boolean =
+        calPrefs().getBoolean("on", false) && hasCalendarPermission() &&
+        System.currentTimeMillis() - calPrefs().getLong("last", 0L) > CAL_AUTO_GAP
+
+    private fun showCalendarDialog() {
+        val on = calPrefs().getBoolean("on", false)
+        AlertDialog.Builder(this)
+            .setTitle("系统日历提醒")
+            .setMessage(
+                "把「该订了」待办和已填好的航班 / 高铁 / 住宿写进系统日历，" +
+                "由日历在到期时弹出通知，不用打开这个 App。\n\n" +
+                "需要日历读写权限；事件写在你的默认日历里，描述带 " +
+                "#RunnerCoach 标记。改期、标已订、删行程后会自动同步，" +
+                "手动删掉的事件下次同步会补回；要彻底停止请点「关闭并清除」。\n\n" +
+                "当前状态：" + (if (on) "已开启" else "未开启"))
+            .setPositiveButton("立即同步") { _, _ -> startCalendarSync(false) }
+            .setNegativeButton("关闭并清除") { _, _ -> disableCalendar() }
+            .setNeutralButton("取消", null)
+            .show()
+    }
+
+    private fun startCalendarSync(silent: Boolean) {
+        if (!hasCalendarPermission()) {
+            // 静默同步绝不弹权限框：用户没主动点，不该被系统弹窗打断
+            if (silent) return
+            requestPermissions(
+                arrayOf(Manifest.permission.READ_CALENDAR,
+                        Manifest.permission.WRITE_CALENDAR), REQ_CALENDAR)
+            return
+        }
+        thread {
+            val msg = try {
+                syncCalendarEvents()
+            } catch (t: Throwable) {
+                Log.e(TAG, "calendar sync failed", t)
+                "失败：写入日历时出错（" + (t.message ?: t.javaClass.simpleName) + "）"
+            }
+            if (silent) {
+                Log.i(TAG, "calendar auto sync: $msg")
+            } else {
+                ui { showCalendarResult(msg) }
+            }
+        }
+    }
+
+    private fun showCalendarResult(msg: String) {
+        AlertDialog.Builder(this)
+            .setTitle(if (msg.startsWith("失败") || msg.startsWith("系统里"))
+                          "日历同步没完成" else "日历同步完成")
+            .setMessage(msg)
+            .setPositiveButton("知道了", null)
+            .show()
+    }
+
+    /** 找一个可写的日历：优先可见的，取权限最高的那个。国产 ROM 常只有本地日历。 */
+    private fun writableCalendarId(): Long? {
+        val cur = contentResolver.query(
+            CalendarContract.Calendars.CONTENT_URI,
+            arrayOf(CalendarContract.Calendars._ID,
+                    CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,
+                    CalendarContract.Calendars.VISIBLE),
+            null, null, null) ?: return null
+        var best: Long? = null
+        var score = -1
+        cur.use {
+            val idC = it.getColumnIndex(CalendarContract.Calendars._ID)
+            val lvC = it.getColumnIndex(CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL)
+            val vsC = it.getColumnIndex(CalendarContract.Calendars.VISIBLE)
+            while (it.moveToNext()) {
+                if (idC < 0 || lvC < 0 ||
+                    it.getInt(lvC) < CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR) continue
+                val s = (if (vsC >= 0 && it.getInt(vsC) == 1) 2 else 0) +
+                        (it.getInt(lvC) - CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR)
+                if (s > score) {
+                    score = s
+                    best = it.getLong(idC)
+                }
+            }
+        }
+        return best
+    }
+
+    /**
+     * 已写过的事件 uid → eventId。查全表再本地过滤，不用 SQL LIKE：
+     * 部分国产 ROM 的 CalendarProvider 对 selection 支持不全，查询失败比
+     * 多读几百行描述严重得多；数据只在本机内存里过一遍，不外传。
+     */
+    private fun existingCalendarEvents(): Map<String, Long> {
+        val out = HashMap<String, Long>()
+        val cur = contentResolver.query(
+            CalendarContract.Events.CONTENT_URI,
+            arrayOf(CalendarContract.Events._ID, CalendarContract.Events.DESCRIPTION),
+            null, null, null) ?: return out
+        cur.use {
+            val idC = it.getColumnIndex(CalendarContract.Events._ID)
+            val dsC = it.getColumnIndex(CalendarContract.Events.DESCRIPTION)
+            // 万一厂商裁掉了 DESCRIPTION，宁可整轮失败，也不能当成「没写过」
+            // 把清单全插一遍——那会在用户日历里堆出一串重复事件。
+            if (idC < 0 || dsC < 0) {
+                throw IllegalStateException("日历 Provider 没返回描述列，已停止同步")
+            }
+            while (it.moveToNext()) {
+                val desc = it.getString(dsC) ?: ""
+                if (!desc.contains("#RunnerCoach")) continue
+                val uid = CAL_UID_RE.find(desc)?.groupValues?.get(1) ?: continue
+                out[uid] = it.getLong(idC)
+            }
+        }
+        return out
+    }
+
+    /** 同步一遍。返回给对话框的结果文案，失败以「失败」开头。 */
+    private fun syncCalendarEvents(): String {
+        val r = apiCall("calendar_list")
+        if (!r.optBoolean("ok", false)) {
+            return "失败：读取提醒清单（" + r.optString("error") + "）"
+        }
+        val items = r.optJSONArray("items") ?: JSONArray()
+        val calId = writableCalendarId()
+            ?: return "系统里没有可写的日历，请先在日历 App 里建一个本地日历"
+        val existing = existingCalendarEvents()
+        val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US).apply {
+            timeZone = TimeZone.getDefault()
+        }
+        val zone = TimeZone.getDefault().id
+        var added = 0
+        var updated = 0
+        var removed = 0
+        val keep = HashSet<String>()
+
+        for (i in 0 until items.length()) {
+            val it = items.optJSONObject(i) ?: continue
+            val uid = it.optString("uid")
+            val start = try {
+                fmt.parse(it.optString("at"))?.time
+            } catch (t: Throwable) {
+                null
+            }
+            if (uid.isBlank() || start == null) continue
+            keep.add(uid)
+            val dur = max(1, it.optInt("duration", 30)) * 60_000L
+            // 更新时不带 CALENDAR_ID：官方明确说事件建好后不该改日历归属
+            val values = ContentValues().apply {
+                put(CalendarContract.Events.TITLE, it.optString("title"))
+                put(CalendarContract.Events.DESCRIPTION, it.optString("desc"))
+                put(CalendarContract.Events.DTSTART, start)
+                put(CalendarContract.Events.DTEND, start + dur)
+                put(CalendarContract.Events.EVENT_TIMEZONE, zone)
+                put(CalendarContract.Events.AVAILABILITY,
+                    CalendarContract.Events.AVAILABILITY_FREE)
+            }
+            val old = existing[uid]
+            val eventId: Long
+            if (old != null) {
+                contentResolver.update(
+                    ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, old),
+                    values, null, null)
+                eventId = old
+                updated++
+            } else {
+                values.put(CalendarContract.Events.CALENDAR_ID, calId)
+                val uri = contentResolver.insert(
+                    CalendarContract.Events.CONTENT_URI, values)
+                    ?: return "失败：日历没接受这条事件，换个日历再试"
+                eventId = ContentUris.parseId(uri)
+                added++
+            }
+            // 提醒先清后插：改了提前量不能把旧的那条留在日历里
+            contentResolver.delete(
+                CalendarContract.Reminders.CONTENT_URI,
+                "${CalendarContract.Reminders.EVENT_ID}=?",
+                arrayOf(eventId.toString()))
+            val mins = it.optJSONArray("minutes") ?: JSONArray().put(0)
+            for (j in 0 until mins.length()) {
+                contentResolver.insert(
+                    CalendarContract.Reminders.CONTENT_URI,
+                    ContentValues().apply {
+                        put(CalendarContract.Reminders.EVENT_ID, eventId)
+                        put(CalendarContract.Reminders.MINUTES, mins.optInt(j, 0))
+                        put(CalendarContract.Reminders.METHOD,
+                            CalendarContract.Reminders.METHOD_ALERT)
+                    })
+            }
+        }
+        // 清单里没有的：已订、过期、改期、删掉行程——一律从日历移除
+        for ((uid, id) in existing) {
+            if (uid in keep) continue
+            contentResolver.delete(
+                ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, id),
+                null, null)
+            contentResolver.delete(
+                CalendarContract.Reminders.CONTENT_URI,
+                "${CalendarContract.Reminders.EVENT_ID}=?",
+                arrayOf(id.toString()))
+            removed++
+        }
+        calPrefs().edit()
+            .putBoolean("on", true)
+            .putLong("last", System.currentTimeMillis())
+            .apply()
+        return ("已写入 $added 条、更新 $updated 条、清除 $removed 条。\n" +
+                "到点由系统日历弹通知；部分机型还需在系统设置里允许日历通知。")
+    }
+
+    /** 关掉同步并把之前写的事件全部撤掉，不在用户日历里留垃圾。 */
+    private fun disableCalendar() {
+        calPrefs().edit().putBoolean("on", false).apply()
+        if (!hasCalendarPermission()) {
+            toast("已关闭日历同步")
+            return
+        }
+        thread {
+            var n = 0
+            try {
+                for ((_, id) in existingCalendarEvents()) {
+                    contentResolver.delete(
+                        ContentUris.withAppendedId(
+                            CalendarContract.Events.CONTENT_URI, id), null, null)
+                    n++
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "calendar clear failed", t)
+            }
+            val count = n
+            ui { toast("已关闭日历同步，清除了 $count 条事件") }
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_CALENDAR) return
+        if (grantResults.isNotEmpty() &&
+            grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+            startCalendarSync(false)
+        } else {
+            AlertDialog.Builder(this)
+                .setTitle("日历权限没开")
+                .setMessage(
+                    "没有日历读写权限就写不进提醒。可以在 系统设置 → 应用 → " +
+                    "RunnerCoach → 权限 里打开；不开也不影响 App 内的「该订了」清单。")
+                .setPositiveButton("知道了", null)
+                .show()
+        }
+    }
+
     /**
      * 唯一的一条 Python 调用通路。
      *
@@ -4822,6 +5099,8 @@ class MainActivity : Activity() {
         /** 赛事资料附件上传（PDF / 图片 / 文本） */
         const val REQ_ATTACH = 1006
         const val REQ_FILE_CHOOSER = 1007
+        /** 系统日历读写权限申请 */
+        const val REQ_CALENDAR = 1008
 
         /**
          * 读 HTML 里的导出探针；旧版 Python 没有探针时返回空串，走尺寸兜底。

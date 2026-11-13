@@ -181,6 +181,7 @@ _API = {
     "coros_workout_preview", "coros_workout_submit", "coros_workout_check",
     "keep_status", "keep_login", "keep_logout", "keep_sync",
     "meal_today", "meal_add", "meal_estimate",
+    "calendar_list",
 }
 
 # 模型接口配置（App「设置」写入）：未来的 AI 点评等功能从这里读。
@@ -3245,6 +3246,19 @@ def start_server(port: int = 0) -> dict:
         pass
     return {"ok": True, "port": srv.server_address[1],
             "url": f"http://127.0.0.1:{srv.server_address[1]}/"}
+
+
+def calendar_list() -> dict:
+    """系统日历同步清单：Kotlin 只按 uid 增删改，不自己算日期。
+
+    每条带本地时间 `at`（`YYYY-MM-DDTHH:MM`）、提前提醒分钟数 `minutes`
+    和描述里的 `#RunnerCoach rcuid=...` 标记；原生靠这个标记找回自己
+    建过的事件，即使 App 数据被清掉也不会留下一堆孤儿日历项。
+    """
+    from . import event as E
+
+    items = E.calendar_items()
+    return {"ok": True, "items": items, "count": len(items)}
 
 
 def recent(limit: int = 20) -> dict:

@@ -562,8 +562,12 @@ def _booking_html(slug: str, hid: str) -> str:
     head = ('<div class="sub2"><b>该订了</b> · 按「航班 '
             f'{rules["flight"]} 天 / 高铁 {rules["train"]} 天 / '
             f'住宿 {rules["stay"]} 天」从行程日倒推。'
-            '错过了也留在这里，不会悄悄消失；订好后标为已订即可。</div>')
-    return '<div class="card">' + head + "".join(rows) + "</div>"
+            '错过了也留在这里，不会悄悄消失；订好后标为已订即可。'
+            '下面的按钮可以把这些日子<b>写进系统日历</b>，由日历到点通知，'
+            '不用打开 App。</div>')
+    return ('<div class="card">' + head + "".join(rows)
+            + '<div class="pager"><div class="btn" data-act="calendarSync">'
+              '同步到系统日历</div></div>' + "</div>")
 
 
 def _trips_html(slug: str, hid: str = "") -> str:
