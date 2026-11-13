@@ -687,6 +687,88 @@ def _vital(label: str, value, unit: str, sub: str, spark: str,
             f'<div class="sub">{esc(sub)}</div>{_s2}{spark}</div>')
 
 
+def _upcoming_html(days: int = 30, limit: int = 3) -> str:
+    """首页「临近」：未来 N 天里赛事时间线的下几个点（领物、报名截止、开赛）。
+
+    只显示最近 limit 条；一条都没有就整块不出现，不留空盒子。
+    提醒开关走表单（/__event/remind），不依赖 JS。
+    """
+    try:
+        from . import event as E
+
+        rows = E.upcoming(days=days)[:limit]
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    out = []
+    for r in rows:
+        slug = r.get("slug") or ""
+        try:
+            on = bool((E.reminders(slug) or {}).get("%s|%s" % (r["at"], r["label"])))
+        except Exception:
+            on = False
+        d = r.get("days")
+        when = "今天" if d == 0 else ("明天" if d == 1 else f"T-{d}")
+        hh = r["at"][11:16] if r["at"][11:16] != "00:00" else ""
+        stamp = r["at"][5:10].replace("-", "/") + (f" {hh}" if hh else "")
+        label = r.get("label") or "时间点"
+        out.append(
+            '<div class="rc-up">'
+            f'<span class="rc-up-d{" hot" if (d or 0) <= 2 else ""}">{esc(when)}</span>'
+            f'<span class="rc-up-t"><b>{esc(stamp)}</b> {esc(label)}'
+            f'<span class="rc-up-e">{esc(r.get("event") or "")}</span></span>'
+            '<form method="post" action="/__event/remind" style="margin:0">'
+            f'<input type="hidden" name="slug" value="{esc(slug)}">'
+            f'<input type="hidden" name="at" value="{esc(r["at"])}">'
+            f'<input type="hidden" name="label" value="{esc(label)}">'
+            f'<input type="hidden" name="on" value="{"0" if on else "1"}">'
+            f'<button class="rc-bell{" on" if on else ""}" type="submit" '
+            f'aria-label="{"取消提醒" if on else "设为提醒"}">'
+            f'{"🔔" if on else "🔕"}</button></form></div>')
+    return ('<section class="rc-panel rc-up-panel">'
+            '<div class="rc-panel-hd"><span class="rc-eyebrow">临近</span>'
+            f'<span class="rc-win">未来 {days} 天</span></div>'
+            + "".join(out) + "</section>")
+
+
+def _reading_card(limit: int = 8) -> str:
+    """首页最底部的「延伸阅读」：内容一行、换行、破折号接数据源。
+
+    多条轮播（每 6 秒换一条），靠一段内联 JS 切 class，不发请求、不重排。
+    内容取不到就整块不出现——首页不能因为一块可选内容变空。
+    """
+    try:
+        from . import reading as RD
+
+        items = RD.items(limit)
+    except Exception:
+        return ""
+    if not items:
+        return ""
+    def _line(it: dict) -> str:
+        # 术语的正文就是一句解释，直接用；赛事光有「报名剩 5 天 · 12月06日」
+        # 不知道是哪场比赛，必须把名称带到前面。
+        if it.get("kind") == "race":
+            return f'{it.get("head") or ""} · {it.get("text") or ""}'.strip(" ·")
+        return it.get("text") or ""
+
+    slides = "".join(
+        f'<div class="rdi{" on" if i == 0 else ""}">'
+        f'<p class="rdt">{esc(_line(it))}</p>'
+        f'<p class="rds">—— {esc(it["src"])}</p></div>'
+        for i, it in enumerate(items))
+    return ('<section class="rc-panel rc-rd-panel" id="rc-read">'
+            '<div class="rc-panel-hd"><span class="rc-eyebrow">延伸阅读</span>'
+            f'<span class="rc-win">共 {len(items)} 条 · 每 6 秒换一条</span></div>'
+            f'<div class="rc-rd">{slides}</div></section>'
+            '<script>(function(){var b=document.getElementById("rc-read");'
+            'if(!b)return;var s=b.querySelectorAll(".rdi");'
+            'if(s.length<2)return;var i=0;'
+            'setInterval(function(){s[i].classList.remove("on");'
+            'i=(i+1)%s.length;s[i].classList.add("on");},6000);})();</script>')
+
+
 def home_page() -> str:
     """「今日」tab：首屏即一页式大屏（0.6.7）。
 
@@ -948,7 +1030,8 @@ def home_page() -> str:
                  f'<div class="rc-samples">{samples}</div></div></section>')
 
     body_html_all = ('<div class="rc-screen">' + verdict + hero + load_html
-                     + body_html + plan_html + week_html + '</div>')
+                     + body_html + plan_html + _upcoming_html()
+                     + week_html + _reading_card() + '</div>')
     # 只留两个数据胶囊：宽屏自动铺成大屏，不再需要第三个按钮。
     # 一图流也不再挂页头：那枚胶囊在横屏大屏里孤零零地压着结论条，
     # 0.6.13 起统一收进「我的」页的低频动作列表。
@@ -1396,6 +1479,10 @@ def me_page() -> str:
     except Exception:
         ai = {}
     ai_on = bool(ai.get("ai_enabled", True))
+    try:
+        _simple = A.simple_mode()
+    except Exception:
+        _simple = False
     if not ai_on:
         ai_sub = "已关闭 · 点这里重新打开"
     elif not ai.get("configured"):
@@ -1423,7 +1510,14 @@ def me_page() -> str:
                    act="bodySource", tone="a") +
                # 开关自己带 data-act，点它不会顺带打开设置；点行的其它地方才进配置
                row("◍", "AI 模型服务", ai_sub, act="aiSettings", tone="b", go=False,
-                   switch=("on" if ai_on else "off"), sw_act="aiToggle"))
+                   switch=("on" if ai_on else "off"), sw_act="aiToggle") +
+               # 简洁模式：把「先不用」的模块整个藏起来，而不是灰掉。
+               # 灰按钮只会让人去点它试试，然后发现没什么用。
+               row("◐", "简洁模式",
+                   ("已开启 · 只留今日 / 历史 · 教练只看今日与体重" if _simple
+                    else "关 · 教练含对话 / 备赛 / 力量"),
+                   act="simpleToggle", tone="a", go=False,
+                   switch=("on" if _simple else "off"), sw_act="simpleToggle"))
 
     # 「补全历史」已经完全没有按钮了：它由 App 在每次刷新后**后台**由近到远
     # 自动往前挪，进度写在标题栏小字。这里只做只读展示，不提供点击 ——

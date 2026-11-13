@@ -146,11 +146,22 @@ def glow_overlay_css(inset: str = "34px 52px 26px", *,
     成片里的字突然变小一圈 —— 正是之前反复踩过的「预览和成片不一致」。
     所以渐变放在卡片上（card_css），辉光放在这层 inset 的装饰层上。
     """
+    # 辉光层是 inset 的矩形，渐变在自己边界处还没落到 0，就会在
+    # 「纯色外圈 / 内容区」之间切出一条硬边（实测差 7 个色阶，看着像框）。
+    # 用 mask 在四边各留一段渐隐，边界处彻底透明，外圈仍是纯色（裁边不受影响）。
     return ("body{position:relative}"
             ".rc-glow{position:absolute;inset:" + inset + ";z-index:0;"
             "pointer-events:none;background:"
             "radial-gradient(760px 540px at 82% -6%, " + g1 + ", transparent 62%),"
-            "radial-gradient(600px 460px at 4% 8%, " + g2 + ", transparent 62%)}")
+            "radial-gradient(600px 460px at 4% 8%, " + g2 + ", transparent 62%);"
+            "-webkit-mask-image:"
+            "linear-gradient(180deg,transparent,#000 72px,#000 calc(100% - 72px),transparent),"
+            "linear-gradient(90deg,transparent,#000 88px,#000 calc(100% - 88px),transparent);"
+            "-webkit-mask-composite:source-in;"
+            "mask-image:"
+            "linear-gradient(180deg,transparent,#000 72px,#000 calc(100% - 72px),transparent),"
+            "linear-gradient(90deg,transparent,#000 88px,#000 calc(100% - 88px),transparent);"
+            "mask-composite:intersect}")
 
 
 def card_css(selector: str = ".card", *, top: str = "#1A2027",

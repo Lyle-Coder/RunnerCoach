@@ -167,13 +167,7 @@ BODY = """
     <div class="gear" id="gear" title="模型服务">⚙</div>
   </div>
 
-  <div class="tabs" id="tabs">
-    <button data-v="today" class="on">今日</button>
-    <button data-v="weight">体重</button>
-    <button data-v="chat">对话</button>
-    <button data-v="event">备赛</button>
-    <button data-v="posture">力量</button>
-  </div>
+  <div class="tabs" id="tabs">__TABS__</div>
 
   <div id="view"></div>
   <div class="foot" id="foot"></div>
@@ -1075,7 +1069,9 @@ document.querySelectorAll('[data-pay]').forEach(b => b.onclick = () => pay(b.dat
   if (c.ok) STATE.config = c;
   refreshSub();
   const h = (location.hash || '').replace('#', '');
-  const start = ['today', 'weight', 'chat'].includes(h) ? h : 'today';
+  // 简洁模式下「对话 / 备赛 / 力量」的按钮根本不存在：按 DOM 判断，
+  // 别用写死的白名单——否则 hash 指到被关掉的 tab 会白屏。
+  const start = document.querySelector('#tabs button[data-v="' + h + '"]') ? h : 'today';
   switchTab(start);
   if (h === 'settings') setTimeout(openSheet, 200);
   // 首次没配好，直接引导到设置
@@ -1088,6 +1084,21 @@ def render(state: dict | None = None) -> str:
     """出整页。`state` 预留：将来可以把首屏状态内联，省掉一次往返。"""
     today = dt.date.today().isoformat()
     title = "AI 教练 · RunnerCoach"
+    # 简洁模式：只留「今日 / 体重」。备赛、力量、对话都是「先不用」的模块，
+    # 按钮不出现比灰掉更干净——灰按钮只会让人去点它试试。
+    try:
+        from . import appapi as _A
+
+        _simple = _A.simple_mode()
+    except Exception:
+        _simple = False
+    _tabs = [("today", "今日"), ("weight", "体重")]
+    if not _simple:
+        _tabs += [("chat", "对话"), ("event", "备赛"), ("posture", "力量")]
+    _tabs_html = "".join(
+        f'<button data-v="{k}"{" class=\"on\"" if i == 0 else ""}>{v}</button>'
+        for i, (k, v) in enumerate(_tabs))
+    body = BODY.replace("__TABS__", _tabs_html)
     return f"""<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
@@ -1096,7 +1107,7 @@ def render(state: dict | None = None) -> str:
 <title>{_h.escape(title)}</title>
 <style>{CSS}</style>
 </head><body>
-{BODY}
+{body}
 <div style="display:none" id="boot">{_h.escape(json.dumps({"date": today}, ensure_ascii=False))}</div>
 <script>{JS}</script>
 </body></html>"""

@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import io
 import re
+import urllib.parse as _up
 
 from . import event as E
 from . import ui
@@ -126,6 +127,25 @@ select.fi{cursor:pointer}
 .dfb{margin-left:auto;flex:none;padding:4px 12px;border-radius:8px;cursor:pointer;
   border:1px solid rgba(79,214,166,.45);background:rgba(79,214,166,.1);
   color:#9FE7C8;font-size:11.5px}
+/* 附件行：名字 + 预览/系统打开 + 改名折叠 */
+.df{padding:7px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.df:last-child{border-bottom:0}
+.df .dfl{padding:0;border:0}
+.dfa{display:flex;gap:6px;flex:none;margin-left:8px}
+.dfa .dfb{margin-left:0}
+.dtimes{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px}
+.dtime{font-size:10.5px;padding:2px 8px;border-radius:99px;color:#9FE7C8;
+  background:rgba(79,214,166,.1);border:1px solid rgba(79,214,166,.28)}
+.dmore{margin-top:6px}
+.dmore>summary{font-size:11.5px;color:var(--muted,#7F8A97);cursor:pointer;
+  list-style:none;display:inline-block}
+.dmore>summary::-webkit-details-marker{display:none}
+.dmore>summary::before{content:"✎ "}
+.dpre{white-space:pre-wrap;word-break:break-word;font-size:12.5px;
+  line-height:1.7;color:var(--fg,#E8F0FB);margin:0}
+.dimg{display:block;width:100%;height:auto;border-radius:12px;
+  border:1px solid rgba(255,255,255,.08)}
+.dbig{padding:24px 12px;text-align:center;color:var(--muted,#7F8A97);font-size:12.5px}
 .hint code{background:rgba(255,255,255,.06);border-radius:4px;padding:0 4px;
   font-size:11px}
 
@@ -732,6 +752,11 @@ def render_page(qs: dict | None = None) -> str:
     import urllib.parse as _up
 
     dcs = E.docs(slug)
+    try:
+        _yr = int(str(ev.get("date") or "")[:4])
+    except (TypeError, ValueError):
+        _yr = 0
+    _yr = _yr or dt.date.today().year
     docs_rows, _idx = [], 0
     for _k in E.DOC_KINDS:
         part = [x for x in dcs["items"] if x["kind"] == _k]
@@ -751,12 +776,40 @@ def render_page(qs: dict | None = None) -> str:
                        + HID + f'<input type="hidden" name="act" value="del">'
                        f'<input type="hidden" name="idx" value="{i_now}">'
                        '<button class="dbtn" type="submit" aria-label="删除">×</button></form>')
+            # 时间点：正文里认出来的日期/时刻，带提醒标记，一眼知道什么时候截止
+            _times = ""
+            try:
+                _tps = E.parse_times(f'{it["title"]}\n{it["body"]}', _yr)
+            except Exception:
+                _tps = []
+            if _tps:
+                _times = ('<div class="dtimes">' + "".join(
+                    f'<span class="dtime">⏱ {ui.esc(t["at"][5:10].replace("-", "/"))}'
+                    + (f' {ui.esc(t["at"][11:16])}' if t["at"][11:16] != "00:00" else "")
+                    + f' · {ui.esc(t["label"])}</span>' for t in _tps[:4])
+                    + "</div>")
+            # 改标题/正文：改错别字不该「删了重加」（会换掉添加日期、跑到末尾）
+            edit_form = ("" if it.get("locked") else
+                         '<details class="dmore"><summary>改</summary>'
+                         '<form class="frm" method="post" action="/__event/doc">' + HID
+                         + '<input type="hidden" name="act" value="edit">'
+                         f'<input type="hidden" name="idx" value="{i_now}">'
+                         '<div class="frow"><label>标题<input class="fi" name="title" '
+                         f'value="{ui.esc(it["title"])}"></label></div>'
+                         '<div class="frow"><label>正文<textarea class="ta" name="body" '
+                         f'rows="3">{ui.esc(it["body"])}</textarea></label></div>'
+                         '<div class="frow"><label>链接<input class="fi" name="url" '
+                         f'value="{ui.esc(it["url"])}"></label></div>'
+                         '<div class="fbtns"><button class="btn primary" type="submit">'
+                         "保存</button></div></form></details>")
             docs_rows.append(
                 f'<div class="dr"><div class="drt"><b>{ui.esc(it["title"])}</b>'
                 + (f'<span class="dat">{ui.esc(it["at"])}</span>' if it.get("at") else "")
                 + del_btn + "</div>"
+                + _times
                 + (f'<div class="drb">{body}</div>' if body else "")
                 + (f'<div class="drb">{link}</div>' if link else "")
+                + edit_form
                 + "</div>")
 
     files_html = ""
@@ -765,12 +818,25 @@ def render_page(qs: dict | None = None) -> str:
         for f in dcs["files"]:
             size = E.human_size(f["size"])
             url = "/event-file/%s/%s" % (slug, _up.quote(f["name"]))
+            prev = "/event-doc?slug=%s&name=%s" % (slug, _up.quote(f["name"]))
+            stem = f["name"].rsplit(".", 1)[0]
+            rename_form = (
+                '<details class="dmore"><summary>改名</summary>'
+                '<form class="frm" method="post" action="/__event/file">' + HID
+                + '<input type="hidden" name="act" value="rename">'
+                f'<input type="hidden" name="name" value="{ui.esc(f["name"])}">'
+                '<div class="frow"><label>新名字<input class="fi" name="new_name" '
+                f'value="{ui.esc(stem)}"></label></div>'
+                '<div class="fbtns"><button class="btn" type="submit">保存</button>'
+                '<span class="fhint">扩展名自动保留</span></div></form></details>')
             rows_f.append(
-                f'<div class="dfl"><span class="dfn">{ui.esc(f["name"])}</span>'
-                f'<span class="dfs">{size}</span>'
-                f'<button class="dfb" data-act="openUrl:{url}" type="button">打开</button>'
-                "</div>")
-        files_html = ('<div class="dg">附件 · 点「打开」用系统应用看</div>'
+                f'<div class="df"><div class="dfl">'
+                f'<a class="dfn" href="{prev}">{ui.esc(f["name"])}</a>'
+                f'<span class="dfs">{size}</span></div>'
+                f'<div class="dfa"><a class="dfb" href="{prev}">预览</a>'
+                f'<button class="dfb" data-act="openUrl:{url}" type="button">系统打开</button>'
+                "</div>" + rename_form + "</div>")
+        files_html = ('<div class="dg">附件 · 点名字在软件内预览；PDF / Office 走系统应用</div>'
                       + "".join(rows_f))
 
     doc_form = (
@@ -1192,3 +1258,58 @@ def add_parser(sub):
     q.add_argument("--gpx", metavar="文件", help="导入官方 GPX 轨迹（滤波爬升 + 剖面）")
     q.set_defaults(func=cmd)
     return q
+
+_PREVIEW_TEXT = (".txt", ".md", ".csv", ".ics", ".json")
+_PREVIEW_IMG = (".png", ".jpg", ".jpeg")
+
+
+def render_doc_page(qs: dict | None = None) -> str:
+    """附件在软件内预览：图片直接显示，文本原样排版，PDF / Office 明说去哪看。
+
+    WebView 没有内置 PDF 渲染器，硬塞 iframe 只会得到一块空白；
+    这类文件老实给「用系统应用打开」，比做一个假预览诚实。
+    """
+    qs = qs or {}
+
+    def _q(k: str) -> str:
+        return (qs.get(k) or [""])[0].strip()
+
+    slug, name = _q("slug"), _q("name")
+    if not slug or not name or "/" in name or "\\" in name or name.startswith("."):
+        return ui.page("EVENT · 资料", "打不开这个附件", "", 
+                       '<div class="dbig">文件名不合法。</div>'
+                       '<div class="pager"><a class="btn" href="/event">返回赛事</a></div>',
+                       back=("返回赛事", "/event"))
+    try:
+        slug = E.active_slug(slug)
+    except ValueError:
+        return ui.page("EVENT · 资料", "找不到这场赛事", "",
+                       '<div class="dbig">赛事可能已经被删除。</div>',
+                       back=("返回赛事", "/event"))
+    fp = E._dir(slug) / name
+    if not fp.is_file():
+        return ui.page("EVENT · 资料", "附件不见了", "",
+                       f'<div class="dbig">赛事目录里没有 {ui.esc(name)}。</div>',
+                       back=("返回赛事", "/event"))
+    suf = fp.suffix.lower()
+    raw_url = "/event-file/%s/%s" % (slug, _up.quote(name))
+    if suf in _PREVIEW_IMG:
+        body = f'<img class="dimg" src="{raw_url}" alt="{ui.esc(name)}">'
+    elif suf in _PREVIEW_TEXT:
+        try:
+            text = io.open(fp, encoding="utf-8", errors="replace").read(200000)
+        except OSError as e:
+            text = "读不出来：%s" % e
+        body = f'<pre class="dpre">{ui.esc(text)}</pre>'
+    else:
+        body = ('<div class="dbig">手机里没有内置的 PDF / Office 渲染器，'
+                '点下面用系统应用打开。</div>'
+                f'<div class="pager" style="justify-content:center">'
+                f'<button class="btn primary" data-act="openUrl:{raw_url}" '
+                'type="button">用系统应用打开</button></div>')
+    size = E.human_size(fp.stat().st_size)
+    return ui.page("EVENT · 资料", name,
+                   f"{slug} · {size}",
+                   '<div class="card">' + body + "</div>",
+                   chips=ui.chip(suf.lstrip(".").upper()),
+                   back=("返回赛事", "/event#docs"))
