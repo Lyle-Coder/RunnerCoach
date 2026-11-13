@@ -502,14 +502,13 @@ def save_course(slug: str, course: dict) -> Path:
 
 GEAR_ROAD = """# 装备清单（路跑）
 
-> 路跑补给站密，不用背太多水；先看官方是否有强制装备，没有就按这份来。
+> 路跑补给站密，**不用自带水壶**；先看官方是否有强制装备，没有就按这份来。
 
 - [ ] 号码布 + 计时芯片
 - [ ] 路跑鞋（磨合过的，别穿新鞋）
 - [ ] 能量胶（按分段补给计划，约每 40 分钟 1 支）
 - [ ] 盐丸（热天每 10 km 一组）
-- [ ] 软水壶 / 腰包水壶 ≥ 500 ml
-- [ ] 防风皮肤衣（山区风大或早晚温差大时）
+- [ ] 雨衣 / 一次性雨披（预报有雨才带，比防风衣实用）
 - [ ] 手机
 """
 
@@ -1082,6 +1081,84 @@ def timeline(slug: str | None = None, *, today: str | None = None,
         except ValueError:
             pass
     return rows
+
+
+# 行程类关键词。只用来给识别出的时间点分类，不参与「有没有时间」的判断——
+# 分类错了顶多图标不对，判错了才会漏掉提醒，两者的代价不一样。
+_TRIP_KINDS = (
+    ("flight", ("航班", "机票", "飞机", "机场", "登机", "值机", "起飞", "落地")),
+    ("train", ("高铁", "动车", "火车", "列车", "车次", "站台", "出发站")),
+    ("stay", ("酒店", "民宿", "客栈", "住宿", "入住", "退房", "宾馆", "青旅")),
+    ("race", ("开赛", "起跑", "领物", "报到", "检录")),
+)
+
+
+def _trip_kind(label: str, text: str) -> str:
+    blob = (label or "") + (text or "")
+    for kind, words in _TRIP_KINDS:
+        if any(w in blob for w in words):
+            return kind
+    return "other"
+
+
+def trips(slug: str | None = None, *, today: str | None = None,
+          horizon_days: int = 120) -> list[dict]:
+    """赛事资料里的「行程与预订」：航班 / 高铁 / 住宿 / 开赛 / 其他。
+
+    和 timeline() 的区别是**带分类和倒计时**：赛前最容易忘的不是比赛本身，
+    是机票什么时候订、酒店几号入住、领物几点关，这些东西写进资料以后
+    散在正文里，临到头谁也想不起来翻。
+
+    分类只认关键词，认不出就归 other（照样显示，只是没图标）——
+    宁可分类不准，也不要因为分错类而漏掉一条提醒。
+    """
+    slug = active_slug(slug)
+    t0 = dt.date.fromisoformat(today) if today else dt.date.today()
+    # 年份必须按**赛事年份**推：赛前踩点写的「3月25日」在去年 12 月看，
+    # 按当年算就成了「今年 3 月 25 日」——早就过去了，整条提醒直接消失。
+    ev = _read(slug, "event.json") or {}
+    _d0 = str(ev.get("date") or "")[:10]
+    year = int(_d0[:4]) if _d0[:4].isdigit() else t0.year
+    # 视界至少覆盖到赛事前后：一场明年 3 月的比赛，今天看还有 130 多天，
+    # 按固定 120 天会把「提前 3 天到」的那条机票漏掉。
+    try:
+        race_day = dt.date.fromisoformat(_d0)
+        need = (race_day - t0).days + 7
+    except ValueError:
+        need = 0
+    end = t0 + dt.timedelta(days=max(1, int(horizon_days), need))
+    out, seen = [], set()
+    for it in docs(slug).get("items") or []:
+        title = str(it.get("title") or "")
+        body = str(it.get("body") or "")
+        # **逐行**识别，不是整段识别后再回头找行：整段识别时「3月25日」
+        # 会先命中「航班 ... 3月25日 08:30」那一行，于是酒店那条被当成航班
+        # （分类和说明文字全跟着错）。按行来，一行就是一件事。
+        for raw_line in (title + "\n" + body).splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            for tp in parse_times(line, year):
+                try:
+                    when = dt.datetime.strptime(tp["at"], "%Y-%m-%dT%H:%M")
+                except ValueError:
+                    continue
+                if when.date() < t0 or when.date() > end:
+                    continue
+                key = tp["at"]
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({
+                    "at": tp["at"], "label": tp["label"], "source": title,
+                    "kind": _trip_kind(tp["label"], line),
+                    "days": (when.date() - t0).days,
+                    "date_only": tp.get("date_only"),
+                    "text": line[:80],
+                })
+    # 开赛本身排最后：它不会「忘记」，真正要提醒的是前面那些预订
+    out.sort(key=lambda x: (x["kind"] == "race", x["at"]))
+    return out
 
 
 def upcoming(days: int = 45, today: str | None = None) -> list[dict]:
