@@ -1684,6 +1684,10 @@ def run() -> int:
     _card_src_now = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
     assert re.search(r"\.top\{\{[^}]*flex:none", _card_src_now), \
         "一图流顶部会被 flex 压缩，延伸阅读会压到睡眠条上"
+    # 辉光层必须有渐隐遮罩：否则它 inset 的矩形边会切出一条比底色亮 7 阶的硬边
+    from garmin_cn import brand as _BR2
+    assert "mask-composite" in _BR2.glow_overlay_css(), \
+        "辉光层没有渐隐遮罩，内容区边界会显出一道亮边"
     assert '<div class="sl">' in _ch and '<div class="sr">' in _ch, \
         "今日处方没改成两栏，评语与 AI 点评没挪到右侧"
     _home_rd = U.home_page()
