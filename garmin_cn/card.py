@@ -393,6 +393,10 @@ def bb_state(t: dict) -> dict:
         if not now_at:
             hh = pts[-1][0]
             now_at = f"{int(hh):02d}:{int(round((hh % 1) * 60)):02d}"
+    # 高驰没有身体电量，但有「恢复程度」：同一个「还剩多少能量」，
+    # 允许它顶这一格。标签必须跟着换，不能出现「身体电量 · 恢复程度」。
+    rec = num(t.get("recovery"))
+    kind = "bb"
     if now is not None:
         val = f"{now:.0f}"
         txt = f"{val}%"
@@ -401,9 +405,14 @@ def bb_state(t: dict) -> dict:
         val = f"{high:.0f}"
         txt = f"最高 {val}%"
         sub = "今日最高" + ("（手表掉落）" if scrubbed else "")
+    elif rec is not None:
+        val, txt, sub = f"{rec:.0f}", f"{rec:.0f}%", "高驰恢复程度"
+        kind = "recovery"
     else:
         val, txt, sub = "—", "未测量", "未测量"
-    if scrubbed and not series:
+    if kind == "recovery":
+        head = f"恢复程度（{txt} · 高驰不提供日内曲线）"
+    elif scrubbed and not series:
         head = "身体电量（今天 · 手表掉落，夜间未测量）"
     elif now is not None:
         # 有当前值但没有曲线（老数据 / 这次没拉到序列）时也要说清是当前值，
@@ -417,7 +426,8 @@ def bb_state(t: dict) -> dict:
         head = "身体电量（未同步）"
     return {"now": now, "now_at": now_at, "high": high, "series": series,
             "pts": pts, "val": val, "txt": txt, "sub": sub, "head": head,
-            "scrubbed": scrubbed}
+            "scrubbed": scrubbed, "kind": kind,
+            "label": "恢复程度" if kind == "recovery" else "身体电量"}
 
 
 def build_html(res: dict, sync_at: str | None = None,
@@ -985,7 +995,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
         <div><b>{_f(sl.get("total_h"), "", 1)}<small>h</small></b><span>{sleep_sub}</span></div>
         <div><b>{_f(t.get("hrv_night"), "", 0)}<small>ms</small></b><span>HRV 夜间</span></div>
         <div><b>{_f(t.get("resting_hr"), "", 0)}<small>bpm</small></b><span>静息心率</span></div>
-        <div><b>{bb_val}<small>%</small></b><span>身体电量 · {esc(bb_sub)}</span></div>
+        <div><b>{bb_val}<small>%</small></b><span>{esc(_bb.get("label") or "身体电量")} · {esc(bb_sub)}</span></div>
       </div>
       <div class="chart-h">睡眠（近 7 天 · 柱高为小时）</div>
       {sleep_bars}

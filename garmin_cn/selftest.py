@@ -1650,6 +1650,37 @@ def run() -> int:
     _b5 = _C.bb_state({"night_scrubbed": True, "bb_high": 90})
     assert _b5["sub"] == "今日最高（手表掉落）" and "手表掉落" in _b5["head"], \
         "夜间缺测的提示丢了"
+
+    # ---- 高驰：恢复程度顶替身体电量 ------------------------------------
+    _b6 = _C.bb_state({"recovery": 72})
+    assert _b6["val"] == "72" and _b6["kind"] == "recovery", \
+        "高驰恢复程度没有顶到电量格，用户还是看到「未测量」"
+    assert _b6["label"] == "恢复程度" and "身体电量" not in _b6["head"], \
+        "标签没跟着换，会出现「身体电量 · 恢复程度」这种怪组合"
+    _b7 = _C.bb_state({"recovery": 72, "bb_high": 90})
+    assert _b7["val"] == "90" and _b7["kind"] == "bb", \
+        "同时有电量与恢复程度时应优先电量（两家口径不混用）"
+
+    _rm = _MT.readiness({"date": "2026-11-13", "sleep_score": 80, "recovery": 55},
+                         [])
+    _names = [p["name"] for p in _rm["parts"]]
+    assert "恢复程度" in _names, f"恢复度没把恢复程度纳入：{_names}"
+    assert _rm["score"] is not None and _rm["score"] < 90, \
+        "恢复程度偏低却没拉低恢复度"
+
+    # 高驰接口的键名不固定，按包含 recover 的键模糊取值
+    from garmin_cn import coros as _CR
+    assert _CR._recovery_of({"recoverRate": 66.0}) == 66.0, "recoverRate 没认出来"
+    assert _CR._recovery_of({"recoveryPercent": 71}) == 71, "recoveryPercent 没认出来"
+    assert _CR._recovery_of({"recovery": 300}) is None, "超出 0-100 的值不该采信"
+    assert _CR._recovery_of({}) is None, "空记录不该编一个值"
+
+    # 主要益处：高驰以前固定写「—」，现在按有氧 TE 兜底
+    assert ACTCARD.benefit_te(2.4) == "维持" and ACTCARD.benefit_te(0.6) == "热身", \
+        "TE 分级兜底不对"
+    _ac_src = (ROOT / "garmin_cn/actcard.py").read_text(encoding="utf-8")
+    assert '"—" if is_coros else benefit(raw)' not in _ac_src, \
+        "高驰的「主要益处」又变回固定的「—」了"
     # 出图前那次刷新必须是「快速失败」：默认 30 秒 × 3 次重试会让离线时
     # 打开完整看板卡近两分钟，宁可 8 秒拿不到就退回库里的值。
     from garmin_cn import live as _L

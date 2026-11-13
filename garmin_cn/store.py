@@ -10,7 +10,7 @@ from typing import Any, Iterable
 DAILY_COLS = [
     "date", "steps", "step_goal", "distance_m", "calories_total", "calories_active",
     "floors", "resting_hr", "min_hr", "max_hr", "avg_stress", "max_stress",
-    "bb_high", "bb_low", "bb_charged", "bb_drained",
+    "bb_high", "bb_low", "bb_charged", "bb_drained", "recovery",
     "spo2_avg", "resp_avg", "intensity_mod", "intensity_vig",
     "sleep_score", "sleep_total_min", "deep_min", "light_min", "rem_min", "awake_min",
     "nap_min", "naps", "sleep_need_min",
@@ -27,7 +27,9 @@ ACT_COLS = [
 # 结构版本。1 = 2026-11 之前的库（没有版本号，只能靠逐列探测认），
 # 2 = 起用 PRAGMA user_version 记账。以后改表就 +1，并在这里写清楚改了什么：
 #   2: 引入 user_version（补齐既有的 nap/体重/电量/source 列）
-SCHEMA_VERSION = 2
+#   3: 加 recovery（高驰「恢复程度」百分比；佳明没有这个字段，保持 NULL）
+#   4: 修 3 的疏漏——3 只抬了版本号没真加列，这里补上并重新记账
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS daily (
@@ -37,6 +39,7 @@ CREATE TABLE IF NOT EXISTS daily (
     resting_hr INTEGER, min_hr INTEGER, max_hr INTEGER,
     avg_stress INTEGER, max_stress INTEGER,
     bb_high INTEGER, bb_low INTEGER, bb_charged INTEGER, bb_drained INTEGER,
+    recovery INTEGER,
     spo2_avg REAL, resp_avg REAL,
     intensity_mod INTEGER, intensity_vig INTEGER,
     sleep_score INTEGER, sleep_total_min INTEGER, deep_min INTEGER,
@@ -127,6 +130,10 @@ class Store:
             self.conn.execute("ALTER TABLE daily ADD COLUMN bb_now_at TEXT")
         if "bb_series" not in have:
             self.conn.execute("ALTER TABLE daily ADD COLUMN bb_series TEXT")
+        # 高驰的「恢复程度」：0-100 的实时恢复百分比，用途等价于佳明的身体电量。
+        # 佳明没有这个字段，保持 NULL；upsert merge 模式下不会互相抹掉。
+        if "recovery" not in have:
+            self.conn.execute("ALTER TABLE daily ADD COLUMN recovery INTEGER")
         # 活动数据源（garmin/coros）：出图时按它决定抓哪家的明细，别弹错登录框。
         # 旧库行保持 NULL，读取端按 garmin 处理（那些行本来就是佳明同步下来的）。
         have_act = {r[1] for r in self.conn.execute("PRAGMA table_info(activities)")}

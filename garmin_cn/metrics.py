@@ -118,6 +118,11 @@ def readiness(today: dict, history: list[dict],
         detail = (f"当前 {bb_now:.0f}%（日内最高 {bb_high:.0f}）" if bb_now is not None
                   else f"最高 {bb:.0f}")
         parts.append(("身体电量", 0.15, clamp(bb), detail))
+    elif num(today.get("recovery")) is not None:
+        # 高驰没有身体电量，但「恢复程度」是同一个用途：现在还剩多少能量。
+        # 用同一个 15% 权重，两家口径不混用（谁有就用谁）。
+        rec = num(today.get("recovery"))
+        parts.append(("恢复程度", 0.15, clamp(rec), f"{rec:.0f}%"))
 
     if not parts:
         return {"score": None, "level": "数据不足", "color": "#8A8F87", "parts": []}

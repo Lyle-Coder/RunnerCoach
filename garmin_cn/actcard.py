@@ -222,20 +222,25 @@ BENEFIT = {
 }
 
 
-def benefit(raw: dict) -> str:
-    """标签缺失（Garmin 自己给 UNKNOWN）时按有氧 TE 分级兜底。
+def benefit_te(te) -> str:
+    """按有氧 TE 分级给一个保守说法（Garmin 缺标签、高驰没这字段都用它）。
 
-    留「—」等于白占一格；TE 分级至少还能说明这次练到什么程度，
-    而且是可解释的量化口径（<1 基本没效果、2~3 维持、3~4 提升）。
+    留「—」等于白占一格；TE 至少说明这次练到什么程度，而且是可解释的量化
+    口径（<1 基本没效果、2~3 维持、3~4 提升）。
     """
+    v = num(te) or 0.0
+    for cut, txt in ((4.0, "大幅提升"), (3.0, "提升"), (2.0, "维持"), (1.0, "轻微")):
+        if v >= cut:
+            return txt
+    return "热身"
+
+
+def benefit(raw: dict) -> str:
+    """Garmin 的 trainingEffectLabel；缺标签时按有氧 TE 兜底。"""
     lab = str(raw.get("trainingEffectLabel") or "").upper()
     if lab in BENEFIT:
         return BENEFIT[lab]
-    te = num(raw.get("aerobicTrainingEffect")) or 0.0
-    for cut, txt in ((4.0, "大幅提升"), (3.0, "提升"), (2.0, "维持"), (1.0, "轻微")):
-        if te >= cut:
-            return txt
-    return "热身"
+    return benefit_te(raw.get("aerobicTrainingEffect"))
 
 
 def _pace_series(run: list, win: int = 8) -> list:
@@ -1255,8 +1260,11 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
                       (f"{hr_avg:.0f}" if hr_avg else "—", "心率 bpm")]
     # hero 右侧固定「上 3 下 3」：用时 / 爬升 / 主要益处，然后技术三项。
     # 距离已经提到左侧大数字，不再重复占格。
+    # 高驰没有 Garmin 的 trainingEffectLabel，但给了有氧/无氧 TE；
+    # 以前这里固定写「—」，用户看着像数据没取到。现在按 TE 分级兜底。
     head3 = [(dur_txt(dur), "用时", 0), (f"{asc:.0f}", "爬升 m", 0),
-             ("—" if is_coros else benefit(raw), "主要益处", 1)]
+             (benefit_te(row.get("aerobic_te")) if is_coros else benefit(raw),
+              "主要益处", 1)]
     if kind == "duration":
         # 力量课这类主指标本身就是时长，右侧再来一格「用时」就是同一个数写两遍
         head3[0] = (f"{kcal:.0f}", "千卡", 0)
