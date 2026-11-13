@@ -688,7 +688,9 @@ def build_html(res: dict, sync_at: str | None = None,
 
         _rd = _RD.pick()
         if _rd:
-            rd_html = (f'<div class="rd"><span>延伸阅读 · {esc(_rd["head"])}</span>'
+            # 不再单起一行写「延伸阅读」标记：术语名直接当引子，
+            # 小号斜体、颜色压暗，读起来像一句注解而不是一个栏目。
+            rd_html = (f'<div class="rd">{esc(_rd["head"])}：'
                        f'{esc(_rd["text"])}</div>')
     except Exception:
         rd_html = ""
@@ -761,20 +763,19 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .top::after{{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
   background:linear-gradient(90deg,#3B82F6,rgba(34,211,238,.35),transparent);
   pointer-events:none}}
-.date{{font-size:38px;font-weight:700;letter-spacing:1px;white-space:nowrap}}
+.date{{font-size:38px;font-weight:700;letter-spacing:1px;white-space:nowrap;
+  margin:6px 0 0 12px}}
 .date small{{font-size:21px;font-weight:400;color:#8FA4BF;margin-left:10px}}
 /* 右侧限宽：来源/同步时间一长就会把右侧顶到画幅外。两行拆开、各自可
    换行，右侧永远留在 52px 安全区内。抬头只留日期，页脚左下角那枚品牌
    角标保留（0.6.10）。 */
 .meta{{flex:0 1 46%;max-width:46%;text-align:right;font-size:19px;
   color:#8FA4BF;line-height:1.5;word-break:break-word}}
-/* 延伸阅读：贴在同步时间下面。两行封顶，一图流高度是写死的 1080×1920。 */
-.meta .rd{{margin-top:8px;padding-top:8px;border-top:1px solid #223349;
-  font-size:16px;line-height:1.5;color:#9AA5B1;text-align:left;
-  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
-  overflow:hidden}}
-.meta .rd span{{display:block;font-size:15px;color:#5FA8E0;font-weight:700;
-  letter-spacing:.5px;margin-bottom:2px}}
+/* 延伸阅读：小号斜体、压暗，像一句脚注；两行封顶防止顶出去。 */
+.meta .rd{{margin-top:7px;padding-top:7px;border-top:1px solid #1E2C3D;
+  font-size:15px;font-style:italic;line-height:1.55;color:#7E8B9C;
+  text-align:left;display:-webkit-box;-webkit-box-orient:vertical;
+  -webkit-line-clamp:2;overflow:hidden}}
 .meta .m2{{font-size:18px;color:#7689A2;margin-top:4px}}
 .hero{{display:flex;align-items:center;gap:40px;padding:14px 0 12px;height:196px;overflow:hidden}}
 .score-box{{text-align:center;min-width:250px}}
@@ -795,20 +796,21 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
    原来评语、AI、营养条竖着叠，卡高约 400px；改两栏后省下约 100px，
    正好给顶部那条延伸阅读腾地方。 */
 .sess{{margin-top:16px;padding:22px 28px;display:grid;
-  grid-template-columns:1.1fr .9fr;gap:24px;align-items:start}}
+  grid-template-columns:1fr 1fr;gap:26px;align-items:start}}
 .sess .sl{{min-width:0}}
 .sess .sr{{min-width:0;border-left:1px solid #24344A;padding-left:22px}}
-.sess .st{{font-size:38px;font-weight:700;letter-spacing:1px}}
+/* 两栏后左栏只有一半宽，38px 会把「轻松跑」拆成两行，降到 33px */
+.sess .st{{font-size:33px;font-weight:700;letter-spacing:.5px;line-height:1.25}}
 .sess .chips{{margin:10px 0 10px}}
 .chip{{display:inline-block;font-size:20px;padding:4px 14px;border-radius:999px;
   background:#232C36;color:#B6C0CB;margin-right:10px}}
 .chip.main{{background:rgba(79,214,166,.14);color:#4FD6A6}}
 .chip.gray{{background:#202932;color:#A8B4C0}}
-.sess .why{{font-size:21px;line-height:1.45;color:#B9C3CE;display:-webkit-box;
-  -webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}}
-.sess .ai{{margin-top:12px;padding-top:10px;border-top:1px solid #24344A;
-  font-size:18px;line-height:1.45;color:#93A3B5;display:-webkit-box;
-  -webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}}
+.sess .why{{font-size:19px;line-height:1.55;color:#B9C3CE;display:-webkit-box;
+  -webkit-box-orient:vertical;-webkit-line-clamp:5;overflow:hidden}}
+.sess .ai{{margin-top:10px;padding-top:9px;border-top:1px solid #24344A;
+  font-size:17px;line-height:1.5;color:#93A3B5;display:-webkit-box;
+  -webkit-box-orient:vertical;-webkit-line-clamp:6;overflow:hidden}}
 .sess .ai span{{color:#5FA8E0;font-weight:700;margin-right:8px}}
 .row4{{display:flex;gap:14px;margin-top:14px}}
 .kpi{{flex:1;background:#141E2B;border:1px solid #24344A;border-radius:16px;

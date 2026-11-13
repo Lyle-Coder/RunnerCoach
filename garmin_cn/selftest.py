@@ -1677,7 +1677,9 @@ def run() -> int:
 
     _ch = _C.build_html(res, "2026-11-13 06:24", "Garmin 国区", "自检点评")
     assert '<div class="m1">' not in _ch, "顶部右上角还留着与主图重复的恢复度数字"
-    assert '<div class="rd">' in _ch and "延伸阅读" in _ch, "一图流没有延伸阅读"
+    assert '<div class="rd">' in _ch and "font-style:italic" in _ch, \
+        "一图流没有延伸阅读，或不是斜体小字"
+    assert '<div class="rd"><span>' not in _ch, "延伸阅读还带着单独一行标记"
     # 顶部必须 flex:none：定高 1920 的列里，它一旦被压缩，meta 就会压到 hero 上
     _card_src_now = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
     assert "padding-bottom:16px;flex:none;" in _card_src_now, \
