@@ -5275,6 +5275,32 @@ def run() -> int:
     assert "只有路线、没有途经点" not in _EVUI.render_page({"slug": ["self-2026"]}), \
         "明明有途经点，还在提示「只有路线」"
 
+    # 官方「路线」格式：<rte><rtept>，以及 GPX 1.0 命名空间
+    _rte = "".join(f'<rtept lat="30" lon="{0.44 * i / 99}"><ele>{20 + i % 9}</ele>'
+                   f'</rtept>' for i in range(100))
+    for _label, _head in (
+        ("rte 1.1", '<gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">'),
+        ("rte 1.0", '<gpx version="1.0" xmlns="http://www.topografix.com/GPX/1/0">'),
+        ("无命名空间", '<gpx version="1.1">'),
+    ):
+        (_ed / "track.gpx").write_text(
+            '<?xml version="1.0"?>' + _head + "<rte>" + _rte + "</rte></gpx>",
+            encoding="utf-8")
+        _rr = _EV.parse_gpx(_ed / "track.gpx", slug="self-2026")
+        assert _rr["points"] == 100, f"{_label} 的 rtept 没解析出来（{_rr['points']} 点）"
+        assert _rr["total_km"] > 40, f"{_label} 距离算错了：{_rr['total_km']}"
+
+    # 只有 5 个点：报错要说清找到了几个，别只说「少于 10 个」
+    (_ed / "track.gpx").write_text(
+        '<?xml version="1.0"?><gpx xmlns="http://www.topografix.com/GPX/1/1"><rte>'
+        + "".join(f'<rtept lat="30" lon="{0.1 * i}"/>' for i in range(5))
+        + "</rte></gpx>", encoding="utf-8")
+    try:
+        _EV.parse_gpx(_ed / "track.gpx", slug="self-2026")
+        raise AssertionError("5 个点的 GPX 居然通过了")
+    except ValueError as _e:
+        assert "5 个坐标点" in str(_e), f"报错没说清找到了几个点：{_e}"
+
     # 刻度疏密跟着赛程：全马 5 km、百公里 10 km
     assert _EVUI._spark([[0, 10], [20, 20], [40, 15]], 5).count('stroke-dasharray') == 7, \
         "全马该按每 5 km 打刻度"
@@ -5342,6 +5368,21 @@ def run() -> int:
 
     _none_segs, _ = _CO.clean([{"name": "甲", "km": 9999}], {"distance_km": 42})
     assert not _none_segs, "超过赛程 1.3 倍的里程该被丢掉（多半是识别错了行）"
+
+    # 路跑不带水：携水必须能填 0（以前下限卡 500，表单直接被原生校验顶回来）
+    assert _EV.set_fuel("self-2026", carry_ml=0)["carry_ml"] == 0, \
+        "携水填 0 被拒了——路跑不带水是正常配置"
+    try:
+        _EV.set_fuel("self-2026", carry_ml=4000)
+        raise AssertionError("携水 4000 居然存进去了")
+    except ValueError:
+        pass
+
+    # 预览页：图片必须带「缩到一屏」的样式（否则长截图把整页拉长，像没加载出来）
+    (_ed / "海报.png").write_bytes(b"\x89PNG\r\n")
+    _pv = _EVUI.render_doc_page({"slug": ["self-2026"], "name": ["海报.png"]})
+    assert "max-height:72vh" in _pv, "预览图没有限高，长图会铺满好几屏"
+    assert "pvImg" in _pv and "full" in _pv, "预览图不能点开看原尺寸"
 
     # 页面：赛事页要有识别入口和文字粘贴（建完赛事之后也能补）
     assert "cpocr:self-2026" in _th, "赛事页没有 CP 表识别入口"
