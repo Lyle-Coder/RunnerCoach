@@ -5096,8 +5096,11 @@ class MainActivity : Activity() {
         /** GPX 必须让开 1003/1004（1.0.8 拍照识热量已占用） */
         const val REQ_GPX = 1005
         const val REQ_CP_IMG = 1006
-        /** 赛事资料附件上传（PDF / 图片 / 文本） */
-        const val REQ_ATTACH = 1006
+        /** 赛事资料附件上传（PDF / 图片 / 文本）。
+         *  别再复用 1006：CP 表识别也是 1006，onActivityResult 先判
+         *  REQ_CP_IMG，附件会被当成 CP 表截图 POST 到 /__event/cp_ocr
+         *  （1.3.0 实测：点「传附件」弹出「正在识别 CP 表…」）。 */
+        const val REQ_ATTACH = 1009
         const val REQ_FILE_CHOOSER = 1007
         /** 系统日历读写权限申请 */
         const val REQ_CALENDAR = 1008
