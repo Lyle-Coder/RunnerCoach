@@ -395,6 +395,10 @@ def bb_state(t: dict) -> dict:
         if not now_at:
             hh = pts[-1][0]
             now_at = f"{int(hh):02d}:{int(round((hh % 1) * 60)):02d}"
+    # 高驰没有身体电量，但有「恢复程度」：同一个「还剩多少能量」，
+    # 允许它顶这一格。标签必须跟着换，不能出现「身体电量 · 恢复程度」。
+    rec = num(t.get("recovery"))
+    kind = "bb"
     if now is not None:
         val = f"{now:.0f}"
         txt = f"{val}%"
@@ -403,9 +407,14 @@ def bb_state(t: dict) -> dict:
         val = f"{high:.0f}"
         txt = f"最高 {val}%"
         sub = "今日最高" + ("（手表掉落）" if scrubbed else "")
+    elif rec is not None:
+        val, txt, sub = f"{rec:.0f}", f"{rec:.0f}%", "高驰恢复程度"
+        kind = "recovery"
     else:
         val, txt, sub = "—", "未测量", "未测量"
-    if scrubbed and not series:
+    if kind == "recovery":
+        head = f"恢复程度（{txt} · 高驰不提供日内曲线）"
+    elif scrubbed and not series:
         head = "身体电量（今天 · 手表掉落，夜间未测量）"
     elif now is not None:
         # 有当前值但没有曲线（老数据 / 这次没拉到序列）时也要说清是当前值，
@@ -419,7 +428,8 @@ def bb_state(t: dict) -> dict:
         head = "身体电量（未同步）"
     return {"now": now, "now_at": now_at, "high": high, "series": series,
             "pts": pts, "val": val, "txt": txt, "sub": sub, "head": head,
-            "scrubbed": scrubbed}
+            "scrubbed": scrubbed, "kind": kind,
+            "label": "恢复程度" if kind == "recovery" else "身体电量"}
 
 
 def build_html(res: dict, sync_at: str | None = None,
@@ -677,6 +687,21 @@ def build_html(res: dict, sync_at: str | None = None,
     hrv_spark = _spark(hrv_pts[-14:], h=42, color="#5FA8E0", label="HRV", unit=" ms")
     rhr_spark = _spark(rhr_pts[-14:], h=42, color="#E06A5F", label="静息心率", unit=" bpm")
 
+    # 延伸阅读：一图流右上角只放一句 brief。取不到内容（文件缺失/坏 JSON）
+    # 就整块不出现——出图不能因为一块可选内容挂掉。
+    rd_html = ""
+    try:
+        from . import reading as _RD
+
+        _rd = _RD.pick()
+        if _rd:
+            # 不再单起一行写「延伸阅读」标记：术语名直接当引子，
+            # 小号斜体、颜色压暗，读起来像一句注解而不是一个栏目。
+            rd_html = (f'<div class="rd">{esc(_rd["head"])}：'
+                       f'{esc(_rd["text"])}</div>')
+    except Exception:
+        rd_html = ""
+
     # AI 点评：只有拿到现成文本才画。限两行——一图流高度写死 1080×1920，
     # 多三行就会把底部挤出画幅。
     ai_html = ""
@@ -740,21 +765,21 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
   -webkit-font-smoothing:antialiased}}
 .wrap{{width:{W}px;height:{H}px;padding:34px 52px 26px;display:flex;flex-direction:column}}
 .top{{position:relative;display:flex;justify-content:space-between;
-  align-items:flex-end;gap:24px;padding-bottom:16px;
-  border-bottom:1px solid #223349}}
-.top::after{{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
-  background:linear-gradient(90deg,#3B82F6,rgba(34,211,238,.35),transparent);
-  pointer-events:none}}
-.date{{font-size:38px;font-weight:700;letter-spacing:1px;white-space:nowrap}}
+  align-items:baseline;gap:24px;padding-bottom:2px;flex:none}}
+.date{{font-size:34px;font-weight:700;letter-spacing:1px;white-space:nowrap}}
 .date small{{font-size:21px;font-weight:400;color:#8FA4BF;margin-left:10px}}
 /* 右侧限宽：来源/同步时间一长就会把右侧顶到画幅外。两行拆开、各自可
    换行，右侧永远留在 52px 安全区内。抬头只留日期，页脚左下角那枚品牌
    角标保留（0.6.10）。 */
 .meta{{flex:0 1 46%;max-width:46%;text-align:right;font-size:19px;
   color:#8FA4BF;line-height:1.5;word-break:break-word}}
-.meta .m1{{font-size:22px;font-weight:650;color:#8CC2FF;
-  font-variant-numeric:tabular-nums}}
-.meta .m2{{font-size:18px;color:#7689A2;margin-top:4px}}
+/* 延伸阅读：一条整宽的注脚条，用上边线给「刊头 + 数据」收口。
+   顶部那条渐变线撤掉，全块只留这一条分界，视线不打架。 */
+.rd{{margin:12px 0 0;padding-top:10px;border-top:1px solid #223349;
+  font-size:15px;font-style:italic;line-height:1.5;color:#7E8B9C;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+  overflow:hidden}}
+.meta .m2{{font-size:16px;color:#7689A2}}
 .hero{{display:flex;align-items:center;gap:40px;padding:14px 0 12px;height:196px;overflow:hidden}}
 .score-box{{text-align:center;min-width:250px}}
 .score{{font-size:104px;font-weight:700;line-height:.95;color:{color};letter-spacing:-4px}}
@@ -770,18 +795,25 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 .bar-track i{{display:block;height:100%;border-radius:5px}}
 .card{{background:#141E2B;border:1px solid #24344A;border-radius:18px;padding:18px 26px}}
 .card h3{{font-size:21px;color:#7F8A97;font-weight:400;margin-bottom:10px;letter-spacing:1px}}
-.sess{{margin-top:16px;padding:22px 28px}}
-.sess .st{{font-size:38px;font-weight:700;letter-spacing:1px}}
+/* 处方卡两栏：左边类型/时长/营养，右边评语与 AI。
+   原来评语、AI、营养条竖着叠，卡高约 400px；改两栏后省下约 100px，
+   正好给顶部那条延伸阅读腾地方。 */
+.sess{{margin-top:16px;padding:22px 28px;display:grid;
+  grid-template-columns:1fr 1fr;gap:26px;align-items:start}}
+.sess .sl{{min-width:0}}
+.sess .sr{{min-width:0;border-left:1px solid #24344A;padding-left:22px}}
+/* 两栏后左栏只有一半宽，38px 会把「轻松跑」拆成两行，降到 33px */
+.sess .st{{font-size:33px;font-weight:700;letter-spacing:.5px;line-height:1.25}}
 .sess .chips{{margin:10px 0 10px}}
 .chip{{display:inline-block;font-size:20px;padding:4px 14px;border-radius:999px;
   background:#232C36;color:#B6C0CB;margin-right:10px}}
 .chip.main{{background:rgba(79,214,166,.14);color:#4FD6A6}}
 .chip.gray{{background:#202932;color:#A8B4C0}}
-.sess .why{{font-size:21px;line-height:1.45;color:#B9C3CE;display:-webkit-box;
-  -webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}}
-.sess .ai{{margin-top:12px;padding-top:10px;border-top:1px solid #24344A;
-  font-size:18px;line-height:1.45;color:#93A3B5;display:-webkit-box;
-  -webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}}
+.sess .why{{font-size:19px;line-height:1.55;color:#B9C3CE;display:-webkit-box;
+  -webkit-box-orient:vertical;-webkit-line-clamp:5;overflow:hidden}}
+.sess .ai{{margin-top:10px;padding-top:9px;border-top:1px solid #24344A;
+  font-size:17px;line-height:1.5;color:#93A3B5;display:-webkit-box;
+  -webkit-box-orient:vertical;-webkit-line-clamp:6;overflow:hidden}}
 .sess .ai span{{color:#5FA8E0;font-weight:700;margin-right:8px}}
 .row4{{display:flex;gap:14px;margin-top:14px}}
 .kpi{{flex:1;background:#141E2B;border:1px solid #24344A;border-radius:16px;
@@ -947,7 +979,6 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 <div class="top">
   <div class="rc-date"><div class="date">{d.strftime("%m月%d日")}<small>{DOW[d.weekday()]}</small></div></div>
   <div class="meta">
-    <div class="m1">恢复度 <b>{_f(r.get("score"))}</b> / 100</div>
     <div class="m2">{esc(src)} · 已同步 {esc((sync_at or "")[:16]) or esc(res["date"])}</div>
   </div>
 </div>
@@ -959,15 +990,20 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
   </div>
   <div class="bars">{_bars(r.get("parts") or [])}</div>
 </div>
+{rd_html}
 
 <div class="card sess">
-  <h3>今日处方</h3>
-  <div class="st">{esc(s["type"])}</div>
-  <div class="chips"><span class="chip main">{esc(s["duration"])}</span><span class="chip">{esc(s["intensity"])}</span></div>
-  <div class="why">{esc(s["why"])}</div>
-  {ai_html}
-  {nutri_chips}
-  {rp_line}
+  <div class="sl">
+    <h3>今日处方</h3>
+    <div class="st">{esc(s["type"])}</div>
+    <div class="chips"><span class="chip main">{esc(s["duration"])}</span><span class="chip">{esc(s["intensity"])}</span></div>
+    {nutri_chips}
+    {rp_line}
+  </div>
+  <div class="sr">
+    <div class="why">{esc(s["why"])}</div>
+    {ai_html}
+  </div>
 </div>
 
 <div class="row4">
@@ -992,7 +1028,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
         <div><b>{_f(sl.get("total_h"), "", 1)}<small>h</small></b><span>{sleep_sub}</span></div>
         <div><b>{_f(t.get("hrv_night"), "", 0)}<small>ms</small></b><span>HRV 夜间</span></div>
         <div><b>{_f(t.get("resting_hr"), "", 0)}<small>bpm</small></b><span>静息心率</span></div>
-        <div><b>{bb_val}<small>%</small></b><span>身体电量 · {esc(bb_sub)}</span></div>
+        <div><b>{bb_val}<small>%</small></b><span>{esc(_bb.get("label") or "身体电量")} · {esc(bb_sub)}</span></div>
       </div>
       <div class="chart-h">睡眠（近 7 天 · 柱高为小时）</div>
       {sleep_bars}

@@ -1363,6 +1363,8 @@ def run() -> int:
     assert _AAI._mask_mail("a@qq.com") == "a*@qq.com"
     assert _AAI._mask_mail(None) == ""
     _kt7 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert 'setNegativeButton("直接识别"' not in _kt7, \
+        "拍照识别又出现了两个功能相同的按钮（识别 / 直接识别）"
     assert '"login:garmin" -> openAccount("garmin")' in _kt7, "已登录仍直接弹登录框"
     assert '"login:coros" -> openAccount("coros")' in _kt7
     assert "点击可重新登录" not in _kt7, "文案还写着「点击可重新登录」"
@@ -1653,6 +1655,299 @@ def run() -> int:
     _b5 = _C.bb_state({"night_scrubbed": True, "bb_high": 90})
     assert _b5["sub"] == "今日最高（手表掉落）" and "手表掉落" in _b5["head"], \
         "夜间缺测的提示丢了"
+
+    # ---- 高驰：恢复程度顶替身体电量 ------------------------------------
+    _b6 = _C.bb_state({"recovery": 72})
+    assert _b6["val"] == "72" and _b6["kind"] == "recovery", \
+        "高驰恢复程度没有顶到电量格，用户还是看到「未测量」"
+    assert _b6["label"] == "恢复程度" and "身体电量" not in _b6["head"], \
+        "标签没跟着换，会出现「身体电量 · 恢复程度」这种怪组合"
+    _b7 = _C.bb_state({"recovery": 72, "bb_high": 90})
+    assert _b7["val"] == "90" and _b7["kind"] == "bb", \
+        "同时有电量与恢复程度时应优先电量（两家口径不混用）"
+
+    # ---- 延伸阅读：内容库结构 / 抽取 / 两处渲染 -------------------------
+    from garmin_cn import reading as _RD2
+
+    _bad = _RD2.validate()
+    assert not _bad, f"延伸阅读内容库不合格：{_bad[:3]}"
+    _p1 = _RD2.pick(seed="2026-11-13")
+    _p2 = _RD2.pick(seed="2026-11-13")
+    assert _p1 and _p1["id"] == _p2["id"], "同一 seed 抽到的条目不稳定（测试没法复现）"
+    assert _p1["src"] and _p1["text"], "条目缺正文或数据源"
+    _its = _RD2.items(6)
+    assert len(_its) == len({x["id"] for x in _its}), "首页轮播里出现了重复条目"
+
+    # ---- 赛事：只展示报名窗口内的 --------------------------------------
+    import json as _js3
+
+    _rdir = Path(tempfile.mkdtemp())
+    _today2 = dt.date.today()
+
+    def _dd(n: int) -> str:
+        return (_today2 + dt.timedelta(days=n)).isoformat()
+
+    (_rdir / "races.json").write_text(_js3.dumps({"version": 1, "updated": _dd(0), "items": [
+        {"id": "a", "name": "报名中", "date": _dd(60), "dist_km": 50, "ascent_m": 2000,
+         "place": "云南", "reg_open": _dd(-2), "reg_close": _dd(10), "source": "赛事官网"},
+        {"id": "b", "name": "未开始", "date": _dd(90), "reg_open": _dd(5), "reg_close": _dd(30)},
+        {"id": "c", "name": "已截止", "date": _dd(20), "reg_open": _dd(-60), "reg_close": _dd(-10)},
+        {"id": "d", "name": "窗口不明", "date": _dd(40)},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    _ov_old = _RD2.OVERRIDE
+    _RD2.OVERRIDE = _rdir
+    try:
+        _rs = _RD2.races()
+        assert [x["head"] for x in _rs] == ["报名中"], \
+            f"报名窗口过滤不对：{[x['head'] for x in _rs]}"
+        assert "报名剩 10 天" in _rs[0]["text"], "没写剩余天数"
+        assert _RD2.items(20), "轮播池没把赛事并进去"
+    finally:
+        _RD2.OVERRIDE = _ov_old
+
+    # 窗口顺序写反必须被 validate 拦下（否则「已截止」会被当成长期有效）
+    _bdir = Path(tempfile.mkdtemp())
+    (_bdir / "races.json").write_text(_js3.dumps({"items": [
+        {"id": "x", "name": "反了", "date": "2027-06-01",
+         "reg_open": "2027-02-01", "reg_close": "2027-01-15"}]}, ensure_ascii=False),
+        encoding="utf-8")
+    _b_old = _RD2.BUNDLED
+    _RD2.BUNDLED = _bdir
+    try:
+        assert any("早于" in m for m in _RD2.validate()), "报名窗口顺序错了却没报"
+    finally:
+        _RD2.BUNDLED = _b_old
+
+    # 抓取解析：一行给全 / 分两行 / 只有截止，都要给对结论
+    import importlib.util as _ilu
+
+    _spec = _ilu.spec_from_file_location("races_sync_t", ROOT / "tools" / "races_sync.py")
+    _rsm = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_rsm)
+    assert _rsm.parse_window("报名时间：2026-11-20 至 2026-12-31", 2026) is not None, \
+        "一行给全的报名窗口没解析出来"
+    assert _rsm.parse_window("报名开始 2026-11-20\n报名截止 2026-12-31", 2026) is not None, \
+        "分两行的窗口没解析出来"
+    assert _rsm.parse_window("报名截止：2026-12-31", 2026) is None, \
+        "只有截止没有开始，不该当成完整窗口"
+    assert _rsm.parse_window("比赛日 2027-03-28，领物 3月26日", 2027) is None, \
+        "把比赛日/领物当成报名窗口了"
+
+    # ---- 最酷抓取：解析 / 跨年 / 失败不毁数据 / 轮播配额 ------------------
+    from garmin_cn import races_fetch as _RF
+
+    _zc_card = (
+        '<div class="event" style="padding-bottom:10px">'
+        '<h4 class="name"><a href="https://zuicool.com/event/84480" class="event-a">'
+        ' 2026舟山群岛马拉松 </a></h4>'
+        '<div class="info"><p>2026.12.06 &middot; 浙江 舟山市 普陀区 普陀大剧院</p></div>'
+        '<div class="meta"><p><span>报名截止：11-18 12:00</span></p></div></div>'
+    )
+    _zc_up = (
+        '<div class="event">'
+        '<h4 class="name"><a href="https://zuicool.com/event/32833" class="event-a">'
+        ' 丽人18（南京站） </a></h4>'
+        '<div class="info"><p>2026.12.05 &middot; 江苏 南京市 建邺区 江心洲</p></div>'
+        '<div class="meta"><p><span>报名开始：11-13 12:00</span></p></div></div>'
+    )
+    _zc_old = (
+        '<div class="event">'
+        '<h4 class="name"><a href="https://zuicool.com/event/1" class="event-a">'
+        ' 早就截止了 </a></h4>'
+        '<div class="info"><p>2026.11.20 &middot; 北京 海淀区 大觉寺</p></div>'
+        '<div class="meta"><p><span>报名截止：10-01 23:59</span></p></div></div>'
+    )
+    _zc_rows, _zc_st = _RF.parse_list(_zc_card + _zc_up + _zc_old, dt.date(2026, 11, 13))
+    assert len(_zc_rows) == 1, f"只该留下在报名中的那一条，实际 {len(_zc_rows)} 条"
+    _r0 = _zc_rows[0]
+    assert _r0["id"] == "zc-84480" and _r0["reg_close"] == "2026-11-18", _r0
+    assert _r0["place"] == "浙江 舟山", f"地名没去掉「市」：{_r0['place']}"
+    assert _r0["dist_km"] == 42.2, f"「马拉松」没认出 42.2：{_r0['dist_km']}"
+    assert _r0["reg_open_source"] == "inferred", "reg_open 是推的，必须标出来"
+    assert _zc_st["upcoming"] == 1 and _zc_st["skipped"] >= 1, _zc_st
+
+    # 跨年：赛事 2027.01.01，截止写「12-10」——年份要回到 2026
+    _zc_cross = (
+        '<div class="event">'
+        '<h4 class="name"><a href="https://zuicool.com/event/9" class="event-a">'
+        ' 元旦迎新跑 </a></h4>'
+        '<div class="info"><p>2027.01.01 &middot; 江苏 无锡市 滨湖区</p></div>'
+        '<div class="meta"><p><span>报名截止：12-10 23:59</span></p></div></div>'
+    )
+    _cx, _ = _RF.parse_list(_zc_cross, dt.date(2026, 11, 13))
+    assert _cx and _cx[0]["reg_close"] == "2026-12-10", \
+        f"跨年赛事的报名截止年份推错了：{_cx[0]['reg_close'] if _cx else '没解析出'}"
+
+    # 抓取全挂：绝不能把已有数据抹掉
+    _rfdir = Path(tempfile.mkdtemp())
+    _rf_old = _RF.OUT
+    _RF.OUT = _rfdir / "content" / "races.json"
+    try:
+        _RF.OUT.parent.mkdir(parents=True, exist_ok=True)
+        _RF.OUT.write_text(_js3.dumps({"version": 7, "updated": "2026-11-01",
+                                       "items": [{"id": "keep", "name": "旧数据",
+                                                  "date": "2026-12-01",
+                                                  "reg_open": "2026-11-01",
+                                                  "reg_close": "2026-11-30"}]}),
+                           encoding="utf-8")
+
+        def _boom(url):
+            raise OSError("网络断了")
+
+        _bad = _RF.sync(today=dt.date(2026, 11, 13), opener=_boom)
+        assert not _bad.get("ok"), "抓取失败却报成功"
+        _after = _js3.loads(_RF.OUT.read_text(encoding="utf-8"))
+        assert _after["version"] == 7 and _after["items"][0]["id"] == "keep", \
+            "抓取失败把旧赛事数据覆盖掉了"
+
+        # 当天已更新就不再抓
+        _RF.OUT.write_text(_js3.dumps({"updated": "2026-11-13", "items": [{"id": "x"}]}),
+                           encoding="utf-8")
+        _skip = _RF.maybe_update(today=dt.date(2026, 11, 13), opener=_boom)
+        assert _skip.get("skipped") == "今天已更新", f"当天重复抓：{_skip}"
+    finally:
+        _RF.OUT = _rf_old
+
+    # 轮播配额：赛事再多也不能把术语挤出去
+    _many = Path(tempfile.mkdtemp())
+    _many_items = [{"id": f"r{i}", "name": f"赛事{i}", "date": "2026-12-01",
+                    "reg_open": _dd(-1), "reg_close": _dd(5 + i)} for i in range(30)]
+    (_many / "races.json").write_text(_js3.dumps({"items": _many_items}),
+                                      encoding="utf-8")
+    _ov2 = _RD2.OVERRIDE
+    _RD2.OVERRIDE = _many
+    try:
+        _mix = _RD2.items(8)
+        _nrace = sum(1 for x in _mix if x.get("kind") == "race")
+        assert _nrace <= _RD2.RACE_PER_SLIDE, f"轮播里 {_nrace} 条赛事，术语被挤没了"
+        assert len(_mix) == 8, f"轮播没排满：{len(_mix)}"
+        assert len(_RD2.races(soon=5)) == 5, "soon 没限住参与抽取的场次"
+        assert _RD2.races()[0]["text"].startswith("报名剩"), "倒计时文案不对"
+    finally:
+        _RD2.OVERRIDE = _ov2
+
+    # 「今天截止」不能写成「报名剩 0 天」
+
+    # ---- 过期清理：文件里的条目要真被删，不能只在展示时过滤 --------------
+    _prdir = Path(tempfile.mkdtemp())
+    _pr_old = _RF.OUT
+    _RF.OUT = _prdir / "content" / "races.json"
+    try:
+        _RF.OUT.parent.mkdir(parents=True, exist_ok=True)
+        _RF.OUT.write_text(_js3.dumps({"version": 3, "updated": _dd(-3), "items": [
+            {"id": "a", "name": "还在报", "date": _dd(60),
+             "reg_open": _dd(-1), "reg_close": _dd(5), "via": "zuicool"},
+            {"id": "b", "name": "今天最后一天", "date": _dd(30),
+             "reg_open": _dd(-5), "reg_close": _dd(0), "via": "zuicool"},
+            {"id": "c", "name": "昨天截止", "date": _dd(20),
+             "reg_open": _dd(-30), "reg_close": _dd(-1), "via": "zuicool"},
+            {"id": "d", "name": "自动源没窗口", "date": _dd(40), "via": "zuicool"},
+            {"id": "e", "name": "人工没窗口", "date": _dd(40), "via": "manual"},
+            {"id": "f", "name": "人工过期", "date": _dd(10),
+             "reg_close": _dd(-7), "via": "manual"},
+        ]}, ensure_ascii=False), encoding="utf-8")
+
+        _pr = _RF.prune(dt.date.today())
+        assert _pr.get("removed") == 3, f"该清 3 条（昨天截止/自动源无窗口/人工过期），实际 {_pr}"
+        _left = {i["id"] for i in _js3.loads(_RF.OUT.read_text(encoding="utf-8"))["items"]}
+        assert _left == {"a", "b", "e"}, f"清理后剩下的不对：{_left}"
+        assert "b" in _left, "今天截止的不能清掉（当天还能报）"
+        assert "e" in _left, "人工填的条目即便缺窗口也不该被自动清掉"
+
+        # 没有变化时不重写文件（避免每次启动都动盘）
+        _mt = _RF.OUT.stat().st_mtime_ns
+        assert _RF.prune(dt.date.today()).get("removed") == 0, "二次清理不该再删"
+        assert _RF.OUT.stat().st_mtime_ns == _mt, "没有变化却重写了文件"
+
+        # sync 覆盖写：手工条目要保住，过期的要清掉
+        _RF.OUT.write_text(_js3.dumps({"version": 9, "updated": _dd(-1), "items": [
+            {"id": "old", "name": "上次抓的", "date": _dd(20),
+             "reg_open": _dd(-3), "reg_close": _dd(2), "via": "zuicool"},
+            {"id": "keep", "name": "手工维护", "date": _dd(50),
+             "reg_open": _dd(-1), "reg_close": _dd(9), "via": "manual"},
+            {"id": "dead", "name": "人工但过期", "date": _dd(5),
+             "reg_close": _dd(-2), "via": "manual"},
+        ]}, ensure_ascii=False), encoding="utf-8")
+        _card = ('<div class="event"><h4 class="name">'
+                 '<a href="https://zuicool.com/event/777" class="event-a"> 新抓到的 </a></h4>'
+                 '<div class="info"><p>2027.12.20 &middot; 浙江 杭州市 西湖区</p></div>'
+                 '<div class="meta"><p><span>报名截止：12-01 23:59</span></p></div></div>')
+        _sr = _RF.sync(opener=lambda url: _card)
+        assert _sr.get("ok"), f"sync 失败：{_sr}"
+        _ids = {i["id"] for i in _js3.loads(_RF.OUT.read_text(encoding="utf-8"))["items"]}
+        assert "keep" in _ids, "每日覆盖抓取把手工维护的赛事抹掉了"
+        assert "dead" not in _ids, "手工条目过期了还留在文件里"
+        assert "old" not in _ids and "zc-777" in _ids, "旧的抓取结果没被替换"
+
+        # 「今天已更新」时也要清：过期清理和今天抓没抓无关
+        _RF.OUT.write_text(_js3.dumps({"version": 11, "updated": dt.date.today().isoformat(),
+                                       "items": [{"id": "gone", "name": "过期了",
+                                                  "date": _dd(5), "reg_close": _dd(-2),
+                                                  "via": "zuicool"}]},
+                                      ensure_ascii=False), encoding="utf-8")
+
+        def _no_net(url):
+            raise OSError("不该联网")
+
+        _mu = _RF.maybe_update(today=dt.date.today(), opener=_no_net)
+        assert _mu.get("skipped") == "今天已更新", _mu
+        assert _mu.get("pruned") == 1, f"就算今天已更新，过期条目也该被清：{_mu}"
+        assert not _js3.loads(_RF.OUT.read_text(encoding="utf-8"))["items"], \
+            "过期条目没被清掉"
+    finally:
+        _RF.OUT = _pr_old
+    _td = Path(tempfile.mkdtemp())
+    (_td / "races.json").write_text(_js3.dumps({"items": [
+        {"id": "t", "name": "今天最后一天", "date": _dd(10),
+         "reg_open": _dd(-3), "reg_close": _dd(0)}]}), encoding="utf-8")
+    _ov3 = _RD2.OVERRIDE
+    _RD2.OVERRIDE = _td
+    try:
+        _one = _RD2.races()
+        assert _one and _one[0]["text"].startswith("今天截止"), \
+            f"当天截止的文案是「{_one[0]['text'][:12] if _one else ''}」，不该是「剩 0 天」"
+    finally:
+        _RD2.OVERRIDE = _ov3
+
+    _ch = _C.build_html(res, "2026-11-13 06:24", "Garmin 国区", "自检点评")
+    assert '<div class="m1">' not in _ch, "顶部右上角还留着与主图重复的恢复度数字"
+    assert '<div class="rd">' in _ch and "font-style:italic" in _ch, \
+        "一图流没有延伸阅读，或不是斜体小字"
+    assert '<div class="rd"><span>' not in _ch, "延伸阅读还带着单独一行标记"
+    # 顶部必须 flex:none：定高 1920 的列里，它一旦被压缩，meta 就会压到 hero 上
+    _card_src_now = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
+    assert re.search(r"\.top\{\{[^}]*flex:none", _card_src_now), \
+        "一图流顶部会被 flex 压缩，延伸阅读会压到睡眠条上"
+    # 辉光层必须有渐隐遮罩：否则它 inset 的矩形边会切出一条比底色亮 7 阶的硬边
+    from garmin_cn import brand as _BR2
+    assert "mask-composite" in _BR2.glow_overlay_css(), \
+        "辉光层没有渐隐遮罩，内容区边界会显出一道亮边"
+    assert '<div class="sl">' in _ch and '<div class="sr">' in _ch, \
+        "今日处方没改成两栏，评语与 AI 点评没挪到右侧"
+    _home_rd = U.home_page()
+    assert 'id="rc-read"' in _home_rd and "—— " in _home_rd, \
+        "首页底部没有延伸阅读卡，或没按「内容 / —— 数据源」排版"
+
+    _rm = _MT.readiness({"date": "2026-11-13", "sleep_score": 80, "recovery": 55},
+                         [])
+    _names = [p["name"] for p in _rm["parts"]]
+    assert "恢复程度" in _names, f"恢复度没把恢复程度纳入：{_names}"
+    assert _rm["score"] is not None and _rm["score"] < 90, \
+        "恢复程度偏低却没拉低恢复度"
+
+    # 高驰接口的键名不固定，按包含 recover 的键模糊取值
+    from garmin_cn import coros as _CR
+    assert _CR._recovery_of({"recoverRate": 66.0}) == 66.0, "recoverRate 没认出来"
+    assert _CR._recovery_of({"recoveryPercent": 71}) == 71, "recoveryPercent 没认出来"
+    assert _CR._recovery_of({"recovery": 300}) is None, "超出 0-100 的值不该采信"
+    assert _CR._recovery_of({}) is None, "空记录不该编一个值"
+
+    # 主要益处：高驰以前固定写「—」，现在按有氧 TE 兜底
+    assert ACTCARD.benefit_te(2.4) == "维持" and ACTCARD.benefit_te(0.6) == "热身", \
+        "TE 分级兜底不对"
+    _ac_src = (ROOT / "garmin_cn/actcard.py").read_text(encoding="utf-8")
+    assert '"—" if is_coros else benefit(raw)' not in _ac_src, \
+        "高驰的「主要益处」又变回固定的「—」了"
     # 出图前那次刷新必须是「快速失败」：默认 30 秒 × 3 次重试会让离线时
     # 打开完整看板卡近两分钟，宁可 8 秒拿不到就退回库里的值。
     from garmin_cn import live as _L
@@ -2870,7 +3165,9 @@ def run() -> int:
     # 「我的」页压缩：竖排行 ≤6 条（账号 4 + 诊断 1），其余走 2 列网格；
     # 三个体重行合并成一行，登录入口放进来源选择器。
     _me = U.me_page()
-    assert _me.count('class="row') <= 6, f"我的页还是长列表：{_me.count('class=\"row')} 行"
+    # 6 → 7：多出来的是「简洁模式」开关。两个开关（AI 服务 / 简洁模式）都
+    # 必须常驻可见，再往上加行得先想清楚是不是该并进别的地方。
+    assert _me.count('class="row') <= 7, f"我的页还是长列表：{_me.count('class=\"row')} 行"
     assert _me.count('class="acts"') == 2, "常用/数据两组没有排成网格"
     assert "体重数据" in _me and ">小米体重<" not in _me, "体重三行没有合并"
     # AI 模型服务从「只读卡片」升级成可点的行（行尾带开关），所以网格里不该
@@ -3103,8 +3400,9 @@ def run() -> int:
 
     _card_src = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
     _act_src = (ROOT / "garmin_cn/actcard.py").read_text(encoding="utf-8")
-    assert "max-width:46%" in _card_src and 'class="m1"' in _card_src, \
-        "看板一图流顶部右侧没限宽，长来源会挤出画幅"
+    # 顶部右上角不再有重复的「恢复度 79 / 100」，改为限宽的 meta + 延伸阅读
+    assert "max-width:46%" in _card_src and '.rd{{' in _card_src, \
+        "看板一图流顶部右侧没限宽，长来源会挤出画幅 / 延伸阅读没样式"
     assert "flex-wrap:nowrap" in _act_src, \
         "活动图顶部标签还会换行/被挤走"
     assert "background:#12161B" in _card_src, \
@@ -4241,6 +4539,32 @@ def run() -> int:
     assert 'id="aiSeg"' in (ROOT / "garmin_cn/aiui.py").read_text(encoding="utf-8"), \
         "配置抽屉里没有 AI 开关"
 
+    # ---- 简洁模式：只留首页/历史 + 教练的今日与体重 ---------------------
+    from garmin_cn import appapi as _AP2
+    from garmin_cn import aiui as _AIUI
+
+    _cfgpath = Path(tempfile.mkdtemp()) / "config.json"
+    _old_cfg = _AP2.CONFIG
+    _AP2.CONFIG = _cfgpath
+    try:
+        assert _AP2.simple_mode() is False, "简洁模式默认应该是关的"
+        assert _AP2.simple_toggle().get("simple_mode") is True, "开关没翻过去"
+        _simple_html = _AIUI.render()
+        assert _simple_html.count("<button data-v=") == 2, \
+            f"简洁模式还有多余标签：{_simple_html.count('<button data-v=')} 个"
+        assert ">今日<" in _simple_html and ">体重<" in _simple_html, "今日/体重被误删"
+        for _gone in (">对话<", ">备赛<", ">力量<"):
+            assert _gone not in _simple_html, f"简洁模式没关掉 {_gone}"
+        _AP2.simple_toggle()
+        assert _AIUI.render().count("<button data-v=") == 5, "关掉简洁模式后模块没回来"
+    finally:
+        _AP2.CONFIG = _old_cfg
+
+    _me_simple = U.me_page()
+    assert 'data-act="simpleToggle"' in _me_simple, "「我的」页没有简洁模式开关"
+    assert 'data-act="simpleToggle"' in _kt7 or '"simpleToggle" -> toggleSimple()' in _kt7, \
+        "App 侧没接简洁模式开关"
+
     # ---- 素材批量删除：删不掉的不能从列表里消失 ----------------------
     _cdir = Path(tempfile.mkdtemp())
     (_cdir / "ok.jpg").write_bytes(b"x")
@@ -4801,6 +5125,65 @@ def run() -> int:
         assert "髋外展" in _PO.text_report({"results": [n]})
     except ImportError:
         pass
+
+    # ---- 赛事资料：改名 / 编辑 / 时间点 / 软件内预览 / 首页临近提醒 -------
+    import json as _js2
+    from garmin_cn import event as _EV
+    from garmin_cn import eventui as _EVUI
+
+    _etmp = Path(tempfile.mkdtemp())
+    _EV.EVENTS = _etmp
+    _ed = _etmp / "self-2026"
+    _ed.mkdir()
+    (_ed / "event.json").write_text(_js2.dumps({
+        "slug": "self-2026", "name": "自检赛", "short": "自检", "date": "2026-11-20",
+        "start_time": "08:00", "status": "confirmed", "distance_km": 42.2,
+        "ascent_m": 120, "duration_h": 6, "goal_s": 13500}, ensure_ascii=False),
+        encoding="utf-8")
+    _EV.add_doc("self-2026", "rule", "关门与罚则",
+                "报名截止 2026-11-18 18:00，领物 11月19日 10:00-20:00")
+    _tl = _EV.timeline("self-2026")
+    _ats = [(x["at"], x["label"]) for x in _tl]
+    assert ("2026-11-18T18:00", "报名截止") in _ats, f"资料里的报名截止没认出来：{_ats}"
+    assert ("2026-11-19T10:00", "领物") in _ats, f"中文日期没认出来：{_ats}"
+    assert ("2026-11-20T08:00", "开赛") in _ats, "赛事开赛时间没进时间线"
+    assert _EV.parse_times("配速 4-5 分，心率 150-160", 2026) == [], \
+        "把配速/心率区间当成日期了"
+
+    _EV.update_doc("self-2026", 0, title="关门与罚则（改）")
+    assert _EV.docs("self-2026")["items"][0]["title"] == "关门与罚则（改）", "改标题没生效"
+    (_ed / "参赛号.png").write_bytes(b"\x89PNG\r\n")
+    assert _EV.rename_file("self-2026", "参赛号.png", "号码布") == "号码布.png", "附件改名失败"
+    assert not (_ed / "参赛号.png").exists(), "改名后旧文件还在"
+
+    _eh = _EVUI.render_page({"slug": ["self-2026"]})
+    assert 'value="edit"' in _eh, "资料页没有「改」表单，名称改不了"
+    assert 'class="dtime"' in _eh, "资料页没把识别到的时间点显示出来"
+    assert "/event-doc?slug=self-2026" in _eh, "附件没有软件内预览入口"
+    assert 'action="/__event/file"' in _eh, "附件没有改名入口"
+    assert 'class="dimg"' in _EVUI.render_doc_page(
+        {"slug": ["self-2026"], "name": ["号码布.png"]}), "图片预览打不开"
+    (_ed / "规程.pdf").write_bytes(b"%PDF-1.4")
+    assert "系统应用打开" in _EVUI.render_doc_page(
+        {"slug": ["self-2026"], "name": ["规程.pdf"]}), "PDF 没给系统打开的兜底"
+    # 改名把路径成分剥掉（不报错，但绝不能把文件挪出赛事目录）
+    _esc = _EV.rename_file("self-2026", "规程.pdf", "../../逃逸")
+    assert _esc == "逃逸.pdf" and (_ed / _esc).is_file(), \
+        "改名没剥掉路径成分，文件可能被挪出赛事目录"
+
+    _EV.set_remind("self-2026", "2026-11-18T18:00", "报名截止", True)
+    assert _EV.reminders("self-2026"), "提醒没存下来"
+    _EV.set_remind("self-2026", "2026-11-18T18:00", "报名截止", False)
+    assert not _EV.reminders("self-2026"), "关掉提醒后还留着键"
+
+    # 首页「临近」：有 30 天内的时间点时出现，且带提醒开关
+    _EV.EVENTS = Path(ROOT) / "data" / "events"
+    _up_html = _EVUI and U.home_page()
+    if _EV.upcoming(days=30):
+        assert '<section class="rc-panel rc-up-panel">' in _up_html, \
+            "有临近时间点，首页却没出现「临近」块"
+    assert "action=\"/__event/remind\"" in _up_html or not _EV.upcoming(days=30), \
+        "首页临近块没有提醒开关"
 
     print(f"√ 自检通过：恢复度 {res['readiness']['score']}，CTL {res['load']['ctl']}，"
           f"ACWR {res['load']['acwr']}，输出 {out.stat().st_size // 1024} KB")
