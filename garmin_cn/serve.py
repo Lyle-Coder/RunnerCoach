@@ -730,7 +730,7 @@ class _Handler(SimpleHTTPRequestHandler):
         self._back(slug, err=err, ok=okmsg, anchor="docs")
 
     def _event_trip(self, u) -> None:
-        """行程与住宿：加一条 / 删一条 / 补地址重新定位。
+        """行程与住宿：增 / 删 / 补地址 / 改提前量 / 标已订。
 
         地址解析走高德 Web 服务，没 Key 或没认出来也照常存文字——
         不能因为定位失败就把用户订好的酒店信息丢掉。
@@ -765,11 +765,20 @@ class _Handler(SimpleHTTPRequestHandler):
                     raise ValueError("这条行程已经不存在了")
                 okmsg = ("已定位，赛道图上会标出来" if item.get("lat") else
                          "地址没定位到（写具体一点，或确认已配高德 Key）")
+            elif act == "rules":
+                E.set_booking_rules(slug, {k: one(k) for k in
+                                           ("flight", "train", "stay")})
+                okmsg = "预订提前量已更新，待办已重算"
+            elif act in ("book", "unbook"):
+                if not E.trip_book(slug, int(one("idx") or -1),
+                                   on=(act == "book")):
+                    raise ValueError("这条行程已经不存在了")
+                okmsg = "已标为已订" if act == "book" else "已取消已订"
             else:
                 item = E.trip_add(slug, one("kind") or "other",
                                   one("at") or "", one("label") or "",
-                                  one("place") or "")
-                okmsg = "已加进行程，进首页「临近」提醒"
+                                  one("place") or "", lead=one("lead"))
+                okmsg = "已加进行程，按提前量生成「该订了」待办"
                 if one("place") and not item.get("lat"):
                     okmsg += "；地址没定位到（写具体点，或确认已配高德 Key）"
         except ValueError as e:
