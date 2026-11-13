@@ -162,6 +162,9 @@ select.fi{cursor:pointer}
 .tt{flex:1;min-width:0;font-size:12.5px;color:var(--fg,#E8F0FB)}
 .tt b{font-variant-numeric:tabular-nums;margin-right:4px}
 .ts{margin-left:6px;font-size:11px;color:var(--faint,#7689A2)}
+/* 俯视图：SVG 是 720×360 的定尺，宽度拉满、高度按比例 */
+.cmap{margin-top:10px}
+.cmap svg{display:block;width:100%;height:auto;border-radius:10px}
 .dtimes{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px}
 .dtime{font-size:10.5px;padding:2px 8px;border-radius:99px;color:#9FE7C8;
   background:rgba(79,214,166,.1);border:1px solid rgba(79,214,166,.28)}
@@ -342,6 +345,56 @@ def _spark(profile: list, tick_km: float = 0) -> str:
             f'<text x="2" y="12" fill="#7F8A97" font-size="11">{y1:.0f} m</text>'
             f'<text x="2" y="{H - 4:.0f}" fill="#7F8A97" font-size="11">{y0:.0f} m</text>'
             f"</svg>")
+
+
+def _course_map(slug: str, stats: dict) -> str:
+    """赛道俯视图：有高德 Key 就叠底图，没有就画矢量轨迹。
+
+    剖面回答「哪一段在爬」，俯视图回答「它在哪儿、弯多不多」——马拉松
+    尤其吃这个：绕湖一圈还是穿城折返，光看海拔是看不出来的。
+    """
+    line = stats.get("polyline") or []
+    if len(line) < 2:
+        # 加 polyline 之前导的老数据：现读一次 GPX，顺便补写回 stats，
+        # 免得每次打开赛事页都解析一遍几 MB 的 XML
+        try:
+            g = E._dir(slug) / "track.gpx"
+            if g.is_file():
+                r = E.parse_gpx(g, slug=slug, save=False)
+                line = r.get("polyline") or []
+                if line:
+                    _s2 = dict(stats)
+                    _s2["polyline"] = line
+                    E._write(slug, "track_stats.json", _s2)
+        except Exception:
+            line = []
+    if len(line) < 2:
+        return ""
+
+    bm, href = None, None
+    try:
+        from . import basemap as BM
+
+        if BM.available():
+            # 缓存命中是秒回；没命中最多等 6 秒（导入时已经预取过一次）
+            bm = BM.ensure(line, E.MAP_W, E.MAP_H,
+                           ident=E.map_ident(slug), timeout=6)
+            if bm:
+                href = "/basemap/%s-%dx%d.png" % (
+                    E.map_ident(slug), E.MAP_W, E.MAP_H)
+    except Exception:
+        bm, href = None, None
+
+    try:
+        from . import actcard as AC
+
+        svg = AC.track_svg(line, E.MAP_W, E.MAP_H, basemap=bm, href=href)
+    except Exception:
+        return ""
+    cap = ("含高德底图 · 只作地形参考" if bm
+           else "矢量轨迹 · 在「我的 → 地图底图」配 Key 后可叠底图")
+    return ('<div class="cmap">' + svg + "</div>"
+            f'<div class="sub2" style="margin:6px 0 2px">{cap}</div>')
 
 
 _TRIP_CN = {"flight": "航班", "train": "高铁", "stay": "住宿",
@@ -662,6 +715,7 @@ def render_page(qs: dict | None = None) -> str:
             f'<span>{stats["points"]} 点 · 海拔 {stats["min_ele"]}–{stats["max_ele"]} m</span>'
             + (f'<span class="tag">{edition} 届参考</span>' if edition else "")
             + "</div>" + warn + note + _spark(stats.get("profile") or [], _tick)
+            + _course_map(slug, stats)
             + (('<div class="cmptitle">CP 里程对照（官方 vs 轨迹）</div>' + cmp_tbl)
                if cmp_tbl else "")
             + '<div class="pager"><div class="btn" data-act="gpx">换一条 GPX</div></div></div>')
