@@ -1415,6 +1415,57 @@ def run() -> int:
         "补历史没有按日期切到 light 模式"
     assert "client = _client(email, password, revalidate=True" in _aa_src, \
         "同步入口没有先校验会话"
+
+    # ---- 日常同步的请求节奏：5 秒里大半是 sleep 和远期课表 --------------
+    from garmin_cn import plan as _PLN
+    from garmin_cn import appapi as _AA4
+
+    assert _AA4.FAST_MIN_INTERVAL <= _AA4.BULK_MIN_INTERVAL < 0.5, \
+        "日常请求间隔没比批量更密，下拉刷新还是被 sleep 拖住"
+    assert "_gap = BULK_MIN_INTERVAL if bulk else FAST_MIN_INTERVAL" in _aa_src, \
+        "sync() 没用日常间隔常量，改回去就又是 0.5 秒一刀"
+    assert len(_PLN._months("2026-11-14", _PLN.NEAR_SPAN_DAYS)) == 3, \
+        "日常只该拉「上月 + 当月 + 下月」三个月"
+    assert len(_PLN._months("2026-11-14")) >= 6, "全量窗口没覆盖到 140 天"
+
+    class _FakePlanClient(_FakeSyncClient):
+        def __init__(self):
+            super().__init__()
+            self.months: list = []
+            self.limits: list = []
+            # sync() 末尾要读 client.net.count 对账
+            self.net = type("_N", (), {"count": 0})()
+
+        def calendar_month(self, y, m):
+            self.months.append((y, m))
+            return {"calendarItems": []}
+
+        def active_plans(self, today=None):
+            return []
+
+        def activities(self, limit=60, start=0):
+            self.limits.append(limit)
+            return []
+
+    import datetime as _dtx
+    _pc = _FakePlanClient()
+    _psvc = _SY.SyncService(_pc, _lst)
+    _psvc.sync_plan("2026-11-14")
+    assert len(_pc.months) == 7, f"首次该全量补齐远期：拉了 {len(_pc.months)} 个月"
+    assert _lst.get_meta(_SY.PLAN_FULL_AT_META), "全量后没记时间，下次又全量"
+    _pc.months.clear()
+    _psvc.sync_plan("2026-11-14")
+    assert len(_pc.months) == 3, f"日常还拉 {len(_pc.months)} 个月，白等往返"
+    _lst.set_meta(_SY.PLAN_FULL_AT_META,
+                  (_dtx.datetime.now() - _dtx.timedelta(days=8)
+                   ).strftime("%Y-%m-%d %H:%M:%S"))
+    _pc.months.clear()
+    _psvc.sync_plan("2026-11-14")
+    assert len(_pc.months) >= 6, "超过一周没全量，远期课表补不回来"
+    # 日常增量只拉最近 20 条活动，不再为 60 条的大响应体买单
+    _pc2 = _FakePlanClient()
+    _SY.SyncService(_pc2, _lst).sync(days=1)
+    assert _pc2.limits == [20], f"日常还按 60 条拉活动：{_pc2.limits}"
     # 3) 补拉：旧版拿「本地有没有密码」当门槛，密码为空时按钮点了只弹登录。
     #    现在连按钮都没有了 —— 后台自动跑，这条只守「别再被密码拦住」。
     assert 'act="historySync"' not in _ui_src, "补全历史又变回按钮了"

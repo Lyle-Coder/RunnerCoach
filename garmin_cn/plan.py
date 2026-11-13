@@ -49,6 +49,13 @@ LEVEL = {"Beginner": "初级", "Intermediate": "中级", "Advanced": "高级"}
 # 向前看多久：备赛周期常到 20 周（140 天），只拉一个月会看不到远期课
 LOOKAHEAD_DAYS = 140
 
+# 日常同步只拉「上个月 + 当月 + 下月」。
+#
+# 一个月的日历是**一次请求**，140 天要 7 次；而这 7 次里有 5 次拉的是
+# 两个月以后的课表，内容几乎不变。日常一刷新就为它们等 3 秒不值得。
+# 远期课表由 sync.py 每周全量补一次（`PLAN_FULL_EVERY_DAYS`），不会丢。
+NEAR_SPAN_DAYS = 45
+
 
 def _iso(value: str | None) -> str | None:
     return value[:10] if isinstance(value, str) and len(value) >= 10 else None
@@ -430,11 +437,16 @@ def _months(today: str, span: int = LOOKAHEAD_DAYS) -> list[tuple[int, int]]:
 
 
 def fetch_calendar(client, today: str | None = None,
-                   activity_days: set[str] | None = None) -> dict:
-    """按月拉日历并归一化。一个排课都没有时返回 available=False。"""
+                   activity_days: set[str] | None = None,
+                   span: int | None = None) -> dict:
+    """按月拉日历并归一化。一个排课都没有时返回 available=False。
+
+    `span` 是向前看的天数，决定要请求几个月：日常同步传 `NEAR_SPAN_DAYS`
+    （3 次），首次/每周全量用默认的 `LOOKAHEAD_DAYS`（7 次）。
+    """
     today = today or dt.date.today().isoformat()
     items: list[dict] = []
-    for year, month in _months(today):
+    for year, month in _months(today, span or LOOKAHEAD_DAYS):
         try:
             data = client.calendar_month(year, month)
         except Exception as e:
@@ -521,8 +533,12 @@ def diag(client, today: str | None = None) -> dict:
 
 
 def fetch(client, today: str | None = None, out_path: Path | None = None,
-          source: str = "auto", activity_days: set[str] | None = None) -> dict:
+          source: str = "auto", activity_days: set[str] | None = None,
+          span: int | None = None) -> dict:
     """拉一次训练安排。取不到就返回 available=False，不抛异常。
+
+    `span` 透传给 `fetch_calendar()`：日常同步用 `NEAR_SPAN_DAYS` 少发请求，
+    首次和每周全量用默认 140 天把远期课表补齐。
 
     `source`：
     * `auto`（默认）—— 先看日历，日历里没有排课再回落到 Garmin Coach 计划；
@@ -536,7 +552,7 @@ def fetch(client, today: str | None = None, out_path: Path | None = None,
 
     if source in ("auto", "calendar"):
         try:
-            cal = fetch_calendar(client, today, activity_days)
+            cal = fetch_calendar(client, today, activity_days, span=span)
         except Exception as e:
             cal = {"available": False, "reason": f"{type(e).__name__}: {e}"}
         use = cal.get("scheduled") if source == "auto" else cal.get("available")

@@ -111,12 +111,13 @@ def get_client(require: bool = True) -> GarminCNClient:
     from garmin_cn.net import Net
 
     auth = GarminCNAuth(HOME)
-    net = Net(auth.session_path, min_interval=0.5)
+    # 与 App 端日常同步同一档：一轮增量 8 个请求，0.5s 一刀要白等四五秒
+    net = Net(auth.session_path, min_interval=0.2)
     has_session = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
     if not has_session:
         cfg = load_config()
         if _auto_login(cfg):
-            net = Net(auth.session_path, min_interval=0.5)
+            net = Net(auth.session_path, min_interval=0.2)
             has_session = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
     if not has_session:
         if require:
