@@ -161,7 +161,14 @@ def _numbers(row: dict, detail: dict) -> str:
     hr = s.get("hr_run_avg") or num(row.get("avg_hr"))
     cad = num(s.get("cad_avg"))
     st = num(s.get("stride_avg"))
-    if cad or st:
+    from .sports import family
+    if family(row.get("type")) == "bike":
+        from .cycling import for_detail
+        cm = for_detail(detail)
+        bits = [f"心率 {hr:.0f}" if hr else "", f"踏频 {cad:.0f} rpm" if cad is not None else "",
+                f"均功率 {cm['avg_power_w']:.0f} W" if cm.get("avg_power_w") is not None else "",
+                f"NP {cm['normalized_power_w']:.0f} W" if cm.get("normalized_power_w") is not None else ""]
+    elif cad or st:
         bits = [f"心率 {hr:.0f}" if hr else "", f"步频 {cad:.0f}" if cad else "",
                 f"步幅 {st:.0f}" if st else ""]
     else:

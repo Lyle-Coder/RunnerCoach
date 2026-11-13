@@ -1066,80 +1066,9 @@ def cmd_today(args) -> int:
 
 
 def cmd_push(args) -> int:
-    """把 105K 课表推成佳明 Connect 训练课程，并排进日历（手表自动同步）。"""
-    from garmin_cn import raceplan, workout
-
-    if not raceplan.available():
-        print("× 本地课表未配置：需要 tools/make_plan.py 与 tools/make_card.py")
-        print("  这两份是个人课表，仓库不含；没有它们会回退到佳明教练计划。")
-        return 2
-
-    mp = raceplan._mp()
-    today = dt.date.today()
-
-    if args.all:
-        start, end = raceplan.span()
-    elif args.week:
-        start = mp.date_of(args.week, 0)
-        end = mp.date_of(args.week, 6)
-    elif args.date:
-        start = end = dt.date.fromisoformat(args.date)
-    elif args.start or args.end:
-        start = dt.date.fromisoformat(args.start) if args.start else today
-        end = dt.date.fromisoformat(args.end) if args.end else start
-    else:
-        start, end = today, today + dt.timedelta(days=6)
-
-    if start > end:
-        start, end = end, start
-    days = (end - start).days + 1
-    print(f"区间 {start} → {end}（{days} 天）" + ("　[演练，不会真的提交]" if args.dry_run else ""))
-
-    client = None
-    if not args.dry_run:
-        try:
-            client = get_client(require=True)
-        except AuthError as e:
-            print(f"× {e}\n  先运行：run.bat login")
-            return 3
-
-    results = workout.push_range(client, start, end, dry=args.dry_run,
-                                 replace=args.replace)
-    ok = skip = fail = 0
-    for r in results:
-        if r.get("skipped"):
-            skip += 1
-            continue
-        if r.get("error"):
-            fail += 1
-            print(f"  × {r['date']} {r['name']}　{r['error']}")
-            continue
-        ok += 1
-        tail = ""
-        if not args.dry_run:
-            tail = f"  id={r.get('workoutId')}"
-            tail += " · 已排程" if r.get("scheduled") else " · 排程失败"
-        print(f"  √ {r['date']} {r['name']}{tail}")
-        if args.dry_run and args.verbose:
-            import json
-            print(json.dumps(r["payload"], ensure_ascii=False, indent=1))
-
-    if client is not None:
-        try:
-            plans = client.active_plans() or []
-            if plans:
-                names = "、".join(str(p.get("trainingPlanName") or p.get("name") or "?")
-                                 for p in plans[:3])
-                print(f"\n！佳明侧还有进行中的计划：{names}")
-                print("  手表会同时显示两套课表，建议去 Connect → 训练计划 里结束它们，"
-                      "只看日历里的 105K 课程。")
-        except Exception:
-            pass
-
-    print(f"完成：建成 {ok}，跳过休息 {skip}，失败 {fail}")
-    if fail:
-        return 1
-    return 0
+    """把跑步或骑行课表推送到佳明；业务逻辑在 workout。"""
+    from garmin_cn.workout import push_cli
+    return push_cli(args, DB, get_client)
 
 
 def cmd_note(args) -> int:
@@ -2439,6 +2368,7 @@ def main() -> int:
     q.set_defaults(func=cmd_today)
 
     q = sub.add_parser("push", help="把 105K 课表推成佳明训练课程（--dry-run 先看结构）")
+    q.add_argument("--sport", choices=("run", "bike"), default="run", help="跑步备赛课表或单日骑行模板")
     q.add_argument("--date", help="只推这一天")
     q.add_argument("--week", type=int, help="只推第 N 周")
     q.add_argument("--start", help="起始日期")

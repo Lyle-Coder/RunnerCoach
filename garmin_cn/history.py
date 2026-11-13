@@ -275,9 +275,12 @@ def history_page(qs: dict) -> str:
     cov = coverage()
     start = _date(qs, "start")
     end = _date(qs, "end")
-    kind = _one(qs, "type")
-    if kind not in ("", "run"):
+    kind = _one(qs, "type", "run") or "all"
+    if kind not in ("", "all", "run", "bike"):
         kind = ""
+    stats_kind = kind if kind else "run"
+    sport_name = "骑行" if stats_kind == "bike" else "运动" if stats_kind == "all" else "跑步"
+    volume_name = "骑行里程" if stats_kind == "bike" else "运动距离" if stats_kind == "all" else "跑量"
     mode = _one(qs, "mode", "list")
     if mode not in ("list", "week", "month", "year"):
         mode = "list"
@@ -286,7 +289,7 @@ def history_page(qs: dict) -> str:
     except ValueError:
         offset = 0
 
-    stats = A.history_stats(None, None, "run" if kind in ("", "run") else "")
+    stats = A.history_stats(None, None, stats_kind)
     if not stats.get("ok"):
         stats = {}
     total = stats.get("total") or {}
@@ -294,7 +297,7 @@ def history_page(qs: dict) -> str:
     cur_y = stats.get("year") or {}
     months = stats.get("months") or []
 
-    chips = (ui.chip(f"{total.get('count', 0)} 次跑步", "ok") +
+    chips = (ui.chip(f"{total.get('count', 0)} 次{sport_name}", "ok") +
              ui.chip(f"累计 {float(total.get('km') or 0):.0f} km") +
              ui.chip(f"{(stats.get('range') or {}).get('first') or '—'} 起") +
              ui.chip("本机 · 离线可用"))
@@ -303,13 +306,13 @@ def history_page(qs: dict) -> str:
     # 单位从值里拆出去：`.val` 只放数字（21px，约 55px 宽），
     # 「13.5 km」整串塞进去要 82px，而卡片内容宽就是 82px —— 必然折行。
     hero = ('<div class="grid three">' +
-            ui.stat("本月跑量", f"{float(cur_m.get('km') or 0):.1f}",
+            ui.stat(f"本月{volume_name}", f"{float(cur_m.get('km') or 0):.1f}",
                     f"{cur_m.get('count') or 0} 次 · {cur_m.get('key') or ''}",
                     unit="km") +
-            ui.stat("本年跑量", f"{float(cur_y.get('km') or 0):.0f}",
+            ui.stat(f"本年{volume_name}", f"{float(cur_y.get('km') or 0):.0f}",
                     f"{cur_y.get('count') or 0} 次 · {cur_y.get('key') or ''}",
                     unit="km") +
-            ui.stat("累计跑量", f"{float(total.get('km') or 0):.0f}",
+            ui.stat(f"累计{volume_name}", f"{float(total.get('km') or 0):.0f}",
                     f"{total.get('count') or 0} 次 · "
                     f"{float(total.get('dur_h') or 0):.0f} 小时", unit="km") +
             '</div>')
@@ -327,7 +330,7 @@ def history_page(qs: dict) -> str:
         """按周期范围再取一次统计；取不到就用空序列。"""
         if not (rs and re_):
             return {}
-        got = A.history_stats(rs, re_, "run" if kind in ("", "run") else "")
+        got = A.history_stats(rs, re_, stats_kind)
         return got if got.get("ok") else {}
 
     def period_foot(rs: str, re_: str, count, km, dur_h) -> str:
@@ -358,6 +361,9 @@ def history_page(qs: dict) -> str:
     switch = ('<div class="tags">' + mchip("活动列表", "list") +
               mchip("按周", "week") + mchip("按月", "month") +
               mchip("按年", "year") + '</div>')
+    switch += '<div class="tags">' + ''.join(
+        f'<a class="chip{" ok" if stats_kind == key else ""}" href="/history?{_q(mode=mode, type=key)}" data-nopush>{label}</a>'
+        for key, label in (("run", "跑步"), ("bike", "骑行"), ("all", "全部运动"))) + '</div>'
 
     # ---- 分组视图
     # `sel` 是「当前选中的周期 key」。点下面任意一行都会带着它回到本粒度，
@@ -374,7 +380,7 @@ def history_page(qs: dict) -> str:
         # 同上：整周 7 根都画，周中打开也是 7 根（后几天是 0），
         # 否则周三只画 3 根，和月视图的疏密完全对不上。
         bs = range_stats(rs, re_)
-        chart = chart_card(f"{sel} 每日跑量（km）" if sel else "本周每日跑量（km）",
+        chart = chart_card(f"{sel} 每日{volume_name}（km）" if sel else f"本周每日{volume_name}（km）",
                            _weekday_series(bs.get("days") or []),
                            hot=today,
                            foot=period_foot(rs, re_, cur.get("count"),
@@ -395,7 +401,7 @@ def history_page(qs: dict) -> str:
         # 也看不出「这个月还剩多少天」。柱状图的刻度本来就是按月数量身定的
         # （dense 分支就是为 28~31 根写的）。
         bs = range_stats(rs, re_)
-        chart = chart_card(f"{sel} 每日跑量（km）" if sel else "本月每日跑量（km）",
+        chart = chart_card(f"{sel} 每日{volume_name}（km）" if sel else f"本月每日{volume_name}（km）",
                            bs.get("days") or [], hot=today,
                            foot=period_foot(rs, re_, cur.get("count"),
                                             cur.get("km"), cur.get("dur_h")))
@@ -418,9 +424,9 @@ def history_page(qs: dict) -> str:
         bs = range_stats(rs, re_)
         # 年视图固定 12 根：当年没到的月份是空柱，不裁剪，
         # 否则「1~11 月」和「1~12 月」的图长得不一样，反而不易横向比较。
-        chart = chart_card(f"{sel} 年各月跑量（km）" if sel else "本年各月跑量（km）",
+        chart = chart_card(f"{sel} 年各月{volume_name}（km）" if sel else f"本年各月{volume_name}（km）",
                            bs.get("months") or [], hot=today[:7],
-                           link="/history?mode=month&sel={key}",
+                           link="/history?mode=month&type=" + kind + "&sel={key}",
                            foot=period_foot(rs, re_, cur.get("count"),
                                             cur.get("km"), cur.get("dur_h")))
         groups = _bucket_rows(
@@ -444,15 +450,17 @@ def history_page(qs: dict) -> str:
         e = r.get("end") or dt.date.today().isoformat()
         scope = f"{s} ~ {e}" if s else "全部"
 
-        selected_all = " selected" if not kind else ""
+        selected_all = " selected" if kind in ("", "all") else ""
         selected_run = " selected" if kind == "run" else ""
+        selected_bike = " selected" if kind == "bike" else ""
         form = f"""<form class="card filters" method="get" action="/history" data-nopush>
       <input type="hidden" name="mode" value="list">
       <label>起 <input type="date" name="start" value="{_esc(start)}"></label>
       <label>止 <input type="date" name="end" value="{_esc(end)}"></label>
       <label>类型 <select name="type">
-        <option value=""{selected_all}>全部</option>
+        <option value="all"{selected_all}>全部</option>
         <option value="run"{selected_run}>只看跑步</option>
+        <option value="bike"{selected_bike}>只看骑行</option>
       </select></label>
       <button class="btn primary" type="submit">筛选</button>
       <div class="tags" style="width:100%">
@@ -464,7 +472,7 @@ def history_page(qs: dict) -> str:
 
         rows = "".join(
             ui.row("▶", f"{i.get('date')} {i.get('start')} · {i.get('name')}",
-                   f"{i.get('dist', 0):.2f} km · 配速 {i.get('pace')} · "
+                   f"{i.get('dist', 0):.2f} km · {i.get('metric_text') or i.get('pace')} · "
                    f"时长 {i.get('dur')} · 心率 {i.get('hr') or '—'} · 点这行出图",
                    aid=str(i.get("id") or ""), tone="b")
             for i in items)
@@ -484,9 +492,9 @@ def history_page(qs: dict) -> str:
         pager += '</div>'
 
         # 柱子可点：点哪个月就切到「按月」并选中它，省得先去按月再翻。
-        chart = chart_card("近 12 个月跑量（km） · 点柱子看当月", months,
+        chart = chart_card(f"近 12 个月{volume_name}（km） · 点柱子看当月", months,
                            hot=str((stats.get("month") or {}).get("key") or ""),
-                           link="/history?mode=month&sel={key}")
+                           link="/history?mode=month&type=" + kind + "&sel={key}")
         detail = (ui.sec("活动", chart + rows + pager +
                          '<div class="note" style="margin-top:8px">'
                          f'当前 {offset + 1}~{offset + len(items)} 条 · 共 {r.get("total", 0)} 条 · {_esc(scope)}'
