@@ -1125,12 +1125,16 @@ TRIP_KINDS = {
     "other": "其他",
 }
 
-# 预订提前量（天）：从行程发生日倒推「该订了」的截止日。
-# 机票越早越便宜、高铁放票晚、酒店居中；0 = 这类不生成待办。
-# 这是默认值，每场赛事可以在「行程与预订 → 改提前量」里覆盖，
-# 单条行程也能用自己的 lead 字段覆盖赛事默认。
+# 预订提前量（天）：**从比赛日期**倒推「该订了」的日子。
+# 锚点必须是赛事日，不能是行程日——要提醒人去订，就不能反过来先要求
+# 他填好「订的是哪趟航班 / 住哪家酒店」，那等于订完了才催。
+# 机票越早越便宜、高铁放票晚、酒店居中；0 = 这类不提醒。
+# 默认值，每场赛事可在「行程与预订 → 改提前量」里覆盖。
 BOOKING_LEAD = {"flight": 60, "train": 15, "stay": 45,
                 "race": 0, "other": 0}
+BOOKING_KINDS = ("flight", "train", "stay")
+BOOKING_LABELS = {"flight": "订机票", "train": "订高铁票",
+                  "stay": "订酒店"}
 BOOKING_FILE = "trip_rules.json"
 BOOKING_HOUR = "09:00"       # 到期当天早上提示，别拿 00:00 当提醒时刻
 
@@ -1261,7 +1265,13 @@ def _lead_days(raw, what: str = "提前量") -> int:
 
 def trip_add(slug: str | None, kind: str, at: str, label: str,
              place: str = "", lead: str | None = None) -> dict:
-    """加一条行程/住宿。`place` 填了才解析坐标；`lead` 覆盖本条提前量。"""
+    """加一条行程/住宿。`place` 填了才解析坐标。
+
+    `lead` 是历史字段（1.3.1 前单条行程能覆盖预订提前量）。改按比赛日
+    倒推后，提前量只跟赛事/类型走，单条行程不再有独立的待办；参数留着
+    只为兼容旧调用和老 trip.json，值照存但**不参与任何提醒计算**。
+    填进来的这条本身会被 bookings() 视为「这一类已经订好了」。
+    """
     slug = active_slug(slug)
     kind = kind if kind in TRIP_KINDS else _trip_kind(label, label) or "other"
     label = str(label or "").strip()
@@ -1317,17 +1327,65 @@ def trip_pins(slug: str | None = None) -> list[dict]:
 
 
 def trip_book(slug: str | None, idx: int, on: bool = True) -> dict | None:
-    """标「已订」/ 取消。只动 booked 字段，地点和坐标都不重算。"""
+    """兼容旧页面缓存的 `book/unbook:idx`：转成按类型的覆盖。
+
+    1.3.1 前「已订」写在某条行程的 booked 字段上；现在待办不绑行程，
+    所以这里不再改 trip.json，只把那一条的类型转发给 set_booking_done()。
+    """
     slug = active_slug(slug)
     items = trip_manual(slug)
     if not (0 <= idx < len(items)):
         return None
-    if on:
-        items[idx]["booked"] = True
+    kind = items[idx].get("kind")
+    if kind in BOOKING_KINDS:
+        set_booking_done(slug, kind, done=bool(on))
+    out = dict(items[idx])
+    out["booked"] = bool(on)
+    return out
+
+
+def _booking_prefs(slug: str) -> dict:
+    """赛事级的手动覆盖：done = 不用再催，todo = 恢复提醒。
+
+    done 给「本地比赛不用坐飞机」这种情形，没填行程也能关掉提醒；
+    todo 给「填了行程但只是计划、票还没买」的情形，能盖掉自动已订。
+    两个都显式写下来，优先级高于自动判定，免得用户改完又被系统覆盖。
+    """
+    raw = _read(slug, BOOKING_FILE) or {}
+
+    def _set(key: str) -> set:
+        v = raw.get(key)
+        return ({k for k in v if k in BOOKING_KINDS}
+                if isinstance(v, list) else set())
+
+    return {"done": _set("done"), "todo": _set("todo")}
+
+
+def set_booking_done(slug: str | None, kind: str, done: bool = True) -> dict:
+    """标「已订 / 不用提醒」或「仍需提醒」，按**类型**而非行程下标。
+
+    按 idx 会漂：同一类常有去程+返程两条，删一条下标就全错；何况现在
+    待办压根不绑具体行程。恢复提醒要同时清 done、加 todo，否则
+    「填了行程自动视为已订」会立刻把状态盖回去。
+    """
+    slug = active_slug(slug)
+    if kind not in BOOKING_KINDS:
+        raise ValueError("只能改航班 / 高铁 / 住宿的预订状态")
+    data = _read(slug, BOOKING_FILE) or {}
+    prefs = _booking_prefs(slug)
+    if done:
+        prefs["done"].add(kind)
+        prefs["todo"].discard(kind)
     else:
-        items[idx].pop("booked", None)
-    _trip_save(slug, items)
-    return items[idx]
+        prefs["done"].discard(kind)
+        prefs["todo"].add(kind)
+    for key in ("done", "todo"):
+        if prefs[key]:
+            data[key] = sorted(prefs[key])
+        else:
+            data.pop(key, None)
+    _write(slug, BOOKING_FILE, data)
+    return {k: sorted(v) for k, v in prefs.items()}
 
 
 def booking_rules(slug: str | None = None) -> dict:
@@ -1349,44 +1407,65 @@ def set_booking_rules(slug: str | None, lead: dict) -> dict:
         if k not in cur or raw is None or not str(raw).strip():
             continue
         cur[k] = _lead_days(raw, TRIP_KINDS.get(k, k) + "提前量")
-    _write(slug, BOOKING_FILE, {"lead": cur})
+    # 同一个文件还存着「不用提醒 / 仍需提醒」的覆盖，整包覆盖会把它们抹掉
+    data = _read(slug, BOOKING_FILE) or {}
+    data["lead"] = cur
+    _write(slug, BOOKING_FILE, data)
     return cur
 
 
 def bookings(slug: str | None = None, *, today: str | None = None,
              include_booked: bool = True) -> list[dict]:
-    """从手填行程倒推出的「该订了」待办。
+    """按**比赛日期**倒推的三类预订提醒：机票 / 高铁票 / 酒店。
 
-    只对**手填**的确定行程生成：资料正文里认出来的时间可能只是「报名截止」
-    之类，硬给它配一个「提前 60 天订机票」会凭空造出一条假提醒。
-    due 过了也保留（days 为负），否则最该催的那条反而会悄悄消失。
+    1.3.1 前是「每条手填行程的发生日 - 提前量」，逻辑是反的：要提醒人
+    去订，却先要求他填好订的哪趟航班、住哪家酒店；填完明明已经订了，
+    还得再手动点一次「标为已订」才不催。现在：
+
+    * 锚点 = event.json 的比赛日，跟有没有填行程无关，建好赛事就有提醒；
+    * 填了**同类型**的手填行程 → 自动视为已订，提醒和日历事件一起消失；
+    * 手动覆盖：done（不用提醒）/ todo（仍需提醒，盖掉自动已订）；
+    * due 过了仍留在赛事页（最该催的就是这条），但不往过去插日历事件。
+
+    只认手填行程：资料正文里认出来的「推荐酒店」「建议航班」不是用户
+    已经订好的东西，拿它当已订会漏掉真提醒。
     """
     slug = active_slug(slug)
     t0 = dt.date.fromisoformat(today) if today else dt.date.today()
-    rules = booking_rules(slug)
     ev = _read(slug, "event.json") or {}
+    try:
+        race_day = dt.date.fromisoformat(str(ev.get("date") or "")[:10])
+    except ValueError:
+        return []
+    if race_day < t0:            # 赛后不再催预订，历史赛事页保持干净
+        return []
+    rules = booking_rules(slug)
+    prefs = _booking_prefs(slug)
+    manual_kinds = {it.get("kind") for it in trip_manual(slug)}
     out = []
-    for idx, it in enumerate(trip_manual(slug)):
-        kind = it.get("kind") if it.get("kind") in TRIP_KINDS else "other"
-        lead = it.get("lead") if isinstance(it.get("lead"), int) else rules.get(kind, 0)
+    for kind in BOOKING_KINDS:
+        lead = rules.get(kind, 0)
         if not isinstance(lead, int) or lead <= 0:
             continue
-        try:
-            when = dt.datetime.strptime(str(it.get("at") or "")[:16], _TRIP_AT)
-        except ValueError:
-            continue
-        due = when.date() - dt.timedelta(days=lead)
+        due = race_day - dt.timedelta(days=lead)
+        auto = kind in manual_kinds
+        done = kind in prefs["done"]
+        todo = kind in prefs["todo"]
+        booked = done or (auto and not todo)
+        reason = ("已标记不用提醒" if done else
+                  ("已填行程，自动视为已订" if auto else ""))
         days = (due - t0).days
         out.append({
             "at": due.isoformat() + "T" + BOOKING_HOUR,
             "due": due.isoformat(), "days": days, "lead": lead,
-            "kind": kind, "label": str(it.get("label") or "行程")[:40],
-            "idx": idx, "booked": bool(it.get("booked")),
-            "overdue": days < 0, "booking": True,
+            "kind": kind, "label": BOOKING_LABELS[kind],
+            "race": race_day.isoformat(),
+            "booked": booked, "auto": auto and not done,
+            "reason": reason, "overdue": days < 0, "booking": True,
             "src": "预订", "slug": slug, "title": ev.get("name") or slug,
             "event": ev.get("short") or ev.get("name") or slug,
         })
-    # 未订的按截止日排前面；已订的沉到底，但保留可见（能取消）
+    # 未订的按截止日排前面；已订的沉到底但保留可见，方便反悔/看清状态
     out.sort(key=lambda x: (x["booked"], x["due"]))
     return out if include_booked else [x for x in out if not x["booked"]]
 
@@ -1438,7 +1517,9 @@ def trips(slug: str | None = None, *, today: str | None = None,
             "manual": True, "idx": i,
             "place": str(it.get("place") or ""),
             "lat": it.get("lat"), "lon": it.get("lon"),
-            "booked": bool(it.get("booked")),
+            # 填进来的机票/高铁/住宿本身就是预订信息，bookings() 会据此
+            # 自动视为已订，列表里的标签要跟着一致，别让人以为漏标了。
+            "booked": bool(it.get("booked")) or kind in BOOKING_KINDS,
             "lead": it.get("lead") if isinstance(it.get("lead"), int) else None,
         })
     # 手填过的「同一类、同一天」就不再从资料里重复提醒一遍
@@ -1550,10 +1631,11 @@ def _cal_uid(prefix: str, *parts: str) -> str:
 def calendar_items(today: str | None = None) -> list[dict]:
     """所有赛事里要写进系统日历的事件清单。
 
-    两类：① 未订的「该订了」待办（截止日当天 09:00 提醒）；
+    两类：① 未订的预订提醒（按比赛日倒推，截止日当天 09:00 弹）；
     ② 已确定下来的手填行程本身（航班/高铁/住宿/开赛，按类型提前提醒）。
     过期的待办不写——往过去插事件最多弹一次骚扰通知，交给赛事页去催；
-    已订的待办不写，标「已订」时同步会把对应日历事件删掉。
+    已订的待办不写：填了行程或标「不用提醒」后，下次同步原生会把
+    清单里消失的 uid 从日历删掉，通知自然就停了。
     """
     t0 = dt.date.fromisoformat(today) if today else dt.date.today()
     out, seen = [], set()
@@ -1575,13 +1657,15 @@ def calendar_items(today: str | None = None) -> list[dict]:
         for b in bks:
             if b["days"] < 0:
                 continue
-            uid = _cal_uid("bk:", slug, b["kind"], b["label"], b["due"], b["at"])
-            desc = (f"{name} · 预订截止 {b['due']}\n"
-                    f"{b['label']}（提前 {b['lead']} 天该订）\n"
-                    "在 RunnerCoach 赛事页标为「已订」后，这条会自动从日历移除。\n"
+            uid = _cal_uid("bk:", slug, b["kind"], b["race"],
+                           b["due"], b["lead"])
+            desc = (f"{name} · 比赛日 {b['race']}\n"
+                    f"该{b['label']}了（提前 {b['lead']} 天，最晚 {b['due']}）\n"
+                    "在 RunnerCoach 赛事页填一条对应类型的行程，或点「不用提醒」，"
+                    "这条会自动从日历移除。\n"
                     f"{CAL_MARK} {CAL_UID_KEY}{uid}")
             add({"uid": uid, "type": "booking", "kind": b["kind"],
-                 "title": f"该订 · {name} · {b['label']}"[:70],
+                 "title": f"该订了 · {name} · {TRIP_KINDS.get(b['kind'], '行程')}"[:70],
                  "desc": desc, "at": b["at"], "minutes": [0],
                  "duration": 30, "slug": slug, "event": name})
         try:

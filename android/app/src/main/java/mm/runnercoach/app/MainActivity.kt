@@ -4859,7 +4859,7 @@ class MainActivity : Activity() {
                 "把「该订了」待办和已填好的航班 / 高铁 / 住宿写进系统日历，" +
                 "由日历在到期时弹出通知，不用打开这个 App。\n\n" +
                 "需要日历读写权限；事件写在你的默认日历里，描述带 " +
-                "#RunnerCoach 标记。改期、标已订、删行程后会自动同步，" +
+                "#RunnerCoach 标记。改期、填好行程、删行程后会自动同步，" +
                 "手动删掉的事件下次同步会补回；要彻底停止请点「关闭并清除」。\n\n" +
                 "当前状态：" + (if (on) "已开启" else "未开启"))
             .setPositiveButton("立即同步") { _, _ -> startCalendarSync(false) }
