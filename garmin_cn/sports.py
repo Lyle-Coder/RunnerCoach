@@ -68,6 +68,24 @@ def preferred(res=None) -> str:
 
 
 def pace_seconds(row) -> float | None:
+    if family(row.get("type")) == "bike":
+        # A detail card may carry a more authoritative native average.
+        speed = number(row.get("avg_speed_mps"))
+        if speed is not None:
+            return 1000 / speed if speed > 0 else None
+        # Historical COROS rows retain the original list response. Re-read its
+        # native units without requiring a full history re-sync or DB rewrite.
+        raw = row.get("raw") or {}
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (ValueError, TypeError):
+                raw = {}
+        if isinstance(raw, dict) and (row.get("source") == "coros" or "labelId" in raw):
+            from .coros import average_speed_mps
+            speed = average_speed_mps(raw)
+            if speed is not None and speed > 0:
+                return 1000 / speed
     pace = number(row.get("pace_s_km"))
     dist, dur = number(row.get("distance_m"), 0), number(row.get("duration_s"), 0)
     return pace if pace and pace > 0 else (dur * 1000 / dist if dist > 0 and dur > 0 else None)
