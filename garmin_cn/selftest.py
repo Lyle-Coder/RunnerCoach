@@ -5468,6 +5468,61 @@ def run() -> int:
     assert _EV.trip_del("self-2026", 0), "手填行程删不掉"
     assert not _EV.trip_manual("self-2026"), "删完还留着空壳"
 
+    # ---- 预订提前量：倒推、可改、单条覆盖、过期不消失、已订 -------------
+    assert _EV.BOOKING_LEAD == {"flight": 60, "train": 15, "stay": 45,
+                                "race": 0, "other": 0}, "默认提前量被改了"
+    _EV.trip_add("self-2026", "flight", "2027-03-25 08:30", "CA1883 起飞")
+    _EV.trip_add("self-2026", "train", "2027-03-25 14:05", "G8712 成都东")
+    _EV.trip_add("self-2026", "stay", "2027-03-26 15:00", "入住 都江堰")
+    _bk = _EV.bookings("self-2026", today="2027-01-01")
+    assert len(_bk) == 3, f"该有三条待办：{_bk}"
+    _due = {b["kind"]: b["due"] for b in _bk}
+    assert _due == {"flight": "2027-01-24", "train": "2027-03-10",
+                    "stay": "2027-02-09"}, f"提前量倒推错了：{_due}"
+    assert [b["kind"] for b in _bk] == ["flight", "stay", "train"], \
+        "待办该按截止日排，不是按行程日"
+    # 赛事级可改：只改航班，其它两项保持
+    assert _EV.set_booking_rules("self-2026", {"flight": "10"})["flight"] == 10
+    assert _EV.booking_rules("self-2026")["stay"] == 45, "改航班把住宿也改了"
+    assert {b["kind"]: b["due"] for b in
+            _EV.bookings("self-2026", today="2027-01-01")}["flight"] == \
+        "2027-03-15", "改完规则待办没重算"
+    try:
+        _EV.set_booking_rules("self-2026", {"train": "-3"})
+        raise AssertionError("负的提前量居然收下了")
+    except ValueError:
+        pass
+    # 单条覆盖：0 表示这条不生成待办
+    _EV.trip_add("self-2026", "flight", "2027-03-27 18:00", "返程航班",
+                 lead="0")
+    assert len(_EV.bookings("self-2026", today="2027-01-01")) == 3, \
+        "单条填 0 还是生成了待办"
+    # 过期不消失：最该催的就是这一条
+    _late = _EV.bookings("self-2026", today="2027-04-01")
+    assert len(_late) == 3 and all(b["overdue"] and b["days"] < 0
+                                   for b in _late), \
+        "截止日过了待办就消失，等于白提醒"
+    # 标已订：默认仍可见（能取消），但首页「临近」不再推
+    _idx = next(b["idx"] for b in _late if b["kind"] == "stay")
+    assert _EV.trip_book("self-2026", _idx, True)["booked"] is True
+    _all_bk = _EV.bookings("self-2026", today="2027-01-01")
+    assert all(b["kind"] != "stay" for b in
+               _EV.bookings("self-2026", today="2027-01-01",
+                            include_booked=False)), "标了已订还在催"
+    assert _all_bk[-1]["booked"] and _all_bk[-1]["kind"] == "stay", \
+        "已订的该沉到底且仍可见，免得误点后找不回来"
+    _up = [r for r in _EV.upcoming(days=80, today="2027-01-01")
+           if r.get("slug") == "self-2026" and r.get("booking")]
+    assert _up and all("入住 都江堰" not in r["label"] for r in _up), \
+        "首页「临近」还在推已订的住宿"
+    assert any(r["label"] == "CA1883 起飞" for r in _up), \
+        "首页「临近」没带上待订的航班"
+    with _mock.patch.object(_BM3, "available", lambda: False):
+        _bk_html = _EVUI.render_page({"slug": ["self-2026"]})
+    for _txt in ("该订了", "改预订提前量", "标为已订", "取消已订"):
+        assert _txt in _bk_html, f"赛事页缺了「{_txt}」"
+    assert "提前量" in _bk_html, "添加表单里没有单条提前量入口"
+
     # ---- CP 表截图识别：解析、校验、不猜 -------------------------------
     from garmin_cn import cpocr as _CO
 

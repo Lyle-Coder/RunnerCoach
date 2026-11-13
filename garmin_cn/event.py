@@ -789,7 +789,7 @@ ATTACH_EXT = (".pdf", ".png", ".jpg", ".jpeg", ".txt", ".md", ".csv",
 # 赛事目录里的系统文件，不算「用户资料」
 RESERVED_FILES = {"event.json", "course.json", "gear.md", "race.json",
                   "track.gpx", "track_stats.json", "docs.json",
-                  "trip.json", "remind.json"}
+                  "trip.json", "trip_rules.json", "remind.json"}
 
 
 def human_size(n: float) -> str:
@@ -1125,6 +1125,15 @@ TRIP_KINDS = {
     "other": "其他",
 }
 
+# 预订提前量（天）：从行程发生日倒推「该订了」的截止日。
+# 机票越早越便宜、高铁放票晚、酒店居中；0 = 这类不生成待办。
+# 这是默认值，每场赛事可以在「行程与预订 → 改提前量」里覆盖，
+# 单条行程也能用自己的 lead 字段覆盖赛事默认。
+BOOKING_LEAD = {"flight": 60, "train": 15, "stay": 45,
+                "race": 0, "other": 0}
+BOOKING_FILE = "trip_rules.json"
+BOOKING_HOUR = "09:00"       # 到期当天早上提示，别拿 00:00 当提醒时刻
+
 _TRIP_AT = "%Y-%m-%dT%H:%M"
 
 
@@ -1239,9 +1248,20 @@ def _trip_locate(item: dict, slug: str | None = None) -> bool:
     return True
 
 
+def _lead_days(raw, what: str = "提前量") -> int:
+    """提前量只认 0~365 的整数；不替人猜「两周」这种写法。"""
+    try:
+        v = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"{what}要填整数天数")
+    if not 0 <= v <= 365:
+        raise ValueError(f"{what}填 0~365 天")
+    return v
+
+
 def trip_add(slug: str | None, kind: str, at: str, label: str,
-             place: str = "") -> dict:
-    """加一条行程/住宿。`place` 填了才会去解析坐标（没 Key 就只存文字）。"""
+             place: str = "", lead: str | None = None) -> dict:
+    """加一条行程/住宿。`place` 填了才解析坐标；`lead` 覆盖本条提前量。"""
     slug = active_slug(slug)
     kind = kind if kind in TRIP_KINDS else _trip_kind(label, label) or "other"
     label = str(label or "").strip()
@@ -1249,6 +1269,8 @@ def trip_add(slug: str | None, kind: str, at: str, label: str,
         raise ValueError("写一句这是什么（例：入住 都江堰锦江之星）")
     item = {"kind": kind, "at": _norm_at(at), "label": label[:80],
             "place": str(place or "").strip()[:120]}
+    if lead is not None and str(lead).strip():
+        item["lead"] = _lead_days(lead, "这条的提前量")
     _trip_locate(item, slug)
     _trip_save(slug, trip_manual(slug) + [item])
     return item
@@ -1292,6 +1314,81 @@ def trip_pins(slug: str | None = None) -> list[dict]:
                     "at": it.get("at") or "",
                     "lat": float(lat), "lon": float(lon)})
     return out
+
+
+def trip_book(slug: str | None, idx: int, on: bool = True) -> dict | None:
+    """标「已订」/ 取消。只动 booked 字段，地点和坐标都不重算。"""
+    slug = active_slug(slug)
+    items = trip_manual(slug)
+    if not (0 <= idx < len(items)):
+        return None
+    if on:
+        items[idx]["booked"] = True
+    else:
+        items[idx].pop("booked", None)
+    _trip_save(slug, items)
+    return items[idx]
+
+
+def booking_rules(slug: str | None = None) -> dict:
+    """这场赛事的预订提前量（天）。没改过就用 BOOKING_LEAD。"""
+    slug = active_slug(slug)
+    saved = (_read(slug, BOOKING_FILE) or {}).get("lead") or {}
+    out = dict(BOOKING_LEAD)
+    for k, v in saved.items():
+        if k in out and isinstance(v, int) and 0 <= v <= 365:
+            out[k] = v
+    return out
+
+
+def set_booking_rules(slug: str | None, lead: dict) -> dict:
+    """改提前量。空值 = 这一项保持不变；填了就必须合法，不静默吞掉。"""
+    slug = active_slug(slug)
+    cur = booking_rules(slug)
+    for k, raw in (lead or {}).items():
+        if k not in cur or raw is None or not str(raw).strip():
+            continue
+        cur[k] = _lead_days(raw, TRIP_KINDS.get(k, k) + "提前量")
+    _write(slug, BOOKING_FILE, {"lead": cur})
+    return cur
+
+
+def bookings(slug: str | None = None, *, today: str | None = None,
+             include_booked: bool = True) -> list[dict]:
+    """从手填行程倒推出的「该订了」待办。
+
+    只对**手填**的确定行程生成：资料正文里认出来的时间可能只是「报名截止」
+    之类，硬给它配一个「提前 60 天订机票」会凭空造出一条假提醒。
+    due 过了也保留（days 为负），否则最该催的那条反而会悄悄消失。
+    """
+    slug = active_slug(slug)
+    t0 = dt.date.fromisoformat(today) if today else dt.date.today()
+    rules = booking_rules(slug)
+    ev = _read(slug, "event.json") or {}
+    out = []
+    for idx, it in enumerate(trip_manual(slug)):
+        kind = it.get("kind") if it.get("kind") in TRIP_KINDS else "other"
+        lead = it.get("lead") if isinstance(it.get("lead"), int) else rules.get(kind, 0)
+        if not isinstance(lead, int) or lead <= 0:
+            continue
+        try:
+            when = dt.datetime.strptime(str(it.get("at") or "")[:16], _TRIP_AT)
+        except ValueError:
+            continue
+        due = when.date() - dt.timedelta(days=lead)
+        days = (due - t0).days
+        out.append({
+            "at": due.isoformat() + "T" + BOOKING_HOUR,
+            "due": due.isoformat(), "days": days, "lead": lead,
+            "kind": kind, "label": str(it.get("label") or "行程")[:40],
+            "idx": idx, "booked": bool(it.get("booked")),
+            "overdue": days < 0, "booking": True,
+            "src": "预订", "slug": slug, "title": ev.get("name") or slug,
+            "event": ev.get("short") or ev.get("name") or slug,
+        })
+    # 未订的按截止日排前面；已订的沉到底，但保留可见（能取消）
+    out.sort(key=lambda x: (x["booked"], x["due"]))
+    return out if include_booked else [x for x in out if not x["booked"]]
 
 
 def trips(slug: str | None = None, *, today: str | None = None,
@@ -1341,6 +1438,8 @@ def trips(slug: str | None = None, *, today: str | None = None,
             "manual": True, "idx": i,
             "place": str(it.get("place") or ""),
             "lat": it.get("lat"), "lon": it.get("lon"),
+            "booked": bool(it.get("booked")),
+            "lead": it.get("lead") if isinstance(it.get("lead"), int) else None,
         })
     # 手填过的「同一类、同一天」就不再从资料里重复提醒一遍
     _manual_day = {(x["kind"], x["at"][:10]) for x in out}
@@ -1381,9 +1480,10 @@ def trips(slug: str | None = None, *, today: str | None = None,
 
 
 def upcoming(days: int = 45, today: str | None = None) -> list[dict]:
-    """所有赛事里未来 N 天的时间点，首页「临近」用。带 days 倒计时与提醒状态。"""
+    """所有赛事里未来 N 天的时间点 + 该订的待办，首页「临近」用。"""
     t0 = dt.date.fromisoformat(today) if today else dt.date.today()
-    end = t0 + dt.timedelta(days=max(1, int(days)))
+    win = max(1, int(days))
+    end = t0 + dt.timedelta(days=win)
     out = []
     for e in list_events(today=t0):
         slug = e.get("slug")
@@ -1404,6 +1504,20 @@ def upcoming(days: int = 45, today: str | None = None) -> list[dict]:
             r["days"] = (when.date() - t0).days
             r["event"] = e.get("short") or e.get("name") or slug
             out.append(r)
+        # 「该订了」比「要起飞了」更容易忘：过期的还留 7 天，再久就别占首页，
+        # 但赛事页的待办区始终保留，不会凭空消失。
+        try:
+            bks = bookings(slug, today=t0.isoformat(), include_booked=False)
+        except Exception:
+            bks = []
+        for b in bks:
+            if b["days"] < -7 or b["days"] > win:
+                continue
+            out.append({"at": b["at"], "label": b["label"],
+                        "days": b["days"], "booking": True,
+                        "kind": b["kind"], "due": b["due"],
+                        "src": "预订", "slug": slug,
+                        "title": b["title"], "event": b["event"]})
     out.sort(key=lambda x: x["at"])
     return out
 
