@@ -108,12 +108,14 @@ select.fi{cursor:pointer}
 .dg:first-of-type{margin-top:6px}
 .dr{padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04)}
 .dr:last-child{border-bottom:0}
-.drt{display:flex;align-items:baseline;gap:8px}
+.drt{display:flex;align-items:center;gap:8px}
 .drt b{font-size:12.5px;color:var(--fg,#E8F0FB);font-weight:600}
 .dat{margin-left:auto;font-size:10.5px;color:var(--muted,#7F8A97)}
-.dbtn{flex:none;width:24px;height:24px;padding:0;border-radius:7px;cursor:pointer;
-  border:1px solid rgba(224,106,95,.35);background:transparent;color:#E06A5F;
-  font-size:14px;line-height:1}
+/* 删除按钮：视觉上是小字「删」，命中区给到 44×44（手指按得准），
+   多出来的高度用负 margin 吃掉，行高不受影响。 */
+.dbtn{flex:none;min-width:44px;min-height:44px;padding:0;border-radius:9px;
+  cursor:pointer;border:1px solid rgba(224,106,95,.35);background:transparent;
+  color:#E06A5F;font-size:12px;line-height:1;margin:-10px -4px -10px 0}
 .dinline{margin:0}
 .drb{font-size:12px;color:var(--muted,#7F8A97);line-height:1.75;margin-top:3px;
   word-break:break-word}
@@ -133,6 +135,10 @@ select.fi{cursor:pointer}
 .df .dfl{padding:0;border:0}
 .dfa{display:flex;gap:6px;flex:none;margin-left:8px}
 .dfa .dfb{margin-left:0}
+/* 附件里的删除：和「预览 / 系统打开」同排但红一档，误点代价高 */
+.dfa .dfb.danger{color:#E06A5F;border-color:rgba(224,106,95,.42);
+  background:transparent}
+.dfa .dfb.danger:active{background:rgba(224,106,95,.12)}
 .dtimes{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px}
 .dtime{font-size:10.5px;padding:2px 8px;border-radius:99px;color:#9FE7C8;
   background:rgba(79,214,166,.1);border:1px solid rgba(79,214,166,.28)}
@@ -770,12 +776,15 @@ def render_page(qs: dict | None = None) -> str:
             body = ui.esc(it["body"]).replace("\n", "<br>")
             link = (f'<a class="dlink" href="{ui.esc(it["url"])}">{ui.esc(it["url"])}</a>'
                     if it.get("url") else "")
+            # 删除按钮写成「删」而不是一个 ×：× 太像「关闭」，
+            # 24px 的小图标在手机上也不容易点中（会误触成打开链接）。
             del_btn = ("" if it.get("locked") else
                        '<form class="dinline" method="post" action="/__event/doc" '
-                       'onsubmit="return confirm(&quot;删掉这条资料？&quot;)">'
+                       'onsubmit="return confirm(&quot;删掉这条资料？删了要重新加&quot;)">'
                        + HID + f'<input type="hidden" name="act" value="del">'
                        f'<input type="hidden" name="idx" value="{i_now}">'
-                       '<button class="dbtn" type="submit" aria-label="删除">×</button></form>')
+                       '<button class="dbtn" type="submit" aria-label="删除这条资料">'
+                       "删</button></form>")
             # 时间点：正文里认出来的日期/时刻，带提醒标记，一眼知道什么时候截止
             _times = ""
             try:
@@ -829,13 +838,20 @@ def render_page(qs: dict | None = None) -> str:
                 f'value="{ui.esc(stem)}"></label></div>'
                 '<div class="fbtns"><button class="btn" type="submit">保存</button>'
                 '<span class="fhint">扩展名自动保留</span></div></form></details>')
+            del_form = (
+                '<form class="dinline" method="post" action="/__event/file" '
+                'onsubmit="return confirm(&quot;删掉这个附件？删了要重新上传&quot;)">'
+                + HID + '<input type="hidden" name="act" value="del">'
+                f'<input type="hidden" name="name" value="{ui.esc(f["name"])}">'
+                '<button class="dfb danger" type="submit" '
+                f'aria-label="删除附件 {ui.esc(f["name"])}">删</button></form>')
             rows_f.append(
                 f'<div class="df"><div class="dfl">'
                 f'<a class="dfn" href="{prev}">{ui.esc(f["name"])}</a>'
                 f'<span class="dfs">{size}</span></div>'
                 f'<div class="dfa"><a class="dfb" href="{prev}">预览</a>'
                 f'<button class="dfb" data-act="openUrl:{url}" type="button">系统打开</button>'
-                "</div>" + rename_form + "</div>")
+                + del_form + "</div>" + rename_form + "</div>")
         files_html = ('<div class="dg">附件 · 点名字在软件内预览；PDF / Office 走系统应用</div>'
                       + "".join(rows_f))
 

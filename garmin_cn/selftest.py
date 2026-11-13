@@ -5210,6 +5210,34 @@ def run() -> int:
     assert _esc == "逃逸.pdf" and (_ed / _esc).is_file(), \
         "改名没剥掉路径成分，文件可能被挪出赛事目录"
 
+    # ---- 删除：文字资料要有按钮，附件也要有，且服务端三道关 -------------
+    assert 'aria-label="删除这条资料"' in _eh, "文字资料没有删除按钮"
+    assert "删除附件" in _eh and 'name="act" value="del"' in _eh, \
+        "附件没有删除按钮"
+    assert "confirm(&quot;删掉" in _eh, "删除没带二次确认（误点就真删了）"
+
+    # ⚠ 同名方法会静默互相覆盖：`_event_file` 是 GET 读附件的（收 path），
+    # 写操作必须换个名字，否则 /event-file/... 一律 500（踩过一次）。
+    import inspect as _insp
+
+    from garmin_cn import serve as _SV
+
+    _params = list(_insp.signature(_SV._Handler._event_file).parameters)
+    assert _params == ["self", "path"], \
+        f"`_event_file` 被写操作覆盖了（现在的参数是 {_params}），附件读不出来"
+    assert hasattr(_SV._Handler, "_event_file_op"), "附件写操作的方法名又改了"
+
+    _del_target = _ed / "逃逸.pdf"
+    assert _EV.remove_file("self-2026", "逃逸.pdf") == "逃逸.pdf", "附件删不掉"
+    assert not _del_target.exists(), "删完文件还在"
+    for _bad in ("../event.json", "..", "event.json", "不存在.pdf"):
+        try:
+            _EV.remove_file("self-2026", _bad)
+            raise AssertionError(f"remove_file 没拦住：{_bad}")
+        except ValueError:
+            pass
+    assert (_ed / "event.json").is_file(), "删除顺带把赛事档案删了"
+
     _EV.set_remind("self-2026", "2026-11-18T18:00", "报名截止", True)
     assert _EV.reminders("self-2026"), "提醒没存下来"
     _EV.set_remind("self-2026", "2026-11-18T18:00", "报名截止", False)

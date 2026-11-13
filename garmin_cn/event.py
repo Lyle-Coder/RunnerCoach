@@ -964,6 +964,38 @@ def rename_file(slug: str | None, name: str, new_name: str) -> str:
     return dst.name
 
 
+def remove_file(slug: str | None, name: str) -> str:
+    """删掉一个附件，返回被删的文件名。
+
+    这里是真删（不是移到回收站）：附件目录本身就在赛事档案里，删错了
+    只能重传。所以前端必须带确认，服务端这边把三道关都卡住：
+
+    1. 只认 basename，任何路径成分一律拒绝（不剥掉，直接报错——删文件
+       这件事上，「猜用户想删哪个」比报错危险得多）；
+    2. 扩展名必须在白名单里（跟上传、改名、读取共用一套）；
+    3. resolve 之后必须还在赛事目录内，挡住符号链接之类的绕路。
+    """
+    slug = active_slug(slug)
+    raw = (name or "").strip()
+    if not raw:
+        raise ValueError("没指定要删哪个附件")
+    base = Path(raw.replace("\\", "/")).name
+    if base != raw or base in (".", "..") or base.startswith("."):
+        raise ValueError("文件名不合法：%s" % raw)
+    d = _dir(slug).resolve()
+    fp = (d / base).resolve()
+    try:
+        fp.relative_to(d)
+    except ValueError:
+        raise ValueError("文件名不合法：%s" % base)
+    if not fp.is_file():
+        raise ValueError("附件不存在：%s" % base)
+    if fp.suffix.lower() not in ATTACH_EXT:
+        raise ValueError("不支持的类型：%s" % fp.suffix)
+    fp.unlink()
+    return base
+
+
 # ---------------------------------------------------------------- 时间点识别
 
 # 三种常见写法，都允许后面跟 HH:MM / HH：MM：
