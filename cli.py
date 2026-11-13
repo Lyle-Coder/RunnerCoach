@@ -1066,7 +1066,13 @@ def cmd_today(args) -> int:
 
 
 def cmd_push(args) -> int:
-    """把跑步或骑行课表推送到佳明；业务逻辑在 workout。"""
+    """把本地跑步或骑行训练导入佳明 / 高驰。"""
+    if getattr(args, "target", "garmin") == "coros":
+        from garmin_cn.coros_workout import push_cli as coros_push
+        return coros_push(args, DB, HOME)
+    if getattr(args, "library", False) or getattr(args, "no_intensity", False):
+        print("× --library 和 --no-intensity 仅用于高驰，请加 --target coros")
+        return 2
     from garmin_cn.workout import push_cli
     return push_cli(args, DB, get_client)
 
@@ -2367,7 +2373,10 @@ def main() -> int:
     q.add_argument("--json", action="store_true", help="输出 JSON（给自动化用）")
     q.set_defaults(func=cmd_today)
 
-    q = sub.add_parser("push", help="把 105K 课表推成佳明训练课程（--dry-run 先看结构）")
+    q = sub.add_parser("push", help="把本地跑步/骑行训练导入佳明或高驰（--dry-run 先预览）")
+    q.add_argument("--target", choices=("garmin", "coros"), default="garmin", help="目标平台，默认佳明")
+    q.add_argument("--library", action="store_true", help="高驰：只存训练库，不安排日期")
+    q.add_argument("--no-intensity", action="store_true", help="高驰：明确不设置强度提醒，保留时间/距离和说明")
     q.add_argument("--sport", choices=("run", "bike"), default="run", help="跑步备赛课表或单日骑行模板")
     q.add_argument("--date", help="只推这一天")
     q.add_argument("--week", type=int, help="只推第 N 周")

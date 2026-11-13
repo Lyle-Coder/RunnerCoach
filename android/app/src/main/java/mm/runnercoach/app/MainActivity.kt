@@ -452,6 +452,7 @@ class MainActivity : Activity() {
             path.startsWith("/view") -> goTab(
                 if (uri?.getQueryParameter("from") == "today") TAB_TODAY else TAB_HISTORY)
             path.startsWith("/plan") -> goTab(TAB_TODAY)   // 训练计划属于今日
+            path.startsWith("/training") -> web.loadUrl("http://127.0.0.1:$port/plan")
             path.startsWith("/event") -> goTab(TAB_COACH)  // 赛事页属于教练（/ai 里的「备赛」）
             path.startsWith("/posture") -> goTab(TAB_COACH) // 姿态评估也在教练下
             path.startsWith("/files") -> goTab(TAB_ME)     // 产物属于我的
@@ -498,6 +499,7 @@ class MainActivity : Activity() {
                     "aiToggle" -> toggleAi()
                     "simpleToggle" -> toggleSimple()
                     "corosSleep" -> askCorosSleep()
+                    "corosTrainingAuth" -> startCorosMcpAuth(forTraining = true)
                     "login" -> showLoginPicker()
                     "mi" -> showMiPanel()
                     "hw" -> showHwPanel()
@@ -1678,7 +1680,10 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun startCorosMcpAuth() {
+    private var mcpTrainingAuth = false
+
+    private fun startCorosMcpAuth(forTraining: Boolean = false) {
+        mcpTrainingAuth = forTraining
         busy(true)
         thread {
             // 区域跟随高驰账号（国内/欧洲/美国），不再在这里写死
@@ -1697,6 +1702,8 @@ class MainActivity : Activity() {
     }
 
     private fun finishCorosMcpAuth(callback: String) {
+        val forTraining = mcpTrainingAuth
+        mcpTrainingAuth = false
         busy(true)
         thread {
             val r = apiCall("coros_mcp_finish", callback)
@@ -1704,6 +1711,10 @@ class MainActivity : Activity() {
                 if (!r.optBoolean("ok")) {
                     busy(false)
                     toast("授权失败：${r.optString("error")}")
+                } else if (forTraining) {
+                    busy(false)
+                    toast("高驰授权成功，请核对预览后导入训练")
+                    web.reload()
                 } else {
                     toast("高驰授权成功，正在同步睡眠…")
                     // 从登录流程过来时活动还没同步过，睡眠收尾后补一次
@@ -2406,6 +2417,10 @@ class MainActivity : Activity() {
                 finishCorosMcpAuth(callback)
             } else {
                 toast("已取消高驰授权")
+                if (mcpTrainingAuth) {
+                    mcpTrainingAuth = false
+                    return
+                }
                 // 登录流程里跳过授权时，活动数据还没同步，不能一起丢掉
                 doSync()
             }

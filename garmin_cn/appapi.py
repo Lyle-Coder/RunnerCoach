@@ -178,6 +178,7 @@ _API = {
     "coros_status", "coros_login", "coros_logout", "coros_sync",
     "coros_mcp_status", "coros_mcp_login_url", "coros_mcp_finish",
     "coros_mcp_sleep", "coros_mcp_logout",
+    "coros_workout_preview", "coros_workout_submit", "coros_workout_check",
     "keep_status", "keep_login", "keep_logout", "keep_sync",
     "meal_today", "meal_add", "meal_estimate",
 }
@@ -847,9 +848,8 @@ _MCP_PENDING: dict[str, object] = {}
 def _coros_region() -> str:
     """高驰账号所在区域。
 
-    官方 MCP 有三套网关（国内 mcpcn / 欧洲 mcpeu / 美国 mcpus），授权页与
-    token 必须跟账号区域一致。以前这里写死 asia，欧/美区账号点「授权睡眠」
-    会跳到错误的网关。账号没登录时按国内处理，登录后自然跟随。
+    已登录 REST 账号时沿用其区域；否则由 MCP 官方统一入口发现区域。
+    已保存的 MCP 凭据始终固定到原 issuer。
     """
     try:
         from . import coros as C
@@ -859,11 +859,11 @@ def _coros_region() -> str:
             return cloud.region
     except Exception:
         pass
-    return "asia"
+    return "auto"
 
 
 def coros_mcp_status() -> dict:
-    """官方 MCP（睡眠）的授权状态。只看本地 token，不联网。"""
+    """官方 MCP（睡眠及训练导入）的授权状态。只看本地 token，不联网。"""
     try:
         from . import coros_mcp as MC
 
@@ -940,6 +940,46 @@ def coros_mcp_logout() -> dict:
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def coros_workout_preview(source_date: str = "", sport: str = "auto",
+                          destination: str = "calendar", date: str = "",
+                          no_intensity: bool = False) -> dict:
+    """离线生成高驰训练预览；不会创建或安排任何远程课程。"""
+    try:
+        from . import coros_workout as CW
+        from .coros_mcp import CorosMcp
+        if destination not in ("calendar", "library") or not isinstance(no_intensity, bool):
+            raise ValueError("导入选项无效")
+        info = CW.local_session(HOME, DB, source_date, sport)
+        courses, warnings = CW.build(info, no_intensity=no_intensity)
+        return CW.prepare(HOME, courses, CorosMcp(HOME, _coros_region()),
+                          date=(date or source_date or dt.date.today().isoformat()) if destination == "calendar" else "",
+                          warnings=warnings)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def coros_workout_submit(preview_id: str, check_only: bool = False) -> dict:
+    """只提交已冻结的预览；check_only 只读核对，不补发写入。"""
+    try:
+        from .coros_workout import submit
+        from .coros_mcp import CorosMcp
+        if not isinstance(check_only, bool):
+            raise ValueError("核对选项无效")
+        return submit(HOME, preview_id, CorosMcp(HOME, _coros_region()), check_only=check_only)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def coros_workout_check(import_key: str) -> dict:
+    """从持久化记录只读核对导入结果，进程重启后仍可使用。"""
+    try:
+        from .coros_workout import check_import
+        from .coros_mcp import CorosMcp
+        return check_import(HOME, import_key, CorosMcp(HOME, _coros_region()))
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 # ---------------------------------------------------------------- 饮食 / 拍照识热量
@@ -1793,7 +1833,7 @@ def _activity_days(today: str) -> set[str]:
 def _plan_local(today: str, days: set[str], note: str = "") -> dict:
     """没有佳明会话时的本地课表兜底。
 
-    纯高驰用户拿不到佳明日历（高驰没有对外计划接口），以前这里直接
+    纯高驰用户没有佳明日历快照（当前首页尚未接高驰 MCP 日历），以前这里直接
     返回 ok:false，今日页整块课表就不渲染。现在退成「备赛计划 > 今日处方」，
     至少让人看到今天该练什么。
     """
@@ -1824,7 +1864,7 @@ def plan(refresh: bool = False, date: str | None = None,
     默认读同步时落下的 `data/plan.json`——零请求，断网也能看。
     `refresh=True` 才联网拉一次，失败不影响已有快照。
     `source`：auto / calendar / coach，见 `plan.fetch()`。
-    高驰没有对外计划接口，这里只处理佳明。
+    此读取入口只处理佳明快照与本地兜底；高驰导入在 coros_workout_*。
     """
     from .plan import annotate, fetch, load
 
