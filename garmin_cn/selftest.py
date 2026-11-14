@@ -1568,6 +1568,14 @@ def run() -> int:
         "总时长没兜底，播放会画一帧就停"
     assert "setTimeout(r, 800)" in _msrc2, \
         "视频定位没超时，导出会卡死在某一帧"
+    # 同一时段的多张照片聚成一簇、在一个停留窗口里轮播
+    assert "(imgs, 25.0)" in _msrc2, "图片素材没按地点聚簇，一张一个点会把时间轴撑长"
+    assert "ph._a = p; ph._b = p + ph._hold;" in _msrc2, \
+        "没记录停留窗口，轮播取不到当前该显示第几张"
+    assert "all.length > 2 && p._b > p._a" in _msrc2, "一个点多张照片没做轮播"
+    assert "function popLayout(p, picked)" in _msrc2, "布局没接轮播选中的那一张"
+    assert "1.2 * Math.max(1, (x.shots || []).length)" in _msrc2, \
+        "一簇多张的停留没按张数给，会一闪而过"
     # 素材列表必须是固定高度的可滚列表：AlertDialog.customPanel 在部分机型上
     # 只放得下七八行，看着就像「只显示最新的 8 个」。
     assert "ScrollView(this).apply" in _main and \
@@ -2422,8 +2430,13 @@ def run() -> int:
             _fpl = MOT.build_payload({"name": "测", "start_ts": "2026-11-07 07:00:00"},
                                      {"route": _frt}, None, clips=_fclips,
                                      duration=30.0)
-        _got_names = sorted(p["clip"]["name"] for p in _fpl["photos"] if p.get("clip"))
-        assert _got_names == ["a", "b", "c", "d"], f"素材没完整插入：{_got_names}"
+        _clip_names = sorted(p["clip"]["name"] for p in _fpl["photos"]
+                             if p.get("clip"))
+        _shot_names = sorted(s["name"] for p in _fpl["photos"]
+                             for s in (p.get("shots") or []))
+        # 图片素材现在聚成一个「照片簇」走 shots（页面轮播），视频仍是 clip
+        assert _clip_names == ["a", "b", "d"], f"视频没完整插入：{_clip_names}"
+        assert "c" in _shot_names, f"图片素材没进照片簇：{_shot_names}"
         # 混音要的磁盘路径必须一直在，且等于页面看到的源（web=True 时只改 src）
         assert all(_Path(p["clip"]["local"]).is_absolute()
                    and p["clip"]["local"] == p["clip"]["src"]
@@ -2431,7 +2444,8 @@ def run() -> int:
             "素材没带可解码的本地路径"
         assert not _fpl["loose"], f"素材被判成挂不上了：{_fpl['loose']}"
         # 30 + 8 + 5 + 3 + 4，一张不少
-        assert _fpl["total"] == 50.0, _fpl["total"]
+        # 30 巡航 + 视频 8+5+4 + 图片簇 2.8（单张按 2.8s 停）
+        assert _fpl["total"] == 49.8, _fpl["total"]
         _d = next(p for p in _fpl["photos"] if (p.get("clip") or {}).get("name") == "d")
         assert _d["clip"]["approx"], "时间对不上的素材没标「约」"
         assert 0 <= _d["t"] <= 120, "越界素材没落到轨迹上"
@@ -2468,9 +2482,10 @@ def run() -> int:
                  {"name": "IMG_20261114_170500", "path": "/tmp/b"},
                  {"name": "IMG_20261114_100500", "path": "/tmp/c"}]
         _mixed = MOT._spread_clips([dict(c) for c in _mix2], _rt2)
-        _known = next(c for c in _mixed if c["name"] == "ok")["t_utc"]
-        assert all(c["t_utc"] > _known for c in _mixed if c["name"] != "ok"), \
-            "无时间素材插到了可信素材前面"
+        _miss_ts = sorted(c["t_utc"] for c in _mixed if c["name"] != "ok")
+        assert _miss_ts[1] - _miss_ts[0] > 10_000, "无时间素材没分散开"
+        assert (_miss_ts[0] - _rt2["t0"]) / 1000 < 60, \
+            "无时间素材全堆到片尾了（照片一多就全压在终点）"
         _late = next(c for c in _mixed if "1705" in c["name"])["t_utc"]
         _early = next(c for c in _mixed if "1005" in c["name"])["t_utc"]
         assert _early < _late, "无时间素材没按文件名时刻排序"
