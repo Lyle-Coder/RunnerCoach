@@ -2756,6 +2756,9 @@ def clips_list() -> dict:
             if got and not x.get("t_utc"):
                 x["t_utc"], x["t_source"] = got
         _clips_write(raw)
+    # 按拍摄时间升序：回放也是按这个时间插入的，列表跟它一致，才不会出现
+    # 「下午拍的排在早上那条前面」。没有时间的按登记顺序排在后面（sort 稳定）。
+    items.sort(key=lambda x: (0, int(x["t_utc"])) if x.get("t_utc") else (1, 0))
     return {"ok": True, "items": items, "dir": str(MEDIA)}
 
 

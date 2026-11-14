@@ -1526,6 +1526,23 @@ def run() -> int:
     assert "imgSeq.incrementAndGet()" in _main, "图片文件名没带唯一序号"
     assert "addImageNow(u, m)" in _main and "for ((u, m) in imgs) {" in _main, \
         "批量加图又改成每张一个线程，几十张大图会一起解码"
+    assert 'opt.outHeight, "image", "", takenMs.toDouble()' in _main, \
+        "加图没带上相册 DATE_TAKEN，HEIC 重编成 JPEG 后就没拍摄时间了"
+    # 素材列表按拍摄时间排：以前按登记顺序，批量选图（相册倒序）就会
+    # 「下午拍的排在早上那条前面」。
+    from garmin_cn import appapi as _APc
+
+    _ctmp = _Path(tempfile.mkdtemp()) / "clips.json"
+    _ctmp.write_text(_json.dumps({"items": [
+        {"id": "p", "path": "/tmp/no1", "name": "下午",
+         "t_utc": 1_700_000_100_000},
+        {"id": "a", "path": "/tmp/no2", "name": "早上",
+         "t_utc": 1_700_000_000_000},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    with _mock.patch.object(_APc, "CLIPS", _ctmp):
+        _cl = _APc.clips_list()
+    assert [x["name"] for x in _cl["items"]] == ["早上", "下午"], \
+        "素材列表没按拍摄时间排序，下午的会排在早上前面"
     # 素材列表必须是固定高度的可滚列表：AlertDialog.customPanel 在部分机型上
     # 只放得下七八行，看着就像「只显示最新的 8 个」。
     assert "ScrollView(this).apply" in _main and \

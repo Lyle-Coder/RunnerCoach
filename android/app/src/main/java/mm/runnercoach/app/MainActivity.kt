@@ -2600,8 +2600,20 @@ class MainActivity : Activity() {
         val opt = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(dst.absolutePath, opt)
         val name = displayNameOf(src).substringBeforeLast('.').ifBlank { "照片" }
+        // 相册的 DATE_TAKEN 是最后一道兜底：HEIC 会被重编成 JPEG、EXIF 跟着丢，
+        // 只靠文件本身就读不到拍摄时间，回放只能按数量估位置。
+        val takenMs = try {
+            contentResolver.query(src, null, null, null, null)?.use { c ->
+                if (!c.moveToFirst()) 0L else {
+                    val i = c.getColumnIndex("datetaken")
+                    if (i >= 0 && !c.isNull(i)) c.getLong(i) else 0L
+                }
+            } ?: 0L
+        } catch (t: Throwable) {
+            0L
+        }
         val add = apiCall("clips_add", dst.absolutePath, name,
-            0.0, opt.outWidth, opt.outHeight, "image")
+            0.0, opt.outWidth, opt.outHeight, "image", "", takenMs.toDouble())
         if (!add.optBoolean("ok")) {
             // 登记失败别把文件留在 media 里，否则素材列表看不到、空间却一直涨
             dst.delete()
