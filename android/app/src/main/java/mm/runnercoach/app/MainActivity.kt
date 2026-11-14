@@ -2407,6 +2407,9 @@ class MainActivity : Activity() {
     /** 批量选中的视频队列：一段剪完自动弹下一段。 */
     private val pendingVideos = ArrayDeque<Uri>()
 
+    /** 图片文件名序号：只带毫秒时，同一毫秒的多张会写到同一个文件。 */
+    private val imgSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
     private fun nextPendingVideo() {
         val u = pendingVideos.removeFirstOrNull()
         if (u == null) {
@@ -2501,9 +2504,23 @@ class MainActivity : Activity() {
                 }
                 if (mime.startsWith("image/")) imgs.add(u to mime) else vids.add(u)
             }
-            // 多张图片：全部加完再刷新列表，别每张都重建一次对话框
-            val left = java.util.concurrent.atomic.AtomicInteger(imgs.size)
-            for ((u, m) in imgs) addImage(u, m, left)
+            // 多张图片：**在同一个线程里顺序**处理。
+            // 以前每张起一个线程、文件名只带毫秒，同一毫秒的几张会写同一个文件，
+            // 后一张覆盖前一张 —— 列表里就成了「所有照片拼在一起」（同一份字节被反复重写）。
+            if (imgs.isNotEmpty()) {
+                busy(true)
+                subtitle.text = "加入素材 0/${imgs.size}…"
+                thread {
+                    var n = 0
+                    for ((u, m) in imgs) {
+                        addImageNow(u, m)
+                        n++
+                        val k = n
+                        ui { subtitle.text = "加入素材 $k/${imgs.size}…" }
+                    }
+                    ui { busy(false); updateSubtitle(); showClips() }
+                }
+            }
             if (vids.isNotEmpty()) {
                 pendingVideos.clear()
                 pendingVideos.addAll(vids)
@@ -2518,66 +2535,90 @@ class MainActivity : Activity() {
      * 常见格式**原样**拷，保留 EXIF 的拍摄时间与坐标——回放靠它把素材放到正确位置。
      * HEIC 之类浏览器解不了的，解码重编成 JPEG（会丢 EXIF，位置由后端均匀铺开兜底）。
      */
-    private fun addImage(src: Uri, mime: String,
-                         left: java.util.concurrent.atomic.AtomicInteger? = null) {
+    /**
+     * 图片素材：拷进 data/media 登记即可，不需要裁剪。
+     *
+     * 常见格式**原样**拷，保留 EXIF 的拍摄时间与坐标——回放靠它把素材放到正确位置。
+     * HEIC 之类浏览器解不了的，解码重编成 JPEG（会丢 EXIF，位置由后端均匀铺开兜底）。
+     *
+     * 文件名必须**唯一**：批量选图时几张会落在同一毫秒，只带时间戳会写到同一个
+     * 文件、后一张覆盖前一张，最后列表里全是同一张。素材显示名仍取相册里的原始
+     * 文件名，`IMG_20261103_180036` 这类还能兜出拍摄时间。
+     */
+    private fun addImage(src: Uri, mime: String) {
         busy(true)
         subtitle.text = "加入素材…"
         thread {
-            // 扩展名跟着内容走：本机服务只放行 png/jpg，把 PNG 存成 .jpg 会让
-            // Content-Type 和实际字节对不上；webp / heic 一律重编成 JPEG。
-            val copyAsIs = mime == "image/jpeg" || mime == "image/jpg" || mime == "image/png"
-            val ext = if (mime == "image/png") ".png" else ".jpg"
-            val dst = File(File(filesDir, "data/media"),
-                "img-" + System.currentTimeMillis() + ext)
-            dst.parentFile?.mkdirs()
-            var ok = false
-            if (copyAsIs) {
-                try {
-                    contentResolver.openInputStream(src)?.use { i ->
-                        dst.outputStream().use { o -> i.copyTo(o) }
-                    }
-                    ok = dst.length() > 0
-                } catch (t: Throwable) {
-                    Log.w(TAG, "copy image", t)
-                }
-            }
-            if (!ok) {
-                try {
-                    val bmp = decodeDown(src, 1600)
-                    if (bmp != null) {
-                        dst.outputStream().use { o ->
-                            bmp.compress(Bitmap.CompressFormat.JPEG, 88, o)
-                        }
-                        bmp.recycle()
-                        ok = dst.length() > 0
-                    }
-                } catch (t: Throwable) {
-                    Log.w(TAG, "encode image", t)
-                }
-            }
-            if (!ok) {
-                dst.delete()
-                ui { busy(false); updateSubtitle(); toast("这张图片读不出来") }
-                return@thread
-            }
-            val opt = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(dst.absolutePath, opt)
-            val add = apiCall("clips_add", dst.absolutePath, dst.nameWithoutExtension,
-                0.0, opt.outWidth, opt.outHeight, "image")
+            val ok = addImageNow(src, mime)
             ui {
                 busy(false)
                 updateSubtitle()
-                val done = left == null || left.decrementAndGet() == 0
-                if (add.optBoolean("ok")) {
-                    toast("已加入素材（图片）")
-                } else {
-                    toast(add.optString("error", "登记失败"))
-                }
-                // 批量时等最后一张再加完刷新，否则每张都重建一次列表对话框
-                if (done) showClips()
+                toast(if (ok) "已加入素材（图片）" else "这张图片读不出来")
+                showClips()
             }
         }
     }
+
+    /** 同步版：拷文件 + 登记。批量时在同一个线程里顺序调用，避免几十张大图一起解码。 */
+    private fun addImageNow(src: Uri, mime: String): Boolean {
+        // 扩展名跟着内容走：本机服务只放行 png/jpg，把 PNG 存成 .jpg 会让
+        // Content-Type 和实际字节对不上；webp / heic 一律重编成 JPEG。
+        val copyAsIs = mime == "image/jpeg" || mime == "image/jpg" || mime == "image/png"
+        val ext = if (mime == "image/png") ".png" else ".jpg"
+        val dst = File(File(filesDir, "data/media"),
+            "img-" + System.currentTimeMillis() + "-" + imgSeq.incrementAndGet() + ext)
+        dst.parentFile?.mkdirs()
+        var ok = false
+        if (copyAsIs) {
+            try {
+                contentResolver.openInputStream(src)?.use { i ->
+                    dst.outputStream().use { o -> i.copyTo(o) }
+                }
+                ok = dst.length() > 0
+            } catch (t: Throwable) {
+                Log.w(TAG, "copy image", t)
+            }
+        }
+        if (!ok) {
+            try {
+                val bmp = decodeDown(src, 1600)
+                if (bmp != null) {
+                    dst.outputStream().use { o ->
+                        bmp.compress(Bitmap.CompressFormat.JPEG, 88, o)
+                    }
+                    bmp.recycle()
+                    ok = dst.length() > 0
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "encode image", t)
+            }
+        }
+        if (!ok) {
+            dst.delete()
+            return false
+        }
+        val opt = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(dst.absolutePath, opt)
+        val name = displayNameOf(src).substringBeforeLast('.').ifBlank { "照片" }
+        val add = apiCall("clips_add", dst.absolutePath, name,
+            0.0, opt.outWidth, opt.outHeight, "image")
+        if (!add.optBoolean("ok")) {
+            // 登记失败别把文件留在 media 里，否则素材列表看不到、空间却一直涨
+            dst.delete()
+            return false
+        }
+        return true
+    }
+
+    /** 相册里的原始文件名：content:// 的末段是随机 id，拿来当显示名根本认不出。 */
+    private fun displayNameOf(uri: Uri): String = try {
+        contentResolver.query(uri, null, null, null, null)?.use { c ->
+            val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+        }
+    } catch (t: Throwable) {
+        null
+    } ?: ""
 
     /** 按最长边降采样解码，避免 4000 万像素的图把内存打爆。 */
     private fun decodeDown(uri: Uri, maxSide: Int): Bitmap? {

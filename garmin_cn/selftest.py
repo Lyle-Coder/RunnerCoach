@@ -1519,6 +1519,13 @@ def run() -> int:
     assert "clipDialog?.dismiss()\n        clipDialog = null" in _main, \
         "重建素材列表前没关旧对话框，「删完还能看见旧列表」"
     assert "val cb = CheckBox(this)" in _main, "素材行没有多选勾选框"
+    # 批量加图：文件名只带毫秒 + 每张一个线程 → 同一毫秒的几张写同一个文件，
+    # 后一张覆盖前一张，列表里成了「所有照片拼在一起」。
+    assert '"img-" + System.currentTimeMillis() + ext' not in _main, \
+        "图片文件名只带毫秒，批量选图同一毫秒会互相覆盖"
+    assert "imgSeq.incrementAndGet()" in _main, "图片文件名没带唯一序号"
+    assert "addImageNow(u, m)" in _main and "for ((u, m) in imgs) {" in _main, \
+        "批量加图又改成每张一个线程，几十张大图会一起解码"
     # 素材列表必须是固定高度的可滚列表：AlertDialog.customPanel 在部分机型上
     # 只放得下七八行，看着就像「只显示最新的 8 个」。
     assert "ScrollView(this).apply" in _main and \
