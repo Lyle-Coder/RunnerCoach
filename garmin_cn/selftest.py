@@ -2465,11 +2465,39 @@ def run() -> int:
         _late = next(c for c in _picked if "1815" in c["name"])
         assert _early["t_utc"] < _late["t_utc"], \
             "倒序添加的无时间素材铺反了，后发生的会先出现"
-        # 差 3 小时：判为「时间不可信」，清空后交给铺开，而不是贴到端点
-        _vague = [{"name": "v", "path": "/tmp/z",
-                   "t_utc": _rt2["t0"] - 3 * 3600_000}]
-        MOT._mark_vague_times(_vague, _rt2["t0"], 120.0)
-        assert _vague[0]["t_utc"] is None, "差 3 小时的素材还被当成可信时间"
+        # 有真实拍摄时间、但落在吸附窗口外（赛前/赛中/赛后跨几小时）：
+        # 整批按比例压进活动时间轴。不许置空均布（位置变估的），也不许
+        # 贴到端点（一多就全堆在终点连播）。
+        _span = [{"name": "a", "path": "/tmp/a",
+                  "t_utc": _rt2["t0"] + 300_000},
+                 {"name": "b", "path": "/tmp/b",
+                  "t_utc": _rt2["t0"] + 4 * 3600_000},
+                 {"name": "c", "path": "/tmp/c",
+                  "t_utc": _rt2["t0"] + 7 * 3600_000}]
+        _n = MOT._fit_clip_times(_span, _rt2["t0"], 120.0,
+                                 MOT.CLIP_TZ_PRE_S, MOT.CLIP_TZ_POST_S)
+        assert _n == 3, f"跨时段的素材没被压缩映射：{_n}"
+        _rel = [(c["t_utc"] - _rt2["t0"]) / 1000 for c in _span]
+        assert _rel == sorted(_rel), "压缩映射把顺序搞乱了"
+        assert all(0 <= r <= 120 for r in _rel), "映射后跑出了活动时间轴"
+        assert _rel[-1] <= 120 * 0.99, "最晚那张仍贴死在终点"
+        assert _rel[0] >= 120 * 0.01, "最早那张仍贴死在起点"
+        # 全都在窗口内时一张都不许动（真实时间最准）
+        _inside = [{"name": "x", "path": "/tmp/x",
+                    "t_utc": _rt2["t0"] + 30_000}]
+        assert MOT._fit_clip_times(_inside, _rt2["t0"], 120.0,
+                                   MOT.CLIP_TZ_PRE_S,
+                                   MOT.CLIP_TZ_POST_S) == 0, \
+            "活动窗内的真实时间被瞎改了"
+        # 差整时区的先归一，不能当成「拍在别的时段」一起压缩
+        _tzc = [{"name": "v", "path": "/tmp/v",
+                 "t_utc": _rt2["t0"] + 60_000 + 8 * 3600_000}]
+        MOT._fit_clip_times(_tzc, _rt2["t0"], 120.0,
+                            MOT.CLIP_TZ_PRE_S, MOT.CLIP_TZ_POST_S)
+        assert abs((_tzc[0]["t_utc"] - _rt2["t0"]) / 1000 - 60) < 1, \
+            "整时区偏差没在压缩前归一，位置会整体错位"
+        assert "_fit_clip_times(clips, t0_ms, act_dur," in _mo_src, \
+            "回放链路没接时间压缩映射，跨时段的照片还是会堆在终点"
         # 差 8 小时（整时区）：保留，交给 photo.match 修正
         _tz = [{"name": "t", "path": "/tmp/t",
                 "t_utc": _rt2["t0"] + 8 * 3600_000}]
