@@ -1956,6 +1956,23 @@ class MainActivity : Activity() {
             if (!clipSelecting) clipChecked.clear()
             renderClipList()
         })
+        // 选择模式下给「全选」：几十个素材一个个点太费劲
+        if (clipSelecting) {
+            btnRow.addView(btn(if (clipChecked.size >= arr.length()) "取消全选" else "全选",
+                0xFF4DA3FF.toInt()) {
+                if (clipChecked.size >= arr.length()) {
+                    clipChecked.clear()
+                } else {
+                    for (i in 0 until arr.length()) {
+                        arr.optJSONObject(i)?.optString("id", "")
+                            ?.takeIf { it.isNotBlank() }?.let { clipChecked.add(it) }
+                    }
+                }
+                clipTitle?.text = if (clipChecked.isEmpty())
+                    "素材（${arr.length()}）" else "已选 ${clipChecked.size} 个"
+                renderClipList()
+            })
+        }
         btnRow.addView(btn(if (clipSelecting) "删除选中" else "添加",
             0xFF4DA3FF.toInt()) {
             if (clipSelecting) {
@@ -2600,8 +2617,20 @@ class MainActivity : Activity() {
         val opt = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(dst.absolutePath, opt)
         val name = displayNameOf(src).substringBeforeLast('.').ifBlank { "照片" }
+        // 相册的 DATE_TAKEN 是最后一道兜底：HEIC 会被重编成 JPEG、EXIF 跟着丢，
+        // 只靠文件本身就读不到拍摄时间，回放只能按数量估位置。
+        val takenMs = try {
+            contentResolver.query(src, null, null, null, null)?.use { c ->
+                if (!c.moveToFirst()) 0L else {
+                    val i = c.getColumnIndex("datetaken")
+                    if (i >= 0 && !c.isNull(i)) c.getLong(i) else 0L
+                }
+            } ?: 0L
+        } catch (t: Throwable) {
+            0L
+        }
         val add = apiCall("clips_add", dst.absolutePath, name,
-            0.0, opt.outWidth, opt.outHeight, "image")
+            0.0, opt.outWidth, opt.outHeight, "image", "", takenMs.toDouble())
         if (!add.optBoolean("ok")) {
             // 登记失败别把文件留在 media 里，否则素材列表看不到、空间却一直涨
             dst.delete()

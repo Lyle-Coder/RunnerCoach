@@ -760,7 +760,8 @@ def run() -> int:
     # 长素材也要整段放完（60 秒的老上限会把长视频截掉）
     assert MOT._timeline_total(30.0, [{"t": 1.0, "clip": {"dur": 90.0}}]) == 120.0
     # 页面收片尾要靠算出来的真实总时长；帧数也必须按它算
-    assert "const TOTAL = TL.total;" in _mo_src, "页面没用真实总时长"
+    assert "Number.isFinite(TL.total)" in _mo_src and "const TOTAL =" in _mo_src, \
+        "页面没用真实总时长（或没做 NaN/0 兜底）"
     assert "duration: TOTAL" in _mo_src, "导出接口没暴露真实总时长"
     assert "if (playT >= D.play)" not in _mo_src, "片尾判断还在用旧的 30 秒预算"
     assert "if (p >= D.play) return D.dur" not in _mo_src, "轨迹取值还在用旧的 30 秒预算"
@@ -1526,6 +1527,47 @@ def run() -> int:
     assert "imgSeq.incrementAndGet()" in _main, "图片文件名没带唯一序号"
     assert "addImageNow(u, m)" in _main and "for ((u, m) in imgs) {" in _main, \
         "批量加图又改成每张一个线程，几十张大图会一起解码"
+    assert 'opt.outHeight, "image", "", takenMs.toDouble()' in _main, \
+        "加图没带上相册 DATE_TAKEN，HEIC 重编成 JPEG 后就没拍摄时间了"
+    # 素材列表按拍摄时间排：以前按登记顺序，批量选图（相册倒序）就会
+    # 「下午拍的排在早上那条前面」。
+    from garmin_cn import appapi as _APc
+
+    _ctmp = _Path(tempfile.mkdtemp()) / "clips.json"
+    _ctmp.write_text(_json.dumps({"items": [
+        {"id": "p", "path": "/tmp/no1", "name": "下午",
+         "t_utc": 1_700_000_100_000},
+        {"id": "a", "path": "/tmp/no2", "name": "早上",
+         "t_utc": 1_700_000_000_000},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    with _mock.patch.object(_APc, "CLIPS", _ctmp):
+        _cl = _APc.clips_list()
+    assert [x["name"] for x in _cl["items"]] == ["早上", "下午"], \
+        "素材列表没按拍摄时间排序，下午的会排在早上前面"
+    # 老素材没有 id：勾选后 id 是空串，批量删除必然报「不在列表里」
+    _ctmp2 = _Path(tempfile.mkdtemp()) / "clips_old.json"
+    _ctmp2.write_text(_json.dumps({"items": [
+        {"path": "/tmp/none-old", "name": "老素材"},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    with _mock.patch.object(_APc, "CLIPS", _ctmp2):
+        _old = _APc.clips_list()["items"][0]
+        assert _old["id"].startswith("c") and len(_old["id"]) > 8, \
+            "老素材没补稳定 id，勾选后删不掉"
+        _rr = _APc.clips_remove_many([_old["id"]])
+    assert _rr.get("ok") and _rr.get("removed") == 1, \
+        f"老素材批量删除仍然失败：{_rr}"
+    assert '"取消全选" else "全选"' in _main, "批量管理没有全选按钮"
+    # 时间轴的里程必须单调：素材间隔小于加减速步长时，减速段会退回上一个
+    # 位置，回放里就是轨迹「冲出去又折返回来」（只有加了照片才出现）。
+    _msrc2 = (ROOT / "garmin_cn/motion.py").read_text(encoding="utf-8")
+    assert "const decelTo = Math.max(r, phT);" in _msrc2, \
+        "减速段还会从加速后的位置退回去"
+    assert "const accelTo = Math.min(r + step, D.dur);" in _msrc2, \
+        "加速段会冲出轨迹终点"
+    assert "Number.isFinite(TL.total)" in _msrc2, \
+        "总时长没兜底，播放会画一帧就停"
+    assert "setTimeout(r, 800)" in _msrc2, \
+        "视频定位没超时，导出会卡死在某一帧"
     # 素材列表必须是固定高度的可滚列表：AlertDialog.customPanel 在部分机型上
     # 只放得下七八行，看着就像「只显示最新的 8 个」。
     assert "ScrollView(this).apply" in _main and \
@@ -2419,6 +2461,28 @@ def run() -> int:
                 "t_utc": _rt2["t0"] + 8 * 3600_000}]
         MOT._mark_vague_times(_tz, _rt2["t0"], 120.0)
         assert _tz[0]["t_utc"], "整时区偏差被误判成不可信，素材位置会全乱"
+        # 无时间的素材只能排在**最后一个可信素材之后**，不能均分到全程去插队：
+        # 否则「下午 5 点加的」会被铺到「早上 10 点那张」前面。
+        _mix2 = [{"name": "ok", "path": "/tmp/a",
+                  "t_utc": _rt2["t0"] + 90_000},
+                 {"name": "IMG_20261114_170500", "path": "/tmp/b"},
+                 {"name": "IMG_20261114_100500", "path": "/tmp/c"}]
+        _mixed = MOT._spread_clips([dict(c) for c in _mix2], _rt2)
+        _known = next(c for c in _mixed if c["name"] == "ok")["t_utc"]
+        assert all(c["t_utc"] > _known for c in _mixed if c["name"] != "ok"), \
+            "无时间素材插到了可信素材前面"
+        _late = next(c for c in _mixed if "1705" in c["name"])["t_utc"]
+        _early = next(c for c in _mixed if "1005" in c["name"])["t_utc"]
+        assert _early < _late, "无时间素材没按文件名时刻排序"
+        # 位置回退（时间对但落回更早的里程）必须被钳回前进方向，
+        # 否则光点会「跑出去又回来」。
+        _mpts = [(0, 400), (100, 400), (200, 400), (300, 400), (400, 400)]
+        _mrt = {"t": [0, 30, 60, 90, 120], "d": [0, 100, 200, 300, 400],
+                "lat": [30.0] * 5, "lon": [120.0] * 5}
+        _mph = [{"t": 100.0, "d": 300.0, "x": 300, "y": 400},
+                {"t": 30.0, "d": 100.0, "x": 100, "y": 400}]
+        assert MOT._forward_only(_mrt, _mpts, _mph) == 1, "位置回退没被修正"
+        assert _mph[1]["d"] >= _mph[0]["d"], "修正后仍然回退，光点会来回跳"
     # 素材清单要够界面用：类型、文件是否还在、拍摄时间（列表要显示缩略图和时间）
     assert 'it["exists"] = p.is_file()' in _ap_src, "素材清单没标文件是否存在"
     assert 'it["t_utc"] = _meta_val(it, info, "t_utc")' in _ap_src, "素材清单没带拍摄时间（且应优先用存下来的）"
@@ -3511,8 +3575,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.3.3 → 134）。
-    assert 'versionCode = 134' in (
+    # 每次发版要同步改这里（本次 1.3.4 → 135）。
+    assert 'versionCode = 135' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。

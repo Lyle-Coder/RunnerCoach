@@ -341,11 +341,48 @@ def _spread_clips(clips: list[dict], rt: dict) -> list[dict]:
     if not miss:
         return clips
     miss.sort(key=_clip_order_key)
+    # 只铺在**最后一个可信素材之后**，不再均分整个活动。
+    # 均分的话，「下午加的」会被铺到「早上那张」前面——看起来就是
+    # 「17 点的排在 10 点前面」，而它们其实都没时间、只是被随手排了个位置。
+    known = [c for c in clips if c.get("t_utc") is not None]
+    start = max(((float(c["t_utc"]) - t0) / 1000.0 for c in known), default=0.0)
+    start = min(max(start, 0.0), span)
     n = len(miss)
+    if span - start < n:
+        start = max(0.0, span - n)
+    room = max(span - start, 0.0)
     for i, c in enumerate(miss):
-        c["t_utc"] = int(t0 + span * 1000.0 * (i + 1) / (n + 1))
+        c["t_utc"] = int(t0 + (start + room * (i + 1) / (n + 1)) * 1000.0)
         c["approx"] = True
     return clips
+
+
+def _forward_only(rt: dict, pts: list, photos: list[dict]) -> int:
+    """让素材沿轨迹**只前进不后退**，返回修正了几个点。
+
+    锚点时间可能来自不可信来源（时区差、下载时间、文件名兜底），排序后
+    仍可能落回更早的里程上；播放时就是「先冲出去、再退回来」。累计里程
+    只增不减，回退一定是锚点错了：把时间推到上一个点之后、按新时间重取位置。
+    """
+    t = rt.get("t") or []
+    d = rt.get("d") or []
+    if not t or not d or len(pts) != len(t):
+        return 0
+    import bisect
+
+    fixed = 0
+    prev_t, prev_d = -1.0, -1.0
+    for p in photos:
+        if p["d"] < prev_d - 1.0:
+            nt = min(max(prev_t + 1.0, p["t"]), float(t[-1]))
+            i = min(max(bisect.bisect_left(t, nt), 0), len(t) - 1)
+            p["t"] = round(nt, 1)
+            p["d"] = round(float(d[i]), 1)
+            x, y = _xy_at(rt, pts, nt)
+            p["x"], p["y"] = round(x, 1), round(y, 1)
+            fixed += 1
+        prev_t, prev_d = p["t"], p["d"]
+    return fixed
 
 
 def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
@@ -508,6 +545,9 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                                    "shots": [], "clip": item})
             out_clips += 1
         out_photos.sort(key=lambda p: p["t"])
+    # 排序只保证时间递增，但时间本身可能是错的：位置回退会让光点「跑出去又回来」。
+    # 这里统一沿轨迹钳一次，照片和视频都适用（轨迹没有素材时是空转）。
+    _forward_only(rt, pts, out_photos)
 
     s = route_mod.summary(rt)
     started = (row.get("start_ts") or "")[5:16]
@@ -784,17 +824,24 @@ const TL = (function () {
     let p = 0, r = 0;
     const step = k * RAMP / 2;      // 半余弦段走的距离：平均速度 k/2
     for (const ph of ps) {
-      const cruiseTo = Math.max(r, ph.t - step);
+      // 素材时间必须落在轨迹内；而且**每一段的里程只能往前走**。
+      // 两张素材间隔小于 step（=k*0.35）时，减速段原来会从「上一段加速后的
+      // 位置」退回到「照片时间的位置」，回放里就是轨迹冲出去又折返回来
+      // （只有加了照片才出现，因为视频之间通常隔得够远）。
+      const phT = Math.min(Math.max(ph.t, 0), D.dur);
+      const cruiseTo = Math.max(r, phT - step);
       const cruiseDur = (cruiseTo - r) / k;
       if (cruiseDur > 1e-6) segs.push({ p0: p, p1: p + cruiseDur, r0: r, r1: cruiseTo, e: 0 });
       p += cruiseDur; r = cruiseTo;
-      segs.push({ p0: p, p1: p + RAMP, r0: r, r1: ph.t, e: -1 });   // 减速
-      p += RAMP; r = ph.t;
+      const decelTo = Math.max(r, phT);              // 不倒退
+      segs.push({ p0: p, p1: p + RAMP, r0: r, r1: decelTo, e: -1 });   // 减速
+      p += RAMP; r = decelTo;
       win.push({ ph, a: p, b: p + ph._hold });
       segs.push({ p0: p, p1: p + ph._hold, r0: r, r1: r, e: 0 });   // 停住
       p += ph._hold;
-      segs.push({ p0: p, p1: p + RAMP, r0: r, r1: r + step, e: 1 });  // 加速
-      p += RAMP; r += step;
+      const accelTo = Math.min(r + step, D.dur);     // 不冲出终点
+      segs.push({ p0: p, p1: p + RAMP, r0: r, r1: accelTo, e: 1 });  // 加速
+      p += RAMP; r = accelTo;
     }
     if (r < D.dur) segs.push({ p0: p, p1: p + (D.dur - r) / k, r0: r, r1: D.dur, e: 0 });
     p = segs.length ? segs[segs.length - 1].p1 : 0;
@@ -816,7 +863,9 @@ const TL = (function () {
 })();
 
 // 整条片子的真实总时长：巡航预算 + 所有素材停留
-const TOTAL = TL.total;
+// 时间轴极端情况下（素材时间全挤在一起 / 时长为 0）可能算出 NaN/0，
+// 那样 playT < TOTAL 永远为假，播放第一帧就停——表现就是「只有搓进度条才动」。
+const TOTAL = (Number.isFinite(TL.total) && TL.total > 0) ? TL.total : Math.max(1, D.play);
 
 function routeAt(p) {
   if (p <= 0) return 0;
@@ -1717,7 +1766,8 @@ function loop(ts) {
   if (!last) last = ts;
   playT += (ts - last) / 1000; last = ts;
   if (playT >= TOTAL) playT = TOTAL;
-  drawFrame(playT);
+  // 单帧画失败不能把 rAF 链断掉：断掉之后画面就定住，只能靠拖进度条推进
+  try { drawFrame(playT); } catch (e) { console.error('draw frame', e); }
   if (playT < TOTAL) raf = requestAnimationFrame(loop);
   else playing = false;
 }
@@ -1735,8 +1785,14 @@ function pause() {
 async function seekTo(t) {
   pause();
   playT = Math.max(0, Math.min(t, TOTAL));
-  await syncVideo(popAt(playT).w);
-  drawFrame(playT);
+  // 视频 seek 偶尔不回调（解码器忙 / 文件被删 / 这一帧没有素材窗口）：
+  // 无限等下去整条导出就卡在这里，原生的下一帧拿到的还是旧画面，最后报
+  // 「帧获取错误」。等 800ms 就画当前能画的，宁可这一帧没视频也不卡死。
+  await Promise.race([
+    syncVideo(popAt(playT).w).catch(() => {}),
+    new Promise(r => setTimeout(r, 800)),
+  ]);
+  try { drawFrame(playT); } catch (e) { console.error('draw frame', e); }
   return playT;
 }
 
