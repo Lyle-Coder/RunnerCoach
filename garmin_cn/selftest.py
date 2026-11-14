@@ -760,7 +760,8 @@ def run() -> int:
     # 长素材也要整段放完（60 秒的老上限会把长视频截掉）
     assert MOT._timeline_total(30.0, [{"t": 1.0, "clip": {"dur": 90.0}}]) == 120.0
     # 页面收片尾要靠算出来的真实总时长；帧数也必须按它算
-    assert "const TOTAL = TL.total;" in _mo_src, "页面没用真实总时长"
+    assert "Number.isFinite(TL.total)" in _mo_src and "const TOTAL =" in _mo_src, \
+        "页面没用真实总时长（或没做 NaN/0 兜底）"
     assert "duration: TOTAL" in _mo_src, "导出接口没暴露真实总时长"
     assert "if (playT >= D.play)" not in _mo_src, "片尾判断还在用旧的 30 秒预算"
     assert "if (p >= D.play) return D.dur" not in _mo_src, "轨迹取值还在用旧的 30 秒预算"
@@ -1543,6 +1544,30 @@ def run() -> int:
         _cl = _APc.clips_list()
     assert [x["name"] for x in _cl["items"]] == ["早上", "下午"], \
         "素材列表没按拍摄时间排序，下午的会排在早上前面"
+    # 老素材没有 id：勾选后 id 是空串，批量删除必然报「不在列表里」
+    _ctmp2 = _Path(tempfile.mkdtemp()) / "clips_old.json"
+    _ctmp2.write_text(_json.dumps({"items": [
+        {"path": "/tmp/none-old", "name": "老素材"},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    with _mock.patch.object(_APc, "CLIPS", _ctmp2):
+        _old = _APc.clips_list()["items"][0]
+        assert _old["id"].startswith("c") and len(_old["id"]) > 8, \
+            "老素材没补稳定 id，勾选后删不掉"
+        _rr = _APc.clips_remove_many([_old["id"]])
+    assert _rr.get("ok") and _rr.get("removed") == 1, \
+        f"老素材批量删除仍然失败：{_rr}"
+    assert '"取消全选" else "全选"' in _main, "批量管理没有全选按钮"
+    # 时间轴的里程必须单调：素材间隔小于加减速步长时，减速段会退回上一个
+    # 位置，回放里就是轨迹「冲出去又折返回来」（只有加了照片才出现）。
+    _msrc2 = (ROOT / "garmin_cn/motion.py").read_text(encoding="utf-8")
+    assert "const decelTo = Math.max(r, phT);" in _msrc2, \
+        "减速段还会从加速后的位置退回去"
+    assert "const accelTo = Math.min(r + step, D.dur);" in _msrc2, \
+        "加速段会冲出轨迹终点"
+    assert "Number.isFinite(TL.total)" in _msrc2, \
+        "总时长没兜底，播放会画一帧就停"
+    assert "setTimeout(r, 800)" in _msrc2, \
+        "视频定位没超时，导出会卡死在某一帧"
     # 素材列表必须是固定高度的可滚列表：AlertDialog.customPanel 在部分机型上
     # 只放得下七八行，看着就像「只显示最新的 8 个」。
     assert "ScrollView(this).apply" in _main and \

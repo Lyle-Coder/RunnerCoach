@@ -22,6 +22,7 @@ Android 里既看不到 stdout、也不该靠退出码判断成功。这里把�
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -2314,6 +2315,22 @@ MEDIA = HOME / "data" / "media"
 _RUN_RE = re.compile(r"[A-Za-z0-9_-]{6,32}")
 
 
+def _clip_id(it: dict) -> str:
+    """素材的稳定 id。
+
+    1.3.3 之前登记的素材没有 `id` 字段，列表里勾选拿到的是空串，批量删除
+    就报「选中的素材已经不在列表里」。这里按 path 生成一个稳定的，
+    同一文件永远得到同一个 id，列表/删除/更新都用它。
+    """
+    got = str(it.get("id") or "").strip()
+    if got:
+        return got
+    raw = str(it.get("path") or it.get("name") or "").strip()
+    if not raw:
+        return ""
+    return "c" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+
+
 def _clips_read() -> list[dict]:
     try:
         data = json.loads(CLIPS.read_text("utf-8"))
@@ -2721,6 +2738,12 @@ def clips_list() -> dict:
     """
     MEDIA.mkdir(parents=True, exist_ok=True)
     items = _clips_read()
+    # 老素材没有 id：先补齐，列表勾选、批量删除全靠它
+    missing_id = False
+    for it in items:
+        if not str(it.get("id") or "").strip():
+            it["id"] = _clip_id(it)
+            missing_id = True
     repairs: dict[str, tuple] = {}
     for it in items:
         p = Path(str(it.get("path") or ""))
@@ -2748,11 +2771,12 @@ def clips_list() -> dict:
         # 视频用文件的真实时长：登记时传的是剪辑结果，可能和时间轴差几十毫秒
         if info.get("dur"):
             it["dur"] = round(float(info["dur"]), 2)
-    if repairs:
-        # 只把补到的两个字段写回原始记录，别把 exists/t_why 这些临时字段落盘
+    if repairs or missing_id:
+        # 只把补到的字段写回原始记录，别把 exists/t_why 这些临时字段落盘
         raw = _clips_read()
         for x in raw:
-            got = repairs.get(str(x.get("id") or x.get("path") or ""))
+            x["id"] = _clip_id(x)
+            got = repairs.get(str(x.get("id") or ""))
             if got and not x.get("t_utc"):
                 x["t_utc"], x["t_source"] = got
         _clips_write(raw)
@@ -2918,7 +2942,9 @@ def clips_remove_many(ids: list) -> dict:
     items = _clips_read()
     keep, gone = [], []
     for it in items:
-        if str(it.get("id") or "") in want:
+        cid = _clip_id(it)
+        if cid and cid in want:
+            it["id"] = cid          # 老素材补上，写回后就固定了
             gone.append(it)
         else:
             keep.append(it)
