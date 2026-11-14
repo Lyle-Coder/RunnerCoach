@@ -1144,7 +1144,9 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
     """拉数据。`email/password` 只在会话过期时用来续一次，不会被写盘。
 
     增量是默认行为：已有数据且早已过完的日子不会再请求一遍，
-    所以「下拉刷新」通常只拉今天和昨天，几秒就能结束。
+    所以「下拉刷新」通常只拉今天一天——一轮 8 个请求（会话校验 1 +
+    日数据 3 + 活动 1 + 近三个月日历 3），两秒左右结束。
+    远期课表每周才全量补一次，日常不为它多等 4 次往返。
     需要整段重拉（换表盘 / 补历史字段）时传 `force=True`。
 
     `end` 是区间结束日（默认今天），`activity_pages` 是活动列表翻页数——
@@ -1158,8 +1160,9 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
             except Exception:
                 pass
 
-    # 补历史走后台批量：间隔收紧到 BULK_MIN_INTERVAL；日常同步保持 0.5s
-    _gap = BULK_MIN_INTERVAL if bulk else 0.5
+    # 日常增量一轮只有 8 个请求，0.5s 间隔在里面占三四秒；
+    # 补历史、日常都收紧，靠 net.py 的 429 自适应兜底
+    _gap = BULK_MIN_INTERVAL if bulk else FAST_MIN_INTERVAL
     try:
         client = _client(email, password, revalidate=True, min_interval=_gap)
     except MfaRequired:
@@ -1367,10 +1370,14 @@ BACKFILL_META = "backfill_cursor"
 # 一段半年：单段 180 天 ≈ 360 次请求，按批量节流约 1.5 分钟；
 # 以前一年一段是 700+ 次、4 分钟以上，用户在这段时间里看不到任何新数据。
 BACKFILL_SPAN_DAYS = 180
-# 批量拉历史时的最小请求间隔（秒）。日常同步仍是 0.5s——交互场景宁可慢一点
-# 也不要被限流；补历史是后台任务，密一点但保留 429 退避（net.py 里会把间隔
-# 自动放大），整体快 2 倍。
+# 最小请求间隔（秒）。补历史是后台批量，日常同步是交互场景。
+#
+# 日常原来固定 0.5s，可一轮增量只有 8 个请求（会话校验 1 + 日数据 3 +
+# 活动 1 + 近 3 个月日历 3），光等间隔就三四秒——「下拉刷新要 5 秒」主要
+# 卡在这里。批量补历史用 0.25 一直没触发限流，日常取同一档 0.2；
+# 真吃到 429 时 net.py 会把间隔自动抬到 0.75 以上并退避重试。
 BULK_MIN_INTERVAL = 0.25
+FAST_MIN_INTERVAL = 0.2
 BACKFILL_MAX_YEARS = 8        # 硬下限：账号再老也不翻 8 年以上
 BACKFILL_PAGES = 20           # 每段最多翻 20 页活动（约 1200 条）
 
