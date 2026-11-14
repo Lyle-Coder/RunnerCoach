@@ -2419,6 +2419,28 @@ def run() -> int:
                 "t_utc": _rt2["t0"] + 8 * 3600_000}]
         MOT._mark_vague_times(_tz, _rt2["t0"], 120.0)
         assert _tz[0]["t_utc"], "整时区偏差被误判成不可信，素材位置会全乱"
+        # 无时间的素材只能排在**最后一个可信素材之后**，不能均分到全程去插队：
+        # 否则「下午 5 点加的」会被铺到「早上 10 点那张」前面。
+        _mix2 = [{"name": "ok", "path": "/tmp/a",
+                  "t_utc": _rt2["t0"] + 90_000},
+                 {"name": "IMG_20261114_170500", "path": "/tmp/b"},
+                 {"name": "IMG_20261114_100500", "path": "/tmp/c"}]
+        _mixed = MOT._spread_clips([dict(c) for c in _mix2], _rt2)
+        _known = next(c for c in _mixed if c["name"] == "ok")["t_utc"]
+        assert all(c["t_utc"] > _known for c in _mixed if c["name"] != "ok"), \
+            "无时间素材插到了可信素材前面"
+        _late = next(c for c in _mixed if "1705" in c["name"])["t_utc"]
+        _early = next(c for c in _mixed if "1005" in c["name"])["t_utc"]
+        assert _early < _late, "无时间素材没按文件名时刻排序"
+        # 位置回退（时间对但落回更早的里程）必须被钳回前进方向，
+        # 否则光点会「跑出去又回来」。
+        _mpts = [(0, 400), (100, 400), (200, 400), (300, 400), (400, 400)]
+        _mrt = {"t": [0, 30, 60, 90, 120], "d": [0, 100, 200, 300, 400],
+                "lat": [30.0] * 5, "lon": [120.0] * 5}
+        _mph = [{"t": 100.0, "d": 300.0, "x": 300, "y": 400},
+                {"t": 30.0, "d": 100.0, "x": 100, "y": 400}]
+        assert MOT._forward_only(_mrt, _mpts, _mph) == 1, "位置回退没被修正"
+        assert _mph[1]["d"] >= _mph[0]["d"], "修正后仍然回退，光点会来回跳"
     # 素材清单要够界面用：类型、文件是否还在、拍摄时间（列表要显示缩略图和时间）
     assert 'it["exists"] = p.is_file()' in _ap_src, "素材清单没标文件是否存在"
     assert 'it["t_utc"] = _meta_val(it, info, "t_utc")' in _ap_src, "素材清单没带拍摄时间（且应优先用存下来的）"

@@ -341,11 +341,48 @@ def _spread_clips(clips: list[dict], rt: dict) -> list[dict]:
     if not miss:
         return clips
     miss.sort(key=_clip_order_key)
+    # 只铺在**最后一个可信素材之后**，不再均分整个活动。
+    # 均分的话，「下午加的」会被铺到「早上那张」前面——看起来就是
+    # 「17 点的排在 10 点前面」，而它们其实都没时间、只是被随手排了个位置。
+    known = [c for c in clips if c.get("t_utc") is not None]
+    start = max(((float(c["t_utc"]) - t0) / 1000.0 for c in known), default=0.0)
+    start = min(max(start, 0.0), span)
     n = len(miss)
+    if span - start < n:
+        start = max(0.0, span - n)
+    room = max(span - start, 0.0)
     for i, c in enumerate(miss):
-        c["t_utc"] = int(t0 + span * 1000.0 * (i + 1) / (n + 1))
+        c["t_utc"] = int(t0 + (start + room * (i + 1) / (n + 1)) * 1000.0)
         c["approx"] = True
     return clips
+
+
+def _forward_only(rt: dict, pts: list, photos: list[dict]) -> int:
+    """让素材沿轨迹**只前进不后退**，返回修正了几个点。
+
+    锚点时间可能来自不可信来源（时区差、下载时间、文件名兜底），排序后
+    仍可能落回更早的里程上；播放时就是「先冲出去、再退回来」。累计里程
+    只增不减，回退一定是锚点错了：把时间推到上一个点之后、按新时间重取位置。
+    """
+    t = rt.get("t") or []
+    d = rt.get("d") or []
+    if not t or not d or len(pts) != len(t):
+        return 0
+    import bisect
+
+    fixed = 0
+    prev_t, prev_d = -1.0, -1.0
+    for p in photos:
+        if p["d"] < prev_d - 1.0:
+            nt = min(max(prev_t + 1.0, p["t"]), float(t[-1]))
+            i = min(max(bisect.bisect_left(t, nt), 0), len(t) - 1)
+            p["t"] = round(nt, 1)
+            p["d"] = round(float(d[i]), 1)
+            x, y = _xy_at(rt, pts, nt)
+            p["x"], p["y"] = round(x, 1), round(y, 1)
+            fixed += 1
+        prev_t, prev_d = p["t"], p["d"]
+    return fixed
 
 
 def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
@@ -508,6 +545,9 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                                    "shots": [], "clip": item})
             out_clips += 1
         out_photos.sort(key=lambda p: p["t"])
+    # 排序只保证时间递增，但时间本身可能是错的：位置回退会让光点「跑出去又回来」。
+    # 这里统一沿轨迹钳一次，照片和视频都适用（轨迹没有素材时是空转）。
+    _forward_only(rt, pts, out_photos)
 
     s = route_mod.summary(rt)
     started = (row.get("start_ts") or "")[5:16]
