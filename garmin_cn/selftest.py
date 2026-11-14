@@ -2390,8 +2390,35 @@ def run() -> int:
         assert not _fpl["loose"], f"素材被判成挂不上了：{_fpl['loose']}"
         # 30 + 8 + 5 + 3 + 4，一张不少
         assert _fpl["total"] == 50.0, _fpl["total"]
-        _clamp = next(p for p in _fpl["photos"] if (p.get("clip") or {}).get("name") == "d")
-        assert _clamp["t"] == 0.0 and _clamp["clip"]["approx"], "越界素材没贴到起点"
+        _d = next(p for p in _fpl["photos"] if (p.get("clip") or {}).get("name") == "d")
+        assert _d["clip"]["approx"], "时间对不上的素材没标「约」"
+        assert 0 <= _d["t"] <= 120, "越界素材没落到轨迹上"
+        # 差几小时的素材不该再挤在起点：光点会从轨道中间跳回 0 秒，
+        # 看着就是「路径跑出去又回来」。
+        assert _d["t"] > 0, "时间不可信的素材还被贴在起点"
+
+        # ---- 素材锚点：顺序按真实时间、不堆端点、不倒序 ----------------
+        _rt2 = {"n": 2, "t0": 1_700_000_000_000, "t": [0, 120],
+                "lat": [30.0, 30.002], "lon": [120.0, 120.002],
+                "d": [0, 200], "hr": [120, 130], "seg": [0], "v": [1.6, 1.7]}
+        # 批量选视频时相册返回倒序：铺设必须按文件名里的拍摄时刻纠正回来
+        _rev = [{"name": "VID_20261103_181500", "path": "/tmp/x"},
+                {"name": "VID_20261103_070500", "path": "/tmp/y"}]
+        _picked = MOT._spread_clips([dict(c) for c in _rev], _rt2)
+        _early = next(c for c in _picked if "0705" in c["name"])
+        _late = next(c for c in _picked if "1815" in c["name"])
+        assert _early["t_utc"] < _late["t_utc"], \
+            "倒序添加的无时间素材铺反了，后发生的会先出现"
+        # 差 3 小时：判为「时间不可信」，清空后交给铺开，而不是贴到端点
+        _vague = [{"name": "v", "path": "/tmp/z",
+                   "t_utc": _rt2["t0"] - 3 * 3600_000}]
+        MOT._mark_vague_times(_vague, _rt2["t0"], 120.0)
+        assert _vague[0]["t_utc"] is None, "差 3 小时的素材还被当成可信时间"
+        # 差 8 小时（整时区）：保留，交给 photo.match 修正
+        _tz = [{"name": "t", "path": "/tmp/t",
+                "t_utc": _rt2["t0"] + 8 * 3600_000}]
+        MOT._mark_vague_times(_tz, _rt2["t0"], 120.0)
+        assert _tz[0]["t_utc"], "整时区偏差被误判成不可信，素材位置会全乱"
     # 素材清单要够界面用：类型、文件是否还在、拍摄时间（列表要显示缩略图和时间）
     assert 'it["exists"] = p.is_file()' in _ap_src, "素材清单没标文件是否存在"
     assert 'it["t_utc"] = _meta_val(it, info, "t_utc")' in _ap_src, "素材清单没带拍摄时间（且应优先用存下来的）"
