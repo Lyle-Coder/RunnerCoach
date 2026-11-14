@@ -130,6 +130,13 @@ def parse_bb(payload: Any, tz_hours: int = 8) -> dict:
 # 留 30 天余量。
 LIGHT_AFTER_DAYS = 120
 
+# 远期课表多久全量补一次。日常只拉近 3 个月的日历（3 次请求），
+# 这个周期负责把 140 天之外的远期课补回来，别天天为它们多等 4 次往返。
+PLAN_FULL_EVERY_DAYS = 7
+# 上一次「全量拉计划」的时间。老版本升级上来时这个键是空的，
+# 必须先全量一次——否则第一次日常同步会把已有的远期课表覆盖成 3 个月。
+PLAN_FULL_AT_META = "plan_full_at"
+
 
 def parse_daily(payload: dict | None, date: str) -> dict:
     p = payload or {}
@@ -335,8 +342,12 @@ class SyncService:
             ok += 1
             if progress:
                 progress(i, len(todo), d)
-        acts = self.sync_activities(max_pages=activity_pages, oldest=dates[0])
-        plan = self.sync_plan(end)
+        # 日常增量往往只有今天一天：活动列表拉最近 20 条就够覆盖，
+        # 60 条的响应体大两三倍、解析也慢。补历史仍按一页 60 条翻。
+        near = len(todo) <= 7
+        acts = self.sync_activities(
+            limit=20 if near else 60, max_pages=activity_pages, oldest=dates[0])
+        plan = self.sync_plan(end, full=bool(bulk or force))
         self.store.set_meta("last_sync", dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.store.set_meta("last_sync_end", end)
         return {
@@ -390,12 +401,52 @@ class SyncService:
                 out[day] = it
         return out
 
-    def sync_plan(self, today: str | None = None) -> dict:
-        """刷新佳明教练计划快照（2 次请求，失败不影响主流程）。"""
-        from .plan import fetch
+    def sync_plan(self, today: str | None = None, *, full: bool = False) -> dict:
+        """刷新训练计划快照（日历按月拉，一个月一次请求）。
 
+        日常只拉近 3 个月：140 天要 7 次请求，多出来的 4 次拉的是更远期的
+        课表，每天内容几乎不变，白白占掉同步时间的大头。首次、补历史、
+        以及 plan.json 超过 `PLAN_FULL_EVERY_DAYS` 天没全量时，才补齐远期。
+        """
+        from .plan import NEAR_SPAN_DAYS, fetch
+
+        out = self.store.path.parent / "plan.json"
+        if not full:
+            full = self._plan_full_due()
+        # 本周已经练过的本地记录：日历里的 activity 项常常只有标题、没有距离
+        # 和时长，光靠它判不出「这门课完成没有」，一整周都会被画成「未练」。
+        acts: list[dict] = []
         try:
-            return fetch(self.client, today, out_path=self.store.path.parent / "plan.json")
+            _d = dt.date.fromisoformat(today or dt.date.today().isoformat())
+            acts = self.store.activities(
+                (_d - dt.timedelta(days=_d.weekday())).isoformat(),
+                _d.isoformat(), dedupe=False)
+        except Exception:
+            acts = []
+        try:
+            data = fetch(self.client, today, out_path=out,
+                         span=None if full else NEAR_SPAN_DAYS,
+                         activities=acts)
         except Exception as e:
             self.errors.append(f"plan: {type(e).__name__} {e}")
             return {"available": False, "reason": str(e)}
+        if full:
+            self.store.set_meta(
+                PLAN_FULL_AT_META, dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        return data
+
+    def _plan_full_due(self) -> bool:
+        """该不该把 140 天的远期课表整段补一次。
+
+        没记录、记录坏了、超过周期都算「该补」——宁可多发 4 个请求，
+        也不能因为少拉几个月让页面上远期课表凭空消失。
+        """
+        try:
+            raw = self.store.get_meta(PLAN_FULL_AT_META) or ""
+        except Exception:
+            return True
+        try:
+            at = dt.datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return True
+        return (dt.datetime.now() - at).days >= PLAN_FULL_EVERY_DAYS

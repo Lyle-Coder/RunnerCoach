@@ -623,6 +623,46 @@ def run() -> int:
             _rows = _week_cells(_got, "2026-11-07")
             assert _rows.count('class="wkd') == 7, "一图流周视图应横排 7 格"
             assert '<div class="wk">' in _rows, "横排容器必须存在，不能退回竖排 7 行"
+
+            # 「我明明练了却显示未练」的回归：日历路径产出的 week 里 done 可能
+            # 为空（活动项没有距离/时长），必须用本地库活动兜底。
+            _wk = {"week": [
+                {"date": "2026-11-02", "dow": "周一",
+                 "items": [{"name": "轻松跑"}], "acts": [], "rest": False},
+                {"date": "2026-11-03", "dow": "周二",
+                 "items": [{"name": "间歇"}], "acts": [], "rest": False},
+                {"date": "2026-11-04", "dow": "周三",
+                 "items": [], "acts": [], "rest": True},
+            ]}
+            _cells = _week_cells(
+                _wk, "2026-11-07",
+                {"2026-11-02": {"km": 8.0, "min": 45}}).split('class="wkd')[1:]
+            assert "已完成" in _cells[0], \
+                "本地库练过、快照里没有 done，一图流仍判成未练"
+            assert "未练" in _cells[1], "真没练的那天反而不标未练"
+            assert "未练" not in _cells[2], "休息日被当成漏练"
+            _mix = _week_cells(
+                {"week": [
+                    {"date": "2026-11-02", "dow": "周一",
+                     "items": [{"name": "轻松跑"}], "acts": [], "rest": False},
+                    {"date": "2026-11-04", "dow": "周三",
+                     "items": [], "acts": [], "rest": True}]},
+                "2026-11-07", {"2026-11-02": {"km": 8.0, "min": 45},
+                               "2026-11-04": {"km": 5.0, "min": 30}}
+            ).split('class="wkd')[1:]
+            assert "已完成" in _mix[0], "有排课且练过，该是已完成"
+            assert "已练" in _mix[1] and "未练" not in _mix[1], \
+                "休息日练了却写成「已完成」，会被误读成完成了课表"
+            # 日历归一化也要吃本地活动，否则 week[].done 和「本周完成」都是 0
+            _cal2 = PL.from_calendar(
+                [{"date": "2026-11-02", "itemType": "workout", "title": "轻松跑",
+                  "sportTypeKey": "running", "estimatedDistanceInMeters": 8000}],
+                "2026-11-07",
+                activities=[{"date": "2026-11-02", "type": "running",
+                             "distance_m": 8200, "duration_s": 2700}])
+            _w2 = next(x for x in _cal2["week"] if x["date"] == "2026-11-02")
+            assert _w2["done"], "传了本地活动还把已完成判成未练"
+            assert not _w2["missed"]
         finally:
             if _old is None:
                 _os.environ.pop("GARMIN_HOME", None)
@@ -1415,6 +1455,57 @@ def run() -> int:
         "补历史没有按日期切到 light 模式"
     assert "client = _client(email, password, revalidate=True" in _aa_src, \
         "同步入口没有先校验会话"
+
+    # ---- 日常同步的请求节奏：5 秒里大半是 sleep 和远期课表 --------------
+    from garmin_cn import plan as _PLN
+    from garmin_cn import appapi as _AA4
+
+    assert _AA4.FAST_MIN_INTERVAL <= _AA4.BULK_MIN_INTERVAL < 0.5, \
+        "日常请求间隔没比批量更密，下拉刷新还是被 sleep 拖住"
+    assert "_gap = BULK_MIN_INTERVAL if bulk else FAST_MIN_INTERVAL" in _aa_src, \
+        "sync() 没用日常间隔常量，改回去就又是 0.5 秒一刀"
+    assert len(_PLN._months("2026-11-14", _PLN.NEAR_SPAN_DAYS)) == 3, \
+        "日常只该拉「上月 + 当月 + 下月」三个月"
+    assert len(_PLN._months("2026-11-14")) >= 6, "全量窗口没覆盖到 140 天"
+
+    class _FakePlanClient(_FakeSyncClient):
+        def __init__(self):
+            super().__init__()
+            self.months: list = []
+            self.limits: list = []
+            # sync() 末尾要读 client.net.count 对账
+            self.net = type("_N", (), {"count": 0})()
+
+        def calendar_month(self, y, m):
+            self.months.append((y, m))
+            return {"calendarItems": []}
+
+        def active_plans(self, today=None):
+            return []
+
+        def activities(self, limit=60, start=0):
+            self.limits.append(limit)
+            return []
+
+    import datetime as _dtx
+    _pc = _FakePlanClient()
+    _psvc = _SY.SyncService(_pc, _lst)
+    _psvc.sync_plan("2026-11-14")
+    assert len(_pc.months) == 7, f"首次该全量补齐远期：拉了 {len(_pc.months)} 个月"
+    assert _lst.get_meta(_SY.PLAN_FULL_AT_META), "全量后没记时间，下次又全量"
+    _pc.months.clear()
+    _psvc.sync_plan("2026-11-14")
+    assert len(_pc.months) == 3, f"日常还拉 {len(_pc.months)} 个月，白等往返"
+    _lst.set_meta(_SY.PLAN_FULL_AT_META,
+                  (_dtx.datetime.now() - _dtx.timedelta(days=8)
+                   ).strftime("%Y-%m-%d %H:%M:%S"))
+    _pc.months.clear()
+    _psvc.sync_plan("2026-11-14")
+    assert len(_pc.months) >= 6, "超过一周没全量，远期课表补不回来"
+    # 日常增量只拉最近 20 条活动，不再为 60 条的大响应体买单
+    _pc2 = _FakePlanClient()
+    _SY.SyncService(_pc2, _lst).sync(days=1)
+    assert _pc2.limits == [20], f"日常还按 60 条拉活动：{_pc2.limits}"
     # 3) 补拉：旧版拿「本地有没有密码」当门槛，密码为空时按钮点了只弹登录。
     #    现在连按钮都没有了 —— 后台自动跑，这条只守「别再被密码拦住」。
     assert 'act="historySync"' not in _ui_src, "补全历史又变回按钮了"
@@ -1428,6 +1519,13 @@ def run() -> int:
     assert "clipDialog?.dismiss()\n        clipDialog = null" in _main, \
         "重建素材列表前没关旧对话框，「删完还能看见旧列表」"
     assert "val cb = CheckBox(this)" in _main, "素材行没有多选勾选框"
+    # 批量加图：文件名只带毫秒 + 每张一个线程 → 同一毫秒的几张写同一个文件，
+    # 后一张覆盖前一张，列表里成了「所有照片拼在一起」。
+    assert '"img-" + System.currentTimeMillis() + ext' not in _main, \
+        "图片文件名只带毫秒，批量选图同一毫秒会互相覆盖"
+    assert "imgSeq.incrementAndGet()" in _main, "图片文件名没带唯一序号"
+    assert "addImageNow(u, m)" in _main and "for ((u, m) in imgs) {" in _main, \
+        "批量加图又改成每张一个线程，几十张大图会一起解码"
     # 素材列表必须是固定高度的可滚列表：AlertDialog.customPanel 在部分机型上
     # 只放得下七八行，看着就像「只显示最新的 8 个」。
     assert "ScrollView(this).apply" in _main and \
@@ -2292,8 +2390,35 @@ def run() -> int:
         assert not _fpl["loose"], f"素材被判成挂不上了：{_fpl['loose']}"
         # 30 + 8 + 5 + 3 + 4，一张不少
         assert _fpl["total"] == 50.0, _fpl["total"]
-        _clamp = next(p for p in _fpl["photos"] if (p.get("clip") or {}).get("name") == "d")
-        assert _clamp["t"] == 0.0 and _clamp["clip"]["approx"], "越界素材没贴到起点"
+        _d = next(p for p in _fpl["photos"] if (p.get("clip") or {}).get("name") == "d")
+        assert _d["clip"]["approx"], "时间对不上的素材没标「约」"
+        assert 0 <= _d["t"] <= 120, "越界素材没落到轨迹上"
+        # 差几小时的素材不该再挤在起点：光点会从轨道中间跳回 0 秒，
+        # 看着就是「路径跑出去又回来」。
+        assert _d["t"] > 0, "时间不可信的素材还被贴在起点"
+
+        # ---- 素材锚点：顺序按真实时间、不堆端点、不倒序 ----------------
+        _rt2 = {"n": 2, "t0": 1_700_000_000_000, "t": [0, 120],
+                "lat": [30.0, 30.002], "lon": [120.0, 120.002],
+                "d": [0, 200], "hr": [120, 130], "seg": [0], "v": [1.6, 1.7]}
+        # 批量选视频时相册返回倒序：铺设必须按文件名里的拍摄时刻纠正回来
+        _rev = [{"name": "VID_20261103_181500", "path": "/tmp/x"},
+                {"name": "VID_20261103_070500", "path": "/tmp/y"}]
+        _picked = MOT._spread_clips([dict(c) for c in _rev], _rt2)
+        _early = next(c for c in _picked if "0705" in c["name"])
+        _late = next(c for c in _picked if "1815" in c["name"])
+        assert _early["t_utc"] < _late["t_utc"], \
+            "倒序添加的无时间素材铺反了，后发生的会先出现"
+        # 差 3 小时：判为「时间不可信」，清空后交给铺开，而不是贴到端点
+        _vague = [{"name": "v", "path": "/tmp/z",
+                   "t_utc": _rt2["t0"] - 3 * 3600_000}]
+        MOT._mark_vague_times(_vague, _rt2["t0"], 120.0)
+        assert _vague[0]["t_utc"] is None, "差 3 小时的素材还被当成可信时间"
+        # 差 8 小时（整时区）：保留，交给 photo.match 修正
+        _tz = [{"name": "t", "path": "/tmp/t",
+                "t_utc": _rt2["t0"] + 8 * 3600_000}]
+        MOT._mark_vague_times(_tz, _rt2["t0"], 120.0)
+        assert _tz[0]["t_utc"], "整时区偏差被误判成不可信，素材位置会全乱"
     # 素材清单要够界面用：类型、文件是否还在、拍摄时间（列表要显示缩略图和时间）
     assert 'it["exists"] = p.is_file()' in _ap_src, "素材清单没标文件是否存在"
     assert 'it["t_utc"] = _meta_val(it, info, "t_utc")' in _ap_src, "素材清单没带拍摄时间（且应优先用存下来的）"
@@ -3386,8 +3511,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.3.2 → 133）。
-    assert 'versionCode = 133' in (
+    # 每次发版要同步改这里（本次 1.3.3 → 134）。
+    assert 'versionCode = 134' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。
@@ -5428,11 +5553,12 @@ def run() -> int:
     assert len(_pins_far) == 3 and all(
         p["kind"] != "flight" for p in _pins_far), \
         "机场被画进赛道图，底图取景会被拉到整个城市"
-    assert all("uri.amap.com/navigation" in p["url"] for p in _pins), \
-        "标注点没有高德导航链接"
+    assert all("uri.amap.com/marker" in p["url"] for p in _pins), \
+        "标注点该是单点「看位置」，导航留给图下的按钮"
     assert "uri.amap.com/marker" in _EVUI._amap_url(30.0, 120.0, "测试", nav=False), \
         "「看位置」应该走单点标注而不是路径规划"
-    _pq = _upx.parse_qs(_upx.urlparse(_pins[0]["url"]).query)
+    _pq = _upx.parse_qs(_upx.urlparse(
+        _EVUI._amap_url(30.0, 120.0, "测试", nav=True)).query)
     _to = _pq["to"][0].split(",")
     _plon, _plat = float(_to[0]), float(_to[1])
     assert _pq["callnative"][0] == "1", "没让高德尝试唤起 App"
@@ -5451,8 +5577,8 @@ def run() -> int:
         "原生动作传了 WGS 坐标；高德 dev=0 会偏 400~500 m"
     assert _upx.unquote(_ap[2]) == "测试 起点", \
         "地名里的逗号没清掉，Kotlin split 会切错载荷"
-    assert all(p.get("act", "").startswith("amapNav:") for p in _pins), \
-        "赛道图标注没带原生导航动作，点了还是开网页"
+    assert all(p.get("act", "").startswith("amapView:") for p in _pins), \
+        "赛道图标注应该只做「看位置」：导航有图下那排按钮，点标注别再直接起步"
     assert _EVUI._pin_tag([]) == ""
     assert _EVUI._pin_tag([[30.67, 104.06]]) == \
            _EVUI._pin_tag([[30.67, 104.06]]), "同样的 POI 每次换缓存名会反复取图"
@@ -5470,8 +5596,8 @@ def run() -> int:
         "矢量俯视图上的起终点标注没渲染"
     assert _svg_pins.count("<a href=") >= 3, \
         "三个点都得能点，不能只画个圆"
-    assert _svg_pins.count('data-act="amapNav:') >= 3, \
-        "SVG 标注没带原生动作，手机上点标注仍会跳网页"
+    assert _svg_pins.count('data-act="amapView:') >= 3, \
+        "SVG 标注没带「看位置」动作，手机上点标注仍会跳网页"
     # 图上圆点太小，还得有一排大按钮兜底
     with _mock.patch.object(_BM3, "available", lambda: False):
         _map_html = _EVUI._course_map(
@@ -5483,6 +5609,8 @@ def run() -> int:
         "机场/车站又混进赛道图导航按钮了"
     assert 'data-act="amapNav:' in _map_html, \
         "赛道图快捷导航按钮没接原生动作"
+    assert 'data-act="amapView:' in _map_html, \
+        "地图标注没改成看位置，会和下面的导航按钮重复"
     _trip_html_amap = _EVUI._trips_html("self-2026", "")
     assert 'data-act="amapNav:' in _trip_html_amap and \
            'data-act="amapView:' in _trip_html_amap, \

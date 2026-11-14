@@ -455,10 +455,16 @@ def _course_pins(slug: str, line: list) -> list[dict]:
     if line:
         for kind, label, p in (("start", "起点", line[0]),
                                ("end", "终点", line[-1])):
+            # 点地图上的点只「看位置」：导航留给图下那排快捷按钮，
+            # 不然同一个动作有两个入口，点错了就起不了步
+            _nm = short + " · " + label
             pins.append({"kind": kind, "label": label,
                          "lat": p[0], "lon": p[1],
-                         "url": _amap_url(p[0], p[1], short + " · " + label),
-                         "act": _amap_act(p[0], p[1], short + " · " + label)})
+                         "url": _amap_url(p[0], p[1], _nm, nav=False),
+                         "act": _amap_act(p[0], p[1], _nm, nav=False),
+                         # 图下那排按钮要的是真导航，单独留一份，别复用它
+                         "nav_url": _amap_url(p[0], p[1], _nm),
+                         "nav_act": _amap_act(p[0], p[1], _nm)})
     try:
         pois = E.trip_pins(slug)
     except Exception:
@@ -472,8 +478,10 @@ def _course_pins(slug: str, line: list) -> list[dict]:
         _place = p.get("place") or p.get("label") or label
         pins.append({"kind": p["kind"], "label": short_name,
                      "lat": p["lat"], "lon": p["lon"],
-                     "url": _amap_url(p["lat"], p["lon"], _place),
-                     "act": _amap_act(p["lat"], p["lon"], _place)})
+                     "url": _amap_url(p["lat"], p["lon"], _place, nav=False),
+                     "act": _amap_act(p["lat"], p["lon"], _place, nav=False),
+                     "nav_url": _amap_url(p["lat"], p["lon"], _place),
+                     "nav_act": _amap_act(p["lat"], p["lon"], _place)})
     return pins
 
 
@@ -481,7 +489,7 @@ def _course_map(slug: str, stats: dict) -> str:
     """赛道俯视图：底图 + 轨迹 + 可点开的起点/终点/住宿标注。
 
     剖面回答「哪一段在爬」，俯视图回答「它在哪儿」；起点、终点、住哪儿
-    是赛前真正要找的三个点，点一下直接交给高德定位导航。
+    是赛前真正要找的三个点：点一下只为「看位置」，导航走图下那排按钮。
     """
     line = stats.get("polyline") or []
     if len(line) < 2:
@@ -527,8 +535,8 @@ def _course_map(slug: str, stats: dict) -> str:
                            basemap=bm, href=href, pins=pins)
     except Exception:
         return ""
-    cap = ("含高德底图 · 只作地形参考；<b>点图上的标注可跳高德导航</b>" if bm
-           else "矢量轨迹 · <b>点标注可跳高德导航</b>；"
+    cap = ("含高德底图 · 只作地形参考；<b>点标注可看位置，导航用下面的按钮</b>" if bm
+           else "矢量轨迹 · <b>点标注可看位置，导航用下面的按钮</b>；"
                 "在「我的 → 地图底图」配 Key 后可叠底图")
     legend = ('<div class="maplg"><span class="s"><i></i>起点</span>'
               '<span class="e"><i></i>终点</span>'
@@ -543,8 +551,8 @@ def _course_map(slug: str, stats: dict) -> str:
              + [p for p in pins if p["kind"] == "stay"][:1])
     navs = ('<div class="pager cmapnav">'
             + "".join(
-                f'<a class="btn" href="{ui.esc(p["url"])}" '
-                f'data-act="{ui.esc(p.get("act", ""))}">导航到'
+                f'<a class="btn" href="{ui.esc(p.get("nav_url") or p["url"])}" '
+                f'data-act="{ui.esc(p.get("nav_act") or p.get("act", ""))}">导航到'
                 + ui.esc(p["label"] if p["kind"] in ("start", "end")
                          else "住宿") + "</a>"
                 for p in quick if p.get("url"))
