@@ -1956,6 +1956,23 @@ class MainActivity : Activity() {
             if (!clipSelecting) clipChecked.clear()
             renderClipList()
         })
+        // 选择模式下给「全选」：几十个素材一个个点太费劲
+        if (clipSelecting) {
+            btnRow.addView(btn(if (clipChecked.size >= arr.length()) "取消全选" else "全选",
+                0xFF4DA3FF.toInt()) {
+                if (clipChecked.size >= arr.length()) {
+                    clipChecked.clear()
+                } else {
+                    for (i in 0 until arr.length()) {
+                        arr.optJSONObject(i)?.optString("id", "")
+                            ?.takeIf { it.isNotBlank() }?.let { clipChecked.add(it) }
+                    }
+                }
+                clipTitle?.text = if (clipChecked.isEmpty())
+                    "素材（${arr.length()}）" else "已选 ${clipChecked.size} 个"
+                renderClipList()
+            })
+        }
         btnRow.addView(btn(if (clipSelecting) "删除选中" else "添加",
             0xFF4DA3FF.toInt()) {
             if (clipSelecting) {
