@@ -2468,20 +2468,26 @@ def run() -> int:
         # 有真实拍摄时间、但落在吸附窗口外（赛前/赛中/赛后跨几小时）：
         # 整批按比例压进活动时间轴。不许置空均布（位置变估的），也不许
         # 贴到端点（一多就全堆在终点连播）。
+        # 窗口内的**一张都不许动**；只有窗外两段压到端口附近的小区间。
+        # 用户真实场景：8.6 小时徒步，照片都在活动内，整批被重排就是
+        # 「还是均分、位置全错」。
         _span = [{"name": "a", "path": "/tmp/a",
-                  "t_utc": _rt2["t0"] + 300_000},
+                  "t_utc": _rt2["t0"] + 60_000},
                  {"name": "b", "path": "/tmp/b",
                   "t_utc": _rt2["t0"] + 4 * 3600_000},
                  {"name": "c", "path": "/tmp/c",
                   "t_utc": _rt2["t0"] + 7 * 3600_000}]
+        _a_before = _span[0]["t_utc"]
         _n = MOT._fit_clip_times(_span, _rt2["t0"], 120.0,
                                  MOT.CLIP_TZ_PRE_S, MOT.CLIP_TZ_POST_S)
-        assert _n == 3, f"跨时段的素材没被压缩映射：{_n}"
+        assert _n == 2, f"只该动窗外那两张：{_n}"
+        assert _span[0]["t_utc"] == _a_before, \
+            "窗口内的真实时间被重排了（这就是「还是均分」的来源）"
         _rel = [(c["t_utc"] - _rt2["t0"]) / 1000 for c in _span]
-        assert _rel == sorted(_rel), "压缩映射把顺序搞乱了"
-        assert all(0 <= r <= 120 for r in _rel), "映射后跑出了活动时间轴"
-        assert _rel[-1] <= 120 * 0.99, "最晚那张仍贴死在终点"
-        assert _rel[0] >= 120 * 0.01, "最早那张仍贴死在起点"
+        assert _rel == sorted(_rel), "映射把顺序搞乱了"
+        assert all(0 < r <= 120 for r in _rel), "映射后跑出了活动时间轴"
+        assert _rel[1] < _rel[2], "赛后素材没按先后排开"
+        assert _rel[2] <= 120, "赛后素材越过终点"
         # 全都在窗口内时一张都不许动（真实时间最准）
         _inside = [{"name": "x", "path": "/tmp/x",
                     "t_utc": _rt2["t0"] + 30_000}]
