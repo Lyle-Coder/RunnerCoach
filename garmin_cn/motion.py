@@ -244,6 +244,12 @@ HOLD_MIN, HOLD_MAX = 0.6, 3600.0
 # 必须剔除，否则会被贴到这次活动两端，看着像放错了片子。
 CLIP_TOL_PRE_S = 24 * 3600.0    # 活动开始前 24 小时
 CLIP_TOL_POST_S = 24 * 3600.0   # 活动结束后 24 小时
+# 时间落在活动前后这个范围内才算「同一次活动、只是拍早/拍晚了几分钟」，
+# 超出就说明它记的是下载/转发时间，不能贴到端点（见 `_mark_vague_times`）。
+CLIP_VAGUE_S = 2 * 3600.0
+# 与 `photo.match` 的默认窗口一致：只有落进这个窗口的时区偏移才算「救得回来」。
+# 两者口径必须相同，否则这里判「能救」、那边判「救不了」，素材就被贴到端点堆着了。
+CLIP_TZ_PRE_S, CLIP_TZ_POST_S = 300.0, 900.0
 
 
 def _timeline_total(play: float, photos: list[dict]) -> float:
@@ -269,6 +275,49 @@ def _timeline_total(play: float, photos: list[dict]) -> float:
     return max(play, 2 * RAMP * len(photos)) + holds
 
 
+_CLIP_STAMP_RE = re.compile(
+    r"(\d{4})[-_]?(\d{2})[-_]?(\d{2})[T _-]?(\d{2})[-_:.]?(\d{2})")
+
+
+def _clip_order_key(c: dict) -> tuple:
+    """素材排序键：优先文件名里的日期（`VID_20261103_180036`），其次文件时间。
+
+    相机/相册导出的名字里基本都带拍摄时刻，转发或剪辑过的没有，就退回文件
+    修改时间，都没有则保持原顺序（键相同，排序稳定）。
+    """
+    name = str(c.get("name") or Path(str(c.get("path") or "")).name)
+    m = _CLIP_STAMP_RE.search(name)
+    if m:
+        return (0, "".join(m.groups()))
+    p = Path(str(c.get("path") or ""))
+    try:
+        return (1, "%013d" % int(p.stat().st_mtime))
+    except OSError:
+        return (2, "0")
+
+
+def _mark_vague_times(clips: list[dict], t0_ms: int, act_dur: float) -> None:
+    """把「时间不像拍摄时间」的素材的 `t_utc` 清掉，交给 `_spread_clips` 铺开。
+
+    判断标准：离活动前后超过 `CLIP_VAGUE_S`（2 小时），且整时区偏移（±8/±9h）
+    也救不回来。这种多半是下载/转发/剪辑时被重写成「当天几点几分」的时间，
+    不是拍摄时刻。留着它会被 `clamp_ends` 硬贴到起点或终点——几段全堆在 0 秒，
+    光点就会从轨道中间跳回起点，看着像路径「跑出去又回来」。
+    """
+    for c in clips:
+        t_utc = c.get("t_utc")
+        if not t_utc:
+            continue
+        rel = (float(t_utc) - float(t0_ms)) / 1000.0
+        if -CLIP_VAGUE_S <= rel <= act_dur + CLIP_VAGUE_S:
+            continue
+        if any(-CLIP_TZ_PRE_S <= rel - h * 3600 <= act_dur + CLIP_TZ_POST_S
+               for h in (8, -8, 9, -9)):
+            continue                  # 差一个时区，photo.match 里会修正
+        c["t_utc"] = None
+        c["approx"] = True
+
+
 def _spread_clips(clips: list[dict], rt: dict) -> list[dict]:
     """给没有拍摄时间的素材补一个位置，均匀铺在活动区间里。
 
@@ -277,6 +326,10 @@ def _spread_clips(clips: list[dict], rt: dict) -> list[dict]:
     `photo.match` 会以「没有拍摄时间」把它们全部丢掉，表现就是
     「加了素材，回放里却什么都没有」。这里按数量均匀铺开，
     宁可位置不准，也别让人以为功能坏了。
+
+    **铺设前必须先排序**：批量选视频时相册返回的是倒序（最新在前），
+    直接按列表顺序铺会把后发生的铺到先发生的之前，回放里就成了
+    「明明后拍，却先出现」。
     """
     if not clips or not rt.get("n"):
         return clips
@@ -287,6 +340,7 @@ def _spread_clips(clips: list[dict], rt: dict) -> list[dict]:
     miss = [c for c in clips if c.get("t_utc") is None]
     if not miss:
         return clips
+    miss.sort(key=_clip_order_key)
     n = len(miss)
     for i, c in enumerate(miss):
         c["t_utc"] = int(t0 + span * 1000.0 * (i + 1) / (n + 1))
@@ -359,7 +413,6 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
     # 挂不上就自己成一个点
     out_clips = 0
     if clips:
-        clips = _spread_clips(clips, rt)
         # 先按**活动时间附近**剔除明显不属于这次活动的素材。
         # 素材库是全局的：上一次跑步/上一次比赛加的视频还留在里面，
         # 不先筛掉的话 clamp_ends 会把它们强行贴到这次活动的两端塞进成片——
@@ -380,11 +433,14 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                 if -CLIP_TOL_PRE_S <= rel <= act_dur + CLIP_TOL_POST_S:
                     keep.append(c)
             clips = keep
+            _mark_vague_times(clips, t0_ms, act_dur)
+        clips = _spread_clips(clips, rt)
         # cluster_m=0：素材**不合并**。两段视频拍在同一地点很常见（同路口前后各
         # 一段），合并后只会保留最长的一段，另一段就凭空消失了——用户要的是
         # 「素材完整插入」。clamp_ends：时间**接近**这次活动但落在外面的
         # （比如起跑前拍的几秒）也贴到最近的一端，不许丢。
         cg = photo_mod.match(clips, rt, t0_ms=rt.get("t0"),
+                             pre_s=CLIP_TZ_PRE_S, post_s=CLIP_TZ_POST_S,
                              cluster_m=0.0, clamp_ends=True,
                              # `rotate` 必须显式透传：photo.match 会重建 item，
                              # 不在白名单里的字段一律丢。漏掉它的话，页面拿到的
