@@ -313,14 +313,17 @@ CLIP_FIT_EDGE = 0.02
 
 def _fit_clip_times(clips: list[dict], t0_ms: int, act_dur: float,
                     pre_s: float, post_s: float) -> int:
-    """把真实拍摄时间按比例压进活动时间轴，返回改了几张。
+    """把**落在活动窗口外**的拍摄时间按比例收进活动时间轴，返回改了几张。
 
-    只在**有素材落在吸附窗口外**时才动手：全部落在 `[-pre_s, dur+post_s]`
-    里的话真实时间最准，一张都不许动。
+    窗口内的素材一张都不动——真实时间最准，跟着 GPS/轨迹走就是对的。
+    只有窗外那部分（赛前很久、赛后很久）需要处理，否则它们会被
+    `clamp_ends` 全贴到端点，一堆照片就全堆在起点/终点。
 
-    压缩是整批一起做的（同一批素材当成一个时间区间，线性映射到活动区间），
-    这样先后顺序、相邻间隔的比例都保留，不会出现「下午 5 点的排到 10 点前」，
-    也不会把多出来的全挤到终点。
+    映射是**分段**的：
+    * 赛前段 `[lo, -pre_s]`   → `[0, a]`
+    * 窗口段 `[-pre_s, dur+post_s]` → `[a, b]`（保持原有相对位置）
+    * 赛后段 `[dur+post_s, hi]` → `[b, dur]`
+    这样活动内的照片位置不变，窗外的按时间顺序在两端的小区间里排开。
     """
     timed = [c for c in clips if c.get("t_utc")]
     if not timed or not t0_ms or act_dur <= 0:
@@ -332,7 +335,7 @@ def _fit_clip_times(clips: list[dict], t0_ms: int, act_dur: float,
     # 先做整时区归一：视频的 creation_time 常把本地时间当 UTC 写，差 8/9 小时。
     # **只对视频**做：照片的 EXIF / 相册日期本身就是准确的本地时间，硬套
     # 「+8 小时能落进窗口」会把「早上 10:05」改成「18:05」，反而把顺序弄反
-    # （10:05 的照片排到 17:20 后面）。照片一律只走后面的比例映射。
+    # （10:05 的照片排到 17:20 后面）。照片一律只走后面的分段映射。
     for c in timed:
         if (c.get("kind") or "").lower() != "video":
             continue
@@ -344,26 +347,40 @@ def _fit_clip_times(clips: list[dict], t0_ms: int, act_dur: float,
                 c["t_utc"] = int(float(c["t_utc"]) - h * 3600 * 1000)
                 break
 
+    lo_in, hi_in = -pre_s, act_dur + post_s
     rels = [_rel(c) for c in timed]
-    if all(-pre_s <= r <= act_dur + post_s for r in rels):
-        return 0                      # 都在窗口里，保持真实时间
-
+    if all(0 <= r <= act_dur for r in rels):
+        return 0                      # 全在活动时段内，保持真实时间
     lo, hi = min(rels), max(rels)
-    a, b = act_dur * CLIP_FIT_EDGE, act_dur * (1 - CLIP_FIT_EDGE)
-    if hi - lo <= 1e-6:
-        # 只有一张且在窗外：压到最近的内侧，别贴死在终点
-        c = timed[0]
-        rel = a if _rel(c) < 0 else b
-        c["t_utc"] = int(float(t0_ms) + rel * 1000)
-        c["approx"] = True
-        return 1
 
+    def _map(rel: float) -> float:
+        # 活动时段内**原样保留**：活动期间拍的照片，真实时间就是最准的锚点，
+        # 一点都不许挪；只有两端（赛前很久 / 赛后很久，以及前后容差里的
+        # 几分钟）压到端点附近的小区间里。
+        if 0 <= rel <= act_dur:
+            return rel
+        if rel < 0:
+            room = min(pre_s, act_dur * CLIP_FIT_EDGE)
+            if lo >= 0:
+                return 1.0
+            # 至少留 1 秒：贴在 0 秒会让光点从轨道中间跳回起点
+            return max(1.0, room * (rel - lo) / (0 - lo))
+        # 赛后：`[dur, hi]` → `[dur - room, dur]`（终点附近，按先后排开）
+        room = min(post_s, act_dur * CLIP_FIT_EDGE)
+        if hi <= act_dur:
+            return act_dur
+        return (act_dur - room) + room * (rel - act_dur) / (hi - act_dur)
+
+    changed = 0
     for c in timed:
-        new = a + (_rel(c) - lo) / (hi - lo) * (b - a)
-        c["t_utc"] = int(float(t0_ms) + new * 1000)
+        rel = _rel(c)
+        if 0 <= rel <= act_dur:
+            continue                  # 活动时段内一张都不动
+        c["t_utc"] = int(float(t0_ms) + _map(rel) * 1000)
         c["approx"] = True
         c["t_fit"] = True
-    return len(timed)
+        changed += 1
+    return changed
 
 
 def _mark_vague_times(clips: list[dict], t0_ms: int, act_dur: float) -> None:
