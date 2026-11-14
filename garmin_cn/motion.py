@@ -304,6 +304,64 @@ def _clip_order_key(c: dict) -> tuple:
         return (2, "0")
 
 
+# 拍摄时间映射：素材像「赛前、赛中、赛后」那样跨了几个小时，而活动本身只有
+# 一小时——真实时间→活动时间轴必须压缩，否则只有两条烂路可走：贴到端点
+# （一多就全堆在终点连播）或置空均布（位置和顺序都变成估的）。
+# 映射后两端各留 CLIP_FIT_EDGE，别和起终点的标注挤在一起。
+CLIP_FIT_EDGE = 0.02
+
+
+def _fit_clip_times(clips: list[dict], t0_ms: int, act_dur: float,
+                    pre_s: float, post_s: float) -> int:
+    """把真实拍摄时间按比例压进活动时间轴，返回改了几张。
+
+    只在**有素材落在吸附窗口外**时才动手：全部落在 `[-pre_s, dur+post_s]`
+    里的话真实时间最准，一张都不许动。
+
+    压缩是整批一起做的（同一批素材当成一个时间区间，线性映射到活动区间），
+    这样先后顺序、相邻间隔的比例都保留，不会出现「下午 5 点的排到 10 点前」，
+    也不会把多出来的全挤到终点。
+    """
+    timed = [c for c in clips if c.get("t_utc")]
+    if not timed or not t0_ms or act_dur <= 0:
+        return 0
+
+    def _rel(c: dict) -> float:
+        return (float(c["t_utc"]) - float(t0_ms)) / 1000.0
+
+    # 先做整时区归一：视频的 creation_time 常把本地时间当 UTC 写，差 8/9 小时。
+    # 这一条必须在压缩之前，否则差 8 小时的那段会被当成「拍在别的时段」压进来。
+    for c in timed:
+        rel = _rel(c)
+        if -pre_s <= rel <= act_dur + post_s:
+            continue
+        for h in (8, -8, 9, -9):
+            if -pre_s <= rel - h * 3600 <= act_dur + post_s:
+                c["t_utc"] = int(float(c["t_utc"]) - h * 3600 * 1000)
+                break
+
+    rels = [_rel(c) for c in timed]
+    if all(-pre_s <= r <= act_dur + post_s for r in rels):
+        return 0                      # 都在窗口里，保持真实时间
+
+    lo, hi = min(rels), max(rels)
+    a, b = act_dur * CLIP_FIT_EDGE, act_dur * (1 - CLIP_FIT_EDGE)
+    if hi - lo <= 1e-6:
+        # 只有一张且在窗外：压到最近的内侧，别贴死在终点
+        c = timed[0]
+        rel = a if _rel(c) < 0 else b
+        c["t_utc"] = int(float(t0_ms) + rel * 1000)
+        c["approx"] = True
+        return 1
+
+    for c in timed:
+        new = a + (_rel(c) - lo) / (hi - lo) * (b - a)
+        c["t_utc"] = int(float(t0_ms) + new * 1000)
+        c["approx"] = True
+        c["t_fit"] = True
+    return len(timed)
+
+
 def _mark_vague_times(clips: list[dict], t0_ms: int, act_dur: float) -> None:
     """把「时间不像拍摄时间」的素材的 `t_utc` 清掉，交给 `_spread_clips` 铺开。
 
@@ -473,6 +531,10 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                 if -CLIP_TOL_PRE_S <= rel <= act_dur + CLIP_TOL_POST_S:
                     keep.append(c)
             clips = keep
+            # 有素材落在吸附窗口外时，把真实拍摄时间整批压进活动时间轴：
+            # 直接留给 photo.match 只会被 clamp 到端点，一多就全堆在终点。
+            _fit_clip_times(clips, t0_ms, act_dur,
+                            CLIP_TZ_PRE_S, CLIP_TZ_POST_S)
             _mark_vague_times(clips, t0_ms, act_dur)
         clips = _spread_clips(clips, rt)
         # 视频和图片分开吸附：
