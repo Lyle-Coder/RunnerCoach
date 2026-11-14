@@ -330,8 +330,12 @@ def _fit_clip_times(clips: list[dict], t0_ms: int, act_dur: float,
         return (float(c["t_utc"]) - float(t0_ms)) / 1000.0
 
     # 先做整时区归一：视频的 creation_time 常把本地时间当 UTC 写，差 8/9 小时。
-    # 这一条必须在压缩之前，否则差 8 小时的那段会被当成「拍在别的时段」压进来。
+    # **只对视频**做：照片的 EXIF / 相册日期本身就是准确的本地时间，硬套
+    # 「+8 小时能落进窗口」会把「早上 10:05」改成「18:05」，反而把顺序弄反
+    # （10:05 的照片排到 17:20 后面）。照片一律只走后面的比例映射。
     for c in timed:
+        if (c.get("kind") or "").lower() != "video":
+            continue
         rel = _rel(c)
         if -pre_s <= rel <= act_dur + post_s:
             continue
@@ -481,6 +485,11 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
 
     out_photos = []
     if photos:
+        # 旧的照片入口走同一套时间映射，别让它成为「堆在终点」的漏网之路
+        _ts = rt.get("t") or []
+        if rt.get("t0") and _ts:
+            _fit_clip_times(photos, rt["t0"], float(_ts[-1]),
+                            CLIP_TZ_PRE_S, CLIP_TZ_POST_S)
         got = photo_mod.match(photos, rt, t0_ms=rt.get("t0"))
         for g in got["points"]:
             x, y = _xy_at(rt, pts, g["t"])

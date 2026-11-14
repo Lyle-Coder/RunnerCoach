@@ -2489,13 +2489,24 @@ def run() -> int:
                                    MOT.CLIP_TZ_PRE_S,
                                    MOT.CLIP_TZ_POST_S) == 0, \
             "活动窗内的真实时间被瞎改了"
-        # 差整时区的先归一，不能当成「拍在别的时段」一起压缩
-        _tzc = [{"name": "v", "path": "/tmp/v",
+        # 差整时区的**视频**先归一，不能当成「拍在别的时段」一起压缩
+        _tzc = [{"name": "v", "path": "/tmp/v", "kind": "video",
                  "t_utc": _rt2["t0"] + 60_000 + 8 * 3600_000}]
         MOT._fit_clip_times(_tzc, _rt2["t0"], 120.0,
                             MOT.CLIP_TZ_PRE_S, MOT.CLIP_TZ_POST_S)
         assert abs((_tzc[0]["t_utc"] - _rt2["t0"]) / 1000 - 60) < 1, \
             "整时区偏差没在压缩前归一，位置会整体错位"
+        # 照片绝不能被时区归一碰：早 7.4 小时那张 +8h 恰好落进窗口，
+        # 一改就会排到晚 11 分钟那张**后面**——正是用户反复报的
+        # 「下午 5 点的排到早上 10 点前面」。照片的 EXIF 本来就是真时间。
+        _ord = [{"name": "m", "path": "/tmp/m", "kind": "image",
+                 "t_utc": _rt2["t0"] - 7 * 3600_000 - 24 * 60_000},
+                {"name": "e", "path": "/tmp/e", "kind": "image",
+                 "t_utc": _rt2["t0"] - 11 * 60_000}]
+        MOT._fit_clip_times(_ord, _rt2["t0"], 2886.0,
+                            MOT.CLIP_TZ_PRE_S, MOT.CLIP_TZ_POST_S)
+        assert _ord[0]["t_utc"] < _ord[1]["t_utc"], \
+            "照片被时区归一改错了顺序（早上的排到下午后面）"
         assert "_fit_clip_times(clips, t0_ms, act_dur," in _mo_src, \
             "回放链路没接时间压缩映射，跨时段的照片还是会堆在终点"
         # 差 8 小时（整时区）：保留，交给 photo.match 修正
