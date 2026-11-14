@@ -146,11 +146,22 @@ def _week_cells(plan: dict | None, today: str,
         else:
             name, sub = "休", ""
         act = done.get(date) or {}
-        if d.get("done"):
+        # 两条证据取并集：
+        #   ① plan 快照里的 done —— 日历/教练计划已经按完成证据标好的；
+        #   ② 本地库当天实际有活动（done_by_day，分钟数够才算）。
+        # 只认 ① 曾经出过事：`from_calendar()` 产出的 week 里根本没有 done
+        # 字段，于是一图流把整周练过的日子全画成「未练」，而 App 里数据都在。
+        trained = bool(d.get("done")) or (act.get("min") or 0) >= 5
+        has_plan = bool(items)
+        if has_plan and trained:
             badge = '<div class="act ok">已完成</div>'
+        elif trained:
+            # 休息日自己还去练了：是好事，但别写成「完成了课表」
+            badge = '<div class="act ok">已练</div>'
         elif is_today:
             badge = '<div class="act void">今天</div>'
-        elif date < today:
+        elif date < today and has_plan:
+            # 只有**排了课又没练**才叫未练；休息日不该被判成漏练
             badge = '<div class="act miss">未练</div>'
         else:
             badge = '<div class="act void">—</div>'

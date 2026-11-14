@@ -413,9 +413,20 @@ class SyncService:
         out = self.store.path.parent / "plan.json"
         if not full:
             full = self._plan_full_due()
+        # 本周已经练过的本地记录：日历里的 activity 项常常只有标题、没有距离
+        # 和时长，光靠它判不出「这门课完成没有」，一整周都会被画成「未练」。
+        acts: list[dict] = []
+        try:
+            _d = dt.date.fromisoformat(today or dt.date.today().isoformat())
+            acts = self.store.activities(
+                (_d - dt.timedelta(days=_d.weekday())).isoformat(),
+                _d.isoformat(), dedupe=False)
+        except Exception:
+            acts = []
         try:
             data = fetch(self.client, today, out_path=out,
-                         span=None if full else NEAR_SPAN_DAYS)
+                         span=None if full else NEAR_SPAN_DAYS,
+                         activities=acts)
         except Exception as e:
             self.errors.append(f"plan: {type(e).__name__} {e}")
             return {"available": False, "reason": str(e)}

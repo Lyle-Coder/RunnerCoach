@@ -623,6 +623,46 @@ def run() -> int:
             _rows = _week_cells(_got, "2026-11-07")
             assert _rows.count('class="wkd') == 7, "一图流周视图应横排 7 格"
             assert '<div class="wk">' in _rows, "横排容器必须存在，不能退回竖排 7 行"
+
+            # 「我明明练了却显示未练」的回归：日历路径产出的 week 里 done 可能
+            # 为空（活动项没有距离/时长），必须用本地库活动兜底。
+            _wk = {"week": [
+                {"date": "2026-11-02", "dow": "周一",
+                 "items": [{"name": "轻松跑"}], "acts": [], "rest": False},
+                {"date": "2026-11-03", "dow": "周二",
+                 "items": [{"name": "间歇"}], "acts": [], "rest": False},
+                {"date": "2026-11-04", "dow": "周三",
+                 "items": [], "acts": [], "rest": True},
+            ]}
+            _cells = _week_cells(
+                _wk, "2026-11-07",
+                {"2026-11-02": {"km": 8.0, "min": 45}}).split('class="wkd')[1:]
+            assert "已完成" in _cells[0], \
+                "本地库练过、快照里没有 done，一图流仍判成未练"
+            assert "未练" in _cells[1], "真没练的那天反而不标未练"
+            assert "未练" not in _cells[2], "休息日被当成漏练"
+            _mix = _week_cells(
+                {"week": [
+                    {"date": "2026-11-02", "dow": "周一",
+                     "items": [{"name": "轻松跑"}], "acts": [], "rest": False},
+                    {"date": "2026-11-04", "dow": "周三",
+                     "items": [], "acts": [], "rest": True}]},
+                "2026-11-07", {"2026-11-02": {"km": 8.0, "min": 45},
+                               "2026-11-04": {"km": 5.0, "min": 30}}
+            ).split('class="wkd')[1:]
+            assert "已完成" in _mix[0], "有排课且练过，该是已完成"
+            assert "已练" in _mix[1] and "未练" not in _mix[1], \
+                "休息日练了却写成「已完成」，会被误读成完成了课表"
+            # 日历归一化也要吃本地活动，否则 week[].done 和「本周完成」都是 0
+            _cal2 = PL.from_calendar(
+                [{"date": "2026-11-02", "itemType": "workout", "title": "轻松跑",
+                  "sportTypeKey": "running", "estimatedDistanceInMeters": 8000}],
+                "2026-11-07",
+                activities=[{"date": "2026-11-02", "type": "running",
+                             "distance_m": 8200, "duration_s": 2700}])
+            _w2 = next(x for x in _cal2["week"] if x["date"] == "2026-11-02")
+            assert _w2["done"], "传了本地活动还把已完成判成未练"
+            assert not _w2["missed"]
         finally:
             if _old is None:
                 _os.environ.pop("GARMIN_HOME", None)
@@ -5479,11 +5519,12 @@ def run() -> int:
     assert len(_pins_far) == 3 and all(
         p["kind"] != "flight" for p in _pins_far), \
         "机场被画进赛道图，底图取景会被拉到整个城市"
-    assert all("uri.amap.com/navigation" in p["url"] for p in _pins), \
-        "标注点没有高德导航链接"
+    assert all("uri.amap.com/marker" in p["url"] for p in _pins), \
+        "标注点该是单点「看位置」，导航留给图下的按钮"
     assert "uri.amap.com/marker" in _EVUI._amap_url(30.0, 120.0, "测试", nav=False), \
         "「看位置」应该走单点标注而不是路径规划"
-    _pq = _upx.parse_qs(_upx.urlparse(_pins[0]["url"]).query)
+    _pq = _upx.parse_qs(_upx.urlparse(
+        _EVUI._amap_url(30.0, 120.0, "测试", nav=True)).query)
     _to = _pq["to"][0].split(",")
     _plon, _plat = float(_to[0]), float(_to[1])
     assert _pq["callnative"][0] == "1", "没让高德尝试唤起 App"
@@ -5502,8 +5543,8 @@ def run() -> int:
         "原生动作传了 WGS 坐标；高德 dev=0 会偏 400~500 m"
     assert _upx.unquote(_ap[2]) == "测试 起点", \
         "地名里的逗号没清掉，Kotlin split 会切错载荷"
-    assert all(p.get("act", "").startswith("amapNav:") for p in _pins), \
-        "赛道图标注没带原生导航动作，点了还是开网页"
+    assert all(p.get("act", "").startswith("amapView:") for p in _pins), \
+        "赛道图标注应该只做「看位置」：导航有图下那排按钮，点标注别再直接起步"
     assert _EVUI._pin_tag([]) == ""
     assert _EVUI._pin_tag([[30.67, 104.06]]) == \
            _EVUI._pin_tag([[30.67, 104.06]]), "同样的 POI 每次换缓存名会反复取图"
@@ -5521,8 +5562,8 @@ def run() -> int:
         "矢量俯视图上的起终点标注没渲染"
     assert _svg_pins.count("<a href=") >= 3, \
         "三个点都得能点，不能只画个圆"
-    assert _svg_pins.count('data-act="amapNav:') >= 3, \
-        "SVG 标注没带原生动作，手机上点标注仍会跳网页"
+    assert _svg_pins.count('data-act="amapView:') >= 3, \
+        "SVG 标注没带「看位置」动作，手机上点标注仍会跳网页"
     # 图上圆点太小，还得有一排大按钮兜底
     with _mock.patch.object(_BM3, "available", lambda: False):
         _map_html = _EVUI._course_map(
@@ -5534,6 +5575,8 @@ def run() -> int:
         "机场/车站又混进赛道图导航按钮了"
     assert 'data-act="amapNav:' in _map_html, \
         "赛道图快捷导航按钮没接原生动作"
+    assert 'data-act="amapView:' in _map_html, \
+        "地图标注没改成看位置，会和下面的导航按钮重复"
     _trip_html_amap = _EVUI._trips_html("self-2026", "")
     assert 'data-act="amapNav:' in _trip_html_amap and \
            'data-act="amapView:' in _trip_html_amap, \
