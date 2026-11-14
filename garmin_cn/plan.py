@@ -66,7 +66,8 @@ def _task_date(task: dict) -> str | None:
 
 
 def normalize(detail: dict, today: str | None = None,
-              activity_days: set[str] | None = None) -> dict:
+              activity_days: set[str] | None = None,
+              activities: list[dict] | None = None) -> dict:
     """把 taskList 展开成「按日期分组的本周课表 + 今天的建议 + 下一次训练」。"""
     today = today or dt.date.today().isoformat()
     tasks = detail.get("taskList") or []
@@ -146,7 +147,7 @@ def normalize(detail: dict, today: str | None = None,
     }
     # 教练计划以前完全没有「完成」概念，本周永远是「已排」，也算不出来；
     # 用同一套证据（本地库 / 日历活动）统一标注。
-    return annotate(data, activity_days, today)
+    return annotate(data, activity_days, today, activities)
 
 
 def _num(v) -> float:
@@ -316,7 +317,8 @@ def annotate(data: dict, activity_days: set[str] | None = None,
 
 
 def from_calendar(items: list[dict] | None, today: str | None = None,
-                  activity_days: set[str] | None = None) -> dict:
+                  activity_days: set[str] | None = None,
+                  activities: list[dict] | None = None) -> dict:
     """日历项 → 与 `normalize()` 相同结构的课表。
 
     日历里三类东西必须分开，分不清就会出现「计划没做被标成已完成」：
@@ -330,8 +332,12 @@ def from_calendar(items: list[dict] | None, today: str | None = None,
     最后一条是旧实现的坑：它把「今天之前的所有项」都当已完成，于是上周计划了
     但没跑的课被悄悄抹掉，历史完成率永远是 100%。
 
-    日期窗口是「本周一 ~ 今天 + 140 天」；`activity_days` 是本地库里有活动的日期，
-    用来兜住「高驰记录、佳明日历里没有」的情况。
+    日期窗口是「本周一 ~ 今天 + 140 天」。
+
+    **完成判定必须带上本地库**：日历里的 activity 项往往只有标题，没有距离和
+    时长，`completion()` 拿它核不出「这门课练够了」，于是一整周都画成「未练」，
+    而 App 里明明有记录。`activities` 传本地库的真活动行，`activity_days`
+    兜住「高驰记录、佳明日历里压根没有」的情况。
     """
     today = today or dt.date.today().isoformat()
     d = dt.date.fromisoformat(today)
@@ -417,7 +423,7 @@ def from_calendar(items: list[dict] | None, today: str | None = None,
         "rest_days_in_week": sum(1 for w in week if w["rest"]),
         "done_days": sorted(done_ids),
     }
-    return annotate(data, activity_days, today)
+    return annotate(data, activity_days, today, activities)
 
 
 def _months(today: str, span: int = LOOKAHEAD_DAYS) -> list[tuple[int, int]]:
@@ -438,11 +444,13 @@ def _months(today: str, span: int = LOOKAHEAD_DAYS) -> list[tuple[int, int]]:
 
 def fetch_calendar(client, today: str | None = None,
                    activity_days: set[str] | None = None,
-                   span: int | None = None) -> dict:
+                   span: int | None = None,
+                   activities: list[dict] | None = None) -> dict:
     """按月拉日历并归一化。一个排课都没有时返回 available=False。
 
     `span` 是向前看的天数，决定要请求几个月：日常同步传 `NEAR_SPAN_DAYS`
     （3 次），首次/每周全量用默认的 `LOOKAHEAD_DAYS`（7 次）。
+    `activities` 是本地库的活动行，用来判「这天到底练没练」。
     """
     today = today or dt.date.today().isoformat()
     items: list[dict] = []
@@ -460,7 +468,7 @@ def fetch_calendar(client, today: str | None = None,
             items.extend(data)
     if not items:
         return {"available": False, "reason": "佳明日历里还没有排课"}
-    return from_calendar(items, today, activity_days)
+    return from_calendar(items, today, activity_days, activities)
 
 
 def diag(client, today: str | None = None) -> dict:
@@ -534,7 +542,7 @@ def diag(client, today: str | None = None) -> dict:
 
 def fetch(client, today: str | None = None, out_path: Path | None = None,
           source: str = "auto", activity_days: set[str] | None = None,
-          span: int | None = None) -> dict:
+          span: int | None = None, activities: list[dict] | None = None) -> dict:
     """拉一次训练安排。取不到就返回 available=False，不抛异常。
 
     `span` 透传给 `fetch_calendar()`：日常同步用 `NEAR_SPAN_DAYS` 少发请求，
@@ -552,7 +560,8 @@ def fetch(client, today: str | None = None, out_path: Path | None = None,
 
     if source in ("auto", "calendar"):
         try:
-            cal = fetch_calendar(client, today, activity_days, span=span)
+            cal = fetch_calendar(client, today, activity_days, span=span,
+                                 activities=activities)
         except Exception as e:
             cal = {"available": False, "reason": f"{type(e).__name__}: {e}"}
         use = cal.get("scheduled") if source == "auto" else cal.get("available")
@@ -578,7 +587,7 @@ def fetch(client, today: str | None = None, out_path: Path | None = None,
         detail = client.adaptive_plan(plan.get("trainingPlanId"))
     except Exception:
         detail = None
-    data = normalize(detail or plan, today, activity_days)
+    data = normalize(detail or plan, today, activity_days, activities)
     data["source"] = "coach"
 
     if out_path:
