@@ -6,6 +6,7 @@ import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.Dialog
+import android.app.DownloadManager
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
@@ -3355,8 +3356,8 @@ class MainActivity : Activity() {
      * 直接问 Gitee 的公开接口，不需要自建后端、不需要推送。
      * 静默检查每天最多一次（gc_prefs 里记时间戳），用户点「稍后」会把该版本
      * 记成已跳过，下次换版本才再提；手动检查不受节流。
-     * 下载走浏览器：APK 是正式签名，Android 覆盖安装会校验签名一致，
-     * 不会出现「装上一个同包名的野包」。
+     * APK 由系统下载管理器保存，明确覆盖 Gitee 的 application/zip 类型，
+     * 下载完成后用户从系统下载通知打开安装。
      */
     private fun checkUpdate(silent: Boolean) {
         if (port == 0) return
@@ -3398,7 +3399,7 @@ class MainActivity : Activity() {
                 if (silent && prefs.getString("update_skipped", "") == tag) return@ui
                 val notes = r.optString("notes", "")
                 val tv = TextView(this).apply {
-                    text = notes.ifBlank { "本次更新没有写说明，点「去下载」看发布页。" }
+                    text = notes.ifBlank { "本次更新未提供说明，下载后可从系统下载记录打开安装。" }
                     textSize = 13f
                     setPadding(dp(20), dp(8), dp(20), dp(8))
                 }
@@ -3406,23 +3407,70 @@ class MainActivity : Activity() {
                 AlertDialog.Builder(this)
                     .setTitle("发现新版本 " + tag)
                     .setView(sv)
-                    .setPositiveButton("去下载") { _, _ ->
-                        val url = r.optString("url", "")
-                        if (url.isBlank()) {
-                            toast("没有拿到下载地址，请到 Gitee 发布页手动下载")
-                        } else {
-                            try {
-                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                            } catch (e: Exception) {
-                                toast("打不开浏览器：$url")
-                            }
-                        }
+                    .setPositiveButton(if (r.optString("apk").isBlank()) "查看发布页" else "下载 APK") { _, _ ->
+                        downloadUpdate(r)
                     }
+                    .setNeutralButton("下载记录") { _, _ -> openUpdateDownloads() }
                     .setNegativeButton("稍后") { _, _ ->
                         prefs.edit().putString("update_skipped", tag).apply()
                     }
                     .show()
             }
+        }
+    }
+
+    private fun downloadUpdate(release: JSONObject) {
+        val name = release.optString("apk")
+        if (name.isBlank()) {
+            // No APK in this release: its URL is a webpage, never a download job.
+            openUpdatePage(release.optString("page", release.optString("url")))
+            return
+        }
+        thread {
+            try {
+                val state = ApkDownload.enqueue(applicationContext, release.optString("url"), name)
+                ui {
+                    when (state) {
+                        ApkDownload.State.QUEUED -> toast("已开始下载 APK，完成后点系统下载通知安装；文件在「下载/RunnerCoach」")
+                        ApkDownload.State.RUNNING -> {
+                            toast("该版本正在下载，可在系统下载记录查看进度")
+                            openUpdateDownloads()
+                        }
+                        ApkDownload.State.DOWNLOADED -> {
+                            toast("该版本已下载，请在下载记录中打开 APK 安装")
+                            openUpdateDownloads()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "无法启动 APK 下载", e)
+                ui {
+                    AlertDialog.Builder(this)
+                        .setTitle("无法开始下载")
+                        .setMessage("请确认系统下载管理器已启用，并检查下载目录是否可用。也可以到发布页手动下载。")
+                        .setPositiveButton("查看发布页") { _, _ -> openUpdatePage(release.optString("page")) }
+                        .setNegativeButton("关闭", null)
+                        .show()
+                }
+            }
+        }
+    }
+
+    private fun openUpdateDownloads() {
+        try {
+            startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS))
+        } catch (_: Exception) {
+            toast("请在文件管理器的「下载/RunnerCoach」中查看 APK")
+        }
+    }
+
+    private fun openUpdatePage(url: String) {
+        try {
+            val uri = Uri.parse(url)
+            require(uri.scheme == "https" && !uri.host.isNullOrBlank())
+            startActivity(Intent(Intent.ACTION_VIEW, uri))
+        } catch (_: Exception) {
+            toast("打不开发布页，请稍后重试")
         }
     }
 
