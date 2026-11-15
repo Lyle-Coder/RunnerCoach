@@ -1648,6 +1648,14 @@ def run() -> int:
         "缩略图遍历的照片列表没挂 window"
     assert "window.__miniErr" in _msrc2, \
         "缩略图绘制没有异常兜底，一处出错会让车头/卡片整帧不画"
+    # 照片密集时小图会叠在一起：必须有多方向 + 由近到远的避让，
+    # 且位置只算一次（缓存到 _mx/_my），否则每帧重算会让画面抖。
+    assert "const DIRS = [[1, 0], [-1, 0], [0, -1], [0, 1]" in _msrc2, \
+        "缩略图没有多方向避让，密集时会堆成一坨"
+    assert "const overlap = r =>" in _msrc2, \
+        "缩略图没做重叠面积判断"
+    assert "p._mx = best.x; p._my = best.y;" in _msrc2, \
+        "缩略图位置没有缓存，每帧重算会抖动"
     assert "Math.max(492 + ph / 2" not in _msrc2, \
         "卡片又钉回画面中央了"
     assert "1.2 * Math.max(1, (x.shots || []).length)" in _msrc2, \

@@ -1169,19 +1169,51 @@ function drawTrack(rt, hd) {
   // 越早的越淡（不抢当前画面），整条路线看下来就是「照片地图」。
   try {
   const SHOWN = window.__shown || [];
+  const PLACED = window.__placed || (window.__placed = []);
+  const MW = 84, MH = 84;
+  // 照片密集时小图会叠在一起：沿标记点四周 12 个方向、由近到远找空位，
+  // 全被占了就选重叠面积最小的那个。位置**只算一次**（存在 p._mx/_my），
+  // 之后每帧不再动，否则画面会抖。
+  const DIRS = [[1, 0], [-1, 0], [0, -1], [0, 1], [1, -0.6], [1, 0.6],
+                [-1, -0.6], [-1, 0.6], [0.6, -1], [0.6, 1], [-0.6, -1], [-0.6, 1]];
+  const overlap = r => {
+    let sum = 0;
+    for (const q of PLACED) {
+      const ox = Math.min(r.x + r.w, q.x + q.w) - Math.max(r.x, q.x);
+      const oy = Math.min(r.y + r.h, q.y + q.h) - Math.max(r.y, q.y);
+      if (ox > 0 && oy > 0) sum += ox * oy;
+    }
+    return sum;
+  };
   for (const p of (window.__ps || [])) {
-    if (!p._done && p._b && playT > p._b + 0.05) { p._done = true; SHOWN.push(p); }
+    if (p._done || !p._b || playT <= p._b + 0.05) continue;
+    p._done = true;
+    SHOWN.push(p);
+    if (!isFinite(p.x) || !isFinite(p.y)) continue;
+    let best = null, bestOv = Infinity;
+    for (const d of [26, 46, 70, 96, 124, 156]) {
+      for (const [ux, uy] of DIRS) {
+        let x = p.x + ux * (d + MW / 2) - MW / 2;
+        let y = p.y + uy * (d + MH / 2) - MH / 2;
+        x = Math.max(16, Math.min(W - 16 - MW, x));
+        y = Math.max(140, Math.min(H - 170 - MH, y));
+        const r = { x, y, w: MW, h: MH };
+        const ov = overlap(r);
+        if (ov === 0) { best = r; bestOv = 0; break; }
+        if (ov < bestOv) { bestOv = ov; best = r; }
+      }
+      if (bestOv === 0) break;
+    }
+    if (best) { p._mx = best.x; p._my = best.y; PLACED.push(best); }
   }
   for (let k = 0; k < SHOWN.length; k++) {
     const p = SHOWN[k];
-    if (!isFinite(p.x) || !isFinite(p.y)) continue;
+    if (p._mx == null) continue;
     const s0 = p.shots && p.shots[0];
     const im = s0 && IMG.get(s0.src);
     if (!im) continue;
-    const w = 84, h = 84;
-    let x = p.x + 24, y = p.y - h / 2;
-    if (x + w > W - 20) x = p.x - 24 - w;      // 靠右边就翻到左侧
-    y = Math.max(150, Math.min(H - 190, y));
+    const w = MW, h = MH;
+    const x = p._mx, y = p._my;
     ctx.save();
     ctx.globalAlpha = (SHOWN.length - 1 - k) > 8 ? 0.35 : 0.92;
     rr(x - 3, y - 3, w + 6, h + 6, 13);
