@@ -1632,6 +1632,32 @@ def run() -> int:
         "没记录停留窗口，轮播取不到当前该显示第几张"
     assert "all.length > 2 && p._b > p._a" in _msrc2, "一个点多张照片没做轮播"
     assert "function popLayout(p, picked)" in _msrc2, "布局没接轮播选中的那一张"
+    # 卡片必须跟着标记点走：固定居中时，标记点在哪都一样，
+    # 看起来就是「照片和地图上的点没关系」。
+    assert "const mky = Math.max(160, Math.min(H - 200, p.y));" in _msrc2, \
+        "卡片没跟着标记点定位，展示和标注还是两张皮"
+    assert "ctx.arc(mkx, mky, 9, 0, 7)" in _msrc2, \
+        "没有从卡片指向标记点的引线，看不出对应关系"
+    # 展示过的照片缩成小图留在轨迹旁：列表必须挂 window —— drawFrame 在另一个
+    # 作用域里，直接引用 const 会报 "ps is not defined"，整帧都画不出来。
+    assert "window.__shown = [];" in _msrc2, \
+        "已展示照片列表没挂 window，drawFrame 里会引用不到"
+    assert "const SHOWN = window.__shown || [];" in _msrc2, \
+        "缩略图没从 window 取列表，跨作用域会崩"
+    assert "window.__ps || []" in _msrc2, \
+        "缩略图遍历的照片列表没挂 window"
+    assert "window.__miniErr" in _msrc2, \
+        "缩略图绘制没有异常兜底，一处出错会让车头/卡片整帧不画"
+    # 照片密集时小图会叠在一起：必须有多方向 + 由近到远的避让，
+    # 且位置只算一次（缓存到 _mx/_my），否则每帧重算会让画面抖。
+    assert "const DIRS = [[1, 0], [-1, 0], [0, -1], [0, 1]" in _msrc2, \
+        "缩略图没有多方向避让，密集时会堆成一坨"
+    assert "const overlap = r =>" in _msrc2, \
+        "缩略图没做重叠面积判断"
+    assert "p._mx = best.x; p._my = best.y;" in _msrc2, \
+        "缩略图位置没有缓存，每帧重算会抖动"
+    assert "Math.max(492 + ph / 2" not in _msrc2, \
+        "卡片又钉回画面中央了"
     assert "1.2 * Math.max(1, (x.shots || []).length)" in _msrc2, \
         "一簇多张的停留没按张数给，会一闪而过"
     # 素材列表必须是固定高度的可滚列表：AlertDialog.customPanel 在部分机型上
@@ -3742,8 +3768,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.3.8 → 139）。
-    assert 'versionCode = 139' in (
+    # 每次发版要同步改这里（本次 1.3.9 → 140）。
+    assert 'versionCode = 140' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。

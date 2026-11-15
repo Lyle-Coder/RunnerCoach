@@ -922,6 +922,12 @@ const RAMP = 0.70;                  // 加减速时长（播放秒）
 const PWIN = [];                    // 每处照片的播放时间窗口 {a: 停住开始, b: 停住结束}
 const TL = (function () {
   const ps = (D.photos || []).slice().sort((a, b) => a.t - b.t);
+// 调试用：暴露排好序的照片点，出问题时能直接问「第 i 张在第几秒」
+window.__ps = ps;
+// 已经展示完的照片：窗口过去后缩成小图钉在轨迹旁，整条路线看下来像照片地图。
+// 必须挂 window：drawFrame 在另一个作用域里，直接引用这里声明的 const 会
+// 报 "ps is not defined"，整帧（车头、卡片）都画不出来。
+window.__shown = [];
   const n = ps.length;
   // 素材停留**叠加**在巡航时长之上，不挤占轨迹节奏：
   //   视频按自身时长整段播完，图片/照片按固定停留。
@@ -1158,6 +1164,72 @@ function drawTrack(rt, hd) {
     ctx.fillStyle = done ? '#fff' : 'rgba(255,255,255,.6)'; ctx.fill();
     ctx.lineWidth = 5; ctx.strokeStyle = ACCENT; ctx.stroke();
   }
+
+  // 展示过的照片缩成小图留在轨迹旁：走完一处就在那儿钉一张，
+  // 越早的越淡（不抢当前画面），整条路线看下来就是「照片地图」。
+  try {
+  const SHOWN = window.__shown || [];
+  const PLACED = window.__placed || (window.__placed = []);
+  const MW = 84, MH = 84;
+  // 照片密集时小图会叠在一起：沿标记点四周 12 个方向、由近到远找空位，
+  // 全被占了就选重叠面积最小的那个。位置**只算一次**（存在 p._mx/_my），
+  // 之后每帧不再动，否则画面会抖。
+  const DIRS = [[1, 0], [-1, 0], [0, -1], [0, 1], [1, -0.6], [1, 0.6],
+                [-1, -0.6], [-1, 0.6], [0.6, -1], [0.6, 1], [-0.6, -1], [-0.6, 1]];
+  const overlap = r => {
+    let sum = 0;
+    for (const q of PLACED) {
+      const ox = Math.min(r.x + r.w, q.x + q.w) - Math.max(r.x, q.x);
+      const oy = Math.min(r.y + r.h, q.y + q.h) - Math.max(r.y, q.y);
+      if (ox > 0 && oy > 0) sum += ox * oy;
+    }
+    return sum;
+  };
+  for (const p of (window.__ps || [])) {
+    if (p._done || !p._b || playT <= p._b + 0.05) continue;
+    p._done = true;
+    SHOWN.push(p);
+    if (!isFinite(p.x) || !isFinite(p.y)) continue;
+    let best = null, bestOv = Infinity;
+    for (const d of [26, 46, 70, 96, 124, 156]) {
+      for (const [ux, uy] of DIRS) {
+        let x = p.x + ux * (d + MW / 2) - MW / 2;
+        let y = p.y + uy * (d + MH / 2) - MH / 2;
+        x = Math.max(16, Math.min(W - 16 - MW, x));
+        y = Math.max(140, Math.min(H - 170 - MH, y));
+        const r = { x, y, w: MW, h: MH };
+        const ov = overlap(r);
+        if (ov === 0) { best = r; bestOv = 0; break; }
+        if (ov < bestOv) { bestOv = ov; best = r; }
+      }
+      if (bestOv === 0) break;
+    }
+    if (best) { p._mx = best.x; p._my = best.y; PLACED.push(best); }
+  }
+  for (let k = 0; k < SHOWN.length; k++) {
+    const p = SHOWN[k];
+    if (p._mx == null) continue;
+    const s0 = p.shots && p.shots[0];
+    const im = s0 && IMG.get(s0.src);
+    if (!im) continue;
+    const w = MW, h = MH;
+    const x = p._mx, y = p._my;
+    ctx.save();
+    // 统一不透明：这些都是路线上真实拍过的点，地位相同，不该按早晚分等级
+    // （之前超过 8 张把最早的降到 0.35，看着像「残缺的图」）。
+    ctx.globalAlpha = 0.94;
+    rr(x - 3, y - 3, w + 6, h + 6, 13);
+    ctx.fillStyle = 'rgba(255,255,255,.94)'; ctx.fill();
+    ctx.save();
+    rr(x, y, w, h, 10); ctx.clip();
+    const iw = im.naturalWidth || w, ih = im.naturalHeight || h;
+    const sc0 = Math.max(w / iw, h / ih);
+    ctx.drawImage(im, x + (w - iw * sc0) / 2, y + (h - ih * sc0) / 2,
+                  iw * sc0, ih * sc0);
+    ctx.restore();
+    ctx.restore();
+  }
+  } catch (e) { console.warn('缩略图绘制失败', e); window.__miniErr = String(e && e.message || e); }
 
   // 车头（插值位置，不是离散轨迹点）
   ctx.beginPath(); ctx.arc(hd.x, hd.y, 26, 0, 7);
@@ -1645,10 +1717,34 @@ function drawPop(p, e) {
   const iw = lay.cells.reduce((a, c) => a + c[0], 0) + gap * (lay.cells.length - 1);
   const ih = Math.max(...lay.cells.map(c => c[1]));
   const pw = iw + pad * 2, ph = ih + pad * 2 + capH;
+  // 卡片跟着**标记点**走，不再永远钉在画面中央：
+  // 标记点偏上就把卡片放下面，偏下就放上面，中间拉一条引线连过去。
+  // 以前卡片位置和标记点完全无关，看起来就是「照片跟地图上的点没关系」。
+  const mkx = Math.max(40, Math.min(W - 40, p.x));
+  const mky = Math.max(160, Math.min(H - 200, p.y));
   const cx = W / 2;
-  const cy = Math.max(492 + ph / 2, Math.min(1030, 1660 - ph / 2));
+  const room = ph / 2 + 90;                 // 卡片与标记点之间留的间距
+  let cy = (mky < H * 0.46)
+    ? Math.min(mky + room, H - 240 - ph / 2) // 标记点在上半屏 → 卡片在下
+    : Math.max(mky - room, 200 + ph / 2);    // 标记点在下半屏 → 卡片在上
+  cy = Math.max(200 + ph / 2, Math.min(H - 240 - ph / 2, cy));
   const left = cx - pw / 2, top = cy - ph / 2;
   const sc = 0.90 + 0.10 * e;
+
+  // 引线先画：从卡片朝向标记点的那条边连到标记点，卡片底板会自然压住起点
+  ctx.save();
+  ctx.globalAlpha = e * 0.85;
+  ctx.strokeStyle = 'rgba(255,255,255,.55)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(Math.max(left + 46, Math.min(left + pw - 46, mkx)),
+             mky < cy ? top : top + ph);
+  ctx.lineTo(mkx, mky);
+  ctx.stroke();
+  ctx.beginPath(); ctx.arc(mkx, mky, 9, 0, 7);
+  ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = ACCENT; ctx.stroke();
+  ctx.restore();
 
   ctx.save();
   ctx.globalAlpha = e;
