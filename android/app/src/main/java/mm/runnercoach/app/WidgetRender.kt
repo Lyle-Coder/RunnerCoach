@@ -3,60 +3,75 @@ package mm.runnercoach.app
 import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
-import android.graphics.LinearGradient
 import android.graphics.Color
+import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PorterDuff
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
 import org.json.JSONObject
+import java.util.Locale
+import kotlin.math.max
 import kotlin.math.min
 
 /**
- * 把「辉光看板」画成小组件用的透明 PNG。
+ * 桌面小组件的「今日数据看板」：透明底 + 多张玻璃卡，每张一种图表。
  *
  * 为什么不用 WebView 截 HTML：桌面小组件没有 Activity 窗口，离屏 WebView
  * 必须挂进窗口才会真正渲染（`renderToPng` 里那段注释就是踩过的坑），
- * 所以小组件这条路只能用原生 Canvas 重画一遍。好处是又快又小，
- * 代价是版式要跟网页版手工对齐。
+ * 所以只能用原生 Canvas 重画一遍。
  *
- * 三种规格共用一套版式，按宽度决定排几列、多放几行：
- *   2×4 (420×840)  竖排：日期 / 主数字 / 等级 / 三行指标
- *   3×4 (630×840)  加今日活动，指标两列
- *   4×4 (840×840)  指标三列，底部加周里程条
+ * 版式按容器宽高比分四档，卡片数量不变、密度随尺寸调整：
+ *   WIDE 4×2   3 列 × 2 行 + 底部建议条
+ *   TALL 2×4   单列 6 张卡（物理高度有限，去掉趋势柱换更大的字）
+ *   MID  3×4 / FULL 4×4   2 列 × 3 行 + 底部建议条
+ *
+ * 字号 deliberately 以画布绝对像素给（25~31px），不按卡片高度百分比算：
+ * 小组件最终会按 fitCenter 缩到 ~0.4 倍显示，百分比字号在横版 4×2 上
+ * 会缩到 5dp 根本看不清。
  */
 object WidgetRender {
-    enum class Size(
-        val pxW: Int, val pxH: Int, val cols: Int,
-        val full: Boolean, val wide: Boolean = false,
-    ) {
-        TALL(420, 840, 1, false),                 // 2×4 竖
-        MID(630, 840, 2, false),                  // 3×4
-        FULL(840, 840, 3, true),                  // 4×4
-        WIDE(840, 420, 3, true, wide = true),     // 4×2 横
+    enum class Size(val pxW: Int, val pxH: Int, val sp: Float, val wide: Boolean = false) {
+        TALL(420, 840, 24f),                  // 2×4 竖（窄，少放一张趋势柱换字更大）
+        MID(630, 840, 28f),                   // 3×4
+        FULL(840, 840, 31f),                  // 4×4
+        WIDE(840, 420, 25f, wide = true),     // 4×2 横
+    }
+
+    private enum class Type { READINESS, NUTRITION, PLAN, ACTIVITY, RACE, TREND, AI }
+
+    private class B(val l: Float, val t: Float, val r: Float, val bot: Float) {
+        val w: Float get() = r - l
+        val h: Float get() = bot - t
     }
 
     private const val INK = 0xFFF2F6FA.toInt()
     private const val MUTED = 0xFF9AA7B4.toInt()
     private const val ACCENT = 0xFF3B82F6.toInt()
     private const val CYAN = 0xFF22D3EE.toInt()
+    private const val GREEN = 0xFF4FD6A6.toInt()
+    private const val YELLOW = 0xFFD6A75A.toInt()
+    private const val RED = 0xFFE4574D.toInt()
+    private const val PROTEIN = 0xFF56D6A8.toInt()
+    private const val CARB = 0xFF5FA8E0.toInt()
+    private const val FAT = 0xFFE0B363.toInt()
 
     /**
      * 按**容器实际宽高比**选版式，而不是只看宽度。
-     *
-     * 之前只看 minWidth，结果启动器给了一个 4×2 的横条，我们还在画 1:2 的
-     * 竖版，`fitCenter` 一缩就变成中间一条窄图，两边全空——看着就是
-     * 「信息特别少、还占了一大块位置」。
+     * 之前只看 minWidth，启动器给 4×2 横条时还在画 1:2 竖版，fitCenter
+     * 一缩就变成中间一条窄图，两边全空。
      */
     fun pick(minWidthDp: Int, minHeightDp: Int): Size {
         val w = minWidthDp.coerceAtLeast(1).toFloat()
         val h = minHeightDp.coerceAtLeast(1).toFloat()
         val ratio = w / h
         return when {
-            ratio >= 1.5f -> Size.WIDE              // 宽扁：4×2
-            ratio <= 0.70f -> if (w < 180) Size.TALL else Size.MID  // 窄高
-            else -> Size.FULL                        // 接近方形：4×4
+            ratio >= 1.5f -> Size.WIDE
+            ratio <= 0.70f -> if (w < 180) Size.TALL else Size.MID
+            else -> Size.FULL
         }
     }
 
@@ -65,194 +80,378 @@ object WidgetRender {
         val h = size.pxH
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
-        // 透明底：桌面壁纸直接透出来，只留辉光和文字
-        c.drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+        // 透明底：壁纸直接透出来，卡片只压一层很淡的暗玻璃
+        c.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
 
-        val main = data.optJSONObject("main")
-        val score = main?.let { nullableInt(it, "score") }
-        val level = main?.optString("level")?.takeIf { it.isNotBlank() } ?: "待同步"
-        val brand = parseColor(main?.optString("color"), ACCENT)
-
+        val rd = data.optJSONObject("readiness") ?: data.optJSONObject("main")
+        val brand = parseColor(rd?.optString("color"), ACCENT)
         drawGlow(c, w, h, brand)
 
-        val pad = w * 0.06f
-        val datePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = MUTED
-            textSize = h * (if (size.wide) 0.055f else 0.036f)
-            typeface = Typeface.DEFAULT_BOLD
-            letterSpacing = 0.06f
+        val pad = min(w, h) * 0.042f
+        val area = B(pad, pad, w - pad, h - pad)
+        // 库里没数据 / Python 还没起来时，别摆一屏空卡片
+        if (!data.optBoolean("ok", true)) {
+            drawEmpty(c, area, size.sp, data.optString("error"))
+            return bmp
         }
-        val bigNum = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = INK
-            textSize = h * (if (size.wide) 0.215f else 0.185f)
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            setShadowLayer(h * 0.03f, 0f, h * 0.008f, 0x66000000)
-        }
-        val lv = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = brand
-            textSize = h * (if (size.wide) 0.070f else 0.040f)
-            typeface = Typeface.DEFAULT_BOLD
-            setShadowLayer(h * 0.02f, 0f, 0f, 0x55000000)
-        }
-
-        // 指标池：横版/方版尽量多放，窄版挑前三四个
-        val items = ArrayList<Pair<String, String>>()
-        nullableInt(data, "sleep_score")?.let { items.add("睡眠" to it.toString()) }
-        data.optDouble("sleep_h", 0.0).takeIf { it > 0 }?.let {
-            items.add("睡眠时长" to String.format("%.1fh", it))
-        }
-        nullableInt(data, "rhr")?.let { items.add("静息" to it.toString()) }
-        nullableInt(data, "hrv")?.let { items.add("HRV" to it.toString()) }
-        nullableInt(data, "bb")?.let { items.add("电量" to it.toString()) }
-        data.optDouble("dist_km", 0.0).takeIf { it > 0 }?.let {
-            items.add("今日" to String.format("%.1fkm", it))
-        }
-        nullableInt(data, "steps")?.let { items.add("步数" to it.toString()) }
-        // 饮食：只有当天摄入有数才显示。历史摄入没有落库，所以这里放文字，
-        // 不做成趋势柱——画一条只有一根柱的图反而误导。
-        val nut = data.optJSONObject("intake")
-        val eat = nut?.optInt("kcal", 0) ?: 0
-        val goal = nut?.optInt("target", 0) ?: 0
-        if (eat > 0) {
-            items.add("饮食" to (if (goal > 0) "$eat/$goal" else eat.toString()))
-        }
-
-        if (size.wide) {
-            // ---- 横版 4×2：左栏日期/主数字/等级，右栏指标两列
-            val leftW = w * 0.44f
-            var x = pad
-            var y = pad + datePaint.textSize
-            val wd = data.optString("weekday")
-            val head = if (wd.isNotBlank()) data.optString("date") + "  " + wd
-            else data.optString("date")
-            c.drawText(head, x, y, datePaint)
-            y += h * 0.10f
-
-            if (score != null) {
-                c.drawText(score.toString(), x, y + bigNum.textSize * 0.86f, bigNum)
-                val nw = bigNum.measureText(score.toString())
-                val kind = if (main?.optString("kind") == "sleep") " 睡眠" else " 恢复"
-                datePaint.color = MUTED
-                c.drawText(kind, x + nw, y + bigNum.textSize * 0.86f, datePaint)
-            } else {
-                bigNum.textSize = h * 0.13f
-                c.drawText(level, x, y + bigNum.textSize, bigNum)
+        // 单张卡出错不能让整个小组件留白：其余卡片照常出
+        for ((type, box) in layout(size, area)) {
+            try {
+                drawCard(c, data, type, box, size.sp, brand)
+            } catch (t: Throwable) {
+                // 忽略这一张，继续画下一张
             }
-            y += bigNum.textSize * 0.92f
-            c.drawText(level, x, y + lv.textSize, lv)
-
-            val show = items.take(4)
-            if (show.isNotEmpty()) {
-                drawGrid(c, show, leftW + pad * 0.4f, pad, (w - pad).toFloat(),
-                    (h * 0.62f).toInt(), 2)
-            }
-            // 横版高度只有 420，指标两行之后还能塞一条很矮的趋势柱
-            drawTrend(c, data, leftW + pad * 0.4f, h * 0.68f,
-                (w - pad).toFloat(), h - pad, h, brand, tiny = true)
-        } else {
-            // ---- 竖版 / 方版：垂直堆叠
-            var y = pad
-            val wd = data.optString("weekday")
-            c.drawText(data.optString("date"), pad, y + datePaint.textSize, datePaint)
-            if (wd.isNotBlank()) {
-                datePaint.textAlign = Paint.Align.RIGHT
-                c.drawText(wd, w - pad, y + datePaint.textSize, datePaint)
-                datePaint.textAlign = Paint.Align.LEFT
-            }
-            val stale = data.optInt("stale", 0)
-            if (stale > 0) {
-                datePaint.color = 0xFFE0A33A.toInt()
-                datePaint.textAlign = Paint.Align.RIGHT
-                datePaint.textSize = h * 0.030f
-                c.drawText("数据 ${stale} 天前", w - pad,
-                    y + datePaint.textSize + h * 0.045f, datePaint)
-                datePaint.textAlign = Paint.Align.LEFT
-                datePaint.textSize = h * 0.036f
-            }
-            y += h * 0.10f
-
-            if (score != null) {
-                c.drawText(score.toString(), pad, y + bigNum.textSize * 0.82f, bigNum)
-                val nw = bigNum.measureText(score.toString())
-                val kind = if (main?.optString("kind") == "sleep") "睡眠" else "恢复"
-                val lbl = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = MUTED; textSize = h * 0.034f
-                }
-                c.drawText(kind, pad + nw + h * 0.018f,
-                    y + bigNum.textSize * 0.82f, lbl)
-            } else {
-                bigNum.textSize = h * 0.085f
-                c.drawText(level, pad, y + bigNum.textSize, bigNum)
-            }
-            y += bigNum.textSize * 0.95f
-            c.drawText(level, pad, y + lv.textSize, lv)
-            y += lv.textSize * 1.9f
-
-            // 底部要留给趋势柱：把指标区的下边界收上来
-            val barsH = h * 0.15f
-            val gridBottom = h - pad - barsH - h * 0.055f
-            val show = if (size.full) items else items.take(if (size.cols >= 2) 4 else 3)
-            if (show.isNotEmpty()) {
-                drawGrid(c, show, pad, y, (w - pad).toFloat(), gridBottom.toInt(), size.cols)
-            }
-            drawTrend(c, data, pad, gridBottom + h * 0.02f,
-                (w - pad).toFloat(), h - pad, h, brand)
         }
         return bmp
     }
 
-    /**
-     * 近 7 天趋势柱：看板上那条「一周起伏」的小图。
-     *
-     * 优先画活动里程；如果这一周一条活动都没有（比如刚同步、或只戴口罩的日子），
-     * 退回睡眠时长——总比画一排零高的小点强。
-     */
-    private fun drawTrend(
-        c: Canvas, data: JSONObject, left: Float, top: Float,
-        right: Float, bottom: Float, h: Int, color: Int, tiny: Boolean = false,
-    ) {
+    private fun drawCard(c: Canvas, data: JSONObject, type: Type, b: B, sp: Float, brand: Int) {
+        when (type) {
+            Type.READINESS -> drawReadiness(c, data, b, sp, brand)
+            Type.NUTRITION -> drawNutrition(c, data, b, sp)
+            Type.PLAN -> drawPlan(c, data, b, sp)
+            Type.ACTIVITY -> drawActivity(c, data, b, sp)
+            Type.RACE -> drawRace(c, data, b, sp)
+            Type.TREND -> drawTrend(c, data, b, sp, brand)
+            Type.AI -> drawAI(c, data, b, sp)
+        }
+    }
+
+    /** 卡片背景 + 标题行，返回内容区。 */
+    private fun panel(
+        c: Canvas, b: B, sp: Float, title: String, tint: Int,
+        note: String, noteTint: Int = MUTED,
+    ): B {
+        val rr = RectF(b.l, b.t, b.r, b.bot)
+        val rad = min(b.w, b.h) * 0.10f
+        val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = Color.argb(58, 8, 14, 22)
+        }
+        c.drawRoundRect(rr, rad, rad, bg)
+        val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(1f, sp * 0.045f)
+            this.color = alpha(INK, 0.10f)
+        }
+        c.drawRoundRect(rr, rad, rad, edge)
+
+        val ins = min(b.w, b.h) * 0.10f
+        val tf = sp * 0.74f
+        val base = b.t + ins + tf
+        val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = tint }
+        c.drawCircle(b.l + ins + tf * 0.14f, base - tf * 0.32f, tf * 0.15f, dot)
+        val titleP = tp(tf, INK, true)
+        txt(c, title, b.l + ins + tf * 0.48f, base, titleP)
+        if (note.isNotBlank()) {
+            val np = tp(tf * 0.88f, noteTint)
+            txt(c, ellip(np, note, b.w * 0.46f), b.r - ins, base, np, Paint.Align.RIGHT)
+        }
+        return B(b.l + ins, base + ins * 0.34f, b.r - ins, b.bot - ins * 0.70f)
+    }
+
+    // ---------------------------------------------------------------- 恢复度：环形仪表 + 分项条
+    private fun drawReadiness(c: Canvas, data: JSONObject, b: B, sp: Float, brand: Int) {
+        val rd = data.optJSONObject("readiness") ?: data.optJSONObject("main")
+        val tint = parseColor(rd?.optString("color"), brand)
+        val sc = rd?.optDouble("score", Double.NaN) ?: Double.NaN
+        val level = rd?.optString("level")?.takeIf { it.isNotBlank() } ?: "待同步"
+        val body = panel(c, b, sp, "今日恢复度", tint, "")
+
+        val parts = rd?.optJSONArray("parts")
+        // 横版卡矮，四条分项会挤成一根线：少画一条换可读性
+        val n = if (parts != null) min(parts.length(), if (body.h < sp * 4.6f) 3 else 4) else 0
+        val ringR = min(body.h * 0.40f, if (n > 0) body.w * 0.21f else body.w * 0.33f)
+            .coerceAtLeast(sp * 0.8f)
+        val cx = body.l + ringR + if (n > 0) sp * 0.10f else (body.w - 2f * ringR) / 2f
+        val cy = (body.t + body.bot) / 2f
+        ring(c, cx, cy, ringR, if (sc.isNaN()) 0f else (sc / 100.0).toFloat().coerceIn(0f, 1f), tint)
+
+        val big = tp(ringR * 0.78f, INK, true)
+        big.setShadowLayer(sp * 0.24f, 0f, sp * 0.10f, 0x66000000)
+        txt(c, if (sc.isNaN()) "—" else sc.toInt().toString(), cx,
+            cy + big.textSize * 0.34f, big, Paint.Align.CENTER)
+        val lv = tp(min(sp * 0.62f, ringR * 0.32f), alpha(tint, 0.98f), true)
+        txt(c, level, cx, cy + ringR * 0.64f, lv, Paint.Align.CENTER)
+
+        if (n == 0 || parts == null) return
+        val px = body.l + 2f * ringR + sp * 0.55f
+        if (px >= body.r - sp * 2f) return
+        val rowH = body.h / n
+        val fs = min(sp * 0.60f, rowH * 0.40f)
+        val lp = tp(fs, MUTED)
+        val vp = tp(fs, INK, true)
+        for (i in 0 until n) {
+            val p = parts.optJSONObject(i) ?: continue
+            val v = p.optDouble("score", 0.0).toFloat()
+            val top = body.t + i * rowH + rowH * 0.04f
+            txt(c, ellip(lp, p.optString("name"), (body.r - px) * 0.56f),
+                px, top + fs, lp)
+            txt(c, v.toInt().toString(), body.r, top + fs, vp, Paint.Align.RIGHT)
+            bar(c, px, top + fs * 1.35f, body.r - px,
+                min(sp * 0.20f, rowH * 0.20f).coerceAtLeast(3f),
+                v / 100f, scoreColor(v))
+        }
+    }
+
+    // ---------------------------------------------------------------- 营养：三条完成度进度条
+    private fun drawNutrition(c: Canvas, data: JSONObject, b: B, sp: Float) {
+        val m = data.optJSONObject("macro")
+        val goal = m?.optString("goal")?.takeIf { it.isNotBlank() } ?: ""
+        val body = panel(c, b, sp, "营养三元素", PROTEIN, goal)
+        if (m == null) {
+            txt(c, "还没有体重数据", body.l, body.t + sp, tp(sp * 0.8f, MUTED))
+            return
+        }
+        val kcal = m.optInt("kcal", 0)
+        val kt = m.optInt("kcal_target", 0)
+        val fs = min(sp * 0.80f, body.h * 0.17f)
+        txt(c, "$kcal / $kt kcal", body.l, body.t + fs, tp(fs, INK, true))
+        txt(c, if (m.optBoolean("logged", false)) "已记餐" else "未记录",
+            body.r, body.t + fs, tp(fs * 0.82f, MUTED), Paint.Align.RIGHT)
+
+        val top = body.t + fs * 1.45f
+        val rowH = (body.bot - top) / 3f
+        val lab = min(sp * 0.66f, rowH * 0.42f)
+        val lp = tp(lab, MUTED)
+        val vp = tp(lab, INK, true)
+        val rows = arrayOf(
+            Triple("蛋白", m.optJSONArray("protein"), PROTEIN),
+            Triple("碳水", m.optJSONArray("carb"), CARB),
+            Triple("脂肪", m.optJSONArray("fat"), FAT),
+        )
+        rows.forEachIndexed { i, row ->
+            val (label, arr, tint) = row
+            val v = arr?.optDouble(0, 0.0)?.toFloat() ?: 0f
+            val tgt = arr?.optDouble(1, 0.0)?.toFloat() ?: 0f
+            val ratio = if (tgt > 0f) v / tgt else 0f
+            // 与网页看板同口径：蛋白/碳水是下限（超 10% 才红），脂肪是上限（超了就红）
+            val col = when {
+                tgt <= 0f -> MUTED
+                i == 2 && ratio > 1.001f -> RED
+                ratio > 1.10f -> RED
+                ratio >= 1f -> GREEN
+                else -> YELLOW
+            }
+            val y = top + i * rowH
+            txt(c, label, body.l, y + lab, lp)
+            txt(c, "${f0(v.toDouble())} / ${f0(tgt.toDouble())} g", body.r,
+                y + lab, vp, Paint.Align.RIGHT)
+            bar(c, body.l, y + lab * 1.30f, body.w,
+                min(sp * 0.24f, rowH * 0.30f).coerceAtLeast(3f), ratio, col)
+        }
+    }
+
+    // ---------------------------------------------------------------- 训练计划：7 格周历 + 课名
+    private fun drawPlan(c: Canvas, data: JSONObject, b: B, sp: Float) {
+        val p = data.optJSONObject("plan")
+        val done = p?.optBoolean("done", false) ?: false
+        val rest = p?.optBoolean("rest", false) ?: false
+        val note = when {
+            done -> "已完成"
+            rest -> "休息"
+            else -> "待完成"
+        }
+        val noteTint = if (done) GREEN else if (rest) MUTED else YELLOW
+        val body = panel(c, b, sp, "今日训练计划", CARB, note, noteTint)
+
+        val title = p?.optString("title")?.takeIf { it.isNotBlank() } ?: "自主训练"
+        val t1 = body.t + sp * 0.92f
+        val big = tp(sp * 0.92f, INK, true)
+        txt(c, ellip(big, title, body.w), body.l, t1, big)
+        val wd = p?.optInt("week_done", 0) ?: 0
+        val wp = p?.optInt("week_planned", 0) ?: 0
+        val mins = p?.optInt("minutes", 0) ?: 0
+        val sub = "本周 $wd / $wp 课" + if (mins > 0) " · $mins 分钟" else ""
+        val sp0 = tp(sp * 0.62f, MUTED)
+        val t2 = t1 + sp * 0.78f
+        txt(c, ellip(sp0, sub, body.w), body.l, t2, sp0)
+
+        val arr = p?.optJSONArray("week")
+        val n = arr?.length() ?: 0
+        if (n == 0 || arr == null) return
+        val dotH = min(sp * 0.72f, body.h * 0.20f).coerceAtLeast(6f)
+        val dotTop = max(t2 + sp * 0.26f, body.bot - dotH - sp * 0.72f)
+        val slot = body.w / n
+        val dw = slot * 0.70f
+        val dp = tp(min(sp * 0.54f, dotH * 0.58f), MUTED)
+        for (i in 0 until n) {
+            val o = arr.optJSONObject(i)
+            val st = o?.optString("state") ?: "rest"
+            val col = when (st) {
+                "done" -> GREEN
+                "missed" -> RED
+                "extra" -> CYAN
+                "plan" -> ACCENT
+                else -> alpha(INK, 0.16f)
+            }
+            val x = body.l + i * slot + (slot - dw) / 2f
+            val rr = RectF(x, dotTop, x + dw, dotTop + dotH)
+            val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.color = alpha(col, if (st == "rest") 0.9f else 0.94f)
+            }
+            c.drawRoundRect(rr, dotH * 0.28f, dotH * 0.28f, fill)
+            if (st == "done") {
+                val ck = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    style = Paint.Style.STROKE
+                    strokeWidth = max(1.5f, dotH * 0.10f)
+                    strokeCap = Paint.Cap.ROUND
+                    this.color = 0xFF0B1A14.toInt()
+                }
+                val path = Path()
+                path.moveTo(x + dw * 0.25f, dotTop + dotH * 0.52f)
+                path.lineTo(x + dw * 0.45f, dotTop + dotH * 0.72f)
+                path.lineTo(x + dw * 0.78f, dotTop + dotH * 0.30f)
+                c.drawPath(path, ck)
+            }
+            txt(c, o?.optString("d") ?: "", x + dw / 2f,
+                dotTop + dotH + dp.textSize * 0.95f, dp, Paint.Align.CENTER)
+        }
+    }
+
+    // ---------------------------------------------------------------- 今日活动：横条 + 步数进度
+    private fun drawActivity(c: Canvas, data: JSONObject, b: B, sp: Float) {
+        val steps = data.optDouble("steps", 0.0).toFloat()
+        val goal = data.optDouble("step_goal", 0.0).toFloat()
+        val pct = if (goal > 0f) (steps / goal * 100f).coerceAtMost(100f) else 0f
+        val body = panel(c, b, sp, "今日活动", CYAN, "步数 ${pct.toInt()}%")
+
+        val acts = data.optJSONArray("acts")
+        val n = min(acts?.length() ?: 0, 3)
+        val footH = sp * 1.35f
+        val areaBot = body.bot - footH
+        if (n == 0 || acts == null) {
+            val ep = tp(sp * 0.78f, alpha(INK, 0.68f))
+            txt(c, "今天还没有训练记录", body.l,
+                (body.t + areaBot) / 2f + ep.textSize * 0.3f, ep)
+        } else {
+            var maxKm = 0.01f
+            for (i in 0 until n) {
+                maxKm = max(maxKm, acts.optJSONObject(i)?.optDouble("km", 0.0)?.toFloat() ?: 0f)
+            }
+            val rowH = (areaBot - body.t) / n
+            val fs = min(sp * 0.68f, rowH * 0.42f)
+            val lp = tp(fs, MUTED)
+            val vp = tp(fs, INK, true)
+            for (i in 0 until n) {
+                val a = acts.optJSONObject(i) ?: continue
+                val km = a.optDouble("km", 0.0).toFloat()
+                val y = body.t + i * rowH
+                txt(c, ellip(lp, a.optString("name").trim(), body.w * 0.56f),
+                    body.l, y + fs, lp)
+                txt(c, "${f1(km.toDouble())} km · ${a.optInt("min", 0)}′", body.r,
+                    y + fs, vp, Paint.Align.RIGHT)
+                bar(c, body.l, y + fs * 1.32f, body.w,
+                    min(sp * 0.22f, rowH * 0.26f).coerceAtLeast(3f),
+                    km / maxKm, CYAN)
+            }
+        }
+        val fs2 = min(sp * 0.60f, footH * 0.40f)
+        val lp2 = tp(fs2, MUTED)
+        val base = areaBot + fs2
+        txt(c, "步数 ${steps.toInt()} / ${goal.toInt()}", body.l, base, lp2)
+        bar(c, body.l, base + fs2 * 0.35f, body.w,
+            min(sp * 0.20f, footH * 0.18f).coerceAtLeast(3f), pct / 100f, ACCENT)
+    }
+
+    // ---------------------------------------------------------------- 备赛：倒计时大数 + 周量进度
+    private fun drawRace(c: Canvas, data: JSONObject, b: B, sp: Float) {
+        val r = data.optJSONObject("race")
+        val days = r?.optInt("days", -1) ?: -1
+        val phase = r?.optString("phase")?.takeIf { it.isNotBlank() } ?: ""
+        val note = if (phase.isNotBlank()) "W${r?.optInt("week_no", 0) ?: 0} · $phase" else ""
+        val body = panel(c, b, sp, "备赛", FAT, note)
+
+        val leftW = body.w * 0.46f
+        val bigFs = min(sp * 2.0f, body.h * 0.60f)
+        val big = tp(bigFs, INK, true)
+        big.setShadowLayer(sp * 0.28f, 0f, sp * 0.10f, 0x66000000)
+        val num = if (days > 0) days.toString() else if (days == 0) "今日" else "—"
+        txt(c, num, body.l, body.t + bigFs * 0.90f, big)
+        if (days > 0) {
+            txt(c, "天", body.l + big.measureText(num) + sp * 0.12f,
+                body.t + bigFs * 0.90f, tp(sp * 0.72f, FAT))
+        }
+        val sub = if (days >= 0) "距 ${r?.optString("name") ?: ""}" else "未设置赛事"
+        val sp0 = tp(sp * 0.62f, MUTED)
+        txt(c, ellip(sp0, sub, leftW), body.l, body.t + bigFs * 1.55f, sp0)
+
+        val x = body.l + leftW + sp * 0.25f
+        if (x >= body.r - sp * 2f) return
+        val wk = r?.optDouble("week_km", 0.0)?.toFloat() ?: 0f
+        val tgt = r?.optDouble("week_target", 0.0)?.toFloat() ?: 0f
+        val fs = min(sp * 0.62f, body.h * 0.22f)
+        val head = if (tgt > 0f) "本周 ${f1(wk.toDouble())} / ${f0(tgt.toDouble())} km"
+        else "本周 ${f1(wk.toDouble())} km"
+        val lp = tp(fs, MUTED)
+        txt(c, ellip(lp, head, body.r - x), x, body.t + fs * 1.10f, lp)
+        val ratio = if (tgt > 0f) wk / tgt else 0f
+        bar(c, x, body.t + fs * 1.85f, body.r - x,
+            min(sp * 0.26f, body.h * 0.14f).coerceAtLeast(3f),
+            ratio, if (ratio >= 1f) GREEN else ACCENT)
+        val foot = if (tgt > 0f) "完成 ${(ratio * 100f).toInt()}%" else "按计划推进"
+        txt(c, foot, x, body.t + fs * 3.15f, tp(fs * 0.92f, alpha(INK, 0.82f)))
+    }
+
+    // ---------------------------------------------------------------- 近 7 天柱状图
+    private fun drawTrend(c: Canvas, data: JSONObject, b: B, sp: Float, brand: Int) {
         var vals = series(data, "km")
         var label = "近 7 天里程"
         if (vals.none { it > 0.05f }) {
             vals = series(data, "sleep")
             label = "近 7 天睡眠"
         }
-        if (vals.isEmpty() || vals.none { it > 0.05f }) return
-
-        val labW = if (tiny) 0f else h * 0.10f
-        val key = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            // 必须写 this.color：函数参数也叫 color，直接写会被当成给参数赋值
-            this.color = MUTED
-            textSize = h * (if (tiny) 0.030f else 0.028f)
+        val avg = if (vals.isEmpty()) 0f else vals.average().toFloat()
+        val body = panel(c, b, sp, label, ACCENT,
+            if (avg > 0f) "均 ${f1(avg.toDouble())}" else "")
+        if (vals.isEmpty() || vals.none { it > 0.05f }) {
+            txt(c, "暂无数据", body.l, body.t + sp, tp(sp * 0.78f, MUTED))
+            return
         }
-        if (!tiny) {
-            c.drawText(label, left, top + key.textSize * 0.9f, key)
+        val labelH = sp * 0.70f
+        drawBars(c, vals, body.l, body.t, body.r, body.bot - labelH, brand)
+        val arr = data.optJSONArray("days")
+        if (arr != null && arr.length() > 0) {
+            val dp = tp(min(sp * 0.55f, labelH * 0.8f), MUTED)
+            txt(c, arr.optJSONObject(0)?.optString("d") ?: "", body.l,
+                body.bot, dp)
+            txt(c, arr.optJSONObject(arr.length() - 1)?.optString("d") ?: "",
+                body.r, body.bot, dp, Paint.Align.RIGHT)
         }
-        val barTop = top + (if (tiny) 0f else key.textSize * 1.4f)
-        drawBars(c, vals, left + labW, barTop, right, bottom, color)
     }
 
     private fun drawBars(
         c: Canvas, vals: List<Float>, left: Float, top: Float,
-        right: Float, bottom: Float, color: Int,
+        right: Float, bottom: Float, tint: Int,
     ) {
         if (vals.isEmpty() || bottom <= top) return
         val n = vals.size
         val slot = (right - left) / n
-        val bw = slot * 0.58f
+        val bw = slot * 0.56f
         val maxV = maxOf(0.05f, vals.maxOrNull() ?: 1f)
+        val mean = vals.average().toFloat()
+        // 均值虚线：一眼看出哪天在平均水平之上
+        if (mean > 0f) {
+            val y = bottom - (bottom - top) * (mean / maxV).coerceIn(0f, 1f)
+            val dp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = 2f
+                this.color = alpha(INK, 0.22f)
+                pathEffect = android.graphics.DashPathEffect(floatArrayOf(8f, 8f), 0f)
+            }
+            c.drawLine(left, y, right, y, dp)
+        }
         vals.forEachIndexed { i, v ->
             val x = left + i * slot + (slot - bw) / 2f
-            // 零值也留一个 2% 的矮块，让「那天没动」看得见，而不是一片空白
-            val hh = (bottom - top) * (v / maxV).coerceIn(0.02f, 1f)
-            val rect = RectF(x, bottom - hh, x + bw, bottom)
+            // 零值留一个 3% 矮块，让「那天没动」看得见，而不是一片空白
+            val hh = (bottom - top) * (v / maxV).coerceIn(0.03f, 1f)
+            val rr = RectF(x, bottom - hh, x + bw, bottom)
             val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 shader = LinearGradient(
                     0f, bottom - hh, 0f, bottom,
-                    alpha(color, 0.92f), alpha(color, 0.26f), Shader.TileMode.CLAMP,
+                    alpha(tint, 0.94f), alpha(tint, 0.24f), Shader.TileMode.CLAMP,
                 )
             }
-            c.drawRoundRect(rect, bw * 0.32f, bw * 0.32f, p)
+            c.drawRoundRect(rr, bw * 0.32f, bw * 0.32f, p)
         }
     }
 
@@ -265,58 +464,194 @@ object WidgetRender {
         return out
     }
 
-    /** 指标网格：按列数切行，左标签右数值，中间用极淡的分隔线。 */
-    private fun drawGrid(
-        c: Canvas, items: List<Pair<String, String>>,
-        left: Float, top: Float, right: Float, h: Int, cols: Int,
-    ) {
-        val colW = (right - left) / cols
-        val bottom = h.toFloat()
-        val rows = (items.size + cols - 1) / cols
-        // 行高上限给到 0.16h：横版画布只有 420 高，按 0.085h 算出来的行距
-        // 比字号还小，三行会挤成一团。
-        val rowH = min((bottom - top) / maxOf(rows, 1), h * 0.16f)
-        val key = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = MUTED
-            textSize = h * 0.030f
-        }
-        val val_ = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = INK
-            textSize = h * 0.042f
-            typeface = Typeface.DEFAULT_BOLD
-        }
-        items.forEachIndexed { i, (k, v) ->
-            val cx = left + (i % cols) * colW
-            val cy = top + (i / cols) * rowH
-            c.drawText(k, cx, cy + key.textSize, key)
-            c.drawText(v, cx, cy + key.textSize + val_.textSize * 1.12f, val_)
+    // ---------------------------------------------------------------- AI 建议 / 今日提醒
+    private fun drawAI(c: Canvas, data: JSONObject, b: B, sp: Float) {
+        val ai = data.optJSONObject("ai")
+        val kind = ai?.optString("kind") ?: "none"
+        val text = (ai?.optString("text") ?: "").trim()
+        val title = if (kind == "ai") "✦ AI 教练" else "今日提醒"
+        val stale = data.optInt("stale", 0)
+        val body = panel(c, b, sp, title, CYAN,
+            if (stale > 0) "数据 $stale 天前" else "", if (stale > 3) YELLOW else MUTED)
+        val fs = min(sp * 0.82f, body.h * 0.34f).coerceAtLeast(sp * 0.55f)
+        val p = tp(fs, alpha(INK, 0.94f))
+        val lines = if (text.isBlank()) listOf("打开 App 同步后，这里会有当天建议")
+        else wrap(p, text, body.w, if (body.h > fs * 2.6f) 2 else 1)
+        var y = body.t + fs * 1.05f
+        for (line in lines) {
+            txt(c, line, body.l, y, p)
+            y += fs * 1.26f
         }
     }
 
-    /** 右下角一团品牌色光晕，就是看板上那道「辉光」的小组件版。 */
+    /** 还没同步过：一块提示卡，不摆一屏「待同步」的空图表。 */
+    private fun drawEmpty(c: Canvas, b: B, sp: Float, msg: String) {
+        val rr = RectF(b.l, b.t, b.r, b.bot)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = Color.argb(58, 8, 14, 22)
+        }
+        c.drawRoundRect(rr, min(b.w, b.h) * 0.09f, min(b.w, b.h) * 0.09f, p)
+        val cx = (b.l + b.r) / 2f
+        val cy = (b.t + b.bot) / 2f
+        val t1 = tp(sp * 1.15f, INK, true)
+        txt(c, "今日数据看板", cx, cy - sp * 0.3f, t1, Paint.Align.CENTER)
+        val line = msg.takeIf { it.isNotBlank() } ?: "打开 App 同步一次就有数据了"
+        val t2 = tp(sp * 0.78f, MUTED)
+        txt(c, ellip(t2, line, b.w * 0.85f), cx,
+            cy + sp * 1.1f, t2, Paint.Align.CENTER)
+    }
+
+    // ---------------------------------------------------------------- 版式
+    private fun layout(size: Size, area: B): List<Pair<Type, B>> {
+        val gap = min(area.w, area.h) * 0.020f
+        fun cell(x0: Float, y0: Float, x1: Float, y1: Float): B = B(
+            area.l + area.w * x0 + gap / 2f,
+            area.t + area.h * y0 + gap / 2f,
+            area.l + area.w * x1 - gap / 2f,
+            area.t + area.h * y1 - gap / 2f,
+        )
+        return when (size) {
+            Size.WIDE -> listOf(
+                Type.READINESS to cell(0f, 0f, 1f / 3f, 0.42f),
+                Type.NUTRITION to cell(1f / 3f, 0f, 2f / 3f, 0.42f),
+                Type.PLAN to cell(2f / 3f, 0f, 1f, 0.42f),
+                Type.ACTIVITY to cell(0f, 0.42f, 1f / 3f, 0.84f),
+                Type.RACE to cell(1f / 3f, 0.42f, 2f / 3f, 0.84f),
+                Type.TREND to cell(2f / 3f, 0.42f, 1f, 0.84f),
+                Type.AI to cell(0f, 0.84f, 1f, 1f),
+            )
+            Size.TALL -> listOf(
+                Type.READINESS to cell(0f, 0f, 1f, 0.180f),
+                Type.NUTRITION to cell(0f, 0.180f, 1f, 0.380f),
+                Type.PLAN to cell(0f, 0.380f, 1f, 0.570f),
+                Type.ACTIVITY to cell(0f, 0.570f, 1f, 0.740f),
+                Type.RACE to cell(0f, 0.740f, 1f, 0.870f),
+                Type.AI to cell(0f, 0.870f, 1f, 1f),
+            )
+            else -> listOf(                       // MID / FULL：2 列 × 3 行 + 通栏建议
+                Type.READINESS to cell(0f, 0f, 0.5f, 0.30f),
+                Type.NUTRITION to cell(0.5f, 0f, 1f, 0.30f),
+                Type.PLAN to cell(0f, 0.30f, 0.5f, 0.58f),
+                Type.ACTIVITY to cell(0.5f, 0.30f, 1f, 0.58f),
+                Type.RACE to cell(0f, 0.58f, 0.5f, 0.83f),
+                Type.TREND to cell(0.5f, 0.58f, 1f, 0.83f),
+                Type.AI to cell(0f, 0.83f, 1f, 1f),
+            )
+        }
+    }
+
+    /** 右下角一团品牌色光晕：看板那道「辉光」的小组件版，压得很淡不糊文字。 */
     private fun drawGlow(c: Canvas, w: Int, h: Int, color: Int) {
         val r = min(w, h) * 0.62f
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             shader = RadialGradient(
                 w * 0.82f, h * 0.06f, r,
-                intArrayOf(alpha(color, 0.34f), alpha(color, 0.10f), Color.TRANSPARENT),
+                intArrayOf(alpha(color, 0.22f), alpha(color, 0.07f), Color.TRANSPARENT),
                 floatArrayOf(0f, 0.45f, 1f), Shader.TileMode.CLAMP,
             )
             maskFilter = BlurMaskFilter(r * 0.10f, BlurMaskFilter.Blur.NORMAL)
         }
         c.drawCircle(w * 0.82f, h * 0.06f, r, p)
-        // 第二道青色光，压在左下，跟看板的双辉光呼应
         val r2 = min(w, h) * 0.42f
         val p2 = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             shader = RadialGradient(
                 w * 0.10f, h * 0.98f, r2,
-                intArrayOf(alpha(CYAN, 0.20f), Color.TRANSPARENT),
+                intArrayOf(alpha(CYAN, 0.14f), Color.TRANSPARENT),
                 floatArrayOf(0f, 1f), Shader.TileMode.CLAMP,
             )
             maskFilter = BlurMaskFilter(r2 * 0.20f, BlurMaskFilter.Blur.NORMAL)
         }
         c.drawCircle(w * 0.10f, h * 0.98f, r2, p2)
     }
+
+    // ---------------------------------------------------------------- 绘图小工具
+    private fun tp(size: Float, color: Int, bold: Boolean = false): Paint =
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            // 必须写 this.color：函数参数也叫 color，直接写会被当成给参数赋值
+            this.color = color
+            textSize = size
+            if (bold) typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+
+    private fun txt(
+        c: Canvas, s: String, x: Float, y: Float, p: Paint,
+        align: Paint.Align = Paint.Align.LEFT,
+    ) {
+        p.textAlign = align
+        c.drawText(s, x, y, p)
+    }
+
+    private fun ellip(p: Paint, s: String, maxW: Float): String {
+        if (maxW <= 0f) return ""
+        if (p.measureText(s) <= maxW) return s
+        var end = s.length
+        while (end > 0 && p.measureText(s.substring(0, end) + "…") > maxW) end--
+        return s.substring(0, end) + "…"
+    }
+
+    private fun wrap(p: Paint, s: String, maxW: Float, maxLines: Int): List<String> {
+        val out = ArrayList<String>(maxLines)
+        var rest = s
+        while (rest.isNotEmpty() && out.size < maxLines) {
+            val n = p.breakText(rest, true, maxW, null)
+            if (n <= 0) break
+            if (n >= rest.length) {
+                out.add(rest)
+                break
+            }
+            if (out.size == maxLines - 1) {
+                var k = n
+                while (k > 0 && p.measureText(rest.substring(0, k) + "…") > maxW) k--
+                out.add(rest.substring(0, k) + "…")
+                break
+            }
+            out.add(rest.substring(0, n))
+            rest = rest.substring(n)
+        }
+        return out
+    }
+
+    private fun bar(c: Canvas, x: Float, y: Float, w: Float, h: Float, ratio: Float, tint: Int) {
+        if (w <= 0f || h <= 0f) return
+        val rad = h / 2f
+        val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = alpha(INK, 0.13f) }
+        c.drawRoundRect(RectF(x, y, x + w, y + h), rad, rad, bg)
+        val fw = (w * ratio.coerceIn(0f, 1f)).coerceAtLeast(if (ratio > 0f) h * 0.8f else 0f)
+        if (fw <= 0f) return
+        val fg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(x, y, x + fw, y,
+                alpha(tint, 0.55f), tint, Shader.TileMode.CLAMP)
+        }
+        c.drawRoundRect(RectF(x, y, x + fw, y + h), rad, rad, fg)
+    }
+
+    private fun ring(c: Canvas, cx: Float, cy: Float, r: Float, ratio: Float, tint: Int) {
+        val sw = r * 0.20f
+        val oval = RectF(cx - r, cy - r, cx + r, cy + r)
+        val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = sw
+            this.color = alpha(INK, 0.13f)
+        }
+        c.drawArc(oval, 0f, 360f, false, bg)
+        val fg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = sw
+            strokeCap = Paint.Cap.ROUND
+            this.color = tint
+            setShadowLayer(r * 0.14f, 0f, 0f, alpha(tint, 0.60f))
+        }
+        c.drawArc(oval, -90f, 360f * ratio.coerceIn(0f, 1f), false, fg)
+    }
+
+    private fun scoreColor(v: Float): Int = when {
+        v >= 75f -> GREEN
+        v >= 55f -> YELLOW
+        else -> RED
+    }
+
+    private fun f0(v: Double): String = String.format(Locale.US, "%.0f", v)
+    private fun f1(v: Double): String = String.format(Locale.US, "%.1f", v)
 
     private fun alpha(color: Int, a: Float): Int =
         Color.argb((a * 255).toInt().coerceIn(0, 255),
@@ -326,11 +661,5 @@ object WidgetRender {
         if (s.isNullOrBlank()) fallback else Color.parseColor(s)
     } catch (t: Throwable) {
         fallback
-    }
-
-    private fun nullableInt(o: JSONObject?, k: String): Int? {
-        if (o == null || o.isNull(k)) return null
-        val d = o.optDouble(k, Double.NaN)
-        return if (d.isNaN()) null else d.toInt()
     }
 }
