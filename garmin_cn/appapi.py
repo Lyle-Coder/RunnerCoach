@@ -2373,9 +2373,15 @@ def _synth_route(detail: dict) -> dict:
     if sdist[-1] <= 0:
         return {}
     t0 = float(pts[0].get("t") or 0)
+    # **两套里程必须换算到同一把尺子上**：track 是抽稀后的折线，haversine 累加
+    # 出来比 Garmin 记录的里程短（直线段替代曲线），总里程常常少几个百分点。
+    # 不缩放就直接二分，最后一个 track 点只能匹配到中途的序列点，时间轴被
+    # 整体压缩——照片按绝对时间挂上去就会「越往后越晚」，13 点的照片跑到
+    # 15 点的位置。按总里程缩放到 Garmin 的尺子后，时间轴能完整覆盖活动。
+    scale = (sdist[-1] / dist[-1]) if dist[-1] > 0 else 1.0
     ts, hrs, vs = [], [], []
     for dd in dist:
-        j = min(max(bisect.bisect_left(sdist, dd), 0), len(pts) - 1)
+        j = min(max(bisect.bisect_left(sdist, dd * scale), 0), len(pts) - 1)
         p = pts[j]
         ts.append(int(round(float(p.get("t") or 0) - t0)))
         hrs.append(int(round(float(p["hr"]))) if p.get("hr") else None)
@@ -2392,7 +2398,8 @@ def _synth_route(detail: dict) -> dict:
     return {"t0": int(t0 * 1000), "n": len(track), "t": ts,
             "lat": [round(a, 6) for a, _ in track],
             "lon": [round(b, 6) for _, b in track],
-            "d": [round(x, 1) for x in dist],
+            # 里程也用缩放后的值：卡片上显示的公里数要跟 Garmin 一致
+            "d": [round(x * scale, 1) for x in dist],
             "hr": hrs, "v": vs, "seg": [0] * len(track), "drift": 0.0}
 
 
