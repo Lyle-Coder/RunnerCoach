@@ -1587,6 +1587,15 @@ def run() -> int:
     assert all(x.get("t_utc") for x in _lst), "文件名里的时间没写进 t_utc"
     assert all(x.get("t_source") == "文件名" for x in _lst), \
         "补到的时间没标来源，用户无法判断准不准"
+    # 回放取素材也必须能靠文件名拿到时间：`img-<毫秒>` 这种没有原始名的
+    # 老素材排不进时间序，会按登记顺序（相册倒序）铺开 → 晚的排在早的前面
+    _pm = _APc._probe_material(_Path(_imgs["items"][1]["path"]),
+                               name_hint="IMG_20261114_095054")
+    assert _pm.get("t_utc") and _pm.get("t_source") == "文件名", \
+        "回放取素材时图片没走文件名兜底，顺序还会倒"
+    assert "_clips_for_motion" in dir(_APc) and "out.sort(" in \
+        (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8"), \
+        "回放取素材没按拍摄时间排序，缺时间的会按登记顺序铺开"
     # 批量删除的 id 过 HTTP 时会被 Kotlin List 的 toString() 变成
     # `"[c1, c2]"` 一个字符串，后端必须能拆回来，否则「勾了也一条都没删掉」
     for _arg in (["c1", "c2"], '["c1", "c2"]', "[c1, c2]", "c1,c2",
