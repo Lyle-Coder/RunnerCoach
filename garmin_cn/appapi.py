@@ -1320,6 +1320,81 @@ def dashboard(date: str | None = None, live: bool = True) -> dict:
     return {"ok": True, "html": str(path), "date": d}
 
 
+def widget_data(date: str | None = None) -> dict:
+    """桌面小组件用的精简数据。
+
+    和 `card_html` 的区别：**不碰 AI 点评**。小组件会被系统随时拉起
+    （每次 onUpdate / 改尺寸），取数必须快；AI 那条路要等网络，放进来
+    小组件就会显示「加载中」半天。这里只取本地库里已有的派生指标。
+    """
+    store = Store(DB)
+    if store.stats()["days"] == 0:
+        return {"ok": False, "error": "还没有数据，先同步一次"}
+    d = date or dt.date.today().isoformat()
+    try:
+        from .metrics import derive
+        from .plan import attach
+        res = attach(derive(store, d))
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    t = res.get("today") or {}
+    rd = res.get("readiness") or {}
+    sl = res.get("sleep") or {}
+    wk = res.get("week") or {}
+
+    def num(v, dg=0):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return round(f, dg) if f == f else None
+
+    try:
+        day = dt.date.fromisoformat(str(res.get("date") or d))
+        label = "%d月%d日" % (day.month, day.day)
+        weekday = "周" + "一二三四五六日"[day.weekday()]
+    except (TypeError, ValueError):
+        label, weekday = str(d)[:10], ""
+
+    # 主指标：恢复度优先，没有就退回睡眠分；两个都没有就只显示「待同步」
+    score = num(rd.get("score"))
+    level = str(rd.get("level") or "")
+    color = str(rd.get("color") or "")
+    main_kind = "readiness"
+    if score is None:
+        score = num(sl.get("score") or sl.get("score_est"))
+        if score is not None:
+            main_kind, level = "sleep", "睡眠评分"
+    if score is None:
+        main_kind, level = "none", str(res.get("readiness", {}).get("level") or "待同步")
+
+    wk_dist = None
+    if isinstance(wk, dict):
+        wk_dist = num((wk.get("dist") or {}).get("now") if isinstance(wk.get("dist"), dict)
+                      else wk.get("dist"), 1)
+
+    out = {
+        "ok": True,
+        "date": label, "weekday": weekday,
+        "iso": d,
+        "stale": int(res.get("data_stale_days") or 0),
+        "main": {"kind": main_kind, "score": score, "level": level, "color": color},
+        "sleep_h": num(sl.get("total_h"), 1),
+        "sleep_score": num(sl.get("score") or sl.get("score_est")),
+        "rhr": num(t.get("resting_hr")),
+        "hrv": num(t.get("hrv_night") or t.get("hrv_weekly")),
+        "hrv_status": str(t.get("hrv_status") or ""),
+        "steps": num(t.get("steps")),
+        "step_goal": num(t.get("step_goal")),
+        "dist_km": num((num(t.get("distance_m")) or 0) / 1000.0, 2) if t.get("distance_m") else None,
+        "bb": num(t.get("bb_now") or t.get("bb_low")),
+        "week_km": wk_dist,
+        "synced": str(t.get("synced_at") or store.get_meta("last_sync") or ""),
+    }
+    return out
+
+
 def card_html(date: str | None = None) -> dict:
     """竖版一图流的 HTML（1080×1920）。PNG 交给 WebView 截，不依赖无头浏览器。"""
     store = Store(DB)
