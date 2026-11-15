@@ -1680,6 +1680,15 @@ def run() -> int:
     _asrc = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
     assert "if _key in seen_path:" in _asrc, \
         "素材没按路径去重，同一张图会重复出现"
+    # 手表暂停 / GPS 丢星会在轨迹上留下采样缺口；落在缺口里的照片原来被挂到
+    # 「恢复之后」的位置，看着就是标点比实际拍摄点靠前一大段。
+    _psrc2 = (ROOT / "garmin_cn/photo.py").read_text(encoding="utf-8")
+    assert "(t[lo] - t[lo - 1]) > 120" in _psrc2, \
+        "采样缺口里没取更近的一端，暂停期间的照片会挂到恢复后的位置"
+    assert "\"hole_s\": (int(_hole) if _hole else 0)," in _psrc2, \
+        "缺口信息没带出去，卡片无法提示位置是估算的"
+    assert "_hole = 0          # 每张单独算" in _psrc2, \
+        "缺口标记没有逐张重置，会串到下一张照片上"
     # 排查期的整串素材日志已经撤掉，别再灌诊断日志
     assert 'log_exc("motion clips"' not in _asrc, \
         "motion clips 的诊断日志又回来了"

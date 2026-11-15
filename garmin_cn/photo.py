@@ -357,6 +357,13 @@ def _at_time(rt: dict, rel: float) -> int:
             lo = mid + 1
         else:
             hi = mid
+    # 只在**采样缺口**里（手表暂停、GPS 丢星，间隔 > 2 分钟）取更近的一端：
+    # 原来总是返回「第一个 ≥ rel」的点，等于把暂停期间拍的照片挂到恢复之后
+    # 的位置；暂停时人一般还在原地，挂缺口前更接近真实位置。
+    # 正常 1~2 秒的采样间隔下保持原行为，别让边界素材漂到起点。
+    if lo > 0 and (t[lo] - t[lo - 1]) > 120 and \
+            abs(t[lo - 1] - rel) < abs(t[lo] - rel):
+        return lo - 1
     return lo
 
 
@@ -381,6 +388,7 @@ def match(photos: list[dict], rt: dict, *, t0_ms: int | None = None,
     hit: list[dict] = []
     loose: list[dict] = []
     for ph in photos:
+        _hole = 0          # 每张单独算，别带上一张的缺口标记
         name = ph.get("name") or Path(ph.get("path", "")).name
         if ph.get("error"):
             loose.append({"name": name, "why": ph["error"]})
@@ -444,6 +452,19 @@ def match(photos: list[dict], rt: dict, *, t0_ms: int | None = None,
             # 环线/折返赛道：起点和终点几乎重合，GPS 精度差一点就把「刚起跑」
             # 判到「快到终点」。两者里程差悬殊时以时间点为准。
             j = _at_time(rt, min(max(rel, 0.0), dur))
+            # 拍摄时刻落在 2 分钟以上的采样缺口里（暂停 / 丢星）：位置只能按
+            # 缺口边缘估算，标成 approx。两侧都要看——j 可能落在缺口**前**
+            # （取近端的结果），也可能落在缺口**后**。
+            if j >= 0:
+                _ts = rt["t"]
+                _in_gap = (
+                    (j + 1 < len(_ts) and _ts[j + 1] - _ts[j] > 120 and rel > _ts[j])
+                    or (j > 0 and _ts[j] - _ts[j - 1] > 120 and rel < _ts[j])
+                )
+                if _in_gap:
+                    approx = True
+                    _hole = max(_ts[j + 1] - _ts[j] if j + 1 < len(_ts) else 0,
+                                _ts[j] - _ts[j - 1] if j > 0 else 0)
             if i >= 0 and j >= 0 and abs(rt["d"][i] - rt["d"][j]) > 300:
                 i, gap = j, None
                 approx = forced
@@ -472,6 +493,8 @@ def match(photos: list[dict], rt: dict, *, t0_ms: int | None = None,
             "lat": rt["lat"][i], "lon": rt["lon"][i],
             "d": rt["d"][i],
             "gap_m": (round(gap, 1) if gap is not None else None),
+            # 拍摄时刻落在轨迹缺口里时给出缺口秒数，卡片上据此提示「位置为估算」
+            "hole_s": (int(_hole) if _hole else 0),
             "w": ph.get("w"), "h": ph.get("h"),
             "orientation": ph.get("orientation") or 1,
             "t_source": (ph.get("t_source") or "") + (f"+{tz_shift}h" if tz_shift else ""),

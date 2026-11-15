@@ -544,6 +544,7 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                     "src": str((thumb or src).resolve()),
                     "w": visible_size(sh)[0], "h": visible_size(sh)[1],
                     "name": sh["name"], "gap": sh["gap_m"],
+                    "hole_s": int(sh.get("hole_s") or 0),
                     "approx": bool(sh.get("approx")),
                 })
             out_photos.append({"t": round(g["t"], 1), "x": round(x, 1),
@@ -1874,7 +1875,11 @@ function drawPop(p, e) {
 
   const approx = isClip ? !!p.clip.approx : !!(shots[0] && shots[0].approx);
   const gapM = isClip ? p.clip.gap : (shots[0] ? shots[0].gap : 0);
-  if (approx) {
+  const holeS = isClip ? 0 : (shots[0] ? (shots[0].hole_s || 0) : 0);
+  if (holeS > 0) {
+    ctx.textAlign = 'center'; ctx.font = '400 18px ' + F; ctx.fillStyle = '#8B98A7';
+    ctx.fillText('拍摄时刻落在轨迹缺口内（暂停/丢星），位置为估算', cx, top - 26);
+  } else if (approx) {
     ctx.textAlign = 'center'; ctx.font = '400 18px ' + F; ctx.fillStyle = '#7E8C9B';
     ctx.fillText('文件里没有坐标，按拍摄时间定位', cx, top - 26);
   } else if (gapM > 40) {
