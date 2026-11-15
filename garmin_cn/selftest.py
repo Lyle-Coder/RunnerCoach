@@ -1669,6 +1669,20 @@ def run() -> int:
         "同一地点多张照片只显示了一张"
     assert "ctx.fillText('+' + (ns - 2), bx, by);" in _msrc2, \
         "多出来的照片没有 +N 角标提示"
+    # 缩略图文件名必须带路径指纹：只用 stem 时不同目录的同名照片会落到
+    # 同一个 png，后一张盖掉前一张 —— 表现是「同一处两张图内容一样」。
+    assert 'src.stem + "-" + _tag + ".png"' in _msrc2, \
+        "缩略图文件名没带路径指纹，同名照片会互相覆盖"
+    # 避让最远只推到 80px，再远就跟标记点没关系了
+    assert "for (const d of [24, 38, 52, 66, 80])" in _msrc2, \
+        "缩略图避让范围太大，会飞到离标记点很远的地方"
+    # 同一文件重复登记要去重
+    _asrc = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    assert "if _key in seen_path:" in _asrc, \
+        "素材没按路径去重，同一张图会重复出现"
+    # 排查期的整串素材日志已经撤掉，别再灌诊断日志
+    assert 'log_exc("motion clips"' not in _asrc, \
+        "motion clips 的诊断日志又回来了"
     assert "Math.max(492 + ph / 2" not in _msrc2, \
         "卡片又钉回画面中央了"
     assert "1.2 * Math.max(1, (x.shots || []).length)" in _msrc2, \

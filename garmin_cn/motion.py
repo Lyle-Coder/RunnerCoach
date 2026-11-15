@@ -530,7 +530,12 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                 src = Path(sh["path"])
                 thumb = None
                 if thumb_dir is not None:
-                    dst = thumb_dir / (src.stem + ".png")
+                    # 文件名带上**完整路径的指纹**：只用 stem 时，不同目录的
+                    # 同名照片（如 IMG_20261114_095054）会落到同一个 png，
+                    # 后一张把前一张盖掉 —— 表现就是「同一处两张图内容一样」。
+                    _tag = hashlib.md5(
+                        str(src.resolve()).encode("utf-8")).hexdigest()[:10]
+                    dst = thumb_dir / (src.stem + "-" + _tag + ".png")
                     thumb = make_thumb(src, dst, sh)
                 # 存**文件路径**而不是 file:// URI：导出 MP4 时页面从本地
                 # HTTP 服务加载同一批文件，URI 形式会让 canvas 被污染，
@@ -1207,7 +1212,8 @@ function drawTrack(rt, hd) {
     const cells = Math.min(Math.max(ns, 1), 2);
     const mw = cells > 1 ? MW * 2 + 6 : MW;
     let best = null, bestOv = Infinity;
-    for (const d of [26, 46, 70, 96, 124, 156]) {
+    // 最多只推到 80px：再远看起来就跟标记点没关系了，宁可轻微重叠
+    for (const d of [24, 38, 52, 66, 80]) {
       for (const [ux, uy] of DIRS) {
         let x = p.x + ux * (d + mw / 2) - mw / 2;
         let y = p.y + uy * (d + MH / 2) - MH / 2;
