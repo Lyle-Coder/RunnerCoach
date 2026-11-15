@@ -922,6 +922,8 @@ const RAMP = 0.70;                  // 加减速时长（播放秒）
 const PWIN = [];                    // 每处照片的播放时间窗口 {a: 停住开始, b: 停住结束}
 const TL = (function () {
   const ps = (D.photos || []).slice().sort((a, b) => a.t - b.t);
+// 调试用：暴露排好序的照片点，出问题时能直接问「第 i 张在第几秒」
+window.__ps = ps;
   const n = ps.length;
   // 素材停留**叠加**在巡航时长之上，不挤占轨迹节奏：
   //   视频按自身时长整段播完，图片/照片按固定停留。
