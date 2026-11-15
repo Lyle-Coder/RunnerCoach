@@ -870,6 +870,8 @@ class MainActivity : Activity() {
                             else if (corosDead) toast("高驰登录已过期，请在「账号登录」里重登")
                             if (keepDead) toast("Keep 登录已过期，请在「我的」里重登")
                             reload()
+                            // 桌面看板不能等 30 分钟的系统周期：刚同步完就重画一次
+                            TodayWidget.refreshAll(this@MainActivity)
                             // 每次刷新（含刚登录）都在后台往前补一段；
                             // 已经补完的库会在第一次调用时立即返回，不发请求。
                             runBackfill()
@@ -1568,6 +1570,8 @@ class MainActivity : Activity() {
                 val kcal = r.optJSONObject("total")?.optInt("kcal") ?: 0
                 toast("已记下 $kcal kcal，一图流和看板已更新")
                 reload()
+                // 营养三元素进度条要立刻跟着变，别等 30 分钟的系统刷新
+                TodayWidget.refreshAll(this@MainActivity)
             }
         }
     }
@@ -1839,6 +1843,7 @@ class MainActivity : Activity() {
                 if (r.optBoolean("ok")) {
                     toast("训练计划已更新")
                     reload()
+                    TodayWidget.refreshAll(this@MainActivity)
                 } else {
                     toast(r.optString("error", "暂时读不到佳明训练计划"))
                 }
