@@ -45,6 +45,12 @@ G_TIME, G_DATE = 0x0007, 0x001D
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 
+# 照片位置先用「拍摄时刻 ± 这个窗口」圈定轨迹范围，再在里面找离 GPS 最近的点。
+# 往返/折返赛道上同一坐标会经过两次，全局最近点分不清是哪一圈——17:40 回程
+# 拍的照片会被吸到 10:00 去程的位置，看起来就是「标记点离实际位置很远」。
+# 3 分钟足够覆盖拍照到记录的时间差，又不会跨到另一圈。
+GPS_WINDOW_S = 180.0
+
 
 # ------------------------------------------------------------------ TIFF 基础
 class _Tiff:
@@ -300,23 +306,41 @@ def scan(folder: Path, *, recursive: bool = True) -> list[dict]:
 
 
 # ------------------------------------------------------------------ 吸附
-def _nearest_on_route(rt: dict, lat: float, lon: float) -> tuple[float, int]:
+def _nearest_on_route(rt: dict, lat: float, lon: float,
+                      t_lo: float | None = None,
+                      t_hi: float | None = None) -> tuple[float, int]:
     """轨迹上离 (lat, lon) 最近的点：返回 (距离米, 下标)。
 
     用轨迹中心纬度的等距圆柱近似（本地 5 km 内误差 <0.1 m），比逐点开
     haversine 快一个量级——一张照片对 3000 个点，10 张就是 3 万次三角函数。
+
+    `t_lo` / `t_hi`：只在轨迹时间落在这个区间内的点里找。**往返、折返赛道
+    上同一个坐标会出现两次**（去程一次、回程一次），全局最近点分不出是哪
+    一圈；只有时间能确定圈次，所以先按时间窗口缩小范围，GPS 只负责在这一圈
+    里把位置校得更准。
     """
     lats, lons = rt.get("lat") or [], rt.get("lon") or []
     if not lats:
         return float("inf"), -1
+    ts = rt.get("t") or []
+    use_win = t_lo is not None and bool(ts) and len(ts) == len(lats)
+    mid = ((t_lo + t_hi) / 2.0) if (use_win and t_hi is not None) else 0.0
     kx = 111320.0 * math.cos(math.radians(sum(lats) / len(lats)))
-    best, bi = float("inf"), -1
+    best, bi, best_dt = float("inf"), -1, float("inf")
     for i, (la, lo) in enumerate(zip(lats, lons)):
+        if use_win:
+            ti = ts[i]
+            if ti < t_lo or (t_hi is not None and ti > t_hi):
+                continue
         dx = (lo - lon) * kx
         dy = (la - lat) * 110540.0
         d2 = dx * dx + dy * dy
-        if d2 < best:
-            best, bi = d2, i
+        dt_ = abs(ts[i] - mid) if use_win else 0.0
+        # 距离几乎一样时（相差 5 m 以内）取**时间更接近拍摄时刻**的那个：
+        # 往返赛道上同一个坐标会经过两次，两处距离都是 0，光看距离会选中
+        # 去程那一圈，照片就被摆到几十分钟前的位置上。
+        if d2 < best - 25.0 or (abs(d2 - best) <= 25.0 and dt_ < best_dt):
+            best, bi, best_dt = d2, i, dt_
     return math.sqrt(best), bi
 
 
@@ -406,10 +430,18 @@ def match(photos: list[dict], rt: dict, *, t0_ms: int | None = None,
                 continue
             gap, approx = None, True
         else:
-            gap, i = _nearest_on_route(rt, lat, lon)
+            # 先在「拍摄时刻 ± GPS_WINDOW_S」圈定的那一段轨迹里找最近点：
+            # 往返/折返赛道上同一个坐标会出现两次，全局最近点分不清去程还是
+            # 回程（17:40 拍的会被吸到 10:00 经过的位置，位置差几公里）。
+            # 时间决定圈次，GPS 只负责在这一圈里把位置校准。
+            gap, i = _nearest_on_route(rt, lat, lon,
+                                       rel - GPS_WINDOW_S, rel + GPS_WINDOW_S)
+            if i < 0 or gap > max_m:
+                # 窗口里没有可信的点（相机时钟偏差大 / 照片拍在路外）：
+                # 退回全局最近点，再按老口径决定用 GPS 还是时间点。
+                gap, i = _nearest_on_route(rt, lat, lon)
             # 环线/折返赛道：起点和终点几乎重合，GPS 精度差一点就把「刚起跑」
-            # 判到「快到终点」。活动内 1Hz 的时间轴是唯一的，所以两者里程差
-            # 悬殊时以时间点为准（GPS 只用来兜住「时间不准」的情况）。
+            # 判到「快到终点」。两者里程差悬殊时以时间点为准。
             j = _at_time(rt, min(max(rel, 0.0), dur))
             if i >= 0 and j >= 0 and abs(rt["d"][i] - rt["d"][j]) > 300:
                 i, gap = j, None
