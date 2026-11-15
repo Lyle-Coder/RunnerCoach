@@ -3506,11 +3506,20 @@ def run() -> int:
                     clamp_ends=True, keep=())
     assert _wo["points"][0]["d"] == 300.0 and _wo["points"][0]["t"] == 200.0, \
         "GPS 完全对不上时没退回按时间定位"
-    assert hasattr(_ph, "GPS_WINDOW_S") and _ph.GPS_WINDOW_S <= 180.0, \
-        "GPS 时间窗口太宽，会跨到另一圈"
+    assert hasattr(_ph, "GPS_WINDOW_S") and _ph.GPS_WINDOW_S <= 60.0, \
+        "GPS 时间窗口太宽：位置与时刻会差出几十米，卡片弹出时标注点在身后"
+    # 时刻与位置必须取自**同一个轨迹点**，否则「卡片弹出时标注点在别处」。
+    # 圈次由 ±60s 的时间窗口保证，不会像 1.3.6 那样吸到另一圈。
     _psrc = (ROOT / "garmin_cn/photo.py").read_text(encoding="utf-8")
-    assert '"t": float(rt["t"][i])' not in _psrc, \
-        "t 又被 GPS 吸附点决定了，往返赛道会再次乱序"
+    assert '"t": float(rt["t"][i])' in _psrc and '"i": i,' in _psrc, \
+        "时刻和位置没取自同一个轨迹点，展示与标注会不同步"
+    assert "rel - GPS_WINDOW_S, rel + GPS_WINDOW_S" in _psrc, \
+        "吸附没按拍摄时刻开窗，往返赛道会吸到另一圈"
+    _msrc3 = (ROOT / "garmin_cn/motion.py").read_text(encoding="utf-8")
+    assert "_pos_of(rt, pts, g)" in _msrc3 and "_pos_of(rt, pts, p)" in _msrc3, \
+        "回放没用吸附点下标取坐标，GPS 位置又会被按时间重算覆盖"
+    assert _msrc3.count("_pos_of(rt, pts,") >= 4, \
+        "有素材路径还在按 t 重算坐标，会覆盖 GPS 吸附结果"
 
     # ---- 0.6.3：可读性 / 触控 / 文案 的闸门（不依赖浏览器，纯静态） ----
     from garmin_cn import ui as _u
@@ -3733,8 +3742,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.3.7 → 138）。
-    assert 'versionCode = 138' in (
+    # 每次发版要同步改这里（本次 1.3.8 → 139）。
+    assert 'versionCode = 139' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。
