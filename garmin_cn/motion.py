@@ -924,6 +924,10 @@ const TL = (function () {
   const ps = (D.photos || []).slice().sort((a, b) => a.t - b.t);
 // 调试用：暴露排好序的照片点，出问题时能直接问「第 i 张在第几秒」
 window.__ps = ps;
+// 调试：每张照片「弹出时刻对应的轨迹时间」应与它自己的 t 一致，
+// 差得多就说明进度和标点没对齐
+window.__probe = () => ps.map(p => ({t: Math.round(p.t),
+  a: +((p._a || 0)).toFixed(2), at: Math.round(routeAt(p._a || 0))}));
 // 已经展示完的照片：窗口过去后缩成小图钉在轨迹旁，整条路线看下来像照片地图。
 // 必须挂 window：drawFrame 在另一个作用域里，直接引用这里声明的 const 会
 // 报 "ps is not defined"，整帧（车头、卡片）都画不出来。
@@ -959,12 +963,16 @@ window.__shown = [];
     const segs = [], win = [];
     let p = 0, r = 0;
     const step = k * RAMP / 2;      // 半余弦段走的距离：平均速度 k/2
-    for (const ph of ps) {
+    // 先算好每张的落点：加速段必须知道「下一张在哪」，否则会冲过头
+    const tlist = ps.map(ph => Math.min(Math.max(ph.t, 0), D.dur));
+    for (let idx = 0; idx < ps.length; idx++) {
+      const ph = ps[idx];
       // 素材时间必须落在轨迹内；而且**每一段的里程只能往前走**。
       // 两张素材间隔小于 step（=k*0.35）时，减速段原来会从「上一段加速后的
       // 位置」退回到「照片时间的位置」，回放里就是轨迹冲出去又折返回来
       // （只有加了照片才出现，因为视频之间通常隔得够远）。
-      const phT = Math.min(Math.max(ph.t, 0), D.dur);
+      const phT = tlist[idx];
+      const nextT = idx + 1 < ps.length ? tlist[idx + 1] : D.dur;
       const cruiseTo = Math.max(r, phT - step);
       const cruiseDur = (cruiseTo - r) / k;
       if (cruiseDur > 1e-6) segs.push({ p0: p, p1: p + cruiseDur, r0: r, r1: cruiseTo, e: 0 });
@@ -976,7 +984,10 @@ window.__shown = [];
       win.push({ ph, a: p, b: p + ph._hold });
       segs.push({ p0: p, p1: p + ph._hold, r0: r, r1: r, e: 0 });   // 停住
       p += ph._hold;
-      const accelTo = Math.min(r + step, D.dur);     // 不冲出终点
+      // 加速段绝不能越过**下一张**的位置：照片密集时（间隔 < step）原来会
+      // 冲过去，下一张只能停在「已经超过自己」的地方，表现就是进度早就过了
+      // 标点、卡片才弹出来，小图也被钉在路过之后的位置。
+      const accelTo = Math.min(r + step, nextT, D.dur);
       segs.push({ p0: p, p1: p + RAMP, r0: r, r1: accelTo, e: 1 });  // 加速
       p += RAMP; r = accelTo;
     }
@@ -1190,14 +1201,19 @@ function drawTrack(rt, hd) {
     p._done = true;
     SHOWN.push(p);
     if (!isFinite(p.x) || !isFinite(p.y)) continue;
+    // 一簇几张就并排几张（最多 2 张，其余用角标 +N）：以前只画 shots[0]，
+    // 同一地点拍的其余照片永远看不到。
+    const ns = (p.shots || []).length;
+    const cells = Math.min(Math.max(ns, 1), 2);
+    const mw = cells > 1 ? MW * 2 + 6 : MW;
     let best = null, bestOv = Infinity;
     for (const d of [26, 46, 70, 96, 124, 156]) {
       for (const [ux, uy] of DIRS) {
-        let x = p.x + ux * (d + MW / 2) - MW / 2;
+        let x = p.x + ux * (d + mw / 2) - mw / 2;
         let y = p.y + uy * (d + MH / 2) - MH / 2;
-        x = Math.max(16, Math.min(W - 16 - MW, x));
+        x = Math.max(16, Math.min(W - 16 - mw, x));
         y = Math.max(140, Math.min(H - 170 - MH, y));
-        const r = { x, y, w: MW, h: MH };
+        const r = { x, y, w: mw, h: MH };
         const ov = overlap(r);
         if (ov === 0) { best = r; bestOv = 0; break; }
         if (ov < bestOv) { bestOv = ov; best = r; }
@@ -1209,24 +1225,40 @@ function drawTrack(rt, hd) {
   for (let k = 0; k < SHOWN.length; k++) {
     const p = SHOWN[k];
     if (p._mx == null) continue;
-    const s0 = p.shots && p.shots[0];
-    const im = s0 && IMG.get(s0.src);
-    if (!im) continue;
+    const all = p.shots || [];
+    const ns = all.length;
+    const cells = Math.min(Math.max(ns, 1), 2);
     const w = MW, h = MH;
-    const x = p._mx, y = p._my;
+    // 统一不透明：这些都是路线上真实拍过的点，地位相同，不该按早晚分等级。
     ctx.save();
-    // 统一不透明：这些都是路线上真实拍过的点，地位相同，不该按早晚分等级
-    // （之前超过 8 张把最早的降到 0.35，看着像「残缺的图」）。
     ctx.globalAlpha = 0.94;
-    rr(x - 3, y - 3, w + 6, h + 6, 13);
-    ctx.fillStyle = 'rgba(255,255,255,.94)'; ctx.fill();
-    ctx.save();
-    rr(x, y, w, h, 10); ctx.clip();
-    const iw = im.naturalWidth || w, ih = im.naturalHeight || h;
-    const sc0 = Math.max(w / iw, h / ih);
-    ctx.drawImage(im, x + (w - iw * sc0) / 2, y + (h - ih * sc0) / 2,
-                  iw * sc0, ih * sc0);
-    ctx.restore();
+    for (let j = 0; j < cells; j++) {
+      const s0 = all[j];
+      const im = s0 && IMG.get(s0.src);
+      if (!im) continue;
+      const x = p._mx + j * (w + 6), y = p._my;
+      rr(x - 3, y - 3, w + 6, h + 6, 13);
+      ctx.fillStyle = 'rgba(255,255,255,.94)'; ctx.fill();
+      ctx.save();
+      rr(x, y, w, h, 10); ctx.clip();
+      const iw = im.naturalWidth || w, ih = im.naturalHeight || h;
+      const sc0 = Math.max(w / iw, h / ih);
+      ctx.drawImage(im, x + (w - iw * sc0) / 2, y + (h - ih * sc0) / 2,
+                    iw * sc0, ih * sc0);
+      ctx.restore();
+    }
+    // 超过 2 张时右下角标 +N，告诉用户这一处还有几张（卡片里会逐张轮播）
+    if (ns > 2) {
+      const bx = p._mx + cells * (w + 6) - 8, by = p._my + h - 6;
+      ctx.beginPath(); ctx.arc(bx, by, 18, 0, 7);
+      ctx.fillStyle = 'rgba(8,12,18,.82)'; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = '700 17px ' + F;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('+' + (ns - 2), bx, by);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    }
     ctx.restore();
   }
   } catch (e) { console.warn('缩略图绘制失败', e); window.__miniErr = String(e && e.message || e); }
