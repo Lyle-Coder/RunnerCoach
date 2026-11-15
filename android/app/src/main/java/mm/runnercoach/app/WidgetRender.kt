@@ -3,6 +3,7 @@ package mm.runnercoach.app
 import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
+import android.graphics.LinearGradient
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RadialGradient
@@ -107,6 +108,14 @@ object WidgetRender {
             items.add("今日" to String.format("%.1fkm", it))
         }
         nullableInt(data, "steps")?.let { items.add("步数" to it.toString()) }
+        // 饮食：只有当天摄入有数才显示。历史摄入没有落库，所以这里放文字，
+        // 不做成趋势柱——画一条只有一根柱的图反而误导。
+        val nut = data.optJSONObject("intake")
+        val eat = nut?.optInt("kcal", 0) ?: 0
+        val goal = nut?.optInt("target", 0) ?: 0
+        if (eat > 0) {
+            items.add("饮食" to (if (goal > 0) "$eat/$goal" else eat.toString()))
+        }
 
         if (size.wide) {
             // ---- 横版 4×2：左栏日期/主数字/等级，右栏指标两列
@@ -132,11 +141,14 @@ object WidgetRender {
             y += bigNum.textSize * 0.92f
             c.drawText(level, x, y + lv.textSize, lv)
 
-            val show = items.take(6)
+            val show = items.take(4)
             if (show.isNotEmpty()) {
                 drawGrid(c, show, leftW + pad * 0.4f, pad, (w - pad).toFloat(),
-                    (h - pad * 0.4f).toInt(), 2)
+                    (h * 0.62f).toInt(), 2)
             }
+            // 横版高度只有 420，指标两行之后还能塞一条很矮的趋势柱
+            drawTrend(c, data, leftW + pad * 0.4f, h * 0.68f,
+                (w - pad).toFloat(), h - pad, h, brand, tiny = true)
         } else {
             // ---- 竖版 / 方版：垂直堆叠
             var y = pad
@@ -176,22 +188,81 @@ object WidgetRender {
             c.drawText(level, pad, y + lv.textSize, lv)
             y += lv.textSize * 1.9f
 
+            // 底部要留给趋势柱：把指标区的下边界收上来
+            val barsH = h * 0.15f
+            val gridBottom = h - pad - barsH - h * 0.055f
             val show = if (size.full) items else items.take(if (size.cols >= 2) 4 else 3)
             if (show.isNotEmpty()) {
-                drawGrid(c, show, pad, y, (w - pad).toFloat(),
-                    (h - pad * 2.2f).toInt(), size.cols)
+                drawGrid(c, show, pad, y, (w - pad).toFloat(), gridBottom.toInt(), size.cols)
             }
-            if (size.full) {
-                val wk = data.optDouble("week_km", 0.0)
-                if (wk > 0) {
-                    val p2 = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                        color = MUTED; textSize = h * 0.030f
-                    }
-                    c.drawText(String.format("本周 %.1f km", wk), pad, h - pad * 0.8f, p2)
-                }
-            }
+            drawTrend(c, data, pad, gridBottom + h * 0.02f,
+                (w - pad).toFloat(), h - pad, h, brand)
         }
         return bmp
+    }
+
+    /**
+     * 近 7 天趋势柱：看板上那条「一周起伏」的小图。
+     *
+     * 优先画活动里程；如果这一周一条活动都没有（比如刚同步、或只戴口罩的日子），
+     * 退回睡眠时长——总比画一排零高的小点强。
+     */
+    private fun drawTrend(
+        c: Canvas, data: JSONObject, left: Float, top: Float,
+        right: Float, bottom: Float, h: Int, color: Int, tiny: Boolean = false,
+    ) {
+        var vals = series(data, "km")
+        var label = "近 7 天里程"
+        if (vals.none { it > 0.05f }) {
+            vals = series(data, "sleep")
+            label = "近 7 天睡眠"
+        }
+        if (vals.isEmpty() || vals.none { it > 0.05f }) return
+
+        val labW = if (tiny) 0f else h * 0.10f
+        val key = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            // 必须写 this.color：函数参数也叫 color，直接写会被当成给参数赋值
+            this.color = MUTED
+            textSize = h * (if (tiny) 0.030f else 0.028f)
+        }
+        if (!tiny) {
+            c.drawText(label, left, top + key.textSize * 0.9f, key)
+        }
+        val barTop = top + (if (tiny) 0f else key.textSize * 1.4f)
+        drawBars(c, vals, left + labW, barTop, right, bottom, color)
+    }
+
+    private fun drawBars(
+        c: Canvas, vals: List<Float>, left: Float, top: Float,
+        right: Float, bottom: Float, color: Int,
+    ) {
+        if (vals.isEmpty() || bottom <= top) return
+        val n = vals.size
+        val slot = (right - left) / n
+        val bw = slot * 0.58f
+        val maxV = maxOf(0.05f, vals.maxOrNull() ?: 1f)
+        vals.forEachIndexed { i, v ->
+            val x = left + i * slot + (slot - bw) / 2f
+            // 零值也留一个 2% 的矮块，让「那天没动」看得见，而不是一片空白
+            val hh = (bottom - top) * (v / maxV).coerceIn(0.02f, 1f)
+            val rect = RectF(x, bottom - hh, x + bw, bottom)
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                shader = LinearGradient(
+                    0f, bottom - hh, 0f, bottom,
+                    alpha(color, 0.92f), alpha(color, 0.26f), Shader.TileMode.CLAMP,
+                )
+            }
+            c.drawRoundRect(rect, bw * 0.32f, bw * 0.32f, p)
+        }
+    }
+
+    private fun series(data: JSONObject, key: String): List<Float> {
+        val arr = data.optJSONArray("days") ?: return emptyList()
+        val out = ArrayList<Float>(arr.length())
+        for (i in 0 until arr.length()) {
+            out.add(arr.optJSONObject(i)?.optDouble(key, 0.0)?.toFloat() ?: 0f)
+        }
+        return out
     }
 
     /** 指标网格：按列数切行，左标签右数值，中间用极淡的分隔线。 */

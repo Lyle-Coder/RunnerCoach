@@ -1392,6 +1392,25 @@ def widget_data(date: str | None = None) -> dict:
         "week_km": wk_dist,
         "synced": str(t.get("synced_at") or store.get_meta("last_sync") or ""),
     }
+    # 近 7 天的柱状图数据：小组件要想「像看板」，光有数字不够，
+    # 得有一条能看出起伏的细柱（活动里程 / 睡眠时长 / 消耗）。
+    days = []
+    for hh in (res.get("history") or [])[-7:]:
+        days.append({
+            "d": str(hh.get("date") or "")[5:],
+            "km": round(float(hh.get("distance_m") or 0) / 1000.0, 1),
+            "sleep": round(float(hh.get("sleep_total_min") or 0) / 60.0, 1),
+            "kcal": int(hh.get("calories_total") or 0),
+            "steps": int(hh.get("steps") or 0),
+        })
+    out["days"] = days
+    nut = res.get("nutrition") or {}
+    it = nut.get("intake") or {}
+    out["intake"] = {
+        "kcal": int(it.get("kcal") or 0),
+        "target": int(nut.get("target_kcal") or 0),
+        "goal": str(nut.get("goal_label") or ""),
+    }
     return out
 
 
