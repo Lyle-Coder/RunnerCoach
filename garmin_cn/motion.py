@@ -1215,7 +1215,9 @@ function drawTrack(rt, hd) {
     const w = MW, h = MH;
     const x = p._mx, y = p._my;
     ctx.save();
-    ctx.globalAlpha = (SHOWN.length - 1 - k) > 8 ? 0.35 : 0.92;
+    // 统一不透明：这些都是路线上真实拍过的点，地位相同，不该按早晚分等级
+    // （之前超过 8 张把最早的降到 0.35，看着像「残缺的图」）。
+    ctx.globalAlpha = 0.94;
     rr(x - 3, y - 3, w + 6, h + 6, 13);
     ctx.fillStyle = 'rgba(255,255,255,.94)'; ctx.fill();
     ctx.save();
