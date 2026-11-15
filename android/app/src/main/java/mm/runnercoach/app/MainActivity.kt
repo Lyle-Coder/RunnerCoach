@@ -3330,10 +3330,21 @@ class MainActivity : Activity() {
                         ui { reload() }
                     }
                 } else if (r.optBoolean("need_login")) {
-                    toast("${brand}登录已失效，请重新授权")
+                    // 凭据过期时 Python 侧只返回 need_login，这里负责把人带回登录框
+                    // （登录成功会自动再同步一次）。本地体重数据没被清空，说清楚。
+                    toast("${brand}登录已失效，请重新授权（已有体重数据不受影响）")
                     if (huawei) askHwLogin() else askMiLogin()
                 } else {
-                    toast("体重同步失败：${r.optString("error")}")
+                    val rawErr = r.optString("error").trim()
+                    // 网关偶尔直接甩一段 JSON（HTTP 401: {"code":3,...}），
+                    // 别把这种原文塞进 toast——真实原因已在 Python 侧归类。
+                    val msg = when {
+                        rawErr.isEmpty() -> "原因未知，稍后再试"
+                        rawErr.contains('{') || rawErr.startsWith("HTTP ") ->
+                            "${brand}云端暂时不可用，稍后再试（已有体重数据不受影响）"
+                        else -> rawErr.take(120)
+                    }
+                    toast("体重同步失败：$msg")
                 }
             }
         }
