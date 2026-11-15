@@ -2757,12 +2757,20 @@ def clips_list() -> dict:
         had = bool(it.get("t_utc"))
         # 老版本登记时探不到时间。现在能从 udta / 原始文件名 / 原生兜底
         # 补回来的直接落盘，免得界面一直显示「加入」、回放一直按数量均分。
-        found = info.get("t_utc") or native
+        typed = info.get("t_utc")
+        named = 0 if (typed or native) else _name_time_ms(
+            it.get("name") or p.name)
+        found = typed or native or named
         if not had and found:
-            src = (info.get("t_source") or "") if info.get("t_utc") else "相册/视频日期标签"
+            if typed:
+                src = info.get("t_source") or "成品文件"
+            elif native:
+                src = "相册/视频日期标签"
+            else:
+                src = "文件名"
             it["t_utc"], it["t_source"] = found, src
             repairs[str(it.get("id") or it.get("path") or "")] = (found, src)
-        it["t_utc"] = _meta_val(it, info, "t_utc") or native or None
+        it["t_utc"] = _meta_val(it, info, "t_utc") or native or named or None
         it["t_source"] = it.get("t_source") or info.get("t_source") \
             or ("相册/视频日期标签" if native else "")
         it["t_why"] = "" if it.get("t_utc") else (info.get("t_why") or "读不到拍摄时间")
@@ -2784,6 +2792,31 @@ def clips_list() -> dict:
     # 「下午拍的排在早上那条前面」。没有时间的按登记顺序排在后面（sort 稳定）。
     items.sort(key=lambda x: (0, int(x["t_utc"])) if x.get("t_utc") else (1, 0))
     return {"ok": True, "items": items, "dir": str(MEDIA)}
+
+
+# 相机/相册导出的文件名几乎都带拍摄时刻：`IMG_20261114_174028`、
+# `VID_20261103_180036`、`PXL_20261114_174028123`。微信转发、编辑过的照片
+# 常被剥掉 EXIF，这是最后一道能拿到**真实**拍摄时间的来源——比按数量均布
+# 准得多，也不会出现「下午 5 点那张排在早上 10 点前面」。
+_NAME_STAMP_RE = re.compile(
+    r"(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[_\-\sT]?"
+    r"([01]\d|2[0-3])([0-5]\d)([0-5]\d)")
+
+
+def _name_time_ms(name: str) -> int:
+    """从文件名里的 `20261114_174028` 抠拍摄时间（本地时区 → UTC 毫秒）。
+
+    抠不出来或不像日期就返回 0，绝不猜。文件名记的是**本地时间**，
+    与 EXIF 的本地时间口径一致，所以同样按本地时区换算。
+    """
+    m = _NAME_STAMP_RE.search(str(name or ""))
+    if not m:
+        return 0
+    try:
+        t = dt.datetime(*(int(x) for x in m.groups()))
+    except ValueError:
+        return 0
+    return int(t.timestamp() * 1000)
 
 
 def _norm_taken_ms(v) -> int:
@@ -2824,7 +2857,8 @@ def clips_reprobe(clip_id: str) -> dict:
             return {"ok": False, "error": "文件已丢失，删掉重新添加一次"}
         info = _probe_material(p, name_hint=str(it.get("name") or ""))
         native = _norm_taken_ms(it.get("t_native"))
-        t = info.get("t_utc") or it.get("t_utc") or native
+        t = (info.get("t_utc") or it.get("t_utc") or native
+             or _name_time_ms(it.get("name") or p.name))
         if not t:
             why = info.get("t_why") or "文件里没有拍摄时间，剪辑前的源文件也没留下"
             it["t_why"] = why
@@ -2891,7 +2925,10 @@ def clips_add(path: str, name: str = "", dur: float = 0,
     elif native:
         t_src = "相册/视频日期标签"
     else:
-        t_src = ""
+        # 最后一道：文件名里的拍摄时刻。微信转发 / 编辑过的照片 EXIF 常被剥掉，
+        # 但 `IMG_20261114_174028` 这种相机命名还在 —— 有真实时间就不用均布。
+        t_utc = _name_time_ms(name or p.name) or None
+        t_src = "文件名" if t_utc else ""
     t_why = "" if t_utc else (meta.get("t_why") or fallback.get("t_why") or "读不到拍摄时间")
     # 把时间写回成品的 mvhd：以后就算 clips.json 丢了，也还能从文件本身读回来。
     if t_utc and k == "video":

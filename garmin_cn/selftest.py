@@ -1557,6 +1557,36 @@ def run() -> int:
     assert _rr.get("ok") and _rr.get("removed") == 1, \
         f"老素材批量删除仍然失败：{_rr}"
     assert '"取消全选" else "全选"' in _main, "批量管理没有全选按钮"
+    # 用户在手机上的真实场景：两张图 EXIF 被剥掉（或读不到），但文件名是
+    # `IMG_20261114_174028` / `IMG_20261114_095054`。文件名必须能兜回时间，
+    # 否则 t_utc 为空 → 列表按登记顺序（相册倒序）→ 晚的排在早的前面。
+    _late = _APc._name_time_ms("IMG_20261114_174028")
+    _early = _APc._name_time_ms("IMG_20261114_095054")
+    assert _late and _early and _late > _early, \
+        "文件名里的拍摄时刻没解析出来，回放会继续按均布/倒序排"
+    assert _APc._name_time_ms("img-1794656752041-3") == 0, \
+        "把加入时间戳误当成拍摄时间了"
+    _cdir = _Path(tempfile.mkdtemp())
+    _cf = _cdir / "clips.json"
+    _imgs = {"items": [
+        # 登记顺序故意反着来：晚的先加（相册批量选择的返回顺序就是这样）
+        {"path": str(_cdir / "a.jpg"), "name": "IMG_20261114_174028",
+         "kind": "image"},
+        {"path": str(_cdir / "b.jpg"), "name": "IMG_20261114_095054",
+         "kind": "image"},
+    ]}
+    for _x in _imgs["items"]:
+        _Path(_x["path"]).write_bytes(b"not-a-real-jpeg")
+    _cf.write_text(_json.dumps(_imgs, ensure_ascii=False), encoding="utf-8")
+    with _mock.patch.object(_APc, "CLIPS", _cf), \
+            _mock.patch.object(_APc, "MEDIA", _cdir):
+        _lst = _APc.clips_list()["items"]
+    assert [x["name"] for x in _lst] == ["IMG_20261114_095054",
+                                         "IMG_20261114_174028"], \
+        f"列表顺序仍按登记顺序（晚的在前）：{[x['name'] for x in _lst]}"
+    assert all(x.get("t_utc") for x in _lst), "文件名里的时间没写进 t_utc"
+    assert all(x.get("t_source") == "文件名" for x in _lst), \
+        "补到的时间没标来源，用户无法判断准不准"
     # 批量删除的 id 过 HTTP 时会被 Kotlin List 的 toString() 变成
     # `"[c1, c2]"` 一个字符串，后端必须能拆回来，否则「勾了也一条都没删掉」
     for _arg in (["c1", "c2"], '["c1", "c2"]', "[c1, c2]", "c1,c2",
