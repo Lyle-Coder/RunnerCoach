@@ -2524,10 +2524,17 @@ def _clips_for_motion(rt: dict | None = None,
     if ts:
         act_dur = float(ts[-1])
     out = []
+    seen_path = set()
     for it in _clips_read():
         p = Path(str(it.get("path") or ""))
         if not p.is_file():
             continue
+        # 同一个文件被登记两次（用户重复选、或列表里残留）只留一次：
+        # 否则回放里同一处并排两张一模一样的图，看着像 bug。
+        _key = str(p.resolve()).lower()
+        if _key in seen_path:
+            continue
+        seen_path.add(_key)
         info = _probe_material(p, name_hint=str(it.get("name") or ""))
         kind = it.get("kind") or info.get("kind") or "video"
         # 视频：文件真实时长优先；探不到才用登记值
@@ -2561,19 +2568,8 @@ def _clips_for_motion(rt: dict | None = None,
     # 交给回放前先按拍摄时间排好：下游 `photo.match` 也会排，但这里排一次
     # 能保证「就算某张时间缺失走了均布，也按真实先后铺，不会倒序」。
     out.sort(key=lambda c: (0, int(c["t_utc"])) if c.get("t_utc") else (1, 0))
-    # 留一条「这次回放到底用了什么时间」的凭据：素材顺序对不上时，
-    # 光看界面分不清是「时间读错」还是「读不到」，诊断日志里能一眼对账。
-    try:
-        from . import diag
-        diag.log_exc("motion clips", " | ".join(
-            "%s t=%s src=%s" % (
-                str(c["name"])[:20],
-                dt.datetime.fromtimestamp(c["t_utc"] / 1000).strftime("%m-%d %H:%M")
-                if c.get("t_utc") else "无",
-                c.get("t_source") or "-")
-            for c in out) or "（没有可用素材）")
-    except Exception:
-        pass
+    # 曾经在这里把「每张素材读到的拍摄时间」整串写进日志，排查时序那阵子
+    # 很有用；问题定位完就撤掉了，否则每次生成都往诊断日志里灌一整行。
     return out
 
 
