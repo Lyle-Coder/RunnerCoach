@@ -3472,38 +3472,45 @@ def run() -> int:
         (ROOT / "garmin_cn/motion.py").read_text(encoding="utf-8"), \
         "motion 调 match 时没把 rotate 放进 keep"
 
-    # GPS 与拍摄时间对不上时：GPS 紧贴轨迹就**信 GPS**，并且位置与时刻取自
-    # 同一个轨迹点。否则照片点标在 A，播放时却按时间跑到轨迹的 B 处，
-    # 表现就是「地图上的标记点和实际位置不一致、GPS 白读了」。
-    _rt_g = {"t0": _T0, "n": 5, "t": [0.0, 30.0, 60.0, 90.0, 120.0],
-             "lat": [34.0, 34.001, 34.002, 34.003, 34.004], "lon": [108.0] * 5,
-             "d": [0.0, 100.0, 200.0, 300.0, 400.0]}
-    _gps_far = [{"name": "far", "path": "/tmp/far", "w": 100, "h": 100,
-                 "t_utc": _T0,                      # 时间对应起点
-                 "lat": 34.004, "lon": 108.0}]      # GPS 对应终点
-    _gf = _ph.match(_gps_far, _rt_g, t0_ms=_T0, pre_s=300, post_s=900,
-                    cluster_m=25.0, clamp_ends=True, keep=())
-    _gp = _gf["points"][0]
-    assert _gp["d"] == 400.0, \
-        f"GPS 明明贴着轨迹，位置却按时间取了 {_gp['d']}（应为 400）"
-    assert _gp["t"] == 120.0, \
-        f"位置和时刻不同源：位置在终点，时刻却是 {_gp['t']}s"
-    # GPS 自己飘得很远（>80m）时才退回时间点，避免环线吸到另一圈
-    _gps_off = [{"name": "off", "path": "/tmp/off", "w": 100, "h": 100,
-                 "t_utc": _T0, "lat": 34.01, "lon": 108.01}]   # 约 1.3 km 外
-    _go = _ph.match(_gps_off, _rt_g, t0_ms=_T0, pre_s=300, post_s=900,
-                    cluster_m=25.0, clamp_ends=True, keep=())
-    assert _go["points"] and _go["points"][0]["d"] == 0.0, \
-        "GPS 离轨迹很远时没退回时间点，照片会被挂到错误位置"
-    # 没有 GPS 就只能按时间
-    _no_gps = [{"name": "t", "path": "/tmp/t", "w": 100, "h": 100,
-                "t_utc": _T0 + 60_000}]
-    _nt = _ph.match(_no_gps, _rt_g, t0_ms=_T0, pre_s=300, post_s=900,
-                    cluster_m=25.0, clamp_ends=True, keep=())
-    assert _nt["points"][0]["d"] == 200.0, \
-        "无 GPS 的照片没按时间定位"
-    assert hasattr(_ph, "GPS_TRUST_M") and _ph.GPS_TRUST_M <= 30.0, \
-        "GPS 可信阈值太宽，环线赛道会吸到另一圈"
+    # 往返/折返赛道：同一坐标会经过两次，GPS **分不出是哪一圈**（1.3.6 就是
+    # 这样改错的：让 GPS 吸附点同时决定 t，最早的照片被放到最晚展示）。
+    # 规则：t 永远取拍摄时间；位置只在「拍摄时刻 ± 窗口」里用 GPS 校准，
+    # 距离几乎一样时取时间更近的那个点。
+    _T1 = 1_700_000_000_000
+    _rtw = {"t0": _T1, "n": 7,
+            "t": [0.0, 60.0, 120.0, 200.0, 260.0, 320.0, 380.0],
+            "lat": [34.0000, 34.0010, 34.0020, 34.0030, 34.0020, 34.0010,
+                    34.0000],
+            "lon": [108.0] * 7,
+            "d": [0.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0]}
+
+    def _wshot(name, sec, gi):
+        return {"name": name, "path": "/tmp/" + name, "w": 100, "h": 100,
+                "t_utc": _T1 + int(sec * 1000),
+                "lat": _rtw["lat"][gi], "lon": _rtw["lon"][gi]}
+
+    _wr = _ph.match([_wshot("ret", 320, 5)], _rtw, t0_ms=_T1, pre_s=300,
+                    post_s=900, cluster_m=25.0, clamp_ends=True, keep=())
+    _p = _wr["points"][0]
+    assert _p["t"] == 320.0, \
+        f"时刻被 GPS 改了（{_p['t']}s），最早的照片会排到最后"
+    assert _p["d"] == 500.0, \
+        f"回程照片吸附到了另一圈（{_p['d']}m，应 500m）"
+    _wf = _ph.match([_wshot("out", 60, 1)], _rtw, t0_ms=_T1, pre_s=300,
+                    post_s=900, cluster_m=25.0, clamp_ends=True, keep=())
+    assert _wf["points"][0]["d"] == 100.0, "去程照片被吸到回程那一圈了"
+    # GPS 与时间都不缺，但完全对不上（比如照片其实拍在别处）→ 退回按时间
+    _wo = _ph.match([{"name": "off", "path": "/tmp/off", "w": 100, "h": 100,
+                      "t_utc": _T1 + 200_000, "lat": 35.5, "lon": 109.5}],
+                    _rtw, t0_ms=_T1, pre_s=300, post_s=900, cluster_m=25.0,
+                    clamp_ends=True, keep=())
+    assert _wo["points"][0]["d"] == 300.0 and _wo["points"][0]["t"] == 200.0, \
+        "GPS 完全对不上时没退回按时间定位"
+    assert hasattr(_ph, "GPS_WINDOW_S") and _ph.GPS_WINDOW_S <= 180.0, \
+        "GPS 时间窗口太宽，会跨到另一圈"
+    _psrc = (ROOT / "garmin_cn/photo.py").read_text(encoding="utf-8")
+    assert '"t": float(rt["t"][i])' not in _psrc, \
+        "t 又被 GPS 吸附点决定了，往返赛道会再次乱序"
 
     # ---- 0.6.3：可读性 / 触控 / 文案 的闸门（不依赖浏览器，纯静态） ----
     from garmin_cn import ui as _u
@@ -3726,8 +3733,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.3.6 → 137）。
-    assert 'versionCode = 137' in (
+    # 每次发版要同步改这里（本次 1.3.7 → 138）。
+    assert 'versionCode = 138' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。
