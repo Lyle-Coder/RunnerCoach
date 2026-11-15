@@ -45,12 +45,6 @@ G_TIME, G_DATE = 0x0007, 0x001D
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 
-# GPS 吸附距离在这么近时，认为照片**确实就在那个位置拍的**：位置以 GPS 为准，
-# 播放时刻改用该轨迹点的时间，三者（照片点 / 弹出时刻 / 光点）严格对齐。
-# 超过这个距离就说明 GPS 本身在飘，退回按拍摄时间定位——否则环线赛道里
-# 精度差二三十米就会被吸到另一圈，位置反而更错。
-GPS_TRUST_M = 30.0
-
 
 # ------------------------------------------------------------------ TIFF 基础
 class _Tiff:
@@ -414,14 +408,12 @@ def match(photos: list[dict], rt: dict, *, t0_ms: int | None = None,
         else:
             gap, i = _nearest_on_route(rt, lat, lon)
             # 环线/折返赛道：起点和终点几乎重合，GPS 精度差一点就把「刚起跑」
-            # 判到「快到终点」。但反过来说，**GPS 紧贴轨迹（≤30 m）时它就是
-            # 最可信的证据**：照片确实在那里拍的，时间反而可能是转发/编辑后
-            # 变的。只有 GPS 自己在飘（30~80 m）才退回时间点，免得吸到另一圈。
+            # 判到「快到终点」。活动内 1Hz 的时间轴是唯一的，所以两者里程差
+            # 悬殊时以时间点为准（GPS 只用来兜住「时间不准」的情况）。
             j = _at_time(rt, min(max(rel, 0.0), dur))
             if i >= 0 and j >= 0 and abs(rt["d"][i] - rt["d"][j]) > 300:
-                if gap is None or gap > GPS_TRUST_M:
-                    i, gap = j, None
-                    approx = forced
+                i, gap = j, None
+                approx = forced
             elif i < 0:
                 if j < 0:
                     loose.append({"name": name, "why": "坐标和时间都对不上轨迹"})
@@ -437,13 +429,7 @@ def match(photos: list[dict], rt: dict, *, t0_ms: int | None = None,
                     continue
         item = {
             "name": name, "path": ph.get("path"),
-            # 时刻和位置必须来自**同一个轨迹点**。以前 t 用拍摄时间、位置却由
-            # build_payload 按 t 再插值一次，等于把 GPS 吸附的结果丢掉了：
-            # 照片在 A 拍摄（GPS 落在 A），播放时却按时间跑到轨迹的 B 处，
-            # 表现就是「地图上标在 A、展示时出现在路上」。
-            # 用 rt["t"][i] 之后，照片点、弹出时刻、光点位置三者严格对齐；
-            # 人就在那里拍的照片，轨迹时间与拍摄时间本来就只差几秒。
-            "t": float(rt["t"][i]),
+            "t": float(max(min(rel, dur), 0)),
             "lat": rt["lat"][i], "lon": rt["lon"][i],
             "d": rt["d"][i],
             "gap_m": (round(gap, 1) if gap is not None else None),
