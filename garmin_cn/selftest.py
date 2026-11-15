@@ -1610,8 +1610,8 @@ def run() -> int:
     _msrc2 = (ROOT / "garmin_cn/motion.py").read_text(encoding="utf-8")
     assert "const decelTo = Math.max(r, phT);" in _msrc2, \
         "减速段还会从加速后的位置退回去"
-    assert "const accelTo = Math.min(r + step, D.dur);" in _msrc2, \
-        "加速段会冲出轨迹终点"
+    assert "const accelTo = Math.min(r + step, nextT, D.dur);" in _msrc2, \
+        "加速段会冲出轨迹终点，或冲过下一张照片"
     assert "Number.isFinite(TL.total)" in _msrc2, \
         "总时长没兜底，播放会画一帧就停"
     assert "setTimeout(r, 800)" in _msrc2, \
@@ -1656,6 +1656,19 @@ def run() -> int:
         "缩略图没做重叠面积判断"
     assert "p._mx = best.x; p._my = best.y;" in _msrc2, \
         "缩略图位置没有缓存，每帧重算会抖动"
+    # 加速段必须知道「下一张在哪」：照片密集时（间隔 < step）原来会冲过去，
+    # 下一张只能停在「已经超过自己」的位置 —— 表现就是进度早过了标点、
+    # 卡片才弹出来。实测 20 个密集点，修复后「弹出时刻对应的轨迹时间」
+    # 与照片自己的 t 偏差为 0。
+    assert "const nextT = idx + 1 < ps.length ? tlist[idx + 1] : D.dur;" in _msrc2, \
+        "时间轴构建没取下一张的位置，密集照片会被冲过头"
+    assert "Math.min(r + step, nextT, D.dur)" in _msrc2, \
+        "加速段还能越过下一张照片"
+    # 一簇多图要并排显示，不能只画第一张
+    assert "const cells = Math.min(Math.max(ns, 1), 2);" in _msrc2, \
+        "同一地点多张照片只显示了一张"
+    assert "ctx.fillText('+' + (ns - 2), bx, by);" in _msrc2, \
+        "多出来的照片没有 +N 角标提示"
     assert "Math.max(492 + ph / 2" not in _msrc2, \
         "卡片又钉回画面中央了"
     assert "1.2 * Math.max(1, (x.shots || []).length)" in _msrc2, \
