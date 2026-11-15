@@ -3472,6 +3472,39 @@ def run() -> int:
         (ROOT / "garmin_cn/motion.py").read_text(encoding="utf-8"), \
         "motion 调 match 时没把 rotate 放进 keep"
 
+    # GPS 与拍摄时间对不上时：GPS 紧贴轨迹就**信 GPS**，并且位置与时刻取自
+    # 同一个轨迹点。否则照片点标在 A，播放时却按时间跑到轨迹的 B 处，
+    # 表现就是「地图上的标记点和实际位置不一致、GPS 白读了」。
+    _rt_g = {"t0": _T0, "n": 5, "t": [0.0, 30.0, 60.0, 90.0, 120.0],
+             "lat": [34.0, 34.001, 34.002, 34.003, 34.004], "lon": [108.0] * 5,
+             "d": [0.0, 100.0, 200.0, 300.0, 400.0]}
+    _gps_far = [{"name": "far", "path": "/tmp/far", "w": 100, "h": 100,
+                 "t_utc": _T0,                      # 时间对应起点
+                 "lat": 34.004, "lon": 108.0}]      # GPS 对应终点
+    _gf = _ph.match(_gps_far, _rt_g, t0_ms=_T0, pre_s=300, post_s=900,
+                    cluster_m=25.0, clamp_ends=True, keep=())
+    _gp = _gf["points"][0]
+    assert _gp["d"] == 400.0, \
+        f"GPS 明明贴着轨迹，位置却按时间取了 {_gp['d']}（应为 400）"
+    assert _gp["t"] == 120.0, \
+        f"位置和时刻不同源：位置在终点，时刻却是 {_gp['t']}s"
+    # GPS 自己飘得很远（>80m）时才退回时间点，避免环线吸到另一圈
+    _gps_off = [{"name": "off", "path": "/tmp/off", "w": 100, "h": 100,
+                 "t_utc": _T0, "lat": 34.01, "lon": 108.01}]   # 约 1.3 km 外
+    _go = _ph.match(_gps_off, _rt_g, t0_ms=_T0, pre_s=300, post_s=900,
+                    cluster_m=25.0, clamp_ends=True, keep=())
+    assert _go["points"] and _go["points"][0]["d"] == 0.0, \
+        "GPS 离轨迹很远时没退回时间点，照片会被挂到错误位置"
+    # 没有 GPS 就只能按时间
+    _no_gps = [{"name": "t", "path": "/tmp/t", "w": 100, "h": 100,
+                "t_utc": _T0 + 60_000}]
+    _nt = _ph.match(_no_gps, _rt_g, t0_ms=_T0, pre_s=300, post_s=900,
+                    cluster_m=25.0, clamp_ends=True, keep=())
+    assert _nt["points"][0]["d"] == 200.0, \
+        "无 GPS 的照片没按时间定位"
+    assert hasattr(_ph, "GPS_TRUST_M") and _ph.GPS_TRUST_M <= 30.0, \
+        "GPS 可信阈值太宽，环线赛道会吸到另一圈"
+
     # ---- 0.6.3：可读性 / 触控 / 文案 的闸门（不依赖浏览器，纯静态） ----
     from garmin_cn import ui as _u
 
