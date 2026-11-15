@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 尺寸按「格子」给：minWidth/minHeight 是能被拉伸的范围，
+     resizeMode 允许横竖自由拉，拉到什么尺寸由 onAppWidgetOptionsChanged
+     拿 minWidth 决定用 2×4 / 3×4 / 4×4 哪一版版式。
+     30 分钟刷新（1800000ms）是系统允许的最快值。 -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:initialLayout="@layout/widget_card"
+    android:minWidth="110dp"
+    android:minHeight="250dp"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="180dp"
+    android:maxResizeWidth="320dp"
+    android:maxResizeHeight="320dp"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen"
+    android:previewImage="@mipmap/ic_launcher"
+    android:description="@string/widget_desc" />
