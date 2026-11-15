@@ -492,6 +492,12 @@ def match(photos: list[dict], rt: dict, *, t0_ms: int | None = None,
             "i": i,
             "lat": rt["lat"][i], "lon": rt["lon"][i],
             "d": rt["d"][i],
+            # 拍摄时刻（活动本地时间 HH:MM）：卡片上直接显示，用户能一眼
+            # 对「这张是几点拍的」和它落在地图的哪个位置。
+            # +30s 再取整：13:00:08 别显示成 12:59
+            "when": (dt.datetime.fromtimestamp(
+                (t0_ms + rel * 1000 + 30000) / 1000).strftime("%H:%M")
+                if t0_ms else ""),
             "gap_m": (round(gap, 1) if gap is not None else None),
             # 拍摄时刻落在轨迹缺口里时给出缺口秒数，卡片上据此提示「位置为估算」
             "hole_s": (int(_hole) if _hole else 0),

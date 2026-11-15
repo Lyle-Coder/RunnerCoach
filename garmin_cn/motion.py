@@ -544,6 +544,7 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                     "src": str((thumb or src).resolve()),
                     "w": visible_size(sh)[0], "h": visible_size(sh)[1],
                     "name": sh["name"], "gap": sh["gap_m"],
+                    "when": sh.get("when") or "",
                     "hole_s": int(sh.get("hole_s") or 0),
                     "approx": bool(sh.get("approx")),
                 })
@@ -624,6 +625,8 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                             "src": str((thumb or src).resolve()),
                             "w": visible_size(x)[0], "h": visible_size(x)[1],
                             "name": x["name"], "gap": x["gap_m"],
+                            "when": x.get("when") or "",
+                            "hole_s": int(x.get("hole_s") or 0),
                             "approx": bool(x.get("approx")),
                         })
                     x_, y_ = _pos_of(rt, pts, g)
@@ -1850,7 +1853,10 @@ function drawPop(p, e) {
   const clipTag = isClip
     ? (p.clip.kind === 'image' ? '图片' : (p.clip.dur || 0).toFixed(1) + 's')
     : '';
-  let capTxt = isClip ? name + '  ' + clipTag : name + more;
+  // 照片额外标出**拍摄时刻**：卡片上「几点拍的 + 落在多少公里」并排，
+  // 位置对不对一眼就能对出来，不用再猜文件名。
+  const whenTxt = (!isClip && shots[0] && shots[0].when) ? '  ' + shots[0].when : '';
+  let capTxt = isClip ? name + '  ' + clipTag : name + whenTxt + more;
   if (ctx.measureText(capTxt).width > capW) {
     while (capTxt.length > 1 && ctx.measureText(capTxt + '…').width > capW) capTxt = capTxt.slice(0, -1);
     capTxt += '…';
