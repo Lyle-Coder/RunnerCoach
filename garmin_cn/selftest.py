@@ -4394,6 +4394,13 @@ def run() -> int:
     assert '"update" -> checkUpdate(silent = false)' in _kt4, "手动入口没接上"
     assert "checkUpdate(silent = true)" in _kt4, "启动时没做静默检查"
     assert "update_skipped" in _kt4, "点「稍后」没有记住，会天天弹同一个版本"
+    _apk_downloader = (KT / "ApkDownload.kt").read_text(encoding="utf-8")
+    assert 'application/vnd.android.package-archive' in _apk_downloader and '.setMimeType(MIME)' in _apk_downloader, \
+        "APK 下载必须覆盖 Gitee 的 application/zip，防止文件名变成 .apk.zip"
+    assert 'Environment.DIRECTORY_DOWNLOADS, "RunnerCoach/$filename"' in _apk_downloader, \
+        "安装包没有固定下载目录，文件名又会由浏览器/响应头猜测"
+    assert 'ApkDownload.enqueue(applicationContext' in _kt4 and 'DownloadManager.ACTION_VIEW_DOWNLOADS' in _kt4, \
+        "系统 APK 下载器未接入更新入口或缺少下载记录入口"
     # 1.0.3 真机没弹窗：节流只按时间、不看版本，升到新包也会被 24h 挡住；
     # 且时间戳在请求前写，一次失败就封锁一天。两处都要钉住。
     assert "update_checked_ver" in _kt4, "节流没按版本判断，升级后不会立即检查"
