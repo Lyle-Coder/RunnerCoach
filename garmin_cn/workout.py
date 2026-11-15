@@ -58,19 +58,27 @@ TIRED_PHASES = {"恢复", "回落", "减量", "赛前", "比赛"}
 # 爬楼梯课的目标区间（上坡到 160 左右）
 STAIR_HR = (160, 178)
 
-# 力量课动作库：(名称, 组数, 次数 or None, 时长秒 or None, 要点)
-# 周三 = 力量 A（臀腿 + 离心），周五 = 力量 B（核心 + 稳定），与 make_card 说明行同源
+# 力量课动作库：(名称, 组数, 次数 or None, 时长秒 or None, 要点, category, exerciseName)
+#
+# category / exerciseName 是 Garmin 的**动作枚举**，手表靠它显示动作名和示意图。
+# 不填这两个字段，手表只认 description，执行时显示的是通用的「开始」——
+# 用户 2026-11-15 反馈「手表上根本看不到名字」就是缺了这两个字段。
+#
+# 枚举格式（真机验证过）：category 大写（动作家族），exerciseName 小写 snake。
+# 两个都要和家族匹配，否则接口回 400「Invalid category」：
+#   step_up 属于 LUNGE 家族（不是 STEP_UP）；single_leg_stand 挂在 CORE 下。
+#   exerciseName 写成大写（GOBLET_SQUAT）也会被这个报错挡住，容易误判成 category 错。
 POWER = {
-    2: [("单腿硬拉", 3, 10, None, "10 次/侧 · 慢下快起"),
-        ("保加利亚分腿蹲", 3, 10, None, "10 次/侧 · 后脚垫高 前膝不内扣"),
-        ("台阶上步", 3, 10, None, "10 次/侧 · 全脚踩实 不借反弹"),
-        ("离心下蹲", 3, 8, None, "8 次 · 数 4 秒下 立刻起"),
-        ("提踵", 3, 15, None, "15 次 · 顶端停 1 秒")],
-    4: [("死虫", 3, 10, None, "10 次/侧 · 腰贴地 对侧手脚"),
-        ("鸟狗", 3, 10, None, "10 次/侧 · 骨盆不转"),
-        ("侧平板", 3, None, 30, "30 秒/侧"),
-        ("弹力带侧向走", 3, 12, None, "12 步/侧 · 臀中发力"),
-        ("单脚站", 3, None, 45, "45 秒/侧 · 闭眼更难")],
+    2: [("单腿硬拉", 3, 10, None, "10 次/侧 · 慢下快起", "DEADLIFT", "ROMANIAN_DEADLIFT"),
+        ("保加利亚分腿蹲", 3, 10, None, "10 次/侧 · 后脚垫高 前膝不内扣", "LUNGE", "WALKING_LUNGE"),
+        ("台阶上步", 3, 10, None, "10 次/侧 · 全脚踩实 不借反弹", "LUNGE", "LUNGE"),
+        ("离心下蹲", 3, 8, None, "8 次 · 数 4 秒下 立刻起", "SQUAT", "GOBLET_SQUAT"),
+        ("提踵", 3, 15, None, "15 次 · 顶端停 1 秒", "CALF_RAISE", "STANDING_CALF_RAISE")],
+    4: [("死虫", 3, 10, None, "10 次/侧 · 腰贴地 对侧手脚", "CORE", ""),
+        ("鸟狗", 3, 10, None, "10 次/侧 · 骨盆不转", "CORE", ""),
+        ("侧平板", 3, None, 30, "30 秒/侧", "PLANK", "SIDE_PLANK"),
+        ("弹力带侧向走", 3, 12, None, "12 步/侧 · 臀中发力", "BANDED_EXERCISES", ""),
+        ("单脚站", 3, None, 45, "45 秒/侧 · 闭眼更难", "CORE", "")],
 }
 
 QUAL_RE = re.compile(r"(\d+)\s*[×x*]\s*(\d+)\s*min\s*@\s*([EMTIR])")
@@ -151,14 +159,23 @@ def _e_pace(phase: str) -> tuple[int, int]:
 
 
 def _power_steps(idx: int, order0: int) -> list[dict]:
-    """把力量 A/B 动作表展开成重复组：3 组 ×（动作次数 + 45 秒组间休息）。"""
+    """把力量 A/B 动作表展开成重复组：3 组 ×（动作 + 45 秒组间休息）。
+
+    每个动作步都带 category/exerciseName，手表上才会显示动作名和示意图。
+    没有这两个字段时，手表只能显示「开始」——动作名躺在 description 里，
+    表盘上根本读不到。
+    """
     steps: list[dict] = []
     order = order0
-    for name, sets, reps, secs, tip in POWER[idx]:
+    for name, sets, reps, secs, tip, cat, ex in POWER[idx]:
         body = (_step(0, "interval", "fixed_repetition", reps, None,
                       "%s %s" % (name, tip))
                 if reps else
                 _step(0, "interval", "time", secs, None, "%s %s" % (name, tip)))
+        if cat:
+            body["category"] = cat
+        if ex:
+            body["exerciseName"] = ex
         steps.append(_repeat(order, sets,
                              [body,
                               _step(0, "recovery", "fixed_rest", 45, None,
