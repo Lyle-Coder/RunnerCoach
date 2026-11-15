@@ -3852,6 +3852,9 @@ class MainActivity : Activity() {
                 // 同时落一份到磁盘：「我的 → 产物文件」靠它显示进度条，
                 // 用户切走、锁屏回来也还能看到「还在生成」。
                 writeJob(run, title, show, "生成回放")
+                // 前台服务的通知也跟着走：用户切到别的 App 时，只有通知栏
+                // 还能看到进度 —— 这同时也是进程不被冻结的凭据。
+                MotionService.update(this@MainActivity, show)
             }
         }
         fun detach() {
@@ -3865,6 +3868,9 @@ class MainActivity : Activity() {
                 view.destroy()
             }
         }
+        // 前台服务保活：不挂这个，切到后台/锁屏后进程会被冻结，
+        // 逐帧渲染跟着停，用户看到的就是「必须停在进度条这一页」。
+        MotionService.start(this@MainActivity, title)
         report()
         view.loadUrl(url)
 
@@ -3934,6 +3940,7 @@ class MainActivity : Activity() {
                 apiCall("motion_cleanup", run)
                 detach()
                 clearJob(run)
+                MotionService.stop(this@MainActivity)
                 ui { busy(false); updateSubtitle(); toast(msg) }
                 break
             }
@@ -3952,6 +3959,8 @@ class MainActivity : Activity() {
             if (ok) report(100)   // 只有成功才强制到 100%，超时后别显示满格
             detach()
             clearJob(run)
+            // 收掉前台服务：通知消失，进程回到正常优先级
+            MotionService.stop(this@MainActivity)
             // 统一收尾：成功、失败、诊断取消还是超时，都得把进度线收掉
             ui {
                 busy(false)
