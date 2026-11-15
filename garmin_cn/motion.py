@@ -439,6 +439,20 @@ def _spread_clips(clips: list[dict], rt: dict) -> list[dict]:
     return clips
 
 
+def _pos_of(rt: dict, pts: list, g: dict) -> tuple[float, float]:
+    """素材点在画布上的坐标。
+
+    优先用 `photo.match` 吸附到的**轨迹点下标**（`g["i"]`）——那是「拍摄时刻
+    附近 + GPS」共同定出来的位置；没有下标才退回按 t 插值。以前这里一律按
+    t 插值，等于把吸附结果又丢掉：照片标注在「时间对应的位置」，和实际拍摄
+    处差几十米甚至另一圈，弹出时机也和标注点对不上。
+    """
+    i = g.get("i")
+    if isinstance(i, int) and 0 <= i < len(pts):
+        return pts[i]
+    return _xy_at(rt, pts, g["t"])
+
+
 def _forward_only(rt: dict, pts: list, photos: list[dict]) -> int:
     """让素材沿轨迹**只前进不后退**，返回修正了几个点。
 
@@ -460,7 +474,8 @@ def _forward_only(rt: dict, pts: list, photos: list[dict]) -> int:
             i = min(max(bisect.bisect_left(t, nt), 0), len(t) - 1)
             p["t"] = round(nt, 1)
             p["d"] = round(float(d[i]), 1)
-            x, y = _xy_at(rt, pts, nt)
+            p["i"] = i
+            x, y = _pos_of(rt, pts, p)
             p["x"], p["y"] = round(x, 1), round(y, 1)
             fixed += 1
         prev_t, prev_d = p["t"], p["d"]
@@ -509,7 +524,7 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                             CLIP_TZ_PRE_S, CLIP_TZ_POST_S)
         got = photo_mod.match(photos, rt, t0_ms=rt.get("t0"))
         for g in got["points"]:
-            x, y = _xy_at(rt, pts, g["t"])
+            x, y = _pos_of(rt, pts, g)
             shots = []
             for sh in g["shots"]:
                 src = Path(sh["path"])
@@ -605,7 +620,7 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                             "name": x["name"], "gap": x["gap_m"],
                             "approx": bool(x.get("approx")),
                         })
-                    x_, y_ = _xy_at(rt, pts, g["t"])
+                    x_, y_ = _pos_of(rt, pts, g)
                     out_photos.append({"t": round(g["t"], 1), "x": round(x_, 1),
                                        "y": round(y_, 1), "d": round(g["d"], 1),
                                        "shots": shots})
@@ -625,7 +640,7 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                     vw, vh = max(int(vw * k), 1), max(int(vh * k), 1)
                 else:
                     vw, vh = visible_size(pick)
-                x_, y_ = _xy_at(rt, pts, g["t"])
+                x_, y_ = _pos_of(rt, pts, g)
                 item = {
                     "src": str(Path(src).resolve()),
                     # 同源 URL 只给页面看；混原声时原生编解码器要的是磁盘路径。
