@@ -1472,8 +1472,10 @@ def me_page() -> str:
     # 账号卡片里补，不必再单独占一行「高驰睡眠」。
     c_sub = (f"{c_ok} · {'睡眠已授权' if _sleep_ok else '睡眠未授权'}"
              + (" · 查看 / 更换" if c_ok == "已登录" else " · 可独立同步活动"))
-    m_ok = "已登录" if m.get("logged_in") else "未连接"
-    h_ok = "已登录" if h.get("logged_in") else "未连接"
+    # 小米/华为只检查本地凭据文件在不在，刻意不联网验证。写「已登录」会被
+    # 读成「凭据现在还有效」，于是同步报 401 时看着像 App 自相矛盾。
+    m_ok = "已存凭据" if m.get("logged_in") else "未连接"
+    h_ok = "已存凭据" if h.get("logged_in") else "未连接"
     try:
         k_ok = "已登录" if A.keep_status().get("logged_in") else "未连接"
     except Exception:

@@ -954,7 +954,9 @@ class MiCloud:
                                 body=urllib.parse.urlencode(enc),
                                 headers={"Cookie": self._cookie})
         if status != 200:
-            raise MiError(f"小米接口 HTTP {status}：{text.strip()[:200]}")
+            # 网关层拒绝（HTTP 401/403）不该当普通业务错误：上层只认
+            # MiAuthError 才会弹「重新登录」，否则会把原始 JSON 甩给用户。
+            raise _http_failure(status, str(text))
         body = self._decode(sn, text)
         code = body.get("code")
         if code != 0:
@@ -1031,6 +1033,37 @@ def _looks_auth(code, msg: str) -> bool:
         return True
     low = str(msg).lower()
     return any(m in low for m in AUTH_ERROR_MARKERS)
+
+
+def _http_failure(status: int, text: str) -> MiError:
+    """HTTP 层失败归类：鉴权问题返回 `MiAuthError`，其余返回 `MiError`。
+
+    小米网关经常**不走业务码**就把过期会话挡掉：HTTP 401 +
+    `{"code":3,"message":"auth err"}`。以前一律是普通 MiError，上层
+    `mi_sync()` 只会把这段 JSON 原样甩给用户，既不换会话也不弹重新登录
+    ——「卡片显示已登录、同步却报 401」就是这么来的。
+    """
+    raw = str(text or "").strip()
+    if status in (401, 403) or _looks_auth(None, raw[:200]):
+        return MiAuthError(
+            f"小米登录已失效（云端拒绝，HTTP {status}）→ 请重新登录小米账号")
+    return MiError(f"小米接口 HTTP {status}：{raw[:200]}")
+
+
+def is_auth_error(exc: BaseException | str) -> bool:
+    """统一的「这次失败是不是凭据问题」判据，供跨模块兜底。
+
+    `MiAuthError` 必然算；普通错误里带网关鉴权特征也算——小米换个状态码
+    或换句文案时，上层仍然会正确弹重新登录，而不是把 JSON 给人看。
+    """
+    if isinstance(exc, MiAuthError):
+        return True
+    low = str(exc).lower()
+    # 只认明确的鉴权特征：含 "login" / "session" 字样的 5xx 或其它业务报错
+    # 不该误判成登录失效，否则会白白弹一次登录框让人重输密码。
+    return any(k in low for k in (
+        "http 401", "http 403", "auth err", "code=3", "unauthorized",
+        "登录已失效", "凭据", "code=70016"))
 
 
 def _diag(res: dict) -> str:
