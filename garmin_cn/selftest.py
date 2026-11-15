@@ -1638,6 +1638,16 @@ def run() -> int:
         "卡片没跟着标记点定位，展示和标注还是两张皮"
     assert "ctx.arc(mkx, mky, 9, 0, 7)" in _msrc2, \
         "没有从卡片指向标记点的引线，看不出对应关系"
+    # 展示过的照片缩成小图留在轨迹旁：列表必须挂 window —— drawFrame 在另一个
+    # 作用域里，直接引用 const 会报 "ps is not defined"，整帧都画不出来。
+    assert "window.__shown = [];" in _msrc2, \
+        "已展示照片列表没挂 window，drawFrame 里会引用不到"
+    assert "const SHOWN = window.__shown || [];" in _msrc2, \
+        "缩略图没从 window 取列表，跨作用域会崩"
+    assert "window.__ps || []" in _msrc2, \
+        "缩略图遍历的照片列表没挂 window"
+    assert "window.__miniErr" in _msrc2, \
+        "缩略图绘制没有异常兜底，一处出错会让车头/卡片整帧不画"
     assert "Math.max(492 + ph / 2" not in _msrc2, \
         "卡片又钉回画面中央了"
     assert "1.2 * Math.max(1, (x.shots || []).length)" in _msrc2, \

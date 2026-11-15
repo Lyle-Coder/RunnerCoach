@@ -924,6 +924,10 @@ const TL = (function () {
   const ps = (D.photos || []).slice().sort((a, b) => a.t - b.t);
 // 调试用：暴露排好序的照片点，出问题时能直接问「第 i 张在第几秒」
 window.__ps = ps;
+// 已经展示完的照片：窗口过去后缩成小图钉在轨迹旁，整条路线看下来像照片地图。
+// 必须挂 window：drawFrame 在另一个作用域里，直接引用这里声明的 const 会
+// 报 "ps is not defined"，整帧（车头、卡片）都画不出来。
+window.__shown = [];
   const n = ps.length;
   // 素材停留**叠加**在巡航时长之上，不挤占轨迹节奏：
   //   视频按自身时长整段播完，图片/照片按固定停留。
@@ -1160,6 +1164,38 @@ function drawTrack(rt, hd) {
     ctx.fillStyle = done ? '#fff' : 'rgba(255,255,255,.6)'; ctx.fill();
     ctx.lineWidth = 5; ctx.strokeStyle = ACCENT; ctx.stroke();
   }
+
+  // 展示过的照片缩成小图留在轨迹旁：走完一处就在那儿钉一张，
+  // 越早的越淡（不抢当前画面），整条路线看下来就是「照片地图」。
+  try {
+  const SHOWN = window.__shown || [];
+  for (const p of (window.__ps || [])) {
+    if (!p._done && p._b && playT > p._b + 0.05) { p._done = true; SHOWN.push(p); }
+  }
+  for (let k = 0; k < SHOWN.length; k++) {
+    const p = SHOWN[k];
+    if (!isFinite(p.x) || !isFinite(p.y)) continue;
+    const s0 = p.shots && p.shots[0];
+    const im = s0 && IMG.get(s0.src);
+    if (!im) continue;
+    const w = 84, h = 84;
+    let x = p.x + 24, y = p.y - h / 2;
+    if (x + w > W - 20) x = p.x - 24 - w;      // 靠右边就翻到左侧
+    y = Math.max(150, Math.min(H - 190, y));
+    ctx.save();
+    ctx.globalAlpha = (SHOWN.length - 1 - k) > 8 ? 0.35 : 0.92;
+    rr(x - 3, y - 3, w + 6, h + 6, 13);
+    ctx.fillStyle = 'rgba(255,255,255,.94)'; ctx.fill();
+    ctx.save();
+    rr(x, y, w, h, 10); ctx.clip();
+    const iw = im.naturalWidth || w, ih = im.naturalHeight || h;
+    const sc0 = Math.max(w / iw, h / ih);
+    ctx.drawImage(im, x + (w - iw * sc0) / 2, y + (h - ih * sc0) / 2,
+                  iw * sc0, ih * sc0);
+    ctx.restore();
+    ctx.restore();
+  }
+  } catch (e) { console.warn('缩略图绘制失败', e); window.__miniErr = String(e && e.message || e); }
 
   // 车头（插值位置，不是离散轨迹点）
   ctx.beginPath(); ctx.arc(hd.x, hd.y, 26, 0, 7);
