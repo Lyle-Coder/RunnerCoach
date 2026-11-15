@@ -2930,13 +2930,50 @@ def clips_remove(clip_id: str) -> dict:
     return {"ok": True, "items": r.get("items") or []}
 
 
+def _id_list(v) -> list:
+    """把批量接口的 id 参数归一成字符串列表。
+
+    App 端 `apiCall` 用 `JSONArray.put(...)` 打包参数，而 Android 的
+    `JSONArray.put(Object)` 对 Kotlin `List` **不做展开**，`toString()` 会把
+    整个列表变成一个字符串（`"[c12ab, c34cd]"`）。以前直接
+    `{str(x) for x in ids}` 是在逐字符遍历，一条都匹配不上 —— 表现就是
+    「勾了几个素材、点删除什么也没发生（或提示不在列表里）」。
+
+    这里兼容三种形态：JSON 数组字符串、逗号/空白分隔的字符串、嵌套列表。
+    """
+    if v is None:
+        return []
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return []
+        if s[0] in "[{":
+            try:
+                got = json.loads(s)
+            except Exception:
+                got = None
+            if isinstance(got, (list, tuple, set)):
+                return _id_list(list(got))
+            if isinstance(got, str):
+                return _id_list(got)
+            s = s.strip("[]{}()")
+        parts = (t.strip().strip("\"'") for t in re.split(r"[,;\s]+", s))
+        return [p for p in parts if p]
+    if isinstance(v, (list, tuple, set)):
+        out = []
+        for x in v:
+            out.extend(_id_list(x))
+        return out
+    return [str(v)]
+
+
 def clips_remove_many(ids: list) -> dict:
     """一次删多条：写一次盘、删一批文件。
 
     批量删除时逐条调 `clips_remove` 会写 N 次 clips.json，几十条就明显卡；
     而且要删的文件里还有「保留的原始片」，不一起删会一直占着几百 MB。
     """
-    want = {str(x) for x in (ids or []) if x}
+    want = set(_id_list(ids))
     if not want:
         return {"ok": False, "error": "没有选中素材"}
     items = _clips_read()

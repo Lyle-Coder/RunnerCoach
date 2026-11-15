@@ -1557,6 +1557,15 @@ def run() -> int:
     assert _rr.get("ok") and _rr.get("removed") == 1, \
         f"老素材批量删除仍然失败：{_rr}"
     assert '"取消全选" else "全选"' in _main, "批量管理没有全选按钮"
+    # 批量删除的 id 过 HTTP 时会被 Kotlin List 的 toString() 变成
+    # `"[c1, c2]"` 一个字符串，后端必须能拆回来，否则「勾了也一条都没删掉」
+    for _arg in (["c1", "c2"], '["c1", "c2"]', "[c1, c2]", "c1,c2",
+                 "c1 c2", [["c1"], "c2"]):
+        assert _APc._id_list(_arg) == ["c1", "c2"], \
+            f"批量删除的 id 参数没拆开：{_arg!r}"
+    assert "JSONArray(ids)" in _main, "批量删除没把 ids 包成 JSONArray"
+    assert 'apiCall("clips_remove_many", ids)' not in _main, \
+        "又把裸 Kotlin List 传给 apiCall 了，后端只会收到一个字符串"
     # 时间轴的里程必须单调：素材间隔小于加减速步长时，减速段会退回上一个
     # 位置，回放里就是轨迹「冲出去又折返回来」（只有加了照片才出现）。
     _msrc2 = (ROOT / "garmin_cn/motion.py").read_text(encoding="utf-8")
