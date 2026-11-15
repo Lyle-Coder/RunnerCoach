@@ -1632,6 +1632,14 @@ def run() -> int:
         "没记录停留窗口，轮播取不到当前该显示第几张"
     assert "all.length > 2 && p._b > p._a" in _msrc2, "一个点多张照片没做轮播"
     assert "function popLayout(p, picked)" in _msrc2, "布局没接轮播选中的那一张"
+    # 卡片必须跟着标记点走：固定居中时，标记点在哪都一样，
+    # 看起来就是「照片和地图上的点没关系」。
+    assert "const mky = Math.max(160, Math.min(H - 200, p.y));" in _msrc2, \
+        "卡片没跟着标记点定位，展示和标注还是两张皮"
+    assert "ctx.arc(mkx, mky, 9, 0, 7)" in _msrc2, \
+        "没有从卡片指向标记点的引线，看不出对应关系"
+    assert "Math.max(492 + ph / 2" not in _msrc2, \
+        "卡片又钉回画面中央了"
     assert "1.2 * Math.max(1, (x.shots || []).length)" in _msrc2, \
         "一簇多张的停留没按张数给，会一闪而过"
     # 素材列表必须是固定高度的可滚列表：AlertDialog.customPanel 在部分机型上

@@ -1645,10 +1645,34 @@ function drawPop(p, e) {
   const iw = lay.cells.reduce((a, c) => a + c[0], 0) + gap * (lay.cells.length - 1);
   const ih = Math.max(...lay.cells.map(c => c[1]));
   const pw = iw + pad * 2, ph = ih + pad * 2 + capH;
+  // 卡片跟着**标记点**走，不再永远钉在画面中央：
+  // 标记点偏上就把卡片放下面，偏下就放上面，中间拉一条引线连过去。
+  // 以前卡片位置和标记点完全无关，看起来就是「照片跟地图上的点没关系」。
+  const mkx = Math.max(40, Math.min(W - 40, p.x));
+  const mky = Math.max(160, Math.min(H - 200, p.y));
   const cx = W / 2;
-  const cy = Math.max(492 + ph / 2, Math.min(1030, 1660 - ph / 2));
+  const room = ph / 2 + 90;                 // 卡片与标记点之间留的间距
+  let cy = (mky < H * 0.46)
+    ? Math.min(mky + room, H - 240 - ph / 2) // 标记点在上半屏 → 卡片在下
+    : Math.max(mky - room, 200 + ph / 2);    // 标记点在下半屏 → 卡片在上
+  cy = Math.max(200 + ph / 2, Math.min(H - 240 - ph / 2, cy));
   const left = cx - pw / 2, top = cy - ph / 2;
   const sc = 0.90 + 0.10 * e;
+
+  // 引线先画：从卡片朝向标记点的那条边连到标记点，卡片底板会自然压住起点
+  ctx.save();
+  ctx.globalAlpha = e * 0.85;
+  ctx.strokeStyle = 'rgba(255,255,255,.55)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(Math.max(left + 46, Math.min(left + pw - 46, mkx)),
+             mky < cy ? top : top + ph);
+  ctx.lineTo(mkx, mky);
+  ctx.stroke();
+  ctx.beginPath(); ctx.arc(mkx, mky, 9, 0, 7);
+  ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = ACCENT; ctx.stroke();
+  ctx.restore();
 
   ctx.save();
   ctx.globalAlpha = e;
