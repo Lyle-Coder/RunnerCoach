@@ -430,12 +430,17 @@ def gitee_ensure_release(owner: str, repo: str, tag: str, notes: str, token: str
 
 def multipart_body(token: str, path: Path) -> tuple[bytes, str]:
     boundary = "----RunnerCoach" + secrets.token_hex(8)
+    # APKs are ZIP containers, but must be uploaded as Android packages so a
+    # storage provider/browser does not infer an extra .zip filename suffix.
+    mime = {".apk": "application/vnd.android.package-archive",
+            ".zip": "application/zip", ".txt": "text/plain; charset=utf-8"}.get(
+                path.suffix.lower(), "application/octet-stream")
     head = (
         f"--{boundary}\r\n"
         f'Content-Disposition: form-data; name="access_token"\r\n\r\n{token}\r\n'
         f"--{boundary}\r\n"
         f'Content-Disposition: form-data; name="file"; filename="{path.name}"\r\n'
-        f"Content-Type: application/octet-stream\r\n\r\n"
+        f"Content-Type: {mime}\r\n\r\n"
     ).encode("utf-8")
     tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
     return head + path.read_bytes() + tail, f"multipart/form-data; boundary={boundary}"
