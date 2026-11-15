@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">RunnerCoach</string>
-    <string name="widget_desc">今日恢复度、睡眠与静息心率</string>
+    <string name="widget_desc">今日数据看板：恢复度、营养三元素、训练计划、活动、备赛与教练建议</string>
 </resources>

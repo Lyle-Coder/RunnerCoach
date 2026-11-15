@@ -1321,11 +1321,12 @@ def dashboard(date: str | None = None, live: bool = True) -> dict:
 
 
 def widget_data(date: str | None = None) -> dict:
-    """桌面小组件用的精简数据。
+    """桌面小组件用的「今日数据看板」数据。
 
-    和 `card_html` 的区别：**不碰 AI 点评**。小组件会被系统随时拉起
-    （每次 onUpdate / 改尺寸），取数必须快；AI 那条路要等网络，放进来
-    小组件就会显示「加载中」半天。这里只取本地库里已有的派生指标。
+    和 `card_html` 的区别：**不做任何网络请求**。小组件会被系统随时拉起
+    （每次 onUpdate / 改尺寸），取数必须快；AI 点评只读本地缓存，
+    没缓存就用当天的提醒兜底，绝不为了一段话去等模型。
+    营养 / 训练 / 活动 / 备赛 / 恢复度全部从本地库与本地 JSON 派生。
     """
     store = Store(DB)
     if store.stats()["days"] == 0:
@@ -1355,7 +1356,7 @@ def widget_data(date: str | None = None) -> dict:
         label = "%d月%d日" % (day.month, day.day)
         weekday = "周" + "一二三四五六日"[day.weekday()]
     except (TypeError, ValueError):
-        label, weekday = str(d)[:10], ""
+        label, weekday, day = str(d)[:10], "", dt.date.today()
 
     # 主指标：恢复度优先，没有就退回睡眠分；两个都没有就只显示「待同步」
     score = num(rd.get("score"))
@@ -1411,6 +1412,138 @@ def widget_data(date: str | None = None) -> dict:
         "target": int(nut.get("target_kcal") or 0),
         "goal": str(nut.get("goal_label") or ""),
     }
+
+    # ---- 营养三元素：目标来自 nutrition.targets()，已摄入来自 meals.json。
+    # 没记餐也要把目标摆出来：桌面看板回答的是「今天还差多少」，
+    # 不是「今天没数据」。蛋白/碳水是下限，脂肪是上限（渲染端按这个着色）。
+    out["macro"] = {
+        "goal": str(nut.get("goal_label") or ""),
+        "logged": bool(it.get("ok")),
+        "kcal": int(it.get("kcal") or 0),
+        "kcal_target": int(nut.get("target_kcal") or 0),
+        "protein": [num(it.get("protein_g")) or 0, num(nut.get("protein_g")) or 0],
+        "carb": [num(it.get("carb_g")) or 0, num(nut.get("carb_g")) or 0],
+        "fat": [num(it.get("fat_g")) or 0, num(nut.get("fat_g")) or 0],
+    }
+
+    # ---- 恢复度分项：环形仪表旁边那几条小横条（睡眠 / HRV / 静息 / 电量）
+    out["readiness"] = {
+        "score": num(rd.get("score")),
+        "level": str(rd.get("level") or ""),
+        "color": str(rd.get("color") or ""),
+        "parts": [{"name": str(p.get("name") or ""), "score": num(p.get("score")) or 0}
+                  for p in (rd.get("parts") or [])][:4],
+    }
+
+    # ---- 今日训练计划：日历快照优先；没排课用本地教练处方兜底（纯本地计算）
+    plan = res.get("plan")
+    try:
+        if not plan or not (plan.get("today") or {}).get("items"):
+            from .plan import from_coach
+            plan = from_coach(res, today=d)
+    except Exception:
+        pass
+    plan = plan if isinstance(plan, dict) else {}
+    pt = plan.get("today") or {}
+    first = (pt.get("items") or [{}])[0] or {}
+    week_states = []
+    for w in (plan.get("week") or [])[:7]:
+        if w.get("done"):
+            state = "done"
+        elif w.get("missed"):
+            state = "missed"
+        elif w.get("extra"):
+            state = "extra"
+        elif w.get("items"):
+            state = "plan"
+        else:
+            state = "rest"
+        week_states.append({"d": str(w.get("dow") or "")[-1:], "state": state})
+    out["plan"] = {
+        "name": str(plan.get("name") or ""),
+        "title": str(first.get("name") or ("休息日" if pt.get("rest") else "自主训练")),
+        "detail": str(first.get("detail") or pt.get("note") or ""),
+        "km": num(first.get("km"), 1),
+        "minutes": num(first.get("minutes")),
+        "rest": bool(pt.get("rest")) or not (pt.get("items")),
+        "done": bool(pt.get("done")),
+        "trained": bool(pt.get("trained")),
+        "week_done": int(plan.get("week_done") or 0),
+        "week_planned": int(plan.get("week_planned") or 0),
+        "week": week_states,
+    }
+
+    # ---- 今日活动：每条活动一条横条（里程），最多 3 条，避免把卡片撑破
+    acts = []
+    for a in (res.get("activities") or []):
+        if str(a.get("date") or "")[:10] != d:
+            continue
+        acts.append({
+            "name": str(a.get("name") or "训练")[:12],
+            "km": round((num(a.get("distance_m")) or 0) / 1000.0, 2),
+            "min": int(round((num(a.get("duration_s")) or 0) / 60.0)),
+            "kcal": int(num(a.get("calories")) or 0),
+        })
+    out["acts"] = acts[:3]
+
+    # ---- AI 建议：只读当天缓存；没缓存就用第一条提醒，卡片不留空。
+    # 绝不调 coach_note()：那会触发后台生成，小组件会被系统反复拉起。
+    ai_text, ai_kind = "", "none"
+    try:
+        from . import aicoach
+        hit = aicoach.cached_note(d) or {}
+        ai_text = re.sub(r"\s+", " ", str(hit.get("text") or "")).strip()
+        if ai_text:
+            ai_kind = "ai"
+    except Exception:
+        pass
+    if not ai_text:
+        fl = res.get("flags") or []
+        if fl:
+            ai_text = re.sub(r"\s+", " ", str((fl[0] or {}).get("text") or "")).strip()
+            ai_kind = "tip"
+    out["ai"] = {"text": ai_text[:96], "kind": ai_kind}
+
+    # ---- 备赛：下一场比赛倒计时 + 本周跑量进度。
+    # raceplan 的课表脚本属于个人数据、不随 APK 分发，手机上 available()
+    # 几乎必然是 False；这时周目标退回日历课表的 km 之和，再取不到就只画实际值。
+    race = {}
+    try:
+        from . import event as evmod
+        nxt = evmod.nearest_upcoming(today=day)
+        if nxt:
+            race = {"name": str(nxt.get("short") or nxt.get("name") or ""),
+                    "days": int(nxt.get("days") or 0),
+                    "distance_km": num(nxt.get("distance_km")) or 0}
+    except Exception:
+        pass
+    mon = day - dt.timedelta(days=day.weekday())
+    week_km = 0.0
+    # 与看板「计划 vs 实际」同口径：只累计跑步活动，骑行/步行的距离不算备赛跑量
+    for a in (res.get("activities") or []):
+        ad = str(a.get("date") or "")[:10]
+        if mon.isoformat() <= ad <= day.isoformat() and sport_family(a.get("type")) == "run":
+            week_km += (num(a.get("distance_m")) or 0) / 1000.0
+    race["week_km"] = round(week_km, 1)
+    wk_tgt = None
+    try:
+        from . import raceplan
+        if raceplan.available():
+            info = raceplan.day_info(day)
+            if info:
+                wk_tgt = num(info.get("week_km")) or None
+                race["week_no"] = info.get("week")
+                race["phase"] = info.get("phase")
+                race["today_km"] = num(info.get("km"), 1)
+    except Exception:
+        pass
+    if not wk_tgt:
+        s = sum(num(x.get("km")) or 0 for w in (plan.get("week") or [])
+                for x in (w.get("items") or []))
+        if s > 0:
+            wk_tgt = round(s)
+    race["week_target"] = wk_tgt
+    out["race"] = race
     return out
 
 
