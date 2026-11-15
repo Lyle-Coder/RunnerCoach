@@ -232,6 +232,10 @@ CLIP_LEAD = 0.0         # 素材延迟起播的秒数：0 = 卡片一出现就�
                         # 原来是 0.15（怕"贴脸突然有声"），但那会让停留必须多留 0.15s
                         # 收尾，总时长就对不上「30s + 素材总长」的要求了。
 RAMP = 0.70             # 每处素材「停住」前后各 0.7s 加减速（播放秒）
+# 纯照片点的停留：单张最多 2.8s；一簇多张时每张 1.2s（上限 6s）。
+PHOTO_HOLD_MAX = 2.8
+PER_SHOT_S = 1.2
+PHOTO_HOLD_MAX_CAP = 6.0
 # 上限只是防呆，不是裁剪。素材要「完整插入」：视频按自身时长整段播完，
 # 所以这里的上限必须 ≥ clip.py 的 MAX_VIDEO_SEC，否则长视频会被截断播放
 # （页面时长标签写的是原时长，实际只播了前面一段，两边对不上）。
@@ -261,15 +265,19 @@ def _timeline_total(play: float, photos: list[dict]) -> float:
     App 靠这个数算要渲染多少帧，算小了片子尾巴会被截掉（素材越多截得越狠）。
     """
     holds = 0.0
-    plain = 0
+    plain = []
     for ph in photos:
         clip = ph.get("clip")
         if clip:
             holds += max(HOLD_MIN, min(HOLD_MAX, float(clip.get("dur") or 0)))
         else:
-            plain += 1
+            plain.append(ph)
     if plain:
-        holds += min(2.8, max(1.0, play * 0.40 / plain)) * plain
+        base = min(PHOTO_HOLD_MAX, max(1.0, play * 0.40 / len(plain)))
+        for ph in plain:
+            # 一簇里有多张照片时按张数给停留，否则 10 张挤在 2.8 秒里一闪而过
+            holds += max(base, min(PHOTO_HOLD_MAX_CAP,
+                                   PER_SHOT_S * max(1, len(ph.get("shots") or []))))
     # 加减速本身也占播放时间。素材多到「光加减速就超过 play」时，巡航被压成 0，
     # 总长以加减速兜底 —— 对应页面里那条 build(8000) 的退化分支。
     return max(play, 2 * RAMP * len(photos)) + holds
@@ -294,6 +302,85 @@ def _clip_order_key(c: dict) -> tuple:
         return (1, "%013d" % int(p.stat().st_mtime))
     except OSError:
         return (2, "0")
+
+
+# 拍摄时间映射：素材像「赛前、赛中、赛后」那样跨了几个小时，而活动本身只有
+# 一小时——真实时间→活动时间轴必须压缩，否则只有两条烂路可走：贴到端点
+# （一多就全堆在终点连播）或置空均布（位置和顺序都变成估的）。
+# 映射后两端各留 CLIP_FIT_EDGE，别和起终点的标注挤在一起。
+CLIP_FIT_EDGE = 0.02
+
+
+def _fit_clip_times(clips: list[dict], t0_ms: int, act_dur: float,
+                    pre_s: float, post_s: float) -> int:
+    """把**落在活动窗口外**的拍摄时间按比例收进活动时间轴，返回改了几张。
+
+    窗口内的素材一张都不动——真实时间最准，跟着 GPS/轨迹走就是对的。
+    只有窗外那部分（赛前很久、赛后很久）需要处理，否则它们会被
+    `clamp_ends` 全贴到端点，一堆照片就全堆在起点/终点。
+
+    映射是**分段**的：
+    * 赛前段 `[lo, -pre_s]`   → `[0, a]`
+    * 窗口段 `[-pre_s, dur+post_s]` → `[a, b]`（保持原有相对位置）
+    * 赛后段 `[dur+post_s, hi]` → `[b, dur]`
+    这样活动内的照片位置不变，窗外的按时间顺序在两端的小区间里排开。
+    """
+    timed = [c for c in clips if c.get("t_utc")]
+    if not timed or not t0_ms or act_dur <= 0:
+        return 0
+
+    def _rel(c: dict) -> float:
+        return (float(c["t_utc"]) - float(t0_ms)) / 1000.0
+
+    # 先做整时区归一：视频的 creation_time 常把本地时间当 UTC 写，差 8/9 小时。
+    # **只对视频**做：照片的 EXIF / 相册日期本身就是准确的本地时间，硬套
+    # 「+8 小时能落进窗口」会把「早上 10:05」改成「18:05」，反而把顺序弄反
+    # （10:05 的照片排到 17:20 后面）。照片一律只走后面的分段映射。
+    for c in timed:
+        if (c.get("kind") or "").lower() != "video":
+            continue
+        rel = _rel(c)
+        if -pre_s <= rel <= act_dur + post_s:
+            continue
+        for h in (8, -8, 9, -9):
+            if -pre_s <= rel - h * 3600 <= act_dur + post_s:
+                c["t_utc"] = int(float(c["t_utc"]) - h * 3600 * 1000)
+                break
+
+    lo_in, hi_in = -pre_s, act_dur + post_s
+    rels = [_rel(c) for c in timed]
+    if all(0 <= r <= act_dur for r in rels):
+        return 0                      # 全在活动时段内，保持真实时间
+    lo, hi = min(rels), max(rels)
+
+    def _map(rel: float) -> float:
+        # 活动时段内**原样保留**：活动期间拍的照片，真实时间就是最准的锚点，
+        # 一点都不许挪；只有两端（赛前很久 / 赛后很久，以及前后容差里的
+        # 几分钟）压到端点附近的小区间里。
+        if 0 <= rel <= act_dur:
+            return rel
+        if rel < 0:
+            room = min(pre_s, act_dur * CLIP_FIT_EDGE)
+            if lo >= 0:
+                return 1.0
+            # 至少留 1 秒：贴在 0 秒会让光点从轨道中间跳回起点
+            return max(1.0, room * (rel - lo) / (0 - lo))
+        # 赛后：`[dur, hi]` → `[dur - room, dur]`（终点附近，按先后排开）
+        room = min(post_s, act_dur * CLIP_FIT_EDGE)
+        if hi <= act_dur:
+            return act_dur
+        return (act_dur - room) + room * (rel - act_dur) / (hi - act_dur)
+
+    changed = 0
+    for c in timed:
+        rel = _rel(c)
+        if 0 <= rel <= act_dur:
+            continue                  # 活动时段内一张都不动
+        c["t_utc"] = int(float(t0_ms) + _map(rel) * 1000)
+        c["approx"] = True
+        c["t_fit"] = True
+        changed += 1
+    return changed
 
 
 def _mark_vague_times(clips: list[dict], t0_ms: int, act_dur: float) -> None:
@@ -341,18 +428,13 @@ def _spread_clips(clips: list[dict], rt: dict) -> list[dict]:
     if not miss:
         return clips
     miss.sort(key=_clip_order_key)
-    # 只铺在**最后一个可信素材之后**，不再均分整个活动。
-    # 均分的话，「下午加的」会被铺到「早上那张」前面——看起来就是
-    # 「17 点的排在 10 点前面」，而它们其实都没时间、只是被随手排了个位置。
-    known = [c for c in clips if c.get("t_utc") is not None]
-    start = max(((float(c["t_utc"]) - t0) / 1000.0 for c in known), default=0.0)
-    start = min(max(start, 0.0), span)
+    # 按文件名里的时刻排完序后**均布全程**。
+    # 不要只排在「最后一个可信素材之后」：那会让所有没时间的照片全压在终点，
+    # 一多就在片尾连播，看着像「照片都堆在终点」。均布至少让它们分散在整段
+    # 活动里，位置仍标注为近似。
     n = len(miss)
-    if span - start < n:
-        start = max(0.0, span - n)
-    room = max(span - start, 0.0)
     for i, c in enumerate(miss):
-        c["t_utc"] = int(t0 + (start + room * (i + 1) / (n + 1)) * 1000.0)
+        c["t_utc"] = int(t0 + span * 1000.0 * (i + 1) / (n + 1))
         c["approx"] = True
     return clips
 
@@ -420,6 +502,11 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
 
     out_photos = []
     if photos:
+        # 旧的照片入口走同一套时间映射，别让它成为「堆在终点」的漏网之路
+        _ts = rt.get("t") or []
+        if rt.get("t0") and _ts:
+            _fit_clip_times(photos, rt["t0"], float(_ts[-1]),
+                            CLIP_TZ_PRE_S, CLIP_TZ_POST_S)
         got = photo_mod.match(photos, rt, t0_ms=rt.get("t0"))
         for g in got["points"]:
             x, y = _xy_at(rt, pts, g["t"])
@@ -470,39 +557,67 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                 if -CLIP_TOL_PRE_S <= rel <= act_dur + CLIP_TOL_POST_S:
                     keep.append(c)
             clips = keep
+            # 有素材落在吸附窗口外时，把真实拍摄时间整批压进活动时间轴：
+            # 直接留给 photo.match 只会被 clamp 到端点，一多就全堆在终点。
+            _fit_clip_times(clips, t0_ms, act_dur,
+                            CLIP_TZ_PRE_S, CLIP_TZ_POST_S)
             _mark_vague_times(clips, t0_ms, act_dur)
         clips = _spread_clips(clips, rt)
-        # cluster_m=0：素材**不合并**。两段视频拍在同一地点很常见（同路口前后各
-        # 一段），合并后只会保留最长的一段，另一段就凭空消失了——用户要的是
-        # 「素材完整插入」。clamp_ends：时间**接近**这次活动但落在外面的
-        # （比如起跑前拍的几秒）也贴到最近的一端，不许丢。
-        cg = photo_mod.match(clips, rt, t0_ms=rt.get("t0"),
-                             pre_s=CLIP_TZ_PRE_S, post_s=CLIP_TZ_POST_S,
-                             cluster_m=0.0, clamp_ends=True,
-                             # `rotate` 必须显式透传：photo.match 会重建 item，
-                             # 不在白名单里的字段一律丢。漏掉它的话，页面拿到的
-                             # clip.rotate 永远是 0 —— 表现就是「不管怎么旋转，
-                             # 插进回放里始终是同一个方向」。
-                             keep=("dur", "codec", "bytes", "kind", "rotate"))
-        loose.extend(cg["loose"])
-        for g in cg["points"]:
-            if not g["shots"]:
+        # 视频和图片分开吸附：
+        #   · 视频同地点**不合并**（同路口前后两段都要完整播），cluster_m=0；
+        #   · 图片按地点聚成一簇，cluster_m=25 —— 同一处十几张照片各占一个
+        #     停留点，会把时间轴拉得很长，而且很容易全挤在末尾连播。
+        vids = [c for c in clips if (c.get("kind") or "").lower() != "image"]
+        imgs = [c for c in clips if (c.get("kind") or "").lower() == "image"]
+        sets = []
+        for part, cluster in ((vids, 0.0), (imgs, 25.0)):
+            if not part:
                 continue
-            # 一段点位上可能有多段，取最长的那段（短的通常是误触）
-            pick = max(g["shots"], key=lambda x: x.get("dur") or 0)
-            if not pick.get("dur"):
-                continue
-            kind = pick.get("kind") or "video"
-            if kind == "image":
-                # 图片素材不做转码，直接把原图交给页面画（Ken Burns 之外不再加工）
-                src = pick["path"]
-                vw, vh = visible_size(pick)
-            else:
+            sets.append(photo_mod.match(
+                part, rt, t0_ms=rt.get("t0"),
+                pre_s=CLIP_TZ_PRE_S, post_s=CLIP_TZ_POST_S,
+                cluster_m=cluster, clamp_ends=True,
+                # `rotate` 必须显式透传：photo.match 会重建 item，
+                # 不在白名单里的字段一律丢。漏掉它的话，页面拿到的
+                # clip.rotate 永远是 0 —— 表现就是「不管怎么旋转，
+                # 插进回放里始终是同一个方向」。
+                keep=("dur", "codec", "bytes", "kind", "rotate")))
+        for cgp in sets:
+            loose.extend(cgp["loose"])
+        for cgp in sets:
+            for g in cgp["points"]:
+                spots = [x for x in g["shots"] if x]
+                if not spots:
+                    continue
+                # 一整簇都是图片：放进同一个点的 shots，页面按停留进度轮播。
+                # 这样「同一时段拍的十几张」只占一个停留窗口，不会把时间轴
+                # 撑成几十段，也不会在片尾一段接一段地念照片。
+                if all((x.get("kind") or "").lower() == "image" for x in spots):
+                    shots = []
+                    for x in spots:
+                        src = Path(str(x["path"]))
+                        thumb = None
+                        if thumb_dir is not None:
+                            thumb = make_thumb(src, thumb_dir / ("c_" + src.stem + ".png"), x)
+                        shots.append({
+                            "src": str((thumb or src).resolve()),
+                            "w": visible_size(x)[0], "h": visible_size(x)[1],
+                            "name": x["name"], "gap": x["gap_m"],
+                            "approx": bool(x.get("approx")),
+                        })
+                    x_, y_ = _xy_at(rt, pts, g["t"])
+                    out_photos.append({"t": round(g["t"], 1), "x": round(x_, 1),
+                                       "y": round(y_, 1), "d": round(g["d"], 1),
+                                       "shots": shots})
+                    continue
+                # 视频：一段点位上可能有多段，取最长的那段（短的通常是误触）
+                pick = max(spots, key=lambda x: x.get("dur") or 0)
+                if not pick.get("dur"):
+                    continue
                 src = clip_mod.ensure_playable(
                     pick, clip_cache or (ROOT / "data" / "motion_cache"))
                 # 尺寸以「真正送进浏览器的那个文件」为准：转码时 ffmpeg 已经把旋转
                 # 烘进像素、矩阵归一了，拿它的 tkhd 才是画面真实朝向。
-                # 用原文件的 w/h 会把竖屏塞进横格子（画面被压扁）。
                 real = clip_mod.probe(Path(src))
                 if real.get("w") and real.get("h"):
                     vw, vh = real["w"], real["h"]
@@ -510,40 +625,36 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                     vw, vh = max(int(vw * k), 1), max(int(vh * k), 1)
                 else:
                     vw, vh = visible_size(pick)
-            x, y = _xy_at(rt, pts, g["t"])
-            item = {
-                "src": str(Path(src).resolve()),
-                # 同源 URL 只给页面看；混原声时原生编解码器要的是磁盘路径。
-                # `web=True` 会把 src 改成 /data/...，这个字段必须原样留着，
-                # 否则手机上 `/__timeline` 回传的 src 是 URL，MediaExtractor 打不开。
-                "local": str(Path(src).resolve()),
-                "kind": kind,
-                "w": vw, "h": vh,
-                "dur": round(float(pick["dur"]), 2), "name": pick["name"],
-                "gap": pick["gap_m"], "approx": bool(pick.get("approx")),
-                "lead": CLIP_LEAD,
-                # 显示旋转（0/90/180/270）：无损剪辑不重新编码，竖拍被压成横屏
-                # 或者用户手动转过的，都靠这个字段在绘制端兑现。
-                "rotate": int(pick.get("rotate") or 0) % 360,
-            }
-            # 素材下标：App 端原生抽帧按这个下标建目录 c<ci>/，
-            # 页面再用 `_clips.json` 里的同一下标取图。必须和 out_clips
-            # 同步递增（只数视频，图片素材不占号），否则页面会取错段。
-            item["ci"] = out_clips
-            # 已有同点照片 → 合并（视频优先，照片当封面/备用）
-            host = None
-            for p0 in out_photos:
-                if host is None and "clip" not in p0 and abs(p0["t"] - g["t"]) <= 4.0 \
-                        and abs(p0["d"] - g["d"]) <= 40:
-                    host = p0
-            if host is not None:
-                host.pop("shots", None)      # 视频优先，不再并排照片
-                host["clip"] = item
-            else:
-                out_photos.append({"t": round(g["t"], 1), "x": round(x, 1),
-                                   "y": round(y, 1), "d": round(g["d"], 1),
-                                   "shots": [], "clip": item})
-            out_clips += 1
+                x_, y_ = _xy_at(rt, pts, g["t"])
+                item = {
+                    "src": str(Path(src).resolve()),
+                    # 同源 URL 只给页面看；混原声时原生编解码器要的是磁盘路径。
+                    "local": str(Path(src).resolve()),
+                    "kind": "video",
+                    "w": vw, "h": vh,
+                    "dur": round(float(pick["dur"]), 2), "name": pick["name"],
+                    "gap": pick["gap_m"], "approx": bool(pick.get("approx")),
+                    "lead": CLIP_LEAD,
+                    # 显示旋转（0/90/180/270）
+                    "rotate": int(pick.get("rotate") or 0) % 360,
+                }
+                # 素材下标：App 端原生抽帧按这个下标建目录 c<ci>/，
+                # 页面再用 `_clips.json` 里的同一下标取图。只数视频。
+                item["ci"] = out_clips
+                # 已有同点照片 → 合并（视频优先，照片当封面/备用）
+                host = None
+                for p0 in out_photos:
+                    if host is None and "clip" not in p0 and abs(p0["t"] - g["t"]) <= 4.0 \
+                            and abs(p0["d"] - g["d"]) <= 40:
+                        host = p0
+                if host is not None:
+                    host.pop("shots", None)      # 视频优先，不再并排照片
+                    host["clip"] = item
+                else:
+                    out_photos.append({"t": round(g["t"], 1), "x": round(x_, 1),
+                                       "y": round(y_, 1), "d": round(g["d"], 1),
+                                       "shots": [], "clip": item})
+                out_clips += 1
         out_photos.sort(key=lambda p: p["t"])
     # 排序只保证时间递增，但时间本身可能是错的：位置回退会让光点「跑出去又回来」。
     # 这里统一沿轨迹钳一次，照片和视频都适用（轨迹没有素材时是空转）。
@@ -815,8 +926,12 @@ const TL = (function () {
   const clipHold = ps.reduce((a, ph) => a + (ph.clip ? ph._hold : 0), 0);
   const rest = D.play * 0.40;
   const baseHold = plain.length ? Math.min(2.8, Math.max(1.0, rest / plain.length)) : 0;
-  for (const x of plain) x._hold = baseHold;
-  const holdsSum = clipHold + baseHold * plain.length;
+  // 一簇多张照片时按张数给停留，否则 10 张挤在 2.8 秒里会被一闪而过
+  for (const x of plain) {
+    x._hold = Math.max(baseHold, Math.min(6.0, 1.2 * Math.max(1, (x.shots || []).length)));
+  }
+  let holdsSum = clipHold;
+  for (const x of plain) holdsSum += x._hold;
 
   // 给定 k（轨迹秒/播放秒），排出整条时间轴；总时长随 k 单调递减，二分求 k
   function build(k) {
@@ -836,6 +951,7 @@ const TL = (function () {
       const decelTo = Math.max(r, phT);              // 不倒退
       segs.push({ p0: p, p1: p + RAMP, r0: r, r1: decelTo, e: -1 });   // 减速
       p += RAMP; r = decelTo;
+      ph._a = p; ph._b = p + ph._hold;      // 轮播用：窗口起止
       win.push({ ph, a: p, b: p + ph._hold });
       segs.push({ p0: p, p1: p + ph._hold, r0: r, r1: r, e: 0 });   // 停住
       p += ph._hold;
@@ -1427,7 +1543,7 @@ function videoFrame(src, v, w, h, rot) {
   return fallbackFrame(src, fw, fh);   // 黑帧沿用上一张有效画面
 }
 
-function popLayout(p) {
+function popLayout(p, picked) {
   if (p.clip) {
     const c = p.clip;
     // 旋转 90/270 时卡片要竖着放：w/h 是原画幅，外接框得交换，
@@ -1438,7 +1554,7 @@ function popLayout(p) {
     const k = Math.min(840 / rw, 780 / rh, 1.5);
     return { cells: [[Math.round(rw * k), Math.round(rh * k)]], crop: false };
   }
-  const shots = (p.shots || []).slice(0, 2);
+  const shots = ((picked || p.shots) || []).slice(0, 2);
   // 单张等比完整显示（裁掉内容最可惜）；两张统一成同样大小的格子 + 中心裁切，
   // 尺寸不一致的两张并排会像贴歪的照片墙。
   if (shots.length <= 1) {
@@ -1495,8 +1611,21 @@ function drawRotated(im, clip, x, y, w, h) {
 
 function drawPop(p, e) {
   const isClip = !!(p.clip);
-  const shots = isClip ? [] : (p.shots || []).slice(0, 2);
-  const lay = popLayout(p);
+  let shots = [];
+  if (!isClip) {
+    const all = p.shots || [];
+    if (all.length > 2 && p._b > p._a) {
+      // 同一处拍了一堆：整个停留窗口按张数等分，逐张轮播，
+      // 不再「只显示前两张、其余的看不见」。
+      const n = all.length;
+      const k = Math.min(n - 1, Math.max(0,
+        Math.floor((playT - p._a) / Math.max(1e-3, p._b - p._a) * n)));
+      shots = [all[k]];
+    } else {
+      shots = all.slice(0, 2);
+    }
+  }
+  const lay = popLayout(p, shots);
   const gap = 10, pad = 16, capH = 88;
   const iw = lay.cells.reduce((a, c) => a + c[0], 0) + gap * (lay.cells.length - 1);
   const ih = Math.max(...lay.cells.map(c => c[1]));
@@ -1785,13 +1914,19 @@ function pause() {
 async function seekTo(t) {
   pause();
   playT = Math.max(0, Math.min(t, TOTAL));
-  // 视频 seek 偶尔不回调（解码器忙 / 文件被删 / 这一帧没有素材窗口）：
-  // 无限等下去整条导出就卡在这里，原生的下一帧拿到的还是旧画面，最后报
-  // 「帧获取错误」。等 800ms 就画当前能画的，宁可这一帧没视频也不卡死。
-  await Promise.race([
-    syncVideo(popAt(playT).w).catch(() => {}),
-    new Promise(r => setTimeout(r, 800)),
-  ]);
+  if (exportMode) {
+    // 导出期视频走**预抽帧**：`syncVideo` 只记一个下标就返回，不会再 seek。
+    // 这里不能再套 `setTimeout` 超时——离屏页面被节流时定时器会被拉长到
+    // 几十秒，那一下就把整条逐帧循环拖住（表现为「卡在某一帧，搓屏幕才动」）。
+    try { await syncVideo(popAt(playT).w); } catch (e) { /* 用兜底帧 */ }
+  } else {
+    // 预览/手动定位：视频 seek 偶尔不回调（解码器忙 / 文件被删 / 这一帧
+    // 没有素材窗口），无限等下去界面就卡死。等 800ms 就画当前能画的。
+    await Promise.race([
+      syncVideo(popAt(playT).w).catch(() => {}),
+      new Promise(r => setTimeout(r, 800)),
+    ]);
+  }
   try { drawFrame(playT); } catch (e) { console.error('draw frame', e); }
   return playT;
 }
@@ -1831,6 +1966,47 @@ async function runExport() {
   // 原生抽好的素材帧（App 在起 WebView 前就备好了）；PC 端没有这个文件，
   // 会回落到下面的逐段预抽。
   await loadClipImages(run);
+  // ------- 取帧 / 上传：**不用任何异步回调，也就不会卡住** -------
+  // 导出在离屏 WebView 里跑。页面一旦被判成不可见，浏览器会节流定时器、
+  // 降频合成：`toBlob` 的回调可能迟迟不来，`setTimeout` 也被拉长到几十秒。
+  // 原来的写法是裸 `await toBlob`，只要它不回调，整个导出就永久停在那一帧
+  // —— 用户看到的就是「不搓屏幕进度条就不动」。
+  // `toDataURL` 是同步编码，不依赖合成回调也不会被定时器节流，慢一点但一定
+  // 拿得到；每帧多几十毫秒，换来的是绝不卡死。
+  function grabJpeg() {
+    try {
+      const s = cv.toDataURL('image/jpeg', 0.82);
+      const m = /^data:image\/jpeg;base64,(.*)$/.exec(s);
+      if (!m) return null;
+      const bin = atob(m[1]);
+      const u8 = new Uint8Array(bin.length);
+      for (let k = 0; k < bin.length; k++) u8[k] = bin.charCodeAt(k);
+      return new Blob([u8], { type: 'image/jpeg' });
+    } catch (e) {
+      console.warn('取帧失败', e);
+      return null;
+    }
+  }
+
+  async function postFrame(i, blob) {
+    if (!blob) return false;
+    for (let k = 0; k < 3; k++) {
+      const ac = new AbortController();
+      const to = setTimeout(() => ac.abort(), 8000);
+      try {
+        const r = await fetch('/__frame?i=' + i + '&run=' + run,
+                              { method: 'POST', body: blob, signal: ac.signal });
+        clearTimeout(to);
+        if (r && r.ok) return true;
+      } catch (e) {
+        clearTimeout(to);
+      }
+      await new Promise(r => setTimeout(r, 120));
+    }
+    return false;
+  }
+
+  let badRun = 0;
   for (let i = from; i < total; i++) {
     const t = i / fps;
     const w = popAt(t).w;
@@ -1839,8 +2015,20 @@ async function runExport() {
     if (src && src !== VPRE.src && !VPFAIL.has(src)) await preloadClip(clip);
     if (!src && VPRE.frames.length) { VPRE.frames = []; VPRE.src = null; }
     await seekTo(t);
-    const blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.82));
-    await fetch('/__frame?i=' + i + '&run=' + run, { method: 'POST', body: blob });
+    const ok = await postFrame(i, grabJpeg());
+    // 连续失败说明不是偶发（页面被判隐藏 / 服务断了），记一笔并让原生知道，
+    // 别在这儿无限重试把整次导出拖死。
+    badRun = ok ? 0 : badRun + 1;
+    if (badRun >= 40) {
+      console.error('导出连续 ' + badRun + ' 帧上传失败，放弃');
+      try {
+        await fetch('/__diag?run=' + run, {
+          method: 'POST',
+          body: JSON.stringify({ error: 'frame upload failed at ' + i })
+        });
+      } catch (e) { /* ignore */ }
+      break;
+    }
   }
   // 必须是 POST：服务端只在 do_POST 里写完成标记，GET 会 404，
   // 调用方就会一直等 done 而等不到
@@ -1906,6 +2094,9 @@ window.__motion = {
   window.__motion.diag = {
     base: !!baseBaked, missing: missing.length, missingOne: missing.slice(0, 3),
     clips: clips.length, vidOk: vidOk,
+    // 导出卡住时先看这个：`hidden` 说明页面被判不可见，定时器会被节流，
+    // 逐帧循环就会停住 —— 这是「不搓屏幕不继续」的根因
+    vis: (typeof document !== 'undefined' ? document.visibilityState : ''),
     // 真机上「底图缩放错」时靠这两个数定位：view 是本次的视口变换，
     // baseSize 是 WebView 实际解码出来的底图像素尺寸。
     view: D.view || null,

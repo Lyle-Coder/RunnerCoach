@@ -2026,7 +2026,10 @@ class MainActivity : Activity() {
             .setPositiveButton("删除") { _, _ ->
                 clipSelecting = false
                 thread {
-                    val r = apiCall("clips_remove_many", ids)
+                    // 显式包成 JSONArray：直接把 Kotlin List 交给 apiCall，
+                    // Android 的 JSONArray.put(Object) 不会展开它，
+                    // toString() 会把整个列表变成一个字符串，后端逐字符匹配必然全失败。
+                    val r = apiCall("clips_remove_many", JSONArray(ids))
                     ui {
                         clipChecked.clear()
                         val n = r.optInt("removed")
@@ -3871,6 +3874,14 @@ class MainActivity : Activity() {
             var loggedPre = ""
             while (!encoded.get() && !cancel.get()) {
                 Thread.sleep(700)
+                // 离屏 WebView 被判定不可见时，浏览器会把 JS 定时器节流到
+                // 一分钟一次，逐帧导出就表现为「卡住不动、手指一搓才继续」。
+                // 每轮踢一下定时器，让页面侧的时间推进不被冻住。
+                try {
+                    if (!detached.get()) view.resumeTimers()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "resumeTimers", t)
+                }
                 val st = apiCall("motion_status", run)
                 val n = st.optInt("frames")
                 // 每段视频的预抽帧结果：真机上能确认走的是新路径、

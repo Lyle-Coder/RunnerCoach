@@ -2519,10 +2519,10 @@ def _clips_for_motion(rt: dict | None = None,
     差好几天的才剔除。读不到拍摄时间的素材一律保留（无法判定归属）。
     """
     t0 = (rt or {}).get("t0")
-    dur = 0.0
-    ts = (rt or {}).get("t") or []
+    act_dur = 0.0                     # 活动时长；**别叫 dur**，下面循环里
+    ts = (rt or {}).get("t") or []    # 会拿素材时长覆盖同名变量
     if ts:
-        dur = float(ts[-1])
+        act_dur = float(ts[-1])
     out = []
     for it in _clips_read():
         p = Path(str(it.get("path") or ""))
@@ -2537,7 +2537,7 @@ def _clips_for_motion(rt: dict | None = None,
         t_utc = _meta_val(it, info, "t_utc")
         if t0 and t_utc:
             rel = (float(t_utc) - float(t0)) / 1000.0
-            if rel < -pre_s or rel > dur + post_s:
+            if rel < -pre_s or rel > act_dur + post_s:
                 # 时间明确不在这次活动里 → 跳过，别让它贴到活动两端
                 continue
         out.append({
@@ -2549,6 +2549,7 @@ def _clips_for_motion(rt: dict | None = None,
             "h": int(it.get("h") or info.get("h") or 1920),
             "orientation": int(info.get("orientation") or 1),
             "t_utc": t_utc,
+            "t_source": str(it.get("t_source") or info.get("t_source") or ""),
             "lat": _meta_val(it, info, "lat"),
             "lon": _meta_val(it, info, "lon"),
             "codec": info.get("codec") or "",
@@ -2557,6 +2558,22 @@ def _clips_for_motion(rt: dict | None = None,
             # 0/90/180/270，只影响呈现，不影响锚定。
             "rotate": int(it.get("rotate") or 0) % 360,
         })
+    # 交给回放前先按拍摄时间排好：下游 `photo.match` 也会排，但这里排一次
+    # 能保证「就算某张时间缺失走了均布，也按真实先后铺，不会倒序」。
+    out.sort(key=lambda c: (0, int(c["t_utc"])) if c.get("t_utc") else (1, 0))
+    # 留一条「这次回放到底用了什么时间」的凭据：素材顺序对不上时，
+    # 光看界面分不清是「时间读错」还是「读不到」，诊断日志里能一眼对账。
+    try:
+        from . import diag
+        diag.log_exc("motion clips", " | ".join(
+            "%s t=%s src=%s" % (
+                str(c["name"])[:20],
+                dt.datetime.fromtimestamp(c["t_utc"] / 1000).strftime("%m-%d %H:%M")
+                if c.get("t_utc") else "无",
+                c.get("t_source") or "-")
+            for c in out) or "（没有可用素材）")
+    except Exception:
+        pass
     return out
 
 
@@ -2574,11 +2591,23 @@ def _probe_material(p: Path, name_hint: str = "") -> dict:
             j = photo_mod.read(p)
         except Exception as e:
             j = {"error": f"{type(e).__name__}: {e}"}
+        # 图片也要有文件名兜底：微信转发 / 编辑过的图常被剥掉 EXIF，
+        # 而 `IMG_20261114_174028` 这种相机命名还在。没有这一步，
+        # 回放链路（`_clips_for_motion` → `_probe_material`）拿到的时间是空，
+        # 素材会被当「没有拍摄时间」均布，顺序就按文件名/登记顺序乱排。
+        t_utc = j.get("t_utc")
+        t_src = j.get("t_source") or ""
+        if not t_utc:
+            for hint in (name_hint, p.name):
+                got = _name_time_ms(hint)
+                if got:
+                    t_utc, t_src = got, "文件名"
+                    break
         return {"kind": "image",
                 "w": j.get("w"), "h": j.get("h"),
                 "orientation": j.get("orientation") or 1,
-                "t_utc": j.get("t_utc"), "t_source": j.get("t_source") or "",
-                "t_why": "" if j.get("t_utc") else (j.get("error") or "图片里没有 EXIF 拍摄时间"),
+                "t_utc": t_utc, "t_source": t_src,
+                "t_why": "" if t_utc else (j.get("error") or "图片里没有 EXIF 拍摄时间"),
                 "lat": j.get("lat"), "lon": j.get("lon"),
                 "bytes": j.get("bytes") or 0, "dur": None}
     from . import clip as clip_mod
@@ -2757,12 +2786,20 @@ def clips_list() -> dict:
         had = bool(it.get("t_utc"))
         # 老版本登记时探不到时间。现在能从 udta / 原始文件名 / 原生兜底
         # 补回来的直接落盘，免得界面一直显示「加入」、回放一直按数量均分。
-        found = info.get("t_utc") or native
+        typed = info.get("t_utc")
+        named = 0 if (typed or native) else _name_time_ms(
+            it.get("name") or p.name)
+        found = typed or native or named
         if not had and found:
-            src = (info.get("t_source") or "") if info.get("t_utc") else "相册/视频日期标签"
+            if typed:
+                src = info.get("t_source") or "成品文件"
+            elif native:
+                src = "相册/视频日期标签"
+            else:
+                src = "文件名"
             it["t_utc"], it["t_source"] = found, src
             repairs[str(it.get("id") or it.get("path") or "")] = (found, src)
-        it["t_utc"] = _meta_val(it, info, "t_utc") or native or None
+        it["t_utc"] = _meta_val(it, info, "t_utc") or native or named or None
         it["t_source"] = it.get("t_source") or info.get("t_source") \
             or ("相册/视频日期标签" if native else "")
         it["t_why"] = "" if it.get("t_utc") else (info.get("t_why") or "读不到拍摄时间")
@@ -2784,6 +2821,31 @@ def clips_list() -> dict:
     # 「下午拍的排在早上那条前面」。没有时间的按登记顺序排在后面（sort 稳定）。
     items.sort(key=lambda x: (0, int(x["t_utc"])) if x.get("t_utc") else (1, 0))
     return {"ok": True, "items": items, "dir": str(MEDIA)}
+
+
+# 相机/相册导出的文件名几乎都带拍摄时刻：`IMG_20261114_174028`、
+# `VID_20261103_180036`、`PXL_20261114_174028123`。微信转发、编辑过的照片
+# 常被剥掉 EXIF，这是最后一道能拿到**真实**拍摄时间的来源——比按数量均布
+# 准得多，也不会出现「下午 5 点那张排在早上 10 点前面」。
+_NAME_STAMP_RE = re.compile(
+    r"(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[_\-\sT]?"
+    r"([01]\d|2[0-3])([0-5]\d)([0-5]\d)")
+
+
+def _name_time_ms(name: str) -> int:
+    """从文件名里的 `20261114_174028` 抠拍摄时间（本地时区 → UTC 毫秒）。
+
+    抠不出来或不像日期就返回 0，绝不猜。文件名记的是**本地时间**，
+    与 EXIF 的本地时间口径一致，所以同样按本地时区换算。
+    """
+    m = _NAME_STAMP_RE.search(str(name or ""))
+    if not m:
+        return 0
+    try:
+        t = dt.datetime(*(int(x) for x in m.groups()))
+    except ValueError:
+        return 0
+    return int(t.timestamp() * 1000)
 
 
 def _norm_taken_ms(v) -> int:
@@ -2824,7 +2886,8 @@ def clips_reprobe(clip_id: str) -> dict:
             return {"ok": False, "error": "文件已丢失，删掉重新添加一次"}
         info = _probe_material(p, name_hint=str(it.get("name") or ""))
         native = _norm_taken_ms(it.get("t_native"))
-        t = info.get("t_utc") or it.get("t_utc") or native
+        t = (info.get("t_utc") or it.get("t_utc") or native
+             or _name_time_ms(it.get("name") or p.name))
         if not t:
             why = info.get("t_why") or "文件里没有拍摄时间，剪辑前的源文件也没留下"
             it["t_why"] = why
@@ -2891,7 +2954,10 @@ def clips_add(path: str, name: str = "", dur: float = 0,
     elif native:
         t_src = "相册/视频日期标签"
     else:
-        t_src = ""
+        # 最后一道：文件名里的拍摄时刻。微信转发 / 编辑过的照片 EXIF 常被剥掉，
+        # 但 `IMG_20261114_174028` 这种相机命名还在 —— 有真实时间就不用均布。
+        t_utc = _name_time_ms(name or p.name) or None
+        t_src = "文件名" if t_utc else ""
     t_why = "" if t_utc else (meta.get("t_why") or fallback.get("t_why") or "读不到拍摄时间")
     # 把时间写回成品的 mvhd：以后就算 clips.json 丢了，也还能从文件本身读回来。
     if t_utc and k == "video":
@@ -2930,13 +2996,50 @@ def clips_remove(clip_id: str) -> dict:
     return {"ok": True, "items": r.get("items") or []}
 
 
+def _id_list(v) -> list:
+    """把批量接口的 id 参数归一成字符串列表。
+
+    App 端 `apiCall` 用 `JSONArray.put(...)` 打包参数，而 Android 的
+    `JSONArray.put(Object)` 对 Kotlin `List` **不做展开**，`toString()` 会把
+    整个列表变成一个字符串（`"[c12ab, c34cd]"`）。以前直接
+    `{str(x) for x in ids}` 是在逐字符遍历，一条都匹配不上 —— 表现就是
+    「勾了几个素材、点删除什么也没发生（或提示不在列表里）」。
+
+    这里兼容三种形态：JSON 数组字符串、逗号/空白分隔的字符串、嵌套列表。
+    """
+    if v is None:
+        return []
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return []
+        if s[0] in "[{":
+            try:
+                got = json.loads(s)
+            except Exception:
+                got = None
+            if isinstance(got, (list, tuple, set)):
+                return _id_list(list(got))
+            if isinstance(got, str):
+                return _id_list(got)
+            s = s.strip("[]{}()")
+        parts = (t.strip().strip("\"'") for t in re.split(r"[,;\s]+", s))
+        return [p for p in parts if p]
+    if isinstance(v, (list, tuple, set)):
+        out = []
+        for x in v:
+            out.extend(_id_list(x))
+        return out
+    return [str(v)]
+
+
 def clips_remove_many(ids: list) -> dict:
     """一次删多条：写一次盘、删一批文件。
 
     批量删除时逐条调 `clips_remove` 会写 N 次 clips.json，几十条就明显卡；
     而且要删的文件里还有「保留的原始片」，不一起删会一直占着几百 MB。
     """
-    want = {str(x) for x in (ids or []) if x}
+    want = set(_id_list(ids))
     if not want:
         return {"ok": False, "error": "没有选中素材"}
     items = _clips_read()
