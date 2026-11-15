@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 尺寸按「格子」给：minWidth/minHeight 是能被拉伸的范围，
+<!-- targetCellWidth/Height（API 31+）直接声明「2 列 × 4 行」，
+     只给 minWidth 时各家启动器的 dp 换算不一样，会被放成 4×2 的横条。
+     尺寸按「格子」给：minWidth/minHeight 是能被拉伸的范围，
      resizeMode 允许横竖自由拉，拉到什么尺寸由 onAppWidgetOptionsChanged
      拿 minWidth 决定用 2×4 / 3×4 / 4×4 哪一版版式。
      30 分钟刷新（1800000ms）是系统允许的最快值。 -->
@@ -8,9 +10,11 @@
     android:minWidth="110dp"
     android:minHeight="250dp"
     android:minResizeWidth="110dp"
-    android:minResizeHeight="180dp"
+    android:minResizeHeight="110dp"
     android:maxResizeWidth="320dp"
     android:maxResizeHeight="320dp"
+    android:targetCellWidth="2"
+    android:targetCellHeight="4"
     android:resizeMode="horizontal|vertical"
     android:updatePeriodMillis="1800000"
     android:widgetCategory="home_screen"
