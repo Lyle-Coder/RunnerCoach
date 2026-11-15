@@ -1615,7 +1615,17 @@ def run() -> int:
     assert "Number.isFinite(TL.total)" in _msrc2, \
         "总时长没兜底，播放会画一帧就停"
     assert "setTimeout(r, 800)" in _msrc2, \
-        "视频定位没超时，导出会卡死在某一帧"
+        "预览定位没超时，界面会卡在某一帧"
+    # 导出逐帧循环里绝不能出现裸 toBlob：离屏页面被判不可见时合成回调可能
+    # 一直不来，整条循环就永久停住（用户看到「不搓屏幕进度条不动」）。
+    assert "await new Promise(res => cv.toBlob" not in _msrc2, \
+        "导出还在裸等 toBlob，页面被节流时会永久卡住"
+    assert "cv.toDataURL('image/jpeg', 0.82)" in _msrc2, \
+        "导出取帧没走同步 toDataURL 兜底"
+    assert "if (exportMode) {" in _msrc2 and "await syncVideo(popAt(playT).w)" in _msrc2, \
+        "导出期的 seekTo 还在用定时器竞速，会被页面节流拉长"
+    assert "view.resumeTimers()" in _main, \
+        "离屏 WebView 没有定期恢复定时器，页面会被节流"
     # 同一时段的多张照片聚成一簇、在一个停留窗口里轮播
     assert "(imgs, 25.0)" in _msrc2, "图片素材没按地点聚簇，一张一个点会把时间轴撑长"
     assert "ph._a = p; ph._b = p + ph._hold;" in _msrc2, \

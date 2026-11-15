@@ -1914,13 +1914,19 @@ function pause() {
 async function seekTo(t) {
   pause();
   playT = Math.max(0, Math.min(t, TOTAL));
-  // 视频 seek 偶尔不回调（解码器忙 / 文件被删 / 这一帧没有素材窗口）：
-  // 无限等下去整条导出就卡在这里，原生的下一帧拿到的还是旧画面，最后报
-  // 「帧获取错误」。等 800ms 就画当前能画的，宁可这一帧没视频也不卡死。
-  await Promise.race([
-    syncVideo(popAt(playT).w).catch(() => {}),
-    new Promise(r => setTimeout(r, 800)),
-  ]);
+  if (exportMode) {
+    // 导出期视频走**预抽帧**：`syncVideo` 只记一个下标就返回，不会再 seek。
+    // 这里不能再套 `setTimeout` 超时——离屏页面被节流时定时器会被拉长到
+    // 几十秒，那一下就把整条逐帧循环拖住（表现为「卡在某一帧，搓屏幕才动」）。
+    try { await syncVideo(popAt(playT).w); } catch (e) { /* 用兜底帧 */ }
+  } else {
+    // 预览/手动定位：视频 seek 偶尔不回调（解码器忙 / 文件被删 / 这一帧
+    // 没有素材窗口），无限等下去界面就卡死。等 800ms 就画当前能画的。
+    await Promise.race([
+      syncVideo(popAt(playT).w).catch(() => {}),
+      new Promise(r => setTimeout(r, 800)),
+    ]);
+  }
   try { drawFrame(playT); } catch (e) { console.error('draw frame', e); }
   return playT;
 }
@@ -1960,6 +1966,47 @@ async function runExport() {
   // 原生抽好的素材帧（App 在起 WebView 前就备好了）；PC 端没有这个文件，
   // 会回落到下面的逐段预抽。
   await loadClipImages(run);
+  // ------- 取帧 / 上传：**不用任何异步回调，也就不会卡住** -------
+  // 导出在离屏 WebView 里跑。页面一旦被判成不可见，浏览器会节流定时器、
+  // 降频合成：`toBlob` 的回调可能迟迟不来，`setTimeout` 也被拉长到几十秒。
+  // 原来的写法是裸 `await toBlob`，只要它不回调，整个导出就永久停在那一帧
+  // —— 用户看到的就是「不搓屏幕进度条就不动」。
+  // `toDataURL` 是同步编码，不依赖合成回调也不会被定时器节流，慢一点但一定
+  // 拿得到；每帧多几十毫秒，换来的是绝不卡死。
+  function grabJpeg() {
+    try {
+      const s = cv.toDataURL('image/jpeg', 0.82);
+      const m = /^data:image\/jpeg;base64,(.*)$/.exec(s);
+      if (!m) return null;
+      const bin = atob(m[1]);
+      const u8 = new Uint8Array(bin.length);
+      for (let k = 0; k < bin.length; k++) u8[k] = bin.charCodeAt(k);
+      return new Blob([u8], { type: 'image/jpeg' });
+    } catch (e) {
+      console.warn('取帧失败', e);
+      return null;
+    }
+  }
+
+  async function postFrame(i, blob) {
+    if (!blob) return false;
+    for (let k = 0; k < 3; k++) {
+      const ac = new AbortController();
+      const to = setTimeout(() => ac.abort(), 8000);
+      try {
+        const r = await fetch('/__frame?i=' + i + '&run=' + run,
+                              { method: 'POST', body: blob, signal: ac.signal });
+        clearTimeout(to);
+        if (r && r.ok) return true;
+      } catch (e) {
+        clearTimeout(to);
+      }
+      await new Promise(r => setTimeout(r, 120));
+    }
+    return false;
+  }
+
+  let badRun = 0;
   for (let i = from; i < total; i++) {
     const t = i / fps;
     const w = popAt(t).w;
@@ -1968,8 +2015,20 @@ async function runExport() {
     if (src && src !== VPRE.src && !VPFAIL.has(src)) await preloadClip(clip);
     if (!src && VPRE.frames.length) { VPRE.frames = []; VPRE.src = null; }
     await seekTo(t);
-    const blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.82));
-    await fetch('/__frame?i=' + i + '&run=' + run, { method: 'POST', body: blob });
+    const ok = await postFrame(i, grabJpeg());
+    // 连续失败说明不是偶发（页面被判隐藏 / 服务断了），记一笔并让原生知道，
+    // 别在这儿无限重试把整次导出拖死。
+    badRun = ok ? 0 : badRun + 1;
+    if (badRun >= 40) {
+      console.error('导出连续 ' + badRun + ' 帧上传失败，放弃');
+      try {
+        await fetch('/__diag?run=' + run, {
+          method: 'POST',
+          body: JSON.stringify({ error: 'frame upload failed at ' + i })
+        });
+      } catch (e) { /* ignore */ }
+      break;
+    }
   }
   // 必须是 POST：服务端只在 do_POST 里写完成标记，GET 会 404，
   // 调用方就会一直等 done 而等不到
@@ -2035,6 +2094,9 @@ window.__motion = {
   window.__motion.diag = {
     base: !!baseBaked, missing: missing.length, missingOne: missing.slice(0, 3),
     clips: clips.length, vidOk: vidOk,
+    // 导出卡住时先看这个：`hidden` 说明页面被判不可见，定时器会被节流，
+    // 逐帧循环就会停住 —— 这是「不搓屏幕不继续」的根因
+    vis: (typeof document !== 'undefined' ? document.visibilityState : ''),
     // 真机上「底图缩放错」时靠这两个数定位：view 是本次的视口变换，
     // baseSize 是 WebView 实际解码出来的底图像素尺寸。
     view: D.view || null,
