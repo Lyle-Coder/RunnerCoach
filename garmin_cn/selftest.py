@@ -1557,6 +1557,54 @@ def run() -> int:
     assert _rr.get("ok") and _rr.get("removed") == 1, \
         f"老素材批量删除仍然失败：{_rr}"
     assert '"取消全选" else "全选"' in _main, "批量管理没有全选按钮"
+    # 用户在手机上的真实场景：两张图 EXIF 被剥掉（或读不到），但文件名是
+    # `IMG_20261114_174028` / `IMG_20261114_095054`。文件名必须能兜回时间，
+    # 否则 t_utc 为空 → 列表按登记顺序（相册倒序）→ 晚的排在早的前面。
+    _late = _APc._name_time_ms("IMG_20261114_174028")
+    _early = _APc._name_time_ms("IMG_20261114_095054")
+    assert _late and _early and _late > _early, \
+        "文件名里的拍摄时刻没解析出来，回放会继续按均布/倒序排"
+    assert _APc._name_time_ms("img-1794656752041-3") == 0, \
+        "把加入时间戳误当成拍摄时间了"
+    _cdir = _Path(tempfile.mkdtemp())
+    _cf = _cdir / "clips.json"
+    _imgs = {"items": [
+        # 登记顺序故意反着来：晚的先加（相册批量选择的返回顺序就是这样）
+        {"path": str(_cdir / "a.jpg"), "name": "IMG_20261114_174028",
+         "kind": "image"},
+        {"path": str(_cdir / "b.jpg"), "name": "IMG_20261114_095054",
+         "kind": "image"},
+    ]}
+    for _x in _imgs["items"]:
+        _Path(_x["path"]).write_bytes(b"not-a-real-jpeg")
+    _cf.write_text(_json.dumps(_imgs, ensure_ascii=False), encoding="utf-8")
+    with _mock.patch.object(_APc, "CLIPS", _cf), \
+            _mock.patch.object(_APc, "MEDIA", _cdir):
+        _lst = _APc.clips_list()["items"]
+    assert [x["name"] for x in _lst] == ["IMG_20261114_095054",
+                                         "IMG_20261114_174028"], \
+        f"列表顺序仍按登记顺序（晚的在前）：{[x['name'] for x in _lst]}"
+    assert all(x.get("t_utc") for x in _lst), "文件名里的时间没写进 t_utc"
+    assert all(x.get("t_source") == "文件名" for x in _lst), \
+        "补到的时间没标来源，用户无法判断准不准"
+    # 回放取素材也必须能靠文件名拿到时间：`img-<毫秒>` 这种没有原始名的
+    # 老素材排不进时间序，会按登记顺序（相册倒序）铺开 → 晚的排在早的前面
+    _pm = _APc._probe_material(_Path(_imgs["items"][1]["path"]),
+                               name_hint="IMG_20261114_095054")
+    assert _pm.get("t_utc") and _pm.get("t_source") == "文件名", \
+        "回放取素材时图片没走文件名兜底，顺序还会倒"
+    assert "_clips_for_motion" in dir(_APc) and "out.sort(" in \
+        (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8"), \
+        "回放取素材没按拍摄时间排序，缺时间的会按登记顺序铺开"
+    # 批量删除的 id 过 HTTP 时会被 Kotlin List 的 toString() 变成
+    # `"[c1, c2]"` 一个字符串，后端必须能拆回来，否则「勾了也一条都没删掉」
+    for _arg in (["c1", "c2"], '["c1", "c2"]', "[c1, c2]", "c1,c2",
+                 "c1 c2", [["c1"], "c2"]):
+        assert _APc._id_list(_arg) == ["c1", "c2"], \
+            f"批量删除的 id 参数没拆开：{_arg!r}"
+    assert "JSONArray(ids)" in _main, "批量删除没把 ids 包成 JSONArray"
+    assert 'apiCall("clips_remove_many", ids)' not in _main, \
+        "又把裸 Kotlin List 传给 apiCall 了，后端只会收到一个字符串"
     # 时间轴的里程必须单调：素材间隔小于加减速步长时，减速段会退回上一个
     # 位置，回放里就是轨迹「冲出去又折返回来」（只有加了照片才出现）。
     _msrc2 = (ROOT / "garmin_cn/motion.py").read_text(encoding="utf-8")
@@ -1567,7 +1615,25 @@ def run() -> int:
     assert "Number.isFinite(TL.total)" in _msrc2, \
         "总时长没兜底，播放会画一帧就停"
     assert "setTimeout(r, 800)" in _msrc2, \
-        "视频定位没超时，导出会卡死在某一帧"
+        "预览定位没超时，界面会卡在某一帧"
+    # 导出逐帧循环里绝不能出现裸 toBlob：离屏页面被判不可见时合成回调可能
+    # 一直不来，整条循环就永久停住（用户看到「不搓屏幕进度条不动」）。
+    assert "await new Promise(res => cv.toBlob" not in _msrc2, \
+        "导出还在裸等 toBlob，页面被节流时会永久卡住"
+    assert "cv.toDataURL('image/jpeg', 0.82)" in _msrc2, \
+        "导出取帧没走同步 toDataURL 兜底"
+    assert "if (exportMode) {" in _msrc2 and "await syncVideo(popAt(playT).w)" in _msrc2, \
+        "导出期的 seekTo 还在用定时器竞速，会被页面节流拉长"
+    assert "view.resumeTimers()" in _main, \
+        "离屏 WebView 没有定期恢复定时器，页面会被节流"
+    # 同一时段的多张照片聚成一簇、在一个停留窗口里轮播
+    assert "(imgs, 25.0)" in _msrc2, "图片素材没按地点聚簇，一张一个点会把时间轴撑长"
+    assert "ph._a = p; ph._b = p + ph._hold;" in _msrc2, \
+        "没记录停留窗口，轮播取不到当前该显示第几张"
+    assert "all.length > 2 && p._b > p._a" in _msrc2, "一个点多张照片没做轮播"
+    assert "function popLayout(p, picked)" in _msrc2, "布局没接轮播选中的那一张"
+    assert "1.2 * Math.max(1, (x.shots || []).length)" in _msrc2, \
+        "一簇多张的停留没按张数给，会一闪而过"
     # 素材列表必须是固定高度的可滚列表：AlertDialog.customPanel 在部分机型上
     # 只放得下七八行，看着就像「只显示最新的 8 个」。
     assert "ScrollView(this).apply" in _main and \
@@ -2422,8 +2488,13 @@ def run() -> int:
             _fpl = MOT.build_payload({"name": "测", "start_ts": "2026-11-07 07:00:00"},
                                      {"route": _frt}, None, clips=_fclips,
                                      duration=30.0)
-        _got_names = sorted(p["clip"]["name"] for p in _fpl["photos"] if p.get("clip"))
-        assert _got_names == ["a", "b", "c", "d"], f"素材没完整插入：{_got_names}"
+        _clip_names = sorted(p["clip"]["name"] for p in _fpl["photos"]
+                             if p.get("clip"))
+        _shot_names = sorted(s["name"] for p in _fpl["photos"]
+                             for s in (p.get("shots") or []))
+        # 图片素材现在聚成一个「照片簇」走 shots（页面轮播），视频仍是 clip
+        assert _clip_names == ["a", "b", "d"], f"视频没完整插入：{_clip_names}"
+        assert "c" in _shot_names, f"图片素材没进照片簇：{_shot_names}"
         # 混音要的磁盘路径必须一直在，且等于页面看到的源（web=True 时只改 src）
         assert all(_Path(p["clip"]["local"]).is_absolute()
                    and p["clip"]["local"] == p["clip"]["src"]
@@ -2431,7 +2502,8 @@ def run() -> int:
             "素材没带可解码的本地路径"
         assert not _fpl["loose"], f"素材被判成挂不上了：{_fpl['loose']}"
         # 30 + 8 + 5 + 3 + 4，一张不少
-        assert _fpl["total"] == 50.0, _fpl["total"]
+        # 30 巡航 + 视频 8+5+4 + 图片簇 2.8（单张按 2.8s 停）
+        assert _fpl["total"] == 49.8, _fpl["total"]
         _d = next(p for p in _fpl["photos"] if (p.get("clip") or {}).get("name") == "d")
         assert _d["clip"]["approx"], "时间对不上的素材没标「约」"
         assert 0 <= _d["t"] <= 120, "越界素材没落到轨迹上"
@@ -2451,11 +2523,56 @@ def run() -> int:
         _late = next(c for c in _picked if "1815" in c["name"])
         assert _early["t_utc"] < _late["t_utc"], \
             "倒序添加的无时间素材铺反了，后发生的会先出现"
-        # 差 3 小时：判为「时间不可信」，清空后交给铺开，而不是贴到端点
-        _vague = [{"name": "v", "path": "/tmp/z",
-                   "t_utc": _rt2["t0"] - 3 * 3600_000}]
-        MOT._mark_vague_times(_vague, _rt2["t0"], 120.0)
-        assert _vague[0]["t_utc"] is None, "差 3 小时的素材还被当成可信时间"
+        # 有真实拍摄时间、但落在吸附窗口外（赛前/赛中/赛后跨几小时）：
+        # 整批按比例压进活动时间轴。不许置空均布（位置变估的），也不许
+        # 贴到端点（一多就全堆在终点连播）。
+        # 窗口内的**一张都不许动**；只有窗外两段压到端口附近的小区间。
+        # 用户真实场景：8.6 小时徒步，照片都在活动内，整批被重排就是
+        # 「还是均分、位置全错」。
+        _span = [{"name": "a", "path": "/tmp/a",
+                  "t_utc": _rt2["t0"] + 60_000},
+                 {"name": "b", "path": "/tmp/b",
+                  "t_utc": _rt2["t0"] + 4 * 3600_000},
+                 {"name": "c", "path": "/tmp/c",
+                  "t_utc": _rt2["t0"] + 7 * 3600_000}]
+        _a_before = _span[0]["t_utc"]
+        _n = MOT._fit_clip_times(_span, _rt2["t0"], 120.0,
+                                 MOT.CLIP_TZ_PRE_S, MOT.CLIP_TZ_POST_S)
+        assert _n == 2, f"只该动窗外那两张：{_n}"
+        assert _span[0]["t_utc"] == _a_before, \
+            "窗口内的真实时间被重排了（这就是「还是均分」的来源）"
+        _rel = [(c["t_utc"] - _rt2["t0"]) / 1000 for c in _span]
+        assert _rel == sorted(_rel), "映射把顺序搞乱了"
+        assert all(0 < r <= 120 for r in _rel), "映射后跑出了活动时间轴"
+        assert _rel[1] < _rel[2], "赛后素材没按先后排开"
+        assert _rel[2] <= 120, "赛后素材越过终点"
+        # 全都在窗口内时一张都不许动（真实时间最准）
+        _inside = [{"name": "x", "path": "/tmp/x",
+                    "t_utc": _rt2["t0"] + 30_000}]
+        assert MOT._fit_clip_times(_inside, _rt2["t0"], 120.0,
+                                   MOT.CLIP_TZ_PRE_S,
+                                   MOT.CLIP_TZ_POST_S) == 0, \
+            "活动窗内的真实时间被瞎改了"
+        # 差整时区的**视频**先归一，不能当成「拍在别的时段」一起压缩
+        _tzc = [{"name": "v", "path": "/tmp/v", "kind": "video",
+                 "t_utc": _rt2["t0"] + 60_000 + 8 * 3600_000}]
+        MOT._fit_clip_times(_tzc, _rt2["t0"], 120.0,
+                            MOT.CLIP_TZ_PRE_S, MOT.CLIP_TZ_POST_S)
+        assert abs((_tzc[0]["t_utc"] - _rt2["t0"]) / 1000 - 60) < 1, \
+            "整时区偏差没在压缩前归一，位置会整体错位"
+        # 照片绝不能被时区归一碰：早 7.4 小时那张 +8h 恰好落进窗口，
+        # 一改就会排到晚 11 分钟那张**后面**——正是用户反复报的
+        # 「下午 5 点的排到早上 10 点前面」。照片的 EXIF 本来就是真时间。
+        _ord = [{"name": "m", "path": "/tmp/m", "kind": "image",
+                 "t_utc": _rt2["t0"] - 7 * 3600_000 - 24 * 60_000},
+                {"name": "e", "path": "/tmp/e", "kind": "image",
+                 "t_utc": _rt2["t0"] - 11 * 60_000}]
+        MOT._fit_clip_times(_ord, _rt2["t0"], 2886.0,
+                            MOT.CLIP_TZ_PRE_S, MOT.CLIP_TZ_POST_S)
+        assert _ord[0]["t_utc"] < _ord[1]["t_utc"], \
+            "照片被时区归一改错了顺序（早上的排到下午后面）"
+        assert "_fit_clip_times(clips, t0_ms, act_dur," in _mo_src, \
+            "回放链路没接时间压缩映射，跨时段的照片还是会堆在终点"
         # 差 8 小时（整时区）：保留，交给 photo.match 修正
         _tz = [{"name": "t", "path": "/tmp/t",
                 "t_utc": _rt2["t0"] + 8 * 3600_000}]
@@ -2468,9 +2585,10 @@ def run() -> int:
                  {"name": "IMG_20261114_170500", "path": "/tmp/b"},
                  {"name": "IMG_20261114_100500", "path": "/tmp/c"}]
         _mixed = MOT._spread_clips([dict(c) for c in _mix2], _rt2)
-        _known = next(c for c in _mixed if c["name"] == "ok")["t_utc"]
-        assert all(c["t_utc"] > _known for c in _mixed if c["name"] != "ok"), \
-            "无时间素材插到了可信素材前面"
+        _miss_ts = sorted(c["t_utc"] for c in _mixed if c["name"] != "ok")
+        assert _miss_ts[1] - _miss_ts[0] > 10_000, "无时间素材没分散开"
+        assert (_miss_ts[0] - _rt2["t0"]) / 1000 < 60, \
+            "无时间素材全堆到片尾了（照片一多就全压在终点）"
         _late = next(c for c in _mixed if "1705" in c["name"])["t_utc"]
         _early = next(c for c in _mixed if "1005" in c["name"])["t_utc"]
         assert _early < _late, "无时间素材没按文件名时刻排序"
@@ -3575,8 +3693,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.3.4 → 135）。
-    assert 'versionCode = 135' in (
+    # 每次发版要同步改这里（本次 1.3.5 → 136）。
+    assert 'versionCode = 136' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。
