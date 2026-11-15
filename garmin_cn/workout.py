@@ -169,18 +169,19 @@ def _power_steps(idx: int, order0: int) -> list[dict]:
     steps: list[dict] = []
     order = order0
     for name, sets, reps, secs, tip, cat, ex in POWER[idx]:
-        body = (_step(0, "interval", "fixed_repetition", reps, None,
-                      "%s %s" % (name, tip))
-                if reps else
-                _step(0, "interval", "time", secs, None, "%s %s" % (name, tip)))
+        # 动作步用 lap 收尾，不写死次数/秒数：单侧 10 次经常要 15–25 秒，
+        # 按秒计时会在做到一半时跳到休息（用户 2026-11-15 反馈「10s 做不完
+        # 单侧就下一组」）。lap = 自己按一下才走，做多久都不打断。
+        # 次数写在说明里，手表上能看到；真按次数自动跳，快做时又会抢拍。
+        body = _step(0, "interval", "lap", 0, None, "%s %s" % (name, tip))
         if cat:
             body["category"] = cat
         if ex:
             body["exerciseName"] = ex
         steps.append(_repeat(order, sets,
                              [body,
-                              _step(0, "recovery", "fixed_rest", 45, None,
-                                    "组间休息 / 换边")]))
+                              _step(0, "recovery", "lap", 0, None,
+                                    "组间休息 / 换边 · 按 Lap 进下一组")]))
         order += 1
     return steps
 
