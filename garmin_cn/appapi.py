@@ -2519,10 +2519,10 @@ def _clips_for_motion(rt: dict | None = None,
     差好几天的才剔除。读不到拍摄时间的素材一律保留（无法判定归属）。
     """
     t0 = (rt or {}).get("t0")
-    dur = 0.0
-    ts = (rt or {}).get("t") or []
+    act_dur = 0.0                     # 活动时长；**别叫 dur**，下面循环里
+    ts = (rt or {}).get("t") or []    # 会拿素材时长覆盖同名变量
     if ts:
-        dur = float(ts[-1])
+        act_dur = float(ts[-1])
     out = []
     for it in _clips_read():
         p = Path(str(it.get("path") or ""))
@@ -2537,7 +2537,7 @@ def _clips_for_motion(rt: dict | None = None,
         t_utc = _meta_val(it, info, "t_utc")
         if t0 and t_utc:
             rel = (float(t_utc) - float(t0)) / 1000.0
-            if rel < -pre_s or rel > dur + post_s:
+            if rel < -pre_s or rel > act_dur + post_s:
                 # 时间明确不在这次活动里 → 跳过，别让它贴到活动两端
                 continue
         out.append({
@@ -2549,6 +2549,7 @@ def _clips_for_motion(rt: dict | None = None,
             "h": int(it.get("h") or info.get("h") or 1920),
             "orientation": int(info.get("orientation") or 1),
             "t_utc": t_utc,
+            "t_source": str(it.get("t_source") or info.get("t_source") or ""),
             "lat": _meta_val(it, info, "lat"),
             "lon": _meta_val(it, info, "lon"),
             "codec": info.get("codec") or "",
@@ -2557,6 +2558,22 @@ def _clips_for_motion(rt: dict | None = None,
             # 0/90/180/270，只影响呈现，不影响锚定。
             "rotate": int(it.get("rotate") or 0) % 360,
         })
+    # 交给回放前先按拍摄时间排好：下游 `photo.match` 也会排，但这里排一次
+    # 能保证「就算某张时间缺失走了均布，也按真实先后铺，不会倒序」。
+    out.sort(key=lambda c: (0, int(c["t_utc"])) if c.get("t_utc") else (1, 0))
+    # 留一条「这次回放到底用了什么时间」的凭据：素材顺序对不上时，
+    # 光看界面分不清是「时间读错」还是「读不到」，诊断日志里能一眼对账。
+    try:
+        from . import diag
+        diag.log_exc("motion clips", " | ".join(
+            "%s t=%s src=%s" % (
+                str(c["name"])[:20],
+                dt.datetime.fromtimestamp(c["t_utc"] / 1000).strftime("%m-%d %H:%M")
+                if c.get("t_utc") else "无",
+                c.get("t_source") or "-")
+            for c in out) or "（没有可用素材）")
+    except Exception:
+        pass
     return out
 
 
@@ -2574,11 +2591,23 @@ def _probe_material(p: Path, name_hint: str = "") -> dict:
             j = photo_mod.read(p)
         except Exception as e:
             j = {"error": f"{type(e).__name__}: {e}"}
+        # 图片也要有文件名兜底：微信转发 / 编辑过的图常被剥掉 EXIF，
+        # 而 `IMG_20261114_174028` 这种相机命名还在。没有这一步，
+        # 回放链路（`_clips_for_motion` → `_probe_material`）拿到的时间是空，
+        # 素材会被当「没有拍摄时间」均布，顺序就按文件名/登记顺序乱排。
+        t_utc = j.get("t_utc")
+        t_src = j.get("t_source") or ""
+        if not t_utc:
+            for hint in (name_hint, p.name):
+                got = _name_time_ms(hint)
+                if got:
+                    t_utc, t_src = got, "文件名"
+                    break
         return {"kind": "image",
                 "w": j.get("w"), "h": j.get("h"),
                 "orientation": j.get("orientation") or 1,
-                "t_utc": j.get("t_utc"), "t_source": j.get("t_source") or "",
-                "t_why": "" if j.get("t_utc") else (j.get("error") or "图片里没有 EXIF 拍摄时间"),
+                "t_utc": t_utc, "t_source": t_src,
+                "t_why": "" if t_utc else (j.get("error") or "图片里没有 EXIF 拍摄时间"),
                 "lat": j.get("lat"), "lon": j.get("lon"),
                 "bytes": j.get("bytes") or 0, "dur": None}
     from . import clip as clip_mod
