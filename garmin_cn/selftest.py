@@ -3472,6 +3472,46 @@ def run() -> int:
         (ROOT / "garmin_cn/motion.py").read_text(encoding="utf-8"), \
         "motion 调 match 时没把 rotate 放进 keep"
 
+    # 往返/折返赛道：同一坐标会经过两次，GPS **分不出是哪一圈**（1.3.6 就是
+    # 这样改错的：让 GPS 吸附点同时决定 t，最早的照片被放到最晚展示）。
+    # 规则：t 永远取拍摄时间；位置只在「拍摄时刻 ± 窗口」里用 GPS 校准，
+    # 距离几乎一样时取时间更近的那个点。
+    _T1 = 1_700_000_000_000
+    _rtw = {"t0": _T1, "n": 7,
+            "t": [0.0, 60.0, 120.0, 200.0, 260.0, 320.0, 380.0],
+            "lat": [34.0000, 34.0010, 34.0020, 34.0030, 34.0020, 34.0010,
+                    34.0000],
+            "lon": [108.0] * 7,
+            "d": [0.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0]}
+
+    def _wshot(name, sec, gi):
+        return {"name": name, "path": "/tmp/" + name, "w": 100, "h": 100,
+                "t_utc": _T1 + int(sec * 1000),
+                "lat": _rtw["lat"][gi], "lon": _rtw["lon"][gi]}
+
+    _wr = _ph.match([_wshot("ret", 320, 5)], _rtw, t0_ms=_T1, pre_s=300,
+                    post_s=900, cluster_m=25.0, clamp_ends=True, keep=())
+    _p = _wr["points"][0]
+    assert _p["t"] == 320.0, \
+        f"时刻被 GPS 改了（{_p['t']}s），最早的照片会排到最后"
+    assert _p["d"] == 500.0, \
+        f"回程照片吸附到了另一圈（{_p['d']}m，应 500m）"
+    _wf = _ph.match([_wshot("out", 60, 1)], _rtw, t0_ms=_T1, pre_s=300,
+                    post_s=900, cluster_m=25.0, clamp_ends=True, keep=())
+    assert _wf["points"][0]["d"] == 100.0, "去程照片被吸到回程那一圈了"
+    # GPS 与时间都不缺，但完全对不上（比如照片其实拍在别处）→ 退回按时间
+    _wo = _ph.match([{"name": "off", "path": "/tmp/off", "w": 100, "h": 100,
+                      "t_utc": _T1 + 200_000, "lat": 35.5, "lon": 109.5}],
+                    _rtw, t0_ms=_T1, pre_s=300, post_s=900, cluster_m=25.0,
+                    clamp_ends=True, keep=())
+    assert _wo["points"][0]["d"] == 300.0 and _wo["points"][0]["t"] == 200.0, \
+        "GPS 完全对不上时没退回按时间定位"
+    assert hasattr(_ph, "GPS_WINDOW_S") and _ph.GPS_WINDOW_S <= 180.0, \
+        "GPS 时间窗口太宽，会跨到另一圈"
+    _psrc = (ROOT / "garmin_cn/photo.py").read_text(encoding="utf-8")
+    assert '"t": float(rt["t"][i])' not in _psrc, \
+        "t 又被 GPS 吸附点决定了，往返赛道会再次乱序"
+
     # ---- 0.6.3：可读性 / 触控 / 文案 的闸门（不依赖浏览器，纯静态） ----
     from garmin_cn import ui as _u
 
