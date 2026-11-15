@@ -141,12 +141,20 @@ object WidgetRender {
         val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = tint }
         c.drawCircle(b.l + ins + tf * 0.14f, base - tf * 0.32f, tf * 0.15f, dot)
         val titleP = tp(tf, INK, true)
-        txt(c, title, b.l + ins + tf * 0.48f, base, titleP)
-        if (note.isNotBlank()) {
-            val np = tp(tf * 0.88f, noteTint)
-            txt(c, ellip(np, note, b.w * 0.46f), b.r - ins, base, np, Paint.Align.RIGHT)
+        val noteP = tp(tf * 0.88f, noteTint)
+        val tx = b.l + ins + tf * 0.48f
+        // 标题最多占卡片一半多一点，剩下的宽度才给右侧角标。
+        // 之前两者各自按 b.w*0.46 截断，在 4×2 的 1/3 宽卡上会实打实压在一起。
+        val titleW = min(titleP.measureText(title), b.w * 0.58f)
+        val noteMax = (b.r - ins - tx - titleW - sp * 0.24f).coerceAtLeast(0f)
+        val noteS = if (note.isBlank()) "" else ellip(noteP, note, noteMax)
+        txt(c, ellip(titleP, title, titleW), tx, base, titleP)
+        if (noteS.isNotEmpty()) {
+            txt(c, noteS, b.r - ins, base, noteP, Paint.Align.RIGHT)
         }
-        return B(b.l + ins, base + ins * 0.34f, b.r - ins, b.bot - ins * 0.70f)
+        // 标题下缘约在 base + 0.20*tf，内容区再让出 0.28*tf 才不会贴脸
+        return B(b.l + ins, base + ins * 0.34f + tf * 0.28f,
+            b.r - ins, b.bot - ins * 0.70f)
     }
 
     // ---------------------------------------------------------------- 恢复度：环形仪表 + 分项条
@@ -168,10 +176,11 @@ object WidgetRender {
 
         val big = tp(ringR * 0.78f, INK, true)
         big.setShadowLayer(sp * 0.24f, 0f, sp * 0.10f, 0x66000000)
+        // 分数往上提、等级往下放：按字形高度算，两行之间留 0.15r 的净空
         txt(c, if (sc.isNaN()) "—" else sc.toInt().toString(), cx,
-            cy + big.textSize * 0.34f, big, Paint.Align.CENTER)
-        val lv = tp(min(sp * 0.62f, ringR * 0.32f), alpha(tint, 0.98f), true)
-        txt(c, level, cx, cy + ringR * 0.64f, lv, Paint.Align.CENTER)
+            cy + big.textSize * 0.16f, big, Paint.Align.CENTER)
+        val lv = tp(min(sp * 0.58f, ringR * 0.30f), alpha(tint, 0.98f), true)
+        txt(c, level, cx, cy + ringR * 0.70f, lv, Paint.Align.CENTER)
 
         if (n == 0 || parts == null) return
         val px = body.l + 2f * ringR + sp * 0.55f
@@ -184,9 +193,8 @@ object WidgetRender {
             val p = parts.optJSONObject(i) ?: continue
             val v = p.optDouble("score", 0.0).toFloat()
             val top = body.t + i * rowH + rowH * 0.04f
-            txt(c, ellip(lp, p.optString("name"), (body.r - px) * 0.56f),
-                px, top + fs, lp)
-            txt(c, v.toInt().toString(), body.r, top + fs, vp, Paint.Align.RIGHT)
+            pair(c, p.optString("name"), v.toInt().toString(),
+                px, body.r, top + fs, lp, vp, fs * 0.40f)
             bar(c, px, top + fs * 1.35f, body.r - px,
                 min(sp * 0.20f, rowH * 0.20f).coerceAtLeast(3f),
                 v / 100f, scoreColor(v))
@@ -205,9 +213,11 @@ object WidgetRender {
         val kcal = m.optInt("kcal", 0)
         val kt = m.optInt("kcal_target", 0)
         val fs = min(sp * 0.80f, body.h * 0.17f)
-        txt(c, "$kcal / $kt kcal", body.l, body.t + fs, tp(fs, INK, true))
-        txt(c, if (m.optBoolean("logged", false)) "已记餐" else "未记录",
-            body.r, body.t + fs, tp(fs * 0.82f, MUTED), Paint.Align.RIGHT)
+        val kcalP = tp(fs, INK, true)
+        val stateP = tp(fs * 0.82f, MUTED)
+        pair(c, "$kcal / $kt kcal",
+            if (m.optBoolean("logged", false)) "已记餐" else "未记录",
+            body.l, body.r, body.t + fs, kcalP, stateP, fs * 0.35f)
 
         val top = body.t + fs * 1.45f
         val rowH = (body.bot - top) / 3f
@@ -233,9 +243,8 @@ object WidgetRender {
                 else -> YELLOW
             }
             val y = top + i * rowH
-            txt(c, label, body.l, y + lab, lp)
-            txt(c, "${f0(v.toDouble())} / ${f0(tgt.toDouble())} g", body.r,
-                y + lab, vp, Paint.Align.RIGHT)
+            pair(c, label, "${f0(v.toDouble())} / ${f0(tgt.toDouble())} g",
+                body.l, body.r, y + lab, lp, vp, lab * 0.50f)
             bar(c, body.l, y + lab * 1.30f, body.w,
                 min(sp * 0.24f, rowH * 0.30f).coerceAtLeast(3f), ratio, col)
         }
@@ -263,14 +272,15 @@ object WidgetRender {
         val mins = p?.optInt("minutes", 0) ?: 0
         val sub = "本周 $wd / $wp 课" + if (mins > 0) " · $mins 分钟" else ""
         val sp0 = tp(sp * 0.62f, MUTED)
-        val t2 = t1 + sp * 0.78f
+        // 课名是大字，行距按两个字号算；固定 0.78sp 时大字下缘会压住副标题
+        val t2 = t1 + big.textSize * 0.42f + sp0.textSize * 1.10f
         txt(c, ellip(sp0, sub, body.w), body.l, t2, sp0)
 
         val arr = p?.optJSONArray("week")
         val n = arr?.length() ?: 0
         if (n == 0 || arr == null) return
         val dotH = min(sp * 0.72f, body.h * 0.20f).coerceAtLeast(6f)
-        val dotTop = max(t2 + sp * 0.26f, body.bot - dotH - sp * 0.72f)
+        val dotTop = max(t2 + sp * 0.36f, body.bot - dotH - sp * 0.72f)
         val slot = body.w / n
         val dw = slot * 0.70f
         val dp = tp(min(sp * 0.54f, dotH * 0.58f), MUTED)
@@ -336,10 +346,9 @@ object WidgetRender {
                 val a = acts.optJSONObject(i) ?: continue
                 val km = a.optDouble("km", 0.0).toFloat()
                 val y = body.t + i * rowH
-                txt(c, ellip(lp, a.optString("name").trim(), body.w * 0.56f),
-                    body.l, y + fs, lp)
-                txt(c, "${f1(km.toDouble())} km · ${a.optInt("min", 0)}′", body.r,
-                    y + fs, vp, Paint.Align.RIGHT)
+                pair(c, a.optString("name").trim(),
+                    "${f1(km.toDouble())} km · ${a.optInt("min", 0)}′",
+                    body.l, body.r, y + fs, lp, vp, fs * 0.40f)
                 bar(c, body.l, y + fs * 1.32f, body.w,
                     min(sp * 0.22f, rowH * 0.26f).coerceAtLeast(3f),
                     km / maxKm, CYAN)
@@ -349,7 +358,7 @@ object WidgetRender {
         val lp2 = tp(fs2, MUTED)
         val base = areaBot + fs2
         txt(c, "步数 ${steps.toInt()} / ${goal.toInt()}", body.l, base, lp2)
-        bar(c, body.l, base + fs2 * 0.35f, body.w,
+        bar(c, body.l, base + fs2 * 0.55f, body.w,
             min(sp * 0.20f, footH * 0.18f).coerceAtLeast(3f), pct / 100f, ACCENT)
     }
 
@@ -389,7 +398,7 @@ object WidgetRender {
             min(sp * 0.26f, body.h * 0.14f).coerceAtLeast(3f),
             ratio, if (ratio >= 1f) GREEN else ACCENT)
         val foot = if (tgt > 0f) "完成 ${(ratio * 100f).toInt()}%" else "按计划推进"
-        txt(c, foot, x, body.t + fs * 3.15f, tp(fs * 0.92f, alpha(INK, 0.82f)))
+        txt(c, foot, x, body.t + fs * 3.45f, tp(fs * 0.92f, alpha(INK, 0.82f)))
     }
 
     // ---------------------------------------------------------------- 近 7 天柱状图
@@ -410,13 +419,13 @@ object WidgetRender {
         val labelH = sp * 0.70f
         drawBars(c, vals, body.l, body.t, body.r, body.bot - labelH, brand)
         val arr = data.optJSONArray("days")
-        if (arr != null && arr.length() > 0) {
-            val dp = tp(min(sp * 0.55f, labelH * 0.8f), MUTED)
-            txt(c, arr.optJSONObject(0)?.optString("d") ?: "", body.l,
-                body.bot, dp)
-            txt(c, arr.optJSONObject(arr.length() - 1)?.optString("d") ?: "",
-                body.r, body.bot, dp, Paint.Align.RIGHT)
-        }
+            if (arr != null && arr.length() > 0) {
+                val dp = tp(min(sp * 0.55f, labelH * 0.8f), MUTED)
+                val db = body.bot - dp.textSize * 0.20f
+                txt(c, arr.optJSONObject(0)?.optString("d") ?: "", body.l, db, dp)
+                txt(c, arr.optJSONObject(arr.length() - 1)?.optString("d") ?: "",
+                    body.r, db, dp, Paint.Align.RIGHT)
+            }
     }
 
     private fun drawBars(
@@ -473,15 +482,19 @@ object WidgetRender {
         val stale = data.optInt("stale", 0)
         val body = panel(c, b, sp, title, CYAN,
             if (stale > 0) "数据 $stale 天前" else "", if (stale > 3) YELLOW else MUTED)
-        val fs = min(sp * 0.82f, body.h * 0.34f).coerceAtLeast(sp * 0.55f)
+        // 按内容区实际高度决定字号与行数：矮卡（4×2 底部通栏）只放一行，
+        // 之前字号被 coerceAtLeast 顶到 0.55sp，标题下缘和正文上缘几乎贴在一起。
+        val fs = min(sp * 0.82f, body.h * 0.30f).coerceAtLeast(sp * 0.52f)
         val p = tp(fs, alpha(INK, 0.94f))
-        val lines = if (text.isBlank()) listOf("打开 App 同步后，这里会有当天建议")
-        else wrap(p, text, body.w, if (body.h > fs * 2.6f) 2 else 1)
-        var y = body.t + fs * 1.05f
-        for (line in lines) {
-            txt(c, line, body.l, y, p)
-            y += fs * 1.26f
-        }
+        val lineH = fs * 1.32f
+        val avail = (body.bot - body.t).coerceAtLeast(0f)
+        val maxLines = (avail / lineH).toInt().coerceIn(1, 2)
+        val plain = text.replace(Regex("\\s+"), " ")
+        val lines = if (plain.isBlank()) listOf("打开 App 同步后，这里会有当天建议")
+        else wrap(p, plain, body.w, maxLines)
+        val first = body.t + fs * 1.02f
+        val fit = min(lines.size, maxOf(1, ((body.bot - first) / lineH).toInt() + 1))
+        for (i in 0 until fit) txt(c, lines[i], body.l, first + i * lineH, p)
     }
 
     /** 还没同步过：一块提示卡，不摆一屏「待同步」的空图表。 */
@@ -511,14 +524,15 @@ object WidgetRender {
             area.t + area.h * y1 - gap / 2f,
         )
         return when (size) {
+            // 底部通栏要留 20% 给建议文字，否则标题和正文会挤成一行
             Size.WIDE -> listOf(
-                Type.READINESS to cell(0f, 0f, 1f / 3f, 0.42f),
-                Type.NUTRITION to cell(1f / 3f, 0f, 2f / 3f, 0.42f),
-                Type.PLAN to cell(2f / 3f, 0f, 1f, 0.42f),
-                Type.ACTIVITY to cell(0f, 0.42f, 1f / 3f, 0.84f),
-                Type.RACE to cell(1f / 3f, 0.42f, 2f / 3f, 0.84f),
-                Type.TREND to cell(2f / 3f, 0.42f, 1f, 0.84f),
-                Type.AI to cell(0f, 0.84f, 1f, 1f),
+                Type.READINESS to cell(0f, 0f, 1f / 3f, 0.40f),
+                Type.NUTRITION to cell(1f / 3f, 0f, 2f / 3f, 0.40f),
+                Type.PLAN to cell(2f / 3f, 0f, 1f, 0.40f),
+                Type.ACTIVITY to cell(0f, 0.40f, 1f / 3f, 0.80f),
+                Type.RACE to cell(1f / 3f, 0.40f, 2f / 3f, 0.80f),
+                Type.TREND to cell(2f / 3f, 0.40f, 1f, 0.80f),
+                Type.AI to cell(0f, 0.80f, 1f, 1f),
             )
             Size.TALL -> listOf(
                 Type.READINESS to cell(0f, 0f, 1f, 0.180f),
@@ -579,6 +593,22 @@ object WidgetRender {
     ) {
         p.textAlign = align
         c.drawText(s, x, y, p)
+    }
+
+    /**
+     * 同一行「左标签 + 右数值」，按右侧实际字宽给左侧留位置。
+     * 之前左侧一律按 56% 截断，右侧数值一长（100、2552 g）就会撞上。
+     */
+    private fun pair(
+        c: Canvas, left: String, right: String,
+        x0: Float, x1: Float, baseline: Float,
+        lp: Paint, rp: Paint, gap: Float,
+    ) {
+        lp.textAlign = Paint.Align.LEFT
+        val rw = if (right.isEmpty()) 0f else rp.measureText(right)
+        val lw = (x1 - x0 - rw - gap).coerceAtLeast(0f)
+        txt(c, ellip(lp, left, lw), x0, baseline, lp)
+        if (right.isNotEmpty()) txt(c, right, x1, baseline, rp, Paint.Align.RIGHT)
     }
 
     private fun ellip(p: Paint, s: String, maxW: Float): String {
