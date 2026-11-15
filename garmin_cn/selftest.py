@@ -1689,6 +1689,15 @@ def run() -> int:
         "缺口信息没带出去，卡片无法提示位置是估算的"
     assert "_hole = 0          # 每张单独算" in _psrc2, \
         "缺口标记没有逐张重置，会串到下一张照片上"
+    # App 生成回放用的是 _synth_route 现场合成的轨迹（不是 detail["route"]）。
+    # 它拿 track 的 haversine 里程去 Garmin 序列里二分取时间，两把尺子不等长，
+    # 不缩放的话时间轴会被整体压缩——照片「越往后挂得越晚」，13 点跑到 15 点。
+    assert "scale = (sdist[-1] / dist[-1]) if dist[-1] > 0 else 1.0" in _asrc, \
+        "_synth_route 没把 track 里程缩放到 Garmin 的尺子，时间轴会被压缩"
+    assert "bisect.bisect_left(sdist, dd * scale)" in _asrc, \
+        "二分还在用未缩放的里程，照片会整体后移"
+    assert '"d": [round(x * scale, 1) for x in dist]' in _asrc, \
+        "合成轨迹的里程没缩放，卡片公里数会和 Garmin 对不上"
     # 排查期的整串素材日志已经撤掉，别再灌诊断日志
     assert 'log_exc("motion clips"' not in _asrc, \
         "motion clips 的诊断日志又回来了"
