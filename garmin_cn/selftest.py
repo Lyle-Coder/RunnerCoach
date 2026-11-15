@@ -1669,6 +1669,29 @@ def run() -> int:
         "同一地点多张照片只显示了一张"
     assert "ctx.fillText('+' + (ns - 2), bx, by);" in _msrc2, \
         "多出来的照片没有 +N 角标提示"
+    # 缩略图文件名必须带路径指纹：只用 stem 时不同目录的同名照片会落到
+    # 同一个 png，后一张盖掉前一张 —— 表现是「同一处两张图内容一样」。
+    assert 'src.stem + "-" + _tag + ".png"' in _msrc2, \
+        "缩略图文件名没带路径指纹，同名照片会互相覆盖"
+    # 避让最远只推到 80px，再远就跟标记点没关系了
+    assert "for (const d of [24, 38, 52, 66, 80])" in _msrc2, \
+        "缩略图避让范围太大，会飞到离标记点很远的地方"
+    # 同一文件重复登记要去重
+    _asrc = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    assert "if _key in seen_path:" in _asrc, \
+        "素材没按路径去重，同一张图会重复出现"
+    # 手表暂停 / GPS 丢星会在轨迹上留下采样缺口；落在缺口里的照片原来被挂到
+    # 「恢复之后」的位置，看着就是标点比实际拍摄点靠前一大段。
+    _psrc2 = (ROOT / "garmin_cn/photo.py").read_text(encoding="utf-8")
+    assert "(t[lo] - t[lo - 1]) > 120" in _psrc2, \
+        "采样缺口里没取更近的一端，暂停期间的照片会挂到恢复后的位置"
+    assert "\"hole_s\": (int(_hole) if _hole else 0)," in _psrc2, \
+        "缺口信息没带出去，卡片无法提示位置是估算的"
+    assert "_hole = 0          # 每张单独算" in _psrc2, \
+        "缺口标记没有逐张重置，会串到下一张照片上"
+    # 排查期的整串素材日志已经撤掉，别再灌诊断日志
+    assert 'log_exc("motion clips"' not in _asrc, \
+        "motion clips 的诊断日志又回来了"
     assert "Math.max(492 + ph / 2" not in _msrc2, \
         "卡片又钉回画面中央了"
     assert "1.2 * Math.max(1, (x.shots || []).length)" in _msrc2, \
@@ -3781,8 +3804,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.3.10 → 141）。
-    assert 'versionCode = 141' in (
+    # 每次发版要同步改这里（本次 1.3.11 → 142）。
+    assert 'versionCode = 142' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。

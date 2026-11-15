@@ -530,7 +530,12 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                 src = Path(sh["path"])
                 thumb = None
                 if thumb_dir is not None:
-                    dst = thumb_dir / (src.stem + ".png")
+                    # 文件名带上**完整路径的指纹**：只用 stem 时，不同目录的
+                    # 同名照片（如 IMG_20261114_095054）会落到同一个 png，
+                    # 后一张把前一张盖掉 —— 表现就是「同一处两张图内容一样」。
+                    _tag = hashlib.md5(
+                        str(src.resolve()).encode("utf-8")).hexdigest()[:10]
+                    dst = thumb_dir / (src.stem + "-" + _tag + ".png")
                     thumb = make_thumb(src, dst, sh)
                 # 存**文件路径**而不是 file:// URI：导出 MP4 时页面从本地
                 # HTTP 服务加载同一批文件，URI 形式会让 canvas 被污染，
@@ -539,6 +544,8 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                     "src": str((thumb or src).resolve()),
                     "w": visible_size(sh)[0], "h": visible_size(sh)[1],
                     "name": sh["name"], "gap": sh["gap_m"],
+                    "when": sh.get("when") or "",
+                    "hole_s": int(sh.get("hole_s") or 0),
                     "approx": bool(sh.get("approx")),
                 })
             out_photos.append({"t": round(g["t"], 1), "x": round(x, 1),
@@ -618,6 +625,8 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                             "src": str((thumb or src).resolve()),
                             "w": visible_size(x)[0], "h": visible_size(x)[1],
                             "name": x["name"], "gap": x["gap_m"],
+                            "when": x.get("when") or "",
+                            "hole_s": int(x.get("hole_s") or 0),
                             "approx": bool(x.get("approx")),
                         })
                     x_, y_ = _pos_of(rt, pts, g)
@@ -1207,7 +1216,8 @@ function drawTrack(rt, hd) {
     const cells = Math.min(Math.max(ns, 1), 2);
     const mw = cells > 1 ? MW * 2 + 6 : MW;
     let best = null, bestOv = Infinity;
-    for (const d of [26, 46, 70, 96, 124, 156]) {
+    // 最多只推到 80px：再远看起来就跟标记点没关系了，宁可轻微重叠
+    for (const d of [24, 38, 52, 66, 80]) {
       for (const [ux, uy] of DIRS) {
         let x = p.x + ux * (d + mw / 2) - mw / 2;
         let y = p.y + uy * (d + MH / 2) - MH / 2;
@@ -1843,7 +1853,10 @@ function drawPop(p, e) {
   const clipTag = isClip
     ? (p.clip.kind === 'image' ? '图片' : (p.clip.dur || 0).toFixed(1) + 's')
     : '';
-  let capTxt = isClip ? name + '  ' + clipTag : name + more;
+  // 照片额外标出**拍摄时刻**：卡片上「几点拍的 + 落在多少公里」并排，
+  // 位置对不对一眼就能对出来，不用再猜文件名。
+  const whenTxt = (!isClip && shots[0] && shots[0].when) ? '  ' + shots[0].when : '';
+  let capTxt = isClip ? name + '  ' + clipTag : name + whenTxt + more;
   if (ctx.measureText(capTxt).width > capW) {
     while (capTxt.length > 1 && ctx.measureText(capTxt + '…').width > capW) capTxt = capTxt.slice(0, -1);
     capTxt += '…';
@@ -1868,7 +1881,11 @@ function drawPop(p, e) {
 
   const approx = isClip ? !!p.clip.approx : !!(shots[0] && shots[0].approx);
   const gapM = isClip ? p.clip.gap : (shots[0] ? shots[0].gap : 0);
-  if (approx) {
+  const holeS = isClip ? 0 : (shots[0] ? (shots[0].hole_s || 0) : 0);
+  if (holeS > 0) {
+    ctx.textAlign = 'center'; ctx.font = '400 18px ' + F; ctx.fillStyle = '#8B98A7';
+    ctx.fillText('拍摄时刻落在轨迹缺口内（暂停/丢星），位置为估算', cx, top - 26);
+  } else if (approx) {
     ctx.textAlign = 'center'; ctx.font = '400 18px ' + F; ctx.fillStyle = '#7E8C9B';
     ctx.fillText('文件里没有坐标，按拍摄时间定位', cx, top - 26);
   } else if (gapM > 40) {
