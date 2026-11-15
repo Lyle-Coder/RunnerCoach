@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 桌面小组件：整块就是一张透明的图（辉光看板），点一下打开 App。
+     图片由 WidgetRender 用 Canvas 画，布局里只留 ImageView。 -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <ImageView
+        android:id="@+id/widget_img"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:adjustViewBounds="true"
+        android:contentDescription="@string/widget_desc"
+        android:scaleType="fitCenter" />
+</FrameLayout>

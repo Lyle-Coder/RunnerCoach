@@ -616,11 +616,24 @@ def build_payload(row: dict, detail: dict, photos: list[dict] | None = None,
                 # 撑成几十段，也不会在片尾一段接一段地念照片。
                 if all((x.get("kind") or "").lower() == "image" for x in spots):
                     shots = []
+                    _seen_src = set()
                     for x in spots:
                         src = Path(str(x["path"]))
+                        # 同一个文件在同一簇里出现两次（登记重复）只留一张：
+                        # 否则并排两格画出来一模一样，角标数字还虚高。
+                        _sk = str(src.resolve()).lower()
+                        if _sk in _seen_src:
+                            continue
+                        _seen_src.add(_sk)
                         thumb = None
                         if thumb_dir is not None:
-                            thumb = make_thumb(src, thumb_dir / ("c_" + src.stem + ".png"), x)
+                            # 文件名必须带**路径指纹**——这条分支原来只有
+                            # `c_文件名.png`，同名不同目录的照片会落到同一个
+                            # png，后一张盖掉前一张，看着就是「两格一样的图」。
+                            _tag = hashlib.md5(
+                                str(src.resolve()).encode("utf-8")).hexdigest()[:10]
+                            name = "c_" + src.stem + "-" + _tag + ".png"
+                            thumb = make_thumb(src, thumb_dir / name, x)
                         shots.append({
                             "src": str((thumb or src).resolve()),
                             "w": visible_size(x)[0], "h": visible_size(x)[1],
