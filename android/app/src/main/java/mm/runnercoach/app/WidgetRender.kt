@@ -26,10 +26,14 @@ import kotlin.math.min
  *   4×4 (840×840)  指标三列，底部加周里程条
  */
 object WidgetRender {
-    enum class Size(val pxW: Int, val pxH: Int, val cols: Int, val full: Boolean) {
-        W2(420, 840, 1, false),
-        W3(630, 840, 2, false),
-        W4(840, 840, 3, true),
+    enum class Size(
+        val pxW: Int, val pxH: Int, val cols: Int,
+        val full: Boolean, val wide: Boolean = false,
+    ) {
+        TALL(420, 840, 1, false),                 // 2×4 竖
+        MID(630, 840, 2, false),                  // 3×4
+        FULL(840, 840, 3, true),                  // 4×4
+        WIDE(840, 420, 3, true, wide = true),     // 4×2 横
     }
 
     private const val INK = 0xFFF2F6FA.toInt()
@@ -37,10 +41,22 @@ object WidgetRender {
     private const val ACCENT = 0xFF3B82F6.toInt()
     private const val CYAN = 0xFF22D3EE.toInt()
 
-    fun pick(minWidthDp: Int, minHeightDp: Int): Size = when {
-        minWidthDp >= 250 -> Size.W4
-        minWidthDp >= 170 -> Size.W3
-        else -> Size.W2
+    /**
+     * 按**容器实际宽高比**选版式，而不是只看宽度。
+     *
+     * 之前只看 minWidth，结果启动器给了一个 4×2 的横条，我们还在画 1:2 的
+     * 竖版，`fitCenter` 一缩就变成中间一条窄图，两边全空——看着就是
+     * 「信息特别少、还占了一大块位置」。
+     */
+    fun pick(minWidthDp: Int, minHeightDp: Int): Size {
+        val w = minWidthDp.coerceAtLeast(1).toFloat()
+        val h = minHeightDp.coerceAtLeast(1).toFloat()
+        val ratio = w / h
+        return when {
+            ratio >= 1.5f -> Size.WIDE              // 宽扁：4×2
+            ratio <= 0.70f -> if (w < 180) Size.TALL else Size.MID  // 窄高
+            else -> Size.FULL                        // 接近方形：4×4
+        }
     }
 
     fun render(data: JSONObject, size: Size): Bitmap {
@@ -58,66 +74,27 @@ object WidgetRender {
 
         drawGlow(c, w, h, brand)
 
-        val pad = w * 0.075f
-        var y = pad
-
-        // ---- 顶部：日期 + 星期（数据不是今天的会标出来）
-        val top = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        val pad = w * 0.06f
+        val datePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = MUTED
-            textSize = h * 0.036f
+            textSize = h * (if (size.wide) 0.055f else 0.036f)
             typeface = Typeface.DEFAULT_BOLD
             letterSpacing = 0.06f
         }
-        c.drawText(data.optString("date"), pad, y + top.textSize, top)
-        val wd = data.optString("weekday")
-        if (wd.isNotBlank()) {
-            top.textAlign = Paint.Align.RIGHT
-            c.drawText(wd, w - pad, y + top.textSize, top)
-            top.textAlign = Paint.Align.LEFT
-        }
-        val stale = data.optInt("stale", 0)
-        if (stale > 0) {
-            top.color = 0xFFE0A33A.toInt()
-            top.textAlign = Paint.Align.RIGHT
-            top.textSize = h * 0.030f
-            c.drawText("数据 ${stale} 天前", w - pad, y + top.textSize + h * 0.045f, top)
-            top.textAlign = Paint.Align.LEFT
-        }
-        y += h * 0.10f
-
-        // ---- 主数字：恢复度（没有就睡眠分），带辉光
         val bigNum = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = INK
-            textSize = h * 0.185f
+            textSize = h * (if (size.wide) 0.215f else 0.185f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             setShadowLayer(h * 0.03f, 0f, h * 0.008f, 0x66000000)
         }
-        val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = MUTED
-            textSize = h * 0.034f
-        }
-        if (score != null) {
-            c.drawText(score.toString(), pad, y + bigNum.textSize * 0.82f, bigNum)
-            val nw = bigNum.measureText(score.toString())
-            val kind = if (main?.optString("kind") == "sleep") "睡眠" else "恢复"
-            c.drawText(kind, pad + nw + h * 0.018f,
-                y + bigNum.textSize * 0.82f, label)
-        } else {
-            bigNum.textSize = h * 0.085f
-            c.drawText(level, pad, y + bigNum.textSize, bigNum)
-        }
-        y += bigNum.textSize * 0.95f
-
         val lv = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = brand
-            textSize = h * 0.040f
+            textSize = h * (if (size.wide) 0.070f else 0.040f)
             typeface = Typeface.DEFAULT_BOLD
             setShadowLayer(h * 0.02f, 0f, 0f, 0x55000000)
         }
-        c.drawText(level, pad, y + lv.textSize, lv)
-        y += lv.textSize * 2.0f
 
-        // ---- 指标区
+        // 指标池：横版/方版尽量多放，窄版挑前三四个
         val items = ArrayList<Pair<String, String>>()
         nullableInt(data, "sleep_score")?.let { items.add("睡眠" to it.toString()) }
         data.optDouble("sleep_h", 0.0).takeIf { it > 0 }?.let {
@@ -131,18 +108,87 @@ object WidgetRender {
         }
         nullableInt(data, "steps")?.let { items.add("步数" to it.toString()) }
 
-        val show = if (size.full) items else items.take(if (size.cols >= 2) 4 else 3)
-        if (show.isNotEmpty()) drawGrid(c, show, pad, y, w, h, size.cols, h - pad)
+        if (size.wide) {
+            // ---- 横版 4×2：左栏日期/主数字/等级，右栏指标两列
+            val leftW = w * 0.44f
+            var x = pad
+            var y = pad + datePaint.textSize
+            val wd = data.optString("weekday")
+            val head = if (wd.isNotBlank()) data.optString("date") + "  " + wd
+            else data.optString("date")
+            c.drawText(head, x, y, datePaint)
+            y += h * 0.10f
 
-        // ---- 4×4 再加一条周里程，否则底部会空一大块
-        if (size.full) {
-            val wk = data.optDouble("week_km", 0.0)
-            if (wk > 0) {
-                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = MUTED
-                    textSize = h * 0.032f
+            if (score != null) {
+                c.drawText(score.toString(), x, y + bigNum.textSize * 0.86f, bigNum)
+                val nw = bigNum.measureText(score.toString())
+                val kind = if (main?.optString("kind") == "sleep") " 睡眠" else " 恢复"
+                datePaint.color = MUTED
+                c.drawText(kind, x + nw, y + bigNum.textSize * 0.86f, datePaint)
+            } else {
+                bigNum.textSize = h * 0.13f
+                c.drawText(level, x, y + bigNum.textSize, bigNum)
+            }
+            y += bigNum.textSize * 0.92f
+            c.drawText(level, x, y + lv.textSize, lv)
+
+            val show = items.take(6)
+            if (show.isNotEmpty()) {
+                drawGrid(c, show, leftW + pad * 0.4f, pad, (w - pad).toFloat(),
+                    (h - pad * 0.4f).toInt(), 2)
+            }
+        } else {
+            // ---- 竖版 / 方版：垂直堆叠
+            var y = pad
+            val wd = data.optString("weekday")
+            c.drawText(data.optString("date"), pad, y + datePaint.textSize, datePaint)
+            if (wd.isNotBlank()) {
+                datePaint.textAlign = Paint.Align.RIGHT
+                c.drawText(wd, w - pad, y + datePaint.textSize, datePaint)
+                datePaint.textAlign = Paint.Align.LEFT
+            }
+            val stale = data.optInt("stale", 0)
+            if (stale > 0) {
+                datePaint.color = 0xFFE0A33A.toInt()
+                datePaint.textAlign = Paint.Align.RIGHT
+                datePaint.textSize = h * 0.030f
+                c.drawText("数据 ${stale} 天前", w - pad,
+                    y + datePaint.textSize + h * 0.045f, datePaint)
+                datePaint.textAlign = Paint.Align.LEFT
+                datePaint.textSize = h * 0.036f
+            }
+            y += h * 0.10f
+
+            if (score != null) {
+                c.drawText(score.toString(), pad, y + bigNum.textSize * 0.82f, bigNum)
+                val nw = bigNum.measureText(score.toString())
+                val kind = if (main?.optString("kind") == "sleep") "睡眠" else "恢复"
+                val lbl = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = MUTED; textSize = h * 0.034f
                 }
-                c.drawText(String.format("本周 %.1f km", wk), pad, h - pad * 0.9f, p)
+                c.drawText(kind, pad + nw + h * 0.018f,
+                    y + bigNum.textSize * 0.82f, lbl)
+            } else {
+                bigNum.textSize = h * 0.085f
+                c.drawText(level, pad, y + bigNum.textSize, bigNum)
+            }
+            y += bigNum.textSize * 0.95f
+            c.drawText(level, pad, y + lv.textSize, lv)
+            y += lv.textSize * 1.9f
+
+            val show = if (size.full) items else items.take(if (size.cols >= 2) 4 else 3)
+            if (show.isNotEmpty()) {
+                drawGrid(c, show, pad, y, (w - pad).toFloat(),
+                    (h - pad * 2.2f).toInt(), size.cols)
+            }
+            if (size.full) {
+                val wk = data.optDouble("week_km", 0.0)
+                if (wk > 0) {
+                    val p2 = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color = MUTED; textSize = h * 0.030f
+                    }
+                    c.drawText(String.format("本周 %.1f km", wk), pad, h - pad * 0.8f, p2)
+                }
             }
         }
         return bmp
@@ -151,12 +197,14 @@ object WidgetRender {
     /** 指标网格：按列数切行，左标签右数值，中间用极淡的分隔线。 */
     private fun drawGrid(
         c: Canvas, items: List<Pair<String, String>>,
-        left: Float, top: Float, w: Int, h: Int, cols: Int, bottom: Float,
+        left: Float, top: Float, right: Float, h: Int, cols: Int,
     ) {
-        val pad = left
-        val colW = (w - pad * 2) / cols
+        val colW = (right - left) / cols
+        val bottom = h.toFloat()
         val rows = (items.size + cols - 1) / cols
-        val rowH = min((bottom - top) / maxOf(rows, 1), h * 0.085f)
+        // 行高上限给到 0.16h：横版画布只有 420 高，按 0.085h 算出来的行距
+        // 比字号还小，三行会挤成一团。
+        val rowH = min((bottom - top) / maxOf(rows, 1), h * 0.16f)
         val key = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = MUTED
             textSize = h * 0.030f
@@ -167,7 +215,7 @@ object WidgetRender {
             typeface = Typeface.DEFAULT_BOLD
         }
         items.forEachIndexed { i, (k, v) ->
-            val cx = pad + (i % cols) * colW
+            val cx = left + (i % cols) * colW
             val cy = top + (i / cols) * rowH
             c.drawText(k, cx, cy + key.textSize, key)
             c.drawText(v, cx, cy + key.textSize + val_.textSize * 1.12f, val_)
