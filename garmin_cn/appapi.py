@@ -534,6 +534,20 @@ def mi_logout() -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
+def _friendly_mi_error(msg: str) -> str:
+    """同步失败时别把网关 JSON / 加密外壳原文甩给界面。"""
+    low = str(msg).lower()
+    if ("连不上" in msg or "timed out" in low or "urlopen" in low
+            or "network is unreachable" in low):
+        return "连不上小米服务器，检查网络后再试"
+    if ("http 5" in low or "gateway" in low or "503" in low or "502" in low
+            or "504" in low):
+        return "小米云端暂时不可用，稍后再试"
+    if "{" in msg or "响应无法解密" in msg:
+        return "小米接口返回异常，稍后再试"
+    return str(msg)[:160]
+
+
 def mi_sync(days: int = 30) -> dict:
     """拉一次小米秤的体重/体成分并入库（body 表 + 回填 daily）。"""
     from . import mi as M
@@ -542,11 +556,20 @@ def mi_sync(days: int = 30) -> dict:
     try:
         n, recs = M.sync(store, HOME, days=min(max(int(days), 7), 120))
     except M.MiAuthError as e:
-        return {"ok": False, "need_login": True, "error": str(e)}
+        msg = str(e)
+        # 登录换票路径会把网关的一小段 JSON 带进异常消息；need_login 已经
+        # 说明情况，error 只留一句能照着做的话，别再让界面显示原始报文。
+        if "{" in msg:
+            msg = "小米登录已失效，请重新授权"
+        return {"ok": False, "need_login": True, "error": msg}
     except M.MiError as e:
-        return {"ok": False, "error": str(e)}
+        # 兜底：小米换个状态码或换句文案时也要弹重新登录，别只甩一段 JSON。
+        if M.is_auth_error(e):
+            return {"ok": False, "need_login": True,
+                    "error": "小米登录已失效，请重新授权"}
+        return {"ok": False, "error": _friendly_mi_error(str(e))}
     except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return {"ok": False, "error": _friendly_mi_error(f"{type(e).__name__}: {e}")}
     return {"ok": True, "count": n,
             "latest": recs[-1]["date"] if recs else None,
             "weight": recs[-1].get("weight_kg") if recs else None}
