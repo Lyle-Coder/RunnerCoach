@@ -93,6 +93,47 @@ def run() -> int:
     except MI.MiAuthError:
         pass
 
+    # 网关层 401 必须归到凭据失效（2026-11-16 小米体重同步实测）：
+    # 以前一律 MiError，上层既不换会话也不弹重新登录，只甩一段 JSON 给用户。
+    e401 = MI._http_failure(401, '{"code":3,"message":"auth err"}')
+    assert isinstance(e401, MI.MiAuthError), "HTTP 401 没归到 MiAuthError"
+    assert "重新登录" in str(e401)
+    assert isinstance(MI._http_failure(403, "auth err"), MI.MiAuthError)
+    e503 = MI._http_failure(503, "gateway timeout")
+    assert isinstance(e503, MI.MiError) and not isinstance(e503, MI.MiAuthError), \
+        "5xx 不该被误判成登录失效"
+    assert MI.is_auth_error(e401)
+    assert MI.is_auth_error('小米接口 HTTP 401: {"code":3,"message":"auth err"}')
+    assert not MI.is_auth_error("连不上小米服务器：URLError")
+
+    # 同步接口：换状态码/文案也要兜底成 need_login；普通错误不把 JSON 甩给界面。
+    from garmin_cn import appapi as _API
+    import unittest.mock as _mock
+    assert "检查网络" in _API._friendly_mi_error("连不上小米服务器：timed out")
+    assert "{" not in _API._friendly_mi_error('小米接口 HTTP 401: {"code":3}')
+    with _mock.patch.object(_API, "Store"), _mock.patch.object(
+            MI, "sync", side_effect=MI.MiError(
+                '小米接口 HTTP 401: {"code":3,"message":"auth err"}')):
+        r401 = _API.mi_sync(days=7)
+    assert r401.get("need_login") and not r401.get("ok"), r401
+    with _mock.patch.object(_API, "Store"), _mock.patch.object(
+            MI, "sync", side_effect=MI.MiAuthError(
+                '小米账号接口返回异常（可能被风控）：{"code":3}')):
+        r_auth = _API.mi_sync(days=7)
+    assert "{" not in str(r_auth.get("error")), r_auth
+    with _mock.patch.object(_API, "Store"), _mock.patch.object(
+            MI, "sync", side_effect=MI.MiError(
+                '小米接口 HTTP 503: {"message":"busy"}')):
+        r503 = _API.mi_sync(days=7)
+    assert "{" not in str(r503.get("error")) and not r503.get("need_login"), r503
+
+    # 「已登录」只表示本地存过凭据，不表示云端还认；别让用户以为 App 自相矛盾。
+    import inspect as _inspect
+    from garmin_cn import ui as _U
+    _me_src = _inspect.getsource(_U.me_page)
+    assert 'm_ok = "已存凭据"' in _me_src and 'h_ok = "已存凭据"' in _me_src, \
+        "体重行还写着「已登录」"
+
     # 浏览器托管登录：Cookie 过滤 / 会话判定是纯函数，改坏了登录会静默失败。
     # 网页端换门户 SSO 后密码通道作废，这条是唯一的登录入口，不能哑掉。
     from garmin_cn import browser_login as BL
@@ -3819,8 +3860,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.3.17 → 148）。
-    assert 'versionCode = 148' in (
+    # 每次发版要同步改这里（本次 1.3.18 → 149）。
+    assert 'versionCode = 149' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。
