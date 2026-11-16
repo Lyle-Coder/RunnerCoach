@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -79,6 +80,45 @@ class AssetTest(unittest.TestCase):
         self.assertIsNone(U.pick_apk([{"name": "a.apk"}]))          # 没有地址
         self.assertIsNone(U.pick_apk([None, "x", 1]))
         self.assertIsNone(U.pick_apk(None))
+
+    def test_apk_zip_is_not_an_installable_attachment(self):
+        self.assertIsNone(U.pick_apk([{"name": "RunnerCoach-release.apk.zip",
+                                      "browser_download_url": "https://gitee.com/x/file.apk.zip"}]))
+
+
+class DownloadContractTest(unittest.TestCase):
+    def test_android_pins_apk_mime_destination_and_completion_notification(self):
+        kt = ROOT / "android/app/src/main/java/mm/runnercoach/app"
+        download = (kt / "ApkDownload.kt").read_text(encoding="utf8")
+        main = (kt / "MainActivity.kt").read_text(encoding="utf8")
+        # Regression contract for a server returning application/zip: neither
+        # Content-Type nor Content-Disposition may choose the output extension.
+        self.assertIn('const val MIME = "application/vnd.android.package-archive"', download)
+        self.assertIn('.setMimeType(MIME)', download)
+        self.assertIn('.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "RunnerCoach/$filename")', download)
+        self.assertIn('UUID.randomUUID().toString().take(8) + ".apk"', download)
+        self.assertIn('VISIBILITY_VISIBLE_NOTIFY_COMPLETED', download)
+        self.assertIn('DownloadManager.STATUS_RUNNING', download)
+        self.assertIn('manager.openDownloadedFile(previous)', download)
+        self.assertIn('ApkDownload.enqueue(applicationContext', main)
+        self.assertIn('DownloadManager.ACTION_VIEW_DOWNLOADS', main)
+        body = main.split('private fun downloadUpdate(', 1)[1].split('private fun openUpdateDownloads(', 1)[0]
+        self.assertIn('if (name.isBlank())', body)
+        self.assertLess(body.index('if (name.isBlank())'), body.index('ApkDownload.enqueue'))
+        self.assertNotIn('Intent.ACTION_VIEW', body)
+
+    def test_uploaded_attachment_mime_preserves_apk_and_zip_distinction(self):
+        from tools import release
+        with tempfile.TemporaryDirectory() as root:
+            for name, expected in (("RunnerCoach-release.apk", "application/vnd.android.package-archive"),
+                                   ("RunnerCoach-source.zip", "application/zip"),
+                                   ("SHA256SUMS.txt", "text/plain; charset=utf-8")):
+                with self.subTest(name=name):
+                    path = Path(root) / name
+                    path.write_bytes(b"PK\x03\x04synthetic-package")
+                    body, _ = release.multipart_body("dummy-test-token", path)
+                    self.assertIn(f'filename="{name}"'.encode(), body)
+                    self.assertIn(f"Content-Type: {expected}\r\n\r\n".encode(), body)
 
 
 class ParseTest(unittest.TestCase):
