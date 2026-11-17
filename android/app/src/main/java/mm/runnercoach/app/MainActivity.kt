@@ -558,6 +558,7 @@ class MainActivity : Activity() {
                     "amap" -> showAmapDialog()
                     "clips" -> showClips()
                     "update" -> checkUpdate(silent = false)
+                    "runShare" -> exportRunCard()
                     "dbExport" -> doExportData()
                     "dbImport" -> doImportData()
                     "diag" -> showDiag()
@@ -3786,8 +3787,39 @@ class MainActivity : Activity() {
             .show()
     }
 
-    /** 单次活动图：先出 HTML（画布 1080×2250），再截成 1080×1920 的 PNG 分享。 */
-    private fun exportActivity(id: String, privacy: String = "trim") {
+    /**
+     * 赛季结算分享图。结算页上的「保存这张图」按钮通过 `data-act="runShare"` 走到这里。
+     *
+     * 图片本身不含 GPS、昵称和别人名字（`runcard` 只放结局、总行程、士气与四段路），
+     * 所以不需要像活动图那样先问一次脱敏档位——问一次反而显得图里有什么见不得人。
+     */
+    private fun exportRunCard() {
+        if (port == 0) {
+            toast("还在启动，稍等一下")
+            return
+        }
+        busy(true)
+        thread {
+            val r = apiCall("expedition_card_html", 0)
+            ui {
+                if (!r.optBoolean("ok")) {
+                    busy(false)
+                    toast("出图失败：${r.optString("error")}")
+                    return@ui
+                }
+                renderToPng(
+                    fileUrl(r.optString("html")),
+                    r.optInt("width", 1080), r.optInt("height", 1920),
+                    "garmin-run", "分享这一季：${r.optString("title")}",
+                    r.optInt("export_width", 1080), r.optInt("export_height", 1920),
+                    r.optString("export_bg", "#0F1319"),
+                    r.optBoolean("export_trim", true),
+                )
+            }
+        }
+    }
+
+    /** 单次活动图：先出 HTML（画布 1080×2250），再截成 1080×1920 的 PNG 分享。 */    private fun exportActivity(id: String, privacy: String = "trim") {
         if (port == 0) {
             toast("还在启动，稍等一下")
             return

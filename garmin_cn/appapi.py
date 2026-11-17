@@ -162,7 +162,8 @@ def _today(store: Store) -> dict:
 # 两边都不用做类型映射，嵌套结构也不会丢。
 _API = {
     "env_info", "status", "login", "submit_mfa", "sync", "sync_range",
-    "dashboard", "card_html", "act_card_html", "runs", "activities", "days_index",
+    "dashboard", "card_html", "act_card_html", "expedition_card_html",
+    "runs", "activities", "days_index",
     "history_stats", "backfill_next",
     "plan", "plan_week", "plan_save", "plan_save_week", "plan_clear",
     "plan_overrides", "plan_generate", "plan_draft", "plan_confirm",
@@ -2782,6 +2783,45 @@ def act_card_html(activity_id: str, title: str | None = None,
                 "privacy": mode, "privacy_note": PV.note(mode, mask_info),
                 **export_spec(BG_ACT)}
     except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def expedition_card_html(gid: int = 0) -> dict:
+    """赛季结算分享图：出 1080 宽 HTML，App 的离屏 WebView 截成 1080×1920。
+
+    和活动图走同一条出图链路（契约见 `exportspec.py`），只是内容不同：
+    这张图不带任何 GPS、不带昵称、不带别人的名字——只写「一队人这一季走到了
+    哪里」。分享出去最多暴露「我参加了一个跑步小组」，不会暴露住址或谁跑得
+    多谁跑得少（榜单才看得到那种东西，这张图刻意没有）。
+
+    没结束的赛季**拒绝出图**：那时候没有结局，出出来的是一张空壳，
+    而「分享一张没有结论的图」比不能分享更尴尬。
+    """
+    try:
+        from . import group as G
+        from . import runcard as RC
+
+        gid = int(gid or 0)
+        if not gid:
+            items = (G.groups() or {}).get("groups") or []
+            gid = int(items[0]["id"]) if items else 0
+        if not gid:
+            return {"ok": False, "error": "还没有加入任何小组"}
+        d = G.run_outcome(gid)
+        if not d.get("ok"):
+            return {"ok": False, "error": d.get("error") or "拿不到赛季结果"}
+        if not d.get("ended"):
+            return {"ok": False, "error": "这一季还没结束，先走到终点"}
+
+        html = RC.build_html(d)
+        out = OUT / f"run-share-{gid}.html"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(html, encoding="utf-8")
+        return {"ok": True, "html": str(out), "ending": d.get("ending"),
+                "title": (d.get("ending_detail") or {}).get("title") or "",
+                "width": RC.W, "height": RC.H,
+                **export_spec(RC.BG)}
+    except Exception as e:  # noqa: BLE001 - 出图失败要让界面能说话
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 

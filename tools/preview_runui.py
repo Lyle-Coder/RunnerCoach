@@ -216,10 +216,22 @@ def main() -> int:
     G.run_state(gid, "2026-12-14")
     ended = G.run_outcome(gid, "2026-12-14")
 
+    # 顺手打一次 App 真正会调的那个接口：出图链路（HTML 落盘 + 导出契约）
+    # 只有这一条路走过，才算「点按钮能出图」，光有 build_html 不算。
+    from garmin_cn import appapi as _A
+
+    _card = _A.expedition_card_html(gid)
+    print(f"expedition_card_html → ok={_card.get('ok')} "
+          f"{Path(str(_card.get('html') or '')).name} "
+          f"{_card.get('export_width')}×{_card.get('export_height')} "
+          f"trim={_card.get('export_trim')} {_card.get('error') or ''}")
+    assert _card.get("ok"), f"出图接口失败：{_card}"
+
     OUT.mkdir(parents=True, exist_ok=True)
     font_url = (ROOT / "garmin_cn/content/expedition-serif.woff2").as_uri()
     wrap = (f"<style>html{{background:#05080d}}"
             f"body{{width:{WIDTH}px;margin:0 auto}}</style>")
+    share_pages: list[str] = []
     for name, data in pages.items():
         h = runsui.run_page("PREVIEW", "", data)
         h = h.replace('url("/fonts/expedition-serif.woff2")', f'url("{font_url}")')
@@ -278,6 +290,14 @@ def main() -> int:
         print(f"end_{key}.html  结局={d.get('ending')} "
               f"遗迹={d.get('relic_count')} 士气={d.get('morale')} "
               f"acts={[(a['act'], a['got'], a['target'], a['hit']) for a in d.get('acts') or []]}")
+        # 分享图：1080 宽，出图尺寸就是 1080×1920（不裁不缩），所以这里
+        # 直接用 1080×1920 的窗口截，看到什么就是分享出去的样子
+        from garmin_cn import runcard as RC
+
+        c = RC.build_html(d)
+        c = c.replace('url("/fonts/expedition-serif.woff2")', f'url("{font_url}")')
+        (OUT / f"share_{key}.html").write_text(c, encoding="utf-8")
+        share_pages.append(f"share_{key}")
 
     # 翻篇之后的第一幕：页脚多一句「上一季」。这一句是给「上周没打开」的人
     # 留的——没有它，那一季就等于没发生过。
@@ -301,6 +321,19 @@ def main() -> int:
                         f"--user-data-dir={Path(tempfile.gettempdir()) / ('wb-prev-' + name)}",
                         "--hide-scrollbars", "--virtual-time-budget=4000",
                         f"--window-size={WIDTH + 40},1800",
+                        f"--screenshot={out}", (OUT / f"{name}.html").as_uri()],
+                       capture_output=True)
+        print(f"{name}.png  {'ok' if out.is_file() else 'FAILED'}")
+
+    # 分享图按真实出图尺寸截：1080×1920，1 倍缩放。和手机上的成品一致，
+    # 缩到聊天窗口里还能不能看清，看的就是这一版。
+    for name in share_pages:
+        out = OUT / f"{name}.png"
+        subprocess.run([exe, "--headless=new", "--disable-gpu", "--no-first-run",
+                        "--no-default-browser-check", "--allow-file-access-from-files",
+                        f"--user-data-dir={Path(tempfile.gettempdir()) / ('wb-prev-' + name)}",
+                        "--hide-scrollbars", "--virtual-time-budget=4000",
+                        "--window-size=1080,1920",
                         f"--screenshot={out}", (OUT / f"{name}.html").as_uri()],
                        capture_output=True)
         print(f"{name}.png  {'ok' if out.is_file() else 'FAILED'}")
