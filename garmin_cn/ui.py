@@ -303,6 +303,20 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .override{display:flex;align-items:center;gap:6px;font-size:11.5px;
   color:var(--muted);margin-top:10px;line-height:1.5}
 .override input{width:16px;height:16px;accent-color:#3B82F6}
+/* 表单里的开关：纯 CSS，状态由 input:checked 驱动，提交时跟着表单走。
+   和「我的」页那个 .sw 不一样——那个走 data-act 调原生，这个必须能被 submit。 */
+.tsw{position:relative;display:inline-block;width:46px;height:26px;
+  flex:0 0 46px;cursor:pointer}
+.tsw input{position:absolute;inset:0;width:100%;height:100%;margin:0;
+  opacity:0;cursor:pointer;z-index:1}
+.tsw i{position:absolute;inset:0;border-radius:99px;
+  background:rgba(255,255,255,.13);transition:background .16s;pointer-events:none}
+.tsw i::after{content:"";position:absolute;left:3px;top:3px;width:20px;height:20px;
+  border-radius:50%;background:#7C8A98;
+  transition:transform .16s,background .16s}
+.tsw input:checked + i{background:rgba(79,214,166,.85)}
+.tsw input:checked + i::after{transform:translateX(20px);background:#06121C}
+.tsw input:focus-visible + i{box-shadow:0 0 0 3px rgba(59,130,246,.3)}
 .kvline{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;
   color:var(--ink2);padding:7px 0;border-bottom:1px solid var(--line2)}
 .kvline:last-child{border-bottom:0}
@@ -1034,9 +1048,13 @@ def home_page() -> str:
             desc += f" · 心率 ≤ {hr_cap}"
     # 没有元信息就不渲染副标题，别留一行空白把计划条撑厚。
     desc_html = f'<div class="d">{esc(desc)}</div>' if desc else ""
+    # 右上角原来写死「按日课表」，重复说明了这一块是什么；换成「本周 3 练」
+    # 这种能一眼判断的信息，体积不变、信息量更大。
+    _wp, _wd = int(pl.get("week_planned") or 0), int(pl.get("week_done") or 0)
+    win_txt = (f"本周 {_wd}/{_wp} 完成" if _wp else "本周未排课")
     plan_html = (f'<section class="rc-panel rc-plan-panel">'
                  f'<div class="rc-panel-hd"><span class="rc-eyebrow">{esc(eyebrow)}</span>'
-                 f'<span class="rc-win">按日课表</span></div>'
+                 f'<span class="rc-win">{esc(win_txt)}</span></div>'
                  f'<div class="rc-plan"><div class="when"><b>{esc(when)}</b>'
                  f'{esc(subwhen)}</div><div class="what"><div class="t">'
                  f'{esc(title)}</div>{desc_html}</div>'
@@ -1414,8 +1432,10 @@ def plan_page(qs: dict | None = None) -> str:
             steps_html += f'<div class="kvline"><span>{esc(step["name"])} · {step["seconds"] / 60:g} 分钟</span><b>{esc(power)}</b></div>'
     steps_section = sec("骑行步骤", '<div class="card">' + steps_html + '</div>') if steps_html else ""
     import_link = '<div class="pager"><a class="btn" href="/training">导入本地训练到高驰</a></div>'
+    # 编辑入口放在「本周」标题右侧，而不是只留在页脚：计划页一进来最想改的就是
+    # 这一周，让人滚到底才能编辑，等于没有入口。
     body = (sec("今日", _today_plan_card(r)) + steps_section + import_link +
-            sec("本周", f'<div class="wk">{rows}</div>') +
+            sec("本周", f'<div class="wk">{rows}</div>', more=("改课表", "/plan/edit")) +
             next_sec +
             sec("计划信息", info) +
             '<div class="pager"><a class="btn primary" href="/plan/edit">编辑本周</a>'
@@ -1532,11 +1552,14 @@ def plan_edit_page(token: str, message: str = "", data: dict | None = None,
                 f'<input type="hidden" name="token" value="{esc(token)}">'
                 + '<div class="card">'
                 '<div class="kvline"><span>每周跑几天</span><b>'
-                '<input type="number" name="run_days" min="2" max="6" step="1" value="" placeholder="按历史"></b></div>'
+                '<input type="number" inputmode="numeric" name="run_days" min="2" max="6"'
+                ' step="1" value="" placeholder="按历史"></b></div>'
                 '<div class="kvline"><span>周量 km</span><b>'
-                '<input type="number" name="week_km" min="0" max="200" step="1" value="" placeholder="按历史"></b></div>'
+                '<input type="number" inputmode="decimal" name="week_km" min="0" max="200"'
+                ' step="1" value="" placeholder="按历史"></b></div>'
                 '<div class="kvline"><span>按赛事减量</span><b>'
-                f'<input type="checkbox" name="race_deload" value="1"{"" if rules["race_deload"] else ""}>'
+                f'<label class="tsw"><input type="checkbox" name="race_deload" value="1"'
+                f'{" checked" if rules["race_deload"] else ""}><i></i></label>'
                 '</b></div></div>'
                 '<p class="note">留空就按近 4 周实际跑量算。强制减量周（每第 4 周）'
                 '始终生效，这个开关只管「赛前要不要压量」。</p>'
