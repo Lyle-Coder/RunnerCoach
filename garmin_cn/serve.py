@@ -31,7 +31,7 @@ from functools import partial
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from . import history, ui
 
@@ -167,6 +167,26 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._html(history.history_page(parse_qs(u.query)))
         if u.path in ("/me", "/me.html"):
             return self._html(ui.me_page())
+        # 训练小组：三个页面共用同一个页面令牌，写操作全部 POST + 303
+        if u.path in ("/account", "/account.html", "/groups", "/groups.html") \
+                or u.path.startswith("/groups/"):
+            if not self._is_loopback():
+                return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+            if not getattr(self.server, "group_token", ""):
+                self.server.group_token = secrets.token_urlsafe(32)
+            tok = self.server.group_token
+            q = parse_qs(u.query)
+            msg = (q.get("msg") or [""])[0]
+            from . import groupui
+            if u.path.startswith("/account"):
+                return self._html(groupui.account_page(
+                    tok, msg, (q.get("account") or [""])[0], (q.get("code") or [""])[0]))
+            if u.path.rstrip("/") in ("/groups", "/groups.html"):
+                return self._html(groupui.groups_page(tok, msg))
+            seg = u.path.rstrip("/").split("/")[2:]
+            if len(seg) == 1 and seg[0].isdigit():
+                return self._html(groupui.group_page(tok, int(seg[0]), msg))
+            return self._json({"ok": False, "error": "没有这个页面"}, 404)
         if u.path == "/sports":
             if not self._is_loopback():
                 return self._json({"ok": False, "error": "只允许本机操作"}, 403)
@@ -1208,6 +1228,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return
         if u.path.startswith("/__plan/"):
             return self._plan_post(u)
+        if u.path.startswith(("/__group/", "/__account/")):
+            return self._group_post(u)
         # 回放视频：动画页 `?export=1` 会自己逐帧 POST 上来，这里只负责收。
         if u.path.startswith(("/__frame", "/__done", "/__timeline", "/__diag")):
             return self._frame_post(u)
@@ -1274,6 +1296,132 @@ class _Handler(SimpleHTTPRequestHandler):
         return self._json(out, 200 if out.get("ok") else 400)
 
     # ---------------------------------------------------------------- 计划编辑
+    def _see_other(self, url: str) -> None:
+        """PRG 回跳。手机上按返回/下拉刷新不会重复提交上一次操作。"""
+        self.send_response(303)
+        self.send_header("Location", url)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        self.close_connection = True
+
+    def _group_report(self, gid: int) -> dict:
+        """手动上报一次。首次加入发 30 天，之后 14 天。"""
+        from . import appapi as A, group as G
+        from .store import Store
+
+        store = Store(A.DB)
+        try:
+            return G.report_group(store, gid, first=not G.seen(gid, store))
+        finally:
+            store.conn.close()
+
+    def _group_post(self, u) -> None:
+        """训练小组的写接口：登录、建组、加入、共享、上报、赛事、退出。"""
+        from . import account as AC, group as G
+
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        token = getattr(self.server, "group_token", "")
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if not 0 < n <= 65536:
+                raise ValueError("参数过大或为空")
+            values = {k: v[0] for k, v in
+                      parse_qs(self.rfile.read(n).decode("utf-8"),
+                               keep_blank_values=True).items()}
+            if not token or not hmac.compare_digest(values.get("token", ""), token):
+                raise PermissionError("页面已过期，请重新打开")
+        except PermissionError as e:
+            return self._see_other("/groups?msg=" + quote(str(e)))
+        except (ValueError, OSError) as e:
+            return self._see_other("/groups?msg=" + quote(str(e)))
+
+        def as_int(v, default=0):
+            try:
+                return int(str(v).strip() or 0)
+            except (TypeError, ValueError):
+                return default
+
+        parts = [p for p in u.path.strip("/").split("/") if p]
+        msg, back = "", "/groups"
+        try:
+            if parts and parts[0] == "__account":
+                act = parts[1] if len(parts) > 1 else ""
+                acct = (values.get("account") or "").strip()
+                if act == "send":
+                    r = AC.send_code(acct)
+                    if r.get("ok"):
+                        q = {"account": acct, "sent": "1"}
+                        if r.get("dev_code"):
+                            q["code"] = r["dev_code"]
+                        return self._see_other("/account?" + urlencode(q))
+                    msg, back = r.get("error") or "发送失败", "/account"
+                elif act == "login":
+                    r = AC.verify(acct, values.get("code"))
+                    if r.get("ok"):
+                        return self._see_other("/groups")
+                    msg = r.get("error") or "登录失败"
+                    back = "/account?" + urlencode({"account": acct})
+                elif act == "logout":
+                    AC.logout()
+                    return self._see_other("/account")
+                else:
+                    raise ValueError("不支持的操作")
+            else:
+                second = parts[1] if len(parts) > 1 else ""
+                if second == "create":
+                    r = G.create(values.get("name"), values.get("intro"),
+                                 as_int(values.get("max_members"), 20), values.get("alias"))
+                    if r.get("ok"):
+                        return self._see_other(f"/groups/{r['group']['id']}")
+                    msg = r.get("error") or "建组失败"
+                elif second == "join":
+                    r = G.join(values.get("code"), values.get("alias"))
+                    if r.get("ok"):
+                        return self._see_other(f"/groups/{r['group']['id']}")
+                    msg = r.get("error") or "加入失败"
+                else:
+                    gid = as_int(second)
+                    if not gid:
+                        raise ValueError("组 id 不对")
+                    act = parts[2] if len(parts) > 2 else ""
+                    back = f"/groups/{gid}"
+                    if act == "leave":
+                        r = G.leave(gid)
+                        if r.get("ok"):
+                            back = "/groups"
+                        else:
+                            msg = r.get("error") or "退出失败"
+                    elif act == "share":
+                        r = G.set_share(gid, values.get("share") or "summary")
+                        msg = "已保存" if r.get("ok") else (r.get("error") or "保存失败")
+                    elif act == "report":
+                        r = self._group_report(gid)
+                        msg = (f'已上报 {r.get("saved", 0)} 天'
+                               if r.get("ok") else (r.get("error") or "上报失败，已排队"))
+                    elif act == "rotate":
+                        r = G.rotate(gid)
+                        msg = (f'新邀请码 {r["invite_code"]}' if r.get("ok")
+                               else (r.get("error") or "换码失败"))
+                    elif act == "challenge":
+                        if len(parts) > 3 and parts[3].isdigit() and parts[-1] == "close":
+                            r = G.challenge_close(gid, int(parts[3]))
+                            msg = "已结束" if r.get("ok") else (r.get("error") or "结束失败")
+                        else:
+                            r = G.challenge_create(
+                                gid, values.get("title"), values.get("kind") or "distance",
+                                as_int(values.get("target")),
+                                values.get("start_date") or "", values.get("end_date") or "")
+                            msg = "已建赛事" if r.get("ok") else (r.get("error") or "建赛事失败")
+                    else:
+                        raise ValueError("不支持的操作")
+        except (ValueError, TypeError) as e:
+            msg = str(e)
+        except Exception as e:  # noqa: BLE001 - 网络异常不能让页面白屏
+            msg = f"{type(e).__name__}: {e}"
+        sep = "&" if "?" in back else "?"
+        return self._see_other(f"{back}{sep}msg=" + quote(msg or ""))
+
     def _plan_post(self, u) -> None:
         """计划的写接口：保存 / 生成 / 确认 / 放弃 / 推送 / 撤销 / 开关。
 

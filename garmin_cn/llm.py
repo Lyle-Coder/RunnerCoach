@@ -125,7 +125,12 @@ DEFAULTS = {
     "platform_auto": True,      # True=用官方服务（内置/服务端下发）；False=自定义地址
     "platform_base": "",        # 当前生效的平台地址（由 _resolve_platform 计算）
     "platform_share_code": "",  # 当前生效的分享码
-    "platform_token": "",
+    "platform_token": "",       # 旧字段：AI 网关令牌，账号体系上线后逐步让位给
+                                # account_token；保留一版做迁移与兼容（别再往这里写）
+    # 账号级令牌：登录后拿到的设备令牌，组功能与 AI 平台额度共用同一个账号。
+    # 和 AI 分开存，是因为关掉 AI 平台模式不该让人进不了组。
+    "account_token": "",
+    "account_label": "",
     # 服务端下发结果（内部字段，界面白名单不含，防止被 config.set 篡改）
     "platform_served_base": "",
     "platform_served_share_code": "",
