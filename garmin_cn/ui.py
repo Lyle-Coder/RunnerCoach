@@ -293,10 +293,47 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
   background:rgba(245,165,36,.10);border:1px solid rgba(245,165,36,.28);
   border-radius:999px;padding:2px 8px}
 .wrow.rest .wb{color:var(--muted);font-weight:400}
+/* 草稿页要看清「为什么这么排」和每节课的说明，不能像周视图那样省略号截断 */
+.whyrow{display:flex;gap:8px;font-size:12.5px;color:var(--ink2);
+  padding:7px 0;border-bottom:1px solid var(--line2)}
+.whyrow:last-child{border-bottom:0}
+.whyrow .wno{flex:0 0 14px;color:var(--muted);font-variant-numeric:tabular-nums}
+.whyrow .wtxt{flex:1 1 auto;min-width:0;line-height:1.55;word-break:break-word}
+.wrow.dwk .wb em{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.5}
+.override{display:flex;align-items:center;gap:6px;font-size:11.5px;
+  color:var(--muted);margin-top:10px;line-height:1.5}
+.override input{width:16px;height:16px;accent-color:#3B82F6}
 .kvline{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;
   color:var(--ink2);padding:7px 0;border-bottom:1px solid var(--line2)}
 .kvline:last-child{border-bottom:0}
 .kvline b{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+/* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
+   手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
+/* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，
+   flex 收缩时它会把后面的输入框挤出卡片；grid 的 minmax(0,1fr) 才是真的可缩。 */
+/* 计划编辑：一天一块，两行堆叠（上：日期 + 类型；下：数值）。
+   试过 flex/grid/table 三种横排，select 的固有宽度都会在 360 宽的手机上把
+   输入框挤出卡片；堆成两行最笨但绝对不会溢出，手指也更好点。 */
+.prow{padding:10px 0;border-bottom:1px solid var(--line2)}
+.prow:last-child{border-bottom:0}
+.prow .p1{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.prow .p1 b{font-size:13px;color:var(--ink);font-weight:600}
+.prow .p1 b span{font-size:11px;color:var(--muted);margin-left:6px;font-weight:400}
+.prow .p1 select{width:118px;flex:0 0 118px;padding:6px 6px;font-size:12.5px}
+.prow .p2{display:flex;align-items:center;gap:7px;margin-top:7px}
+.prow .p2 input[type=number]{flex:1 1 auto;min-width:0;padding:8px 10px;
+  font-size:13px;text-align:center}
+.prow .p2 .unit{flex:0 0 auto;font-size:11.5px;color:var(--muted)}
+.prow .pinfo{font-size:11.5px;color:var(--muted);margin-top:6px}
+.prow.past{opacity:.5}
+.prow.cur{background:rgba(59,130,246,.08);border-radius:12px;
+  margin:0 -10px;padding:10px}
+/* 表单里的数字输入统一收窄：默认宽度会把卡片撑破（手机上尤其明显） */
+.kvline b{flex:0 0 auto;min-width:0;display:flex;justify-content:flex-end}
+.kvline input[type=number]{width:88px;min-width:88px;padding:5px 6px;
+  font-size:12.5px;text-align:center}
+.kvline input[type=checkbox]{width:20px;height:20px;min-width:0;
+  accent-color:#3B82F6}
 @media(max-width:380px){
   /* 只有普通 .grid 退成单列；.acts 是 68px 的紧凑卡，360 宽下两列仍放得下，
      退成单列会让「我的」页凭空多出 4 行、又变回长列表。 */
@@ -1381,10 +1418,207 @@ def plan_page(qs: dict | None = None) -> str:
             sec("本周", f'<div class="wk">{rows}</div>') +
             next_sec +
             sec("计划信息", info) +
-            '<div class="pager"><div class="btn" data-act="planRefresh">刷新计划</div></div>')
+            '<div class="pager"><a class="btn primary" href="/plan/edit">编辑本周</a>'
+            '<a class="btn" href="/plan/draft">看草稿</a>'
+            '<div class="btn" data-act="planRefresh">刷新计划</div></div>')
     return page("PLAN · 训练计划", "今天练什么",
                 (r.get("name") or "佳明教练计划"), body, chips,
                 back=("返回今日", "/"))
+
+
+def _num_input(name: str, value, *, step: str = "0.5", lo=0, hi=60,
+               disabled: bool = False, ph: str = "") -> str:
+    v = "" if value in (None, 0, 0.0, "") else f"{float(value):g}"
+    dis = " disabled" if disabled else ""
+    return (f'<input type="number" inputmode="decimal" name="{esc(name)}"'
+            f' step="{step}" min="{lo}" max="{hi}"'
+            f' value="{esc(v)}" placeholder="{esc(ph)}"{dis}>')
+
+
+def plan_edit_page(token: str, message: str = "", data: dict | None = None,
+                   rules: dict | None = None) -> str:
+    """计划编辑页：一周 7 天逐块改，改完保存。
+
+    只写 `plan_overrides.json`，不动日历快照——下次同步不会把这里改的东西冲掉。
+    过去的日子标灰且不提交：改历史会让完成率凭空变化，也没有任何用处。
+
+    一天有多条课次时这一块只读并提示去日历改：这个页面只处理「一天一条」，
+    硬压成一条会把另一条悄悄删掉。
+
+    `data` / `rules` 可以外部传入（自检用），不传就现读。
+    """
+    from . import appapi as A, plangen as PG
+    import datetime as _dt
+
+    r = data if isinstance(data, dict) else A.plan_week()
+    rules = rules if isinstance(rules, dict) else PG.rules()
+    today = _dt.date.today().isoformat()
+    if not r.get("ok"):
+        body = ('<div class="card"><div class="empty"><b>读不到本周计划</b>'
+                f'{esc(r.get("error") or "先回今日页下拉同步一次")}</div>'
+                '<div class="pager"><div class="btn primary" data-act="planRefresh">'
+                '重新读取</div></div></div>')
+        return page("PLAN · 编辑计划", "编辑本周", "还没读到课表",
+                    body, back=("返回计划", "/plan"))
+
+    rows, multi_days, past_days = "", 0, 0
+    for i, d in enumerate(r.get("days") or []):
+        its = d.get("items") or []
+        first = its[0] if its else None
+        kind = (first or {}).get("kind") or ("rest" if not its else "easy")
+        multi = len(its) > 1
+        past = bool(d.get("past"))
+        if multi:
+            multi_days += 1
+        if past:
+            past_days += 1
+
+        cls = ""
+        if past:
+            cls += " past"
+        if d["date"] == today:
+            cls += " cur"
+
+        # 不改的日子（多条 / 已过去）**整行不提交**：多条怕覆盖掉另一条，
+        # 过去的日子改了会让完成率凭空变化。只留一行说明。
+        if multi or past:
+            why = (f'共 {len(its)} 条课次，请到佳明日历里改' if multi else '已经过去')
+            rows += (f'<div class="{cls}">'
+                     f'<input type="hidden" name="d{i}_skip" value="1">'
+                     f'<div class="p1"><b>{esc(d["dow"])}<span>{esc(d["date"][5:])}</span></b></div>'
+                     f'<div class="pinfo">{esc(why)}</div></div>')
+            continue
+
+        opts = ""
+        for key, label in (("rest", "休息"), ("easy", "轻松跑"), ("tempo", "节奏跑"),
+                           ("long", "长距离"), ("interval", "间歇"),
+                           ("strength", "力量"), ("race", "比赛")):
+            sel = " selected" if key == kind else ""
+            opts += f'<option value="{key}"{sel}>{label}</option>'
+
+        # 数值框的语义跟着类型走：力量课填分钟，其余填里程。只留一个输入框，
+        # 两个并排在手机上必然挤成一团。
+        if kind == "strength":
+            num = _num_input(f"d{i}_minutes", (first or {}).get("minutes"),
+                             step="5", lo=0, hi=600, ph="0")
+            unit = "分钟"
+        else:
+            num = _num_input(f"d{i}_km", (first or {}).get("km"), ph="0")
+            unit = "km"
+
+        rows += (f'<div class="{cls}">'
+                 f'<input type="hidden" name="d{i}_date" value="{esc(d["date"])}">'
+                 f'<div class="p1"><b>{esc(d["dow"])}<span>{esc(d["date"][5:])}</span></b>'
+                 f'<select name="d{i}_kind">{opts}</select></div>'
+                 f'<div class="p2">{num}<span class="unit">{unit}</span></div></div>')
+
+    chips = (chip(f'本周 {r.get("week_km") or 0:g} km', "ok") +
+             chip(f'{r.get("monday")} 起') +
+             (chip("有本地改动") if r.get("edited") else "") +
+             (chip("快照过期", "") if r.get("stale") else ""))
+    msg = f'<p class="note">{esc(message)}</p>' if message else ""
+    stale_tip = ('<p class="note">快照不是这一周：先点右上「刷新」或回今日页下拉同步，'
+                 '再回来编辑，否则改的是上一周。</p>' if r.get("stale") else "")
+
+    save_form = (f'<form action="/__plan/save" method="post">'
+                 f'<input type="hidden" name="token" value="{esc(token)}">'
+                 + sec("本周课表", '<div class="card">' + rows + '</div>')
+                 + '<p class="note">只填里程或时长之一也行；留空并选「休息」表示不跑。'
+                   '保存后立即生效，不会改到佳明日历。</p>'
+                 + '<div class="pager"><button class="btn primary" type="submit">保存本周</button>'
+                   '<a class="btn" href="/plan">取消</a></div></form>')
+
+    gen_form = (f'<form action="/__plan/generate" method="post">'
+                f'<input type="hidden" name="token" value="{esc(token)}">'
+                + '<div class="card">'
+                '<div class="kvline"><span>每周跑几天</span><b>'
+                '<input type="number" name="run_days" min="2" max="6" step="1" value="" placeholder="按历史"></b></div>'
+                '<div class="kvline"><span>周量 km</span><b>'
+                '<input type="number" name="week_km" min="0" max="200" step="1" value="" placeholder="按历史"></b></div>'
+                '<div class="kvline"><span>按赛事减量</span><b>'
+                f'<input type="checkbox" name="race_deload" value="1"{"" if rules["race_deload"] else ""}>'
+                '</b></div></div>'
+                '<p class="note">留空就按近 4 周实际跑量算。强制减量周（每第 4 周）'
+                '始终生效，这个开关只管「赛前要不要压量」。</p>'
+                '<div class="pager"><button class="btn" type="submit">生成草稿</button></div></form>')
+
+    push_form = (f'<form action="/__plan/push" method="post">'
+                 f'<input type="hidden" name="token" value="{esc(token)}">'
+                 '<div class="pager"><button class="btn" type="submit">推到佳明手表</button></div>'
+                 '<p class="note">只创建自己的课，不动官方教练计划。重复推送会先删掉上次推的。</p></form>')
+
+    clear_form = (f'<form action="/__plan/clear" method="post">'
+                  f'<input type="hidden" name="token" value="{esc(token)}">'
+                  '<div class="pager"><button class="btn" type="submit">撤销所有本地改动</button></div>'
+                  '<p class="note">撤销后回到日历/教练计划的原始课表。</p></form>')
+
+    body = msg + stale_tip + save_form + sec("没有计划？按历史生成",
+                                             '<div class="card">' + gen_form + '</div>') \
+        + sec("手表", '<div class="card">' + push_form + '</div>') \
+        + sec("改动", '<div class="card">' + clear_form + '</div>') \
+        + (f'<p class="note">本周有 {multi_days} 天是多条课次、{past_days} 天已过去，'
+           '这些行这里改不了。</p>' if (multi_days or past_days) else "")
+    return page("PLAN · 编辑计划", "编辑本周", f'{r.get("monday")} 起这一周',
+                body, chips, back=("返回计划", "/plan"))
+
+
+def plan_draft_page(token: str, message: str = "", draft: dict | None = None) -> str:
+    """草稿预览：生成的计划先看再决定，确认之前一个字都不落盘。"""
+    from . import plangen as PG
+
+    d = draft if isinstance(draft, dict) else PG.load_draft()
+    if not d or not d.get("week"):
+        body = ('<div class="card"><div class="empty"><b>没有待确认的草稿</b>'
+                '回计划页点「按历史生成」</div>'
+                '<div class="pager"><a class="btn primary" href="/plan/edit">去生成</a></div></div>')
+        return page("PLAN · 草稿", "生成计划", "还没有草稿",
+                    body, back=("返回计划", "/plan"))
+
+    rows = ""
+    for w in d.get("week") or []:
+        its = w.get("items") or []
+        if not its:
+            rows += (f'<div class="wrow rest"><span class="wd">{esc(w.get("dow"))}</span>'
+                     '<span class="wb">休息</span></div>')
+            continue
+        it = its[0]
+        meta = " · ".join(x for x in (
+            f'{it.get("km") or 0:g} km' if it.get("km") else "",
+            f'{it.get("minutes")}′' if it.get("minutes") else "",
+            it.get("detail") or "") if x)
+        rows += (f'<div class="wrow dwk"><span class="wd">{esc(w.get("dow"))}</span>'
+                 f'<span class="wb">{esc(it.get("name") or "训练")}'
+                 f'<em>{esc(meta)}</em></span></div>')
+
+    reasons = "".join(
+        f'<div class="whyrow"><span class="wno">{i + 1}</span>'
+        f'<span class="wtxt">{esc(x)}</span></div>'
+        for i, x in enumerate(d.get("reason") or []))
+    chips = (chip(f'{d.get("week_km") or 0:g} km', "ok") +
+             chip(f'{d.get("days") or 0} 天') +
+             chip(f'{d.get("monday")} 起') +
+             (chip(f'系数 ×{d.get("factor"):g}') if d.get("factor") not in (None, 1) else ""))
+    msg = f'<p class="note">{esc(message)}</p>' if message else ""
+
+    # 三个动作放进同一个表单，用 formaction 区分：两个 form 并排会让按钮和
+    # 勾选框挤成两行，手机上很难看清哪个按钮对应哪个动作。
+    ok_form = (f'<form action="/__plan/confirm" method="post">'
+               f'<input type="hidden" name="token" value="{esc(token)}">'
+               '<div class="pager">'
+               '<button class="btn primary" type="submit">用这份计划</button>'
+               '<a class="btn" href="/plan/edit">改框架重生成</a>'
+               '<button class="btn" type="submit" formaction="/__plan/discard">放弃</button>'
+               '</div>'
+               '<label class="override"><input type="checkbox" name="override" value="1">'
+               '覆盖我手改过的天（默认只补空缺）</label></form>')
+    body = (msg
+            + sec("为什么这么排", '<div class="card">' + reasons + '</div>')
+            + sec("这一周", f'<div class="wk">{rows}</div>')
+            + ok_form
+            + '<p class="note">确认后写进本地改动表，并从下周一自动续。'
+              '默认只补你没安排的天。</p>')
+    return page("PLAN · 草稿", "生成计划", "确认前不落盘",
+                body, chips, back=("返回计划", "/plan"))
 
 
 def _map_on() -> bool:

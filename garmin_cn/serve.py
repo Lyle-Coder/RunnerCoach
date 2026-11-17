@@ -93,6 +93,44 @@ def _with_fix(doc: str, css: str) -> str:
     return doc.replace("</head>", f"<style>{css}</style></head>", 1)
 
 
+def _plan_float(v, cap: float = 600.0) -> float:
+    """表单里的数字：空串、负数、超上限都当 0，不抛。"""
+    try:
+        f = float(str(v or "").strip() or 0)
+    except ValueError:
+        return 0.0
+    return f if 0 < f <= cap else 0.0
+
+
+def _plan_days_from_form(values: dict) -> list[dict]:
+    """把编辑页的扁平字段还原成 `[{date, items, rest}, ...]`。
+
+    单独拿出来是为了能离线测：这一层最容易出现「存进去少了一天」「休息日变成
+    一条 0 km 的课」这类静默错误，埋进 HTTP 处理里就没法验。
+
+    跳过 `d<i>_skip=1` 的日子——那是「一天多条课次」，这一页不处理，宁可不改
+    也不能悄悄把另一条删掉。
+    """
+    days = []
+    for i in range(7):
+        date = str(values.get(f"d{i}_date") or "").strip()[:10]
+        if not date or str(values.get(f"d{i}_skip") or "") == "1":
+            continue
+        kind = str(values.get(f"d{i}_kind") or "rest").strip().lower()
+        km = _plan_float(values.get(f"d{i}_km"), cap=60)
+        minutes = _plan_float(values.get(f"d{i}_minutes"), cap=600)
+        if kind == "rest" or (km <= 0 and minutes <= 0):
+            days.append({"date": date, "items": [], "rest": True})
+            continue
+        item = {"km": km, "minutes": minutes, "kind": kind}
+        if kind == "strength":
+            item.update({"sport": "力量", "sport_key": "strength_training"})
+        else:
+            item.update({"sport": "跑步", "sport_key": "running"})
+        days.append({"date": date, "items": [item], "rest": False})
+    return days
+
+
 class _Handler(SimpleHTTPRequestHandler):
     server_version = "garmin-coach/0.1"
 
@@ -137,6 +175,15 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._html(ui.sports_page(self.server.sports_token))
         if u.path in ("/plan", "/plan.html"):
             return self._html(ui.plan_page(parse_qs(u.query)))
+        if u.path in ("/plan/edit", "/plan/edit.html", "/plan/draft", "/plan/draft.html"):
+            if not self._is_loopback():
+                return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+            # 编辑页能改课表，和运动设置一样要页面令牌 + 仅回环访问
+            if not getattr(self.server, "plan_token", ""):
+                self.server.plan_token = secrets.token_urlsafe(32)
+            msg = (parse_qs(u.query).get("msg") or [""])[0]
+            fn = ui.plan_draft_page if "/draft" in u.path else ui.plan_edit_page
+            return self._html(fn(self.server.plan_token, msg))
         if u.path in ("/training", "/__training/status"):
             if not self._is_loopback():
                 return self._json({"ok": False, "error": "只允许本机操作"}, 403)
@@ -1159,6 +1206,8 @@ class _Handler(SimpleHTTPRequestHandler):
             self.send_header("Location", "/sports")
             self.end_headers()
             return
+        if u.path.startswith("/__plan/"):
+            return self._plan_post(u)
         # 回放视频：动画页 `?export=1` 会自己逐帧 POST 上来，这里只负责收。
         if u.path.startswith(("/__frame", "/__done", "/__timeline", "/__diag")):
             return self._frame_post(u)
@@ -1223,6 +1272,93 @@ class _Handler(SimpleHTTPRequestHandler):
         except Exception as e:      # dispatch 内部已兜底，这里只防万一
             out = {"ok": False, "error": f"{type(e).__name__}: {e}"}
         return self._json(out, 200 if out.get("ok") else 400)
+
+    # ---------------------------------------------------------------- 计划编辑
+    def _plan_post(self, u) -> None:
+        """计划的写接口：保存 / 生成 / 确认 / 放弃 / 推送 / 撤销 / 开关。
+
+        全部 303 回跳（PRG）：手机上按返回、下拉刷新都不会重复提交。
+        """
+        from . import appapi as A
+
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        token = getattr(self.server, "plan_token", "")
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if not 0 < n <= 65536:
+                raise ValueError("参数过大或为空")
+            values = {k: v[0] for k, v in
+                      parse_qs(self.rfile.read(n).decode("utf-8"),
+                               keep_blank_values=True).items()}
+            if not token or not hmac.compare_digest(values.get("token", ""), token):
+                raise PermissionError("页面已过期，请回到计划页重新打开")
+        except PermissionError as e:
+            return self._html(ui.plan_edit_page(token, str(e)), 403)
+        except (ValueError, OSError) as e:
+            return self._html(ui.plan_edit_page(token, str(e)), 400)
+
+        act = u.path.rsplit("/", 1)[-1]
+        msg, back = "", "/plan/edit"
+        try:
+            if act == "save":
+                days = _plan_days_from_form(values)
+                if not days:
+                    msg = "没有可保存的改动"
+                else:
+                    r = A.plan_save_week(json.dumps(days, ensure_ascii=False))
+                    msg = f'已保存 {r.get("saved")} 天' if r.get("ok") \
+                        else (r.get("error") or "保存失败")
+            elif act == "generate":
+                try:
+                    run_days = int(values.get("run_days") or 0)
+                except ValueError:
+                    run_days = 0
+                try:
+                    week_km = float(values.get("week_km") or 0)
+                except ValueError:
+                    week_km = 0.0
+                A.plan_rules_set(values.get("race_deload") == "1")
+                r = A.plan_generate(run_days, week_km)
+                if r.get("ok") and r.get("week_km"):
+                    back = "/plan/draft"
+                else:
+                    msg = (r.get("error") or r.get("reason")
+                           or "没有可参考的跑量，先在今日页同步几次")
+            elif act == "confirm":
+                r = A.plan_confirm(values.get("override") == "1")
+                back = "/plan"
+                msg = (f'已写入 {r.get("saved")} 天，下周一起自动续'
+                       if r.get("ok") else (r.get("error") or "确认失败"))
+            elif act == "discard":
+                A.plan_discard()
+                msg = "草稿已放弃"
+            elif act == "clear":
+                r = A.plan_clear()
+                msg = (f'已撤销 {r.get("cleared")} 天改动' if r.get("ok")
+                       else (r.get("error") or "撤销失败"))
+            elif act == "rules":
+                r = A.plan_rules_set(values.get("race_deload") == "1")
+                msg = ("已关闭赛前减量" if r.get("race_deload") is False
+                       else "已开启赛前减量") if r.get("ok") else (r.get("error") or "保存失败")
+            elif act == "push":
+                r = A.plan_push(False)
+                back = "/plan"
+                if r.get("ok"):
+                    msg = (f'已推送 {r.get("created")} 节课，覆盖 {r.get("days")} 天'
+                           if r.get("created") else "没有需要推送的课")
+                elif r.get("need_login"):
+                    msg = r.get("error") or "佳明未登录，先去「我的」登录"
+                else:
+                    msg = r.get("error") or "推送失败"
+            else:
+                return self._json({"ok": False, "error": f"不支持的操作：{act}"}, 404)
+        except Exception as e:                                  # noqa: BLE001
+            msg = f"{type(e).__name__}: {e}"
+
+        self.send_response(303)
+        self.send_header("Location", f"{back}?msg={quote(msg)}")
+        self.end_headers()
 
     def _json(self, obj, code: int = 200) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")

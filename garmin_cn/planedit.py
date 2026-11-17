@@ -259,6 +259,28 @@ def list_overrides(path: Path | None = None) -> dict:
 
 
 # ---------------------------------------------------------------- 编辑视图
+def guess_kind(item: dict) -> str:
+    """从课名 / 运动类型推断 kind。
+
+    佳明日历的课**只有标题**，没有 kind。不推断的话，一节力量课在编辑页会显示成
+    「轻松跑 45 分钟」，用户一点保存就把它改成了跑步——这类静默改写比显示不出
+    更糟。
+    """
+    key = str(item.get("sport_key") or "").lower()
+    name = str(item.get("name") or "")
+    if "strength" in key or "力量" in name or "核心" in name:
+        return "strength"
+    if "interval" in key or "间歇" in name or "×" in name:
+        return "interval"
+    if "race" in key or "比赛" in name:
+        return "race"
+    if float(item.get("km") or 0) >= 15 or "长距离" in name:
+        return "long"
+    if "@T" in name.upper() or "节奏" in name:
+        return "tempo"
+    return "easy"
+
+
 def week_edit_view(plan: dict | None, monday: str | None = None,
                    today: str | None = None) -> dict:
     """把（已合并改动的）计划整理成 App 编辑页能直接渲染的结构。
@@ -292,8 +314,10 @@ def week_edit_view(plan: dict | None, monday: str | None = None,
             "source": src.get("source") or (plan or {}).get("source") or "",
             "note": src.get("note") or "",
             "km": round(sum(float(x.get("km") or 0) for x in items), 2),
-            "items": [{"name": x.get("name"), "kind": x.get("kind") or DEFAULT_KIND,
-                       "label": KIND.get(str(x.get("kind") or DEFAULT_KIND), KIND[DEFAULT_KIND]),
+            "items": [{"name": x.get("name"),
+                       "kind": x.get("kind") or guess_kind(x),
+                       "label": KIND.get(str(x.get("kind") or guess_kind(x)),
+                                         KIND[DEFAULT_KIND]),
                        "km": x.get("km") or 0, "minutes": x.get("minutes") or 0,
                        "detail": x.get("detail") or ""} for x in items],
         })

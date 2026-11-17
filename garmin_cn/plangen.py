@@ -258,9 +258,12 @@ def build_draft(store=None, today: str | None = None, monday: str | None = None,
     days = int(run_days if run_days is not None else prof["run_days"])
 
     f_race, race = race_factor(today)
+    # 「不按赛事减量」：备赛的人通常有自己的周期安排，让 App 再压一次量
+    # 等于两套减量叠加。这个开关给的就是「只按我自己的计划走」。
+    race_deload = _load_json(_rules_path(rules_path)).get("race_deload", True) is not False
     idx = _week_index(rules_path)
     f_deload = 0.7 if idx % 4 == 0 else 1.0
-    factor = min(f_race, f_deload)
+    factor = min(f_race, f_deload) if race_deload else f_deload
 
     target = base_km * factor if base_km > 0 else 0.0
     if base_km > 0:
@@ -276,10 +279,14 @@ def build_draft(store=None, today: str | None = None, monday: str | None = None,
     else:
         reasons.append("本地还没有跑步记录，先按 3 天框架给个起步量")
     if race:
-        reasons.append(f"下一场是 {race['date']} 的 {race['name']}，还有 {race['days']} 天"
-                       f"（周量 ×{f_race:g}）")
+        if race_deload:
+            reasons.append(f"下一场是 {race['date']} 的 {race['name']}，"
+                           f"还有 {race['days']} 天，周量按 {f_race:g} 倍算")
+        else:
+            reasons.append(f"下一场是 {race['date']} 的 {race['name']}，"
+                           f"还有 {race['days']} 天，已按设置不压量")
     if f_deload < 1:
-        reasons.append(f"第 {idx} 周按计划减量（周量 ×{f_deload:g}）")
+        reasons.append(f"第 {idx} 周按计划减量，周量按 {f_deload:g} 倍算")
     if not target:
         reasons.append("没有可参考的跑量，先不排里程；跑两周后会按实际调整")
 
@@ -332,13 +339,27 @@ def load_draft(path: Path | None = None) -> dict | None:
     return d or None
 
 
+def discard(path: Path | None = None) -> dict:
+    """放弃草稿。删掉文件而不是标记作废：留着会被下次「确认」误用。"""
+    p = _draft_path(path)
+    had = p.exists()
+    try:
+        p.unlink()
+    except OSError:
+        pass
+    return {"ok": True, "had": had}
+
+
 # ---------------------------------------------------------------- 确认
 def confirm(path: Path | None = None, rules_path: Path | None = None,
-            today: str | None = None) -> dict:
+            today: str | None = None, override_manual: bool = False) -> dict:
     """把草稿写进 overrides，并记住「以后可以自动续」。
 
     只写今天及以后的天：把过去的日子改成新计划，会让已完成的那几天凭空
     变成「未完成」，完成率立刻失真。
+
+    `override_manual=True` 才会盖掉用户手改过的天。默认不盖——先手改再点确认，
+    期望的是「补空缺」，不是「我改的都被冲掉」。整周都排满时会返回明确提示。
     """
     from . import planedit as PE
 
@@ -358,17 +379,19 @@ def confirm(path: Path | None = None, rules_path: Path | None = None,
                      "origin": "generated",
                      "note": "自动生成" if w.get("items") else ""})
 
-    # 用户亲手改过的那天，草稿不许盖。自动续是给「没管这周」的人用的，
+    # 用户亲手改过的那天，草稿默认不许盖。自动续是给「没管这周」的人用的，
     # 不是给「安排好了又被系统改掉」的人用的。
     kept = {x.get("date") for x in
             PE.list_overrides(path=(Path(path).parent if path else None)).get("items") or []
             if x.get("origin") == "manual"}
     skipped = [d["date"] for d in days if d["date"] in kept]
-    days = [d for d in days if d["date"] not in kept]
+    if not override_manual:
+        days = [d for d in days if d["date"] not in kept]
 
     if not days:
-        return {"ok": False, "error": "这一周每天都已被你手动安排过，草稿没有可写的位置",
-                "skipped_manual": skipped}
+        return {"ok": False, "skipped_manual": skipped,
+                "error": "这一周每天都已被你手动安排过。想用这份草稿，"
+                         "勾上「覆盖我改过的天」再确认。"}
 
     r = PE.save_week(days, path=(Path(path).parent if path else None))
 
@@ -390,8 +413,20 @@ def confirm(path: Path | None = None, rules_path: Path | None = None,
 
 def rules(path: Path | None = None) -> dict:
     r = _load_json(_rules_path(path))
-    return {"auto": bool(r.get("auto")), "week_index": int(r.get("week_index") or 1),
+    return {"auto": bool(r.get("auto")),
+            "race_deload": r.get("race_deload", True) is not False,
+            "week_index": int(r.get("week_index") or 1),
             "last_week": r.get("last_week"), "confirmed_at": r.get("confirmed_at")}
+
+
+def set_rules(path: Path | None = None, race_deload: bool | None = None) -> dict:
+    """改生成规则。只开放 `race_deload`：别的字段跟着流程走，不该手改。"""
+    p = _rules_path(path)
+    r = _load_json(p)
+    if race_deload is not None:
+        r["race_deload"] = bool(race_deload)
+    _dump(p, r)
+    return rules(path)
 
 
 def auto_renew(store=None, today: str | None = None, path: Path | None = None,
