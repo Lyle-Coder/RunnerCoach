@@ -954,6 +954,46 @@ def run() -> int:
     # 一旦页面上能看到「+3 格」这类数，选择就退化成算术题。
     assert "effect" not in _fh and "advance" not in _fh, "选项把数值写进了页面"
 
+    # 结算页：四个结局共用一套版式，变的是文案与脚印的去向
+    _oc = {"ok": True, "ended": True, "ending": "arrive",
+           "ending_detail": {"key": "arrive", "title": "抵达",
+                             "line": "五天，一炉火", "text": "（正文第一句）。"},
+           "team": 52.0, "morale": 7, "members": 3, "relic_count": 1,
+           "acts": [{"act": 1, "theme": "信任", "got": 13.0, "target": 12.0, "hit": True},
+                    {"act": 2, "theme": "代价", "got": 11.0, "target": 12.0, "hit": False},
+                    {"act": 3, "theme": "取舍", "got": 15.8, "target": 12.0, "hit": True},
+                    {"act": 4, "theme": "选择", "got": 15.8, "target": 12.0, "hit": True}]}
+    _oh = RU.outcome_page("TOK", _oc)
+    assert "抵达" in _oh and "（正文第一句）" in _oh, "结算页缺结局标题或正文"
+    assert _oh.count("走够") == 3 and _oh.count("没够") == 1, \
+        "四段的「走够/没够」和 got/target 对不上"
+    assert "0/0" not in _oh, "没结算的段被显示成了 0/0"
+
+    # 没结算过的幕要显示「没走到」，不能显示成「0/0 没够」——
+    # 那是「没走到」，不是「这一周没走够」，两者对玩家是两件事
+    _oc2 = dict(_oc, acts=[{"act": 1, "theme": "信任", "got": 13.0,
+                            "target": 12.0, "hit": True},
+                           {"act": 2, "theme": "代价", "got": 0.0,
+                            "target": 0.0, "hit": False}])
+    _oh2 = RU.outcome_page("TOK", _oc2)
+    assert "没走到" in _oh2 and "0/0" not in _oh2, "未结算的幕没显示成「没走到」"
+
+    # 结局的脚印图形：四种结局必须真的不一样，否则「同一片雪地、不同的
+    # 到达方式」这个说法就是空的
+    _svgs = {k: RU._ending_svg(k) for k in
+             ("arrive", "detour", "lost", "discoverer")}
+    assert len(set(_svgs.values())) == 4, "四个结局的插画有重复"
+    assert "C98B4B" in _svgs["arrive"] and "C98B4B" not in _svgs["lost"], \
+        "「没走完」的窗户不该是亮的"
+    assert _svgs["discoverer"].count("<rect") > 4, "隐藏结局没画出三本日志"
+
+    # 遗迹事件：标签要是「旧物」，不能混在普通「遭遇」里被划过去
+    _relic = {"id": "x_relic", "type": "story", "act": 2, "title": "门框上的字",
+              "text": "有人在门框上刻了字。", "relic": True, "chosen": "",
+              "options": [{"id": "take", "label": "拿走", "brief": "", "time": 0}]}
+    _rh = RU.event_card(_relic, 0)
+    assert "旧物" in _rh and "relic" in _rh, "遗迹事件没有视觉标识"
+
     # 衬线字体：正文靠它和「数据」区分开。Android 的 WebView 里 serif 对中文
     # 没有可用字体，不内嵌就 fallback 成无衬线，故事感直接消失。
     _font = ROOT / "garmin_cn" / "content" / "expedition-serif.woff2"

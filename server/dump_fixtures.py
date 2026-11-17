@@ -320,6 +320,9 @@ def _season(gid: int, t: dict) -> None:
           token=t["member"])
 
     print("\n4. 远征 · 终幕与结局")
+    # 先把四周的数据灌满再走到赛季末。只灌前两周的话，后面两幕所有人都会被
+    # 「连续没动」剔除，段目标缩到只有一两个人的量，结算样例看着像 bug。
+    _seed_weeks(gid, t)
     w4 = "2026-12-08"
     _call("40_state_act4", "GET", f"/v1/group/{gid}/run/state?today={w4}",
           "第四幕：`season.act` = 4，进度是累计值不是当幕值",
@@ -347,6 +350,21 @@ def _season(gid: int, t: dict) -> None:
           f"/v1/group/{gid}/run/outcome?today=2026-12-20",
           "隐藏结局：三处遗迹集齐 → `ending: discoverer`，`relics` 是 tag 数组",
           token=t["owner"])
+
+
+def _seed_weeks(gid: int, t: dict) -> None:
+    """给三个人各灌满四周（每周四天），让结算有真实感。"""
+    weights = {"owner": 9.0, "member": 8.0, "third": 7.0}
+    for who, km in weights.items():
+        days = []
+        for d in range(28):
+            date = (dt.date.fromisoformat(SEASON_START) + dt.timedelta(days=d))
+            if d % 7 in (0, 1, 2, 4, 5):
+                days.append({"date": date.isoformat(),
+                             "distance_m": int(km * 1000),
+                             "duration_s": int(km * 330),
+                             "acts": 1, "plan_done": d % 7 != 4})
+        _req("POST", f"/v1/group/{gid}/report", {"days": days}, t[who])
 
 
 def _brave_option(pool: dict, fork_id: str) -> str:

@@ -77,6 +77,11 @@ CSS = """
 .ecard.trial{--ec:#22D3EE}
 .ecard.supply{--ec:#5EA0FF}
 .ecard.story{--ec:#8CC2FF}
+/* 遗迹（旧日志）：暖边 + 稍亮的底，让它从一排事件里"跳"一下。
+   只让人注意到"这个不一样"，不写有什么用——标成任务清单就不叫探索了。 */
+.ecard.relic{--ec:#C98B4B;border-color:rgba(201,139,75,.34);
+  background:linear-gradient(180deg,rgba(28,24,19,.92),rgba(18,21,30,.95))}
+.ecard.relic .tag{background:rgba(201,139,75,.18);color:#DCA269}
 .ecard.done{opacity:.9}
 .ecard .in{padding:14px 15px 14px 18px}
 .ecard .tag{display:inline-block;font-size:10.5px;line-height:1.5;padding:1px 7px;
@@ -312,9 +317,14 @@ def event_card(ev: dict, slot: int) -> str:
     etype = str(ev.get("type") or "story")
     kind = str(ev.get("kind") or "")
     chosen = str(ev.get("chosen") or "")
-    cls = "ecard " + ("fork" if kind == "fork" else etype) + (" done" if chosen else "")
+    relic = bool(ev.get("relic"))
+    cls = "ecard " + ("fork" if kind == "fork" else etype)
+    if relic:
+        cls += " relic"
+    if chosen:
+        cls += " done"
 
-    label = KIND_ZH.get(kind) or TYPE_ZH.get(etype) or "事件"
+    label = "旧物" if relic else (KIND_ZH.get(kind) or TYPE_ZH.get(etype) or "事件")
     when = "这一刻要定" if (kind == "fork" and not chosen) else ("已选" if chosen else "")
     head = (f'<span class="tag">{esc(label)}</span>'
             + (f'<span class="when">{esc(when)}</span>' if when else "")
@@ -476,3 +486,167 @@ def run_page(token: str, message: str = "", data: dict | None = None) -> str:
                    head_bg=f'<div id="runbg">{ridge_svg()}</div>',
                    foot="进度来自你上报的里程，不上传轨迹与位置。",
                    back=("返回", "/groups")).replace("</body>", js + "</body>")
+
+
+# ---------------------------------------------------------------- 结算
+def _ending_svg(key: str) -> str:
+    """结局面面：同一片雪地，用脚印的去向和屋里的灯光分四种结局。
+
+    不用四张不同的插画，是因为「同一处地方、不同的到达方式」才是这个玩法
+    的意思——玩家换一季再来，看见的还是这片雪地，变的是自己走成了什么样。
+    """
+    cabin = ('<rect x="262" y="74" width="66" height="38" rx="2" fill="#1B2739"'
+             ' stroke="rgba(220,231,245,.28)" stroke-width="1"/>'
+             '<path d="M256 74 l39 -22 l39 22 z" fill="#151F2E"'
+             ' stroke="rgba(220,231,245,.3)" stroke-width="1" stroke-linejoin="round"/>')
+    # 窗：唯一的暖光。四结局里只有「抵达」和「发现者」亮着
+    lit = ('<rect x="290" y="88" width="11" height="9" fill="#C98B4B" opacity=".9"/>'
+           if key in ("arrive", "discoverer") else
+           '<rect x="290" y="88" width="11" height="9" fill="#0B111B"'
+           ' stroke="rgba(220,231,245,.2)" stroke-width=".8"/>')
+
+    def foot(x, y, op=1.0):
+        # 脚印要看得见才有「有人走过」的意思。之前 rx=2.6、透明度从 0.3 起，
+        # 在 420 宽的手机上几乎是一层噪点。
+        return (f'<ellipse cx="{x:.1f}" cy="{y:.1f}" rx="3.4" ry="1.9"'
+                f' fill="#DCE7F5" opacity="{min(0.95, op):.2f}"/>')
+
+    prints = []
+    ground = '<path d="M8 111 H364" stroke="rgba(220,231,245,.16)" stroke-width="1"/>'
+    snow = ('<circle cx="60" cy="34" r="1.2" fill="#DCE7F5" opacity=".3"/>'
+            '<circle cx="128" cy="52" r="1" fill="#DCE7F5" opacity=".22"/>'
+            '<circle cx="196" cy="30" r="1.3" fill="#DCE7F5" opacity=".26"/>'
+            '<circle cx="236" cy="58" r="1" fill="#DCE7F5" opacity=".2"/>'
+            '<circle cx="330" cy="44" r="1.1" fill="#DCE7F5" opacity=".24"/>')
+
+    if key == "arrive":
+        for i in range(13):
+            prints.append(foot(26 + i * 17, 106 - i * 1.3, 0.6 + i * 0.03))
+    elif key == "detour":
+        # 三条散开的脚印，只有最右那条走到了门口
+        for i in range(9):
+            prints.append(foot(26 + i * 15, 108 - i * 0.8, 0.62))
+        for i in range(6):
+            prints.append(foot(26 + i * 15, 100 + i * 2.6, 0.5))
+        for i in range(5):
+            prints.append(foot(26 + i * 15, 116 - i * 1.4, 0.44))
+        for i in range(6):
+            prints.append(foot(168 + i * 16, 96 - i * 1.1, 0.66))
+    elif key == "lost":
+        # 走到一半就断了，后面什么都没有。
+        # 断的地方放一块石头——文案里写的是「退回背风的那块石头下面」，
+        # 图里没有它，那句话就是空的。
+        for i in range(8):
+            prints.append(foot(26 + i * 15, 108 - i * 1.1, 0.66 - i * 0.045))
+        prints.append('<path d="M158 111 L166 96 L180 104 L186 111 Z"'
+                      ' fill="#1B2739" stroke="rgba(220,231,245,.24)"'
+                      ' stroke-width="1" stroke-linejoin="round"/>')
+    else:  # discoverer
+        for i in range(12):
+            prints.append(foot(24 + i * 17, 106 - i * 1.5, 0.5 + i * 0.035))
+        # 三本叠着的日志，压在路边
+        prints += [
+            '<rect x="44" y="96" width="26" height="7" rx="1" fill="#1B2739"'
+            ' stroke="rgba(201,139,75,.55)" stroke-width=".9"/>',
+            '<rect x="47" y="89" width="26" height="7" rx="1" fill="#16202F"'
+            ' stroke="rgba(201,139,75,.4)" stroke-width=".9"/>',
+            '<rect x="50" y="82" width="26" height="7" rx="1" fill="#121A28"'
+            ' stroke="rgba(201,139,75,.28)" stroke-width=".9"/>',
+        ]
+
+    return ('<svg viewBox="0 0 372 132" class="endsvg" role="img"'
+            f' aria-label="结局示意图：{esc(key)}">'
+            + snow + ground + cabin + lit + "".join(prints) + "</svg>")
+
+
+def outcome_page(token: str, data: dict | None = None) -> str:
+    """结算页。四个结局共用一套版式——变的是文案和脚印的去向。"""
+    d = data or {}
+    detail = d.get("ending_detail") or {}
+    key = str(d.get("ending") or "lost")
+    title = str(detail.get("title") or "结束了")
+    line = str(detail.get("line") or "")
+    text = str(detail.get("text") or "")
+
+    team = float(d.get("team") or 0)
+    morale = int(d.get("morale") or 0)
+    members = int(d.get("members") or 0)
+    relics = int(d.get("relic_count") or 0)
+    season = str(d.get("season") or "雪线之前")
+
+    # 逐幕：显示「走够了没有」，不打分。远征不是考试，这里只是回放
+    acts = ""
+    for a in d.get("acts") or []:
+        got = float(a.get("got") or 0)
+        need = float(a.get("target") or 0)
+        hit = bool(a.get("hit"))
+        if need <= 0:
+            # 这一段根本没结算过（赛季提前终止、或 cron 没跑到）。
+            # 显示「0/0 没够」是在骗人——它不是没走够，是没走到。
+            mark, cls, val = "没走到", "arow miss", "—"
+        else:
+            mark = "走够" if hit else "没够"
+            cls = "arow ok" if hit else "arow"
+            val = f'{got:g}<i>/{need:g}</i>'
+        acts += (f'<div class="{cls}"><span class="an">'
+                 f'第{CN_NUM[int(a.get("act") or 1) - 1]}段</span>'
+                 f'<span class="at">{esc(a.get("theme") or "")}</span>'
+                 f'<span class="av">{val}</span>'
+                 f'<span class="am">{mark}</span></div>')
+
+    body = (f'<div class="endwrap">{_ending_svg(key)}'
+            f'<div class="endk">SEASON OVER · {esc(season)}</div>'
+            f'<h1 class="endh">{esc(title)}</h1>'
+            f'<div class="endl">{esc(line)}</div>'
+            f'<div class="lit endt">{esc(text)}</div>'
+            '<div class="enddata">'
+            f'<div><b>{team:g}</b><span>总行程</span></div>'
+            f'<div><b>{morale}</b><span>士气</span></div>'
+            f'<div><b>{members}</b><span>走过的人</span></div>'
+            f'<div><b>{relics}<i>/3</i></b><span>旧日志</span></div>'
+            "</div>"
+            f'<div class="endacts">{acts}</div>'
+            '<p class="note" style="margin-top:14px">下一季周一自动开始。'
+            "队还在，路会换一段。</p>"
+            '<div class="pager"><a class="btn" href="/groups">回到小组</a></div>'
+            "</div>")
+
+    # 页头不放 h1：结算页的大标题是结局名，页头再来一个「这一季」
+    # 就是两个并列的主标题，谁也不是谁的上级。
+    return ui.page("EXPEDITION · 雪线之前", "", "", body,
+                   css=FONT_CSS + END_CSS,
+                   foot="进度来自你上报的里程，不上传轨迹与位置。",
+                   back=("返回", "/groups"))
+
+
+END_CSS = """
+.endwrap{padding:6px 0 4px;text-align:center}
+.endsvg{width:100%;height:auto;display:block;margin:0 auto}
+.endk{margin-top:14px;font-size:10.5px;font-weight:700;letter-spacing:2px;color:var(--cyan)}
+.endh{margin:8px 0 0;font-size:26px;font-weight:650;letter-spacing:-.3px;line-height:1.3}
+.endl{margin-top:7px;font-size:12.5px;color:var(--muted)}
+/* 结局正文：整页最重的一段字，所以给它最宽的行距和最慢的颜色 */
+.endt{margin:17px auto 0;max-width:330px;text-align:left;
+  font-size:14.5px;line-height:1.95;color:#C6D4E6}
+.enddata{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-top:22px;
+  padding-top:18px;border-top:1px solid var(--line2)}
+.enddata div{display:flex;flex-direction:column;gap:3px}
+.enddata b{font-size:17px;font-weight:600;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+.enddata b i{font-style:normal;font-size:11px;color:var(--faint);margin-left:1px}
+.enddata span{font-size:10.5px;color:var(--faint);line-height:1.35}
+.endacts{margin-top:20px;text-align:left}
+.arow{display:grid;grid-template-columns:52px 1fr 62px 40px;gap:8px;
+  align-items:center;padding:9px 0;border-bottom:1px solid var(--line2);
+  font-size:12px;color:var(--muted)}
+.arow:last-child{border-bottom:0}
+.arow .an{font-size:10.5px;color:var(--faint)}
+.arow .at{color:var(--ink2)}
+.arow .av{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink2)}
+.arow .av i{font-style:normal;color:var(--faint);font-size:10.5px}
+.arow .am{text-align:right;font-size:10.5px;color:var(--faint)}
+.arow.ok .am{color:#5EE7F5}
+.arow.miss .at{color:var(--faint)}
+.arow.miss .av{color:var(--faint)}
+.arow.ok .at{color:var(--ink)}
+"""

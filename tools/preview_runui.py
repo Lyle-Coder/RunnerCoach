@@ -96,8 +96,10 @@ def main() -> int:
     llm.save_config(account_token=toks["a"])
 
     def report(token, km):
+        # 灌满 28 天（四季）。只灌两周的话第 3、4 幕没有里程，结算出来是 0，
+        # 结算页会显示成「没走到」——那是数据不全，不是设计。
         days = []
-        for d in range(14):
+        for d in range(28):
             date = SEASON_START + dt.timedelta(days=d)
             if d % 7 in (0, 1, 2, 4, 5):
                 days.append({"date": date.isoformat(), "distance_m": int(km * 1000),
@@ -146,6 +148,11 @@ def main() -> int:
     G.run_trial(gid, trial_of(2), False, "", "2026-11-24")
     st2s = G.run_state(gid, "2026-11-24")
 
+    # 结算页：先真跑到赛季末，让四幕都结算过——否则 targets 只有前两项，
+    # 结算页会把第 3、4 段显示成「没走到」，那是数据不全，不是设计。
+    G.run_state(gid, "2026-12-20")
+    ended = G.run_outcome(gid, "2026-12-20")
+
     OUT.mkdir(parents=True, exist_ok=True)
     font_url = (ROOT / "garmin_cn/content/expedition-serif.woff2").as_uri()
     wrap = (f"<style>html{{background:#05080d}}"
@@ -162,6 +169,55 @@ def main() -> int:
           f"{(st2.get('fork') or {}).get('id')} | 本幕 "
           f"{st2['progress'].get('stage_team')}/{st2['progress'].get('stage_target')}")
     print(f"受困：{st2s['me']['status']} | 名单 {st2s['stranded']}")
+    print(f"结局：{ended.get('ending')} | {(ended.get('ending_detail') or {}).get('title')}")
+
+    # 四个结局各出一张。用 SQL 改 flags 造状态，走的是和真实一样的分支判定，
+    # 不是把文案写死在预览里。
+    def outcome_for(key: str) -> dict:
+        import groups as GG
+
+        with GG.db() as c:
+            row = c.execute("SELECT flags FROM group_run_season WHERE group_id=?",
+                            (gid,)).fetchone()
+            flags = json.loads(row["flags"] or "{}")
+            stages = flags.get("stages") or {}
+            targets = flags.get("targets") or {}
+            # `stages[幕]` 是**这一幕的产出**，`targets[幕]` 是**到这一幕为止的
+            # 累计目标**——两者不能按同一比例乘。要按「增量」算：
+            # 第 i 段的份额 = targets[i] - targets[i-1]。
+            orders = sorted(targets, key=lambda x: int(x))
+            # arrive 用真实结算值：各幕高低不一（受困那幕会低），比统一乘个
+            # 系数更像真的。其余三个按比例压/抬，用来演示分支。
+            if key == "arrive" and stages:
+                orders = []
+            ratio = 0.5 if key == "lost" else 1.08
+            for idx, k in enumerate(orders):
+                prev = float(targets[orders[idx - 1]]) if idx else 0.0
+                share = float(targets[k]) - prev
+                stages[k] = round(share * ratio, 1)
+            flags["stages"] = stages
+            flags["relics"] = (["relic_1", "relic_2", "relic_3"]
+                               if key == "discoverer"
+                               else ([] if key == "lost" else ["relic_1"]))
+            flags["stages"] = stages
+            c.execute("UPDATE group_run_season SET flags=?, morale=? WHERE group_id=?",
+                      (json.dumps(flags, ensure_ascii=False),
+                       2 if key == "detour" else 7, gid))
+        return G.run_outcome(gid, "2026-12-20")
+
+    for key in ("arrive", "detour", "lost", "discoverer"):
+        d = outcome_for(key)
+        h = runsui.outcome_page("PREVIEW", d)
+        h = h.replace('url("/fonts/expedition-serif.woff2")', f'url("{font_url}")')
+        (OUT / f"end_{key}.html").write_text(h.replace("</body>", wrap + "</body>"),
+                                            encoding="utf-8")
+        print(f"end_{key}.html  结局={d.get('ending')} "
+              f"遗迹={d.get('relic_count')} 士气={d.get('morale')} "
+              f"acts={[(a['act'], a['got'], a['target'], a['hit']) for a in d.get('acts') or []]}")
+
+    pages = dict(pages)
+    pages.update({f"end_{k}": None for k in
+                  ("arrive", "detour", "lost", "discoverer")})
 
     exe = CHROME if Path(CHROME).is_file() else "chrome"
     for name in pages:

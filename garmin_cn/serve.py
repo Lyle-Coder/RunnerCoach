@@ -1350,8 +1350,13 @@ class _Handler(SimpleHTTPRequestHandler):
             return runsui.run_page("", "", {"ok": False,
                                             "error": "还没有加入任何小组"})
         msg = (q.get("msg") or [""])[0]
-        return runsui.run_page(getattr(self.server, "group_token", ""), msg,
-                               G.run_state(gid))
+        st = G.run_state(gid)
+        # 赛季结束就直接进结算页：玩家下次打开想看到的是结果，
+        # 不是一条停在最后一幕、还在催他跑步的路线。
+        if (st.get("season") or {}).get("ended"):
+            return runsui.outcome_page(getattr(self.server, "group_token", ""),
+                                       G.run_outcome(gid))
+        return runsui.run_page(getattr(self.server, "group_token", ""), msg, st)
 
     def _run_post(self, u) -> None:
         """远征的写接口。和小组页同一套「本机 + 页面令牌 + 303 回跳」。"""
