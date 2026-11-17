@@ -711,7 +711,12 @@ def outcome_page(token: str, data: dict | None = None) -> str:
             f'<div class="endacts">{acts}</div>'
             '<p class="note" style="margin-top:14px">明天开新的一季。'
             "队还在，路会换一段。</p>"
-            '<div class="pager"><a class="btn" href="/groups">回到小组</a></div>'
+            # 「保存这张图」走原生桥（data-act）：App 里由离屏 WebView 把同一份
+            # 数据渲染成 1080×1920 的图。只是网页里点它没有反应——那是刻意的，
+            # 网页里本来也没有相册。
+            '<div class="pager endbar">'
+            '<a class="btn primary" href="#" data-act="runShare">保存这张图</a>'
+            '<a class="btn" href="/groups">回到小组</a></div>'
             "</div>")
 
     # 页头不放 h1：结算页的大标题是结局名，页头再来一个「这一季」
@@ -739,6 +744,9 @@ END_CSS = """
 .enddata b i{font-style:normal;font-size:11px;color:var(--faint);margin-left:1px}
 .enddata span{font-size:10.5px;color:var(--faint);line-height:1.35}
 .endacts{margin-top:20px;text-align:left}
+/* 结算页的两个入口并排：出图是主事，回小组是退出，主次要分明 */
+.endbar{justify-content:center;margin-top:20px;padding-top:18px;
+  border-top:1px solid var(--line2)}
 .arow{display:grid;grid-template-columns:52px 1fr 62px 40px;gap:8px;
   align-items:center;padding:9px 0;border-bottom:1px solid var(--line2);
   font-size:12px;color:var(--muted)}

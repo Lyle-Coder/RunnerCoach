@@ -1036,6 +1036,23 @@ def run() -> int:
         "「没走完」的窗户不该是亮的"
     assert _svgs["discoverer"].count("<rect") > 4, "隐藏结局没画出三本日志"
 
+    # 分享图：1080×1920 的竖图，走和活动图同一套出图链路（探针 + 9:16）。
+    # 它**不能带**轨迹、昵称或别人的名字——发出去最多暴露「我参加了一个跑步
+    # 小组」。版式锁死高度，否则出图时上下会留一大块底色。
+    from garmin_cn import runcard as RC
+    assert RC.W == 1080 and RC.H == 1920 and RC.W * 16 == RC.H * 9, "分享图不是 9:16"
+    _sh = RC.build_html(_oc)
+    assert "data-gc-canvas" in _sh and "__gcExportInfo" in _sh, "分享图缺出图探针"
+    assert "抵达" in _sh and ">52<" in _sh, "分享图缺结局名或总行程"
+    assert _sh.count('class="ar') == 4, "四段路没画全"
+    assert "height:1920px" in _sh, "分享图没锁高度，出图会上下留白"
+    for _bad in ("track", "latitude", "小赵", "老李"):
+        assert _bad not in _sh, f"分享图里出现了不该出现的东西：{_bad}"
+    # 没结算过的段：显示「没走到」，不能算成 0/0 没够
+    _sh2 = RC.build_html(dict(_oc, acts=[{"act": 1, "theme": "信任", "got": 0.0,
+                                          "target": 0.0, "hit": False}]))
+    assert "没走到" in _sh2 and "没够" not in _sh2, "分享图把没结算的段画成了没够"
+
     # 遗迹事件：标签要是「旧物」，不能混在普通「遭遇」里被划过去
     _relic = {"id": "x_relic", "type": "story", "act": 2, "title": "门框上的字",
               "text": "有人在门框上刻了字。", "relic": True, "chosen": "",
