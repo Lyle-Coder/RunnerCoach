@@ -179,7 +179,7 @@ _API = {
     "hw_status", "hw_import", "hw_login", "hw_probe", "hw_sync", "hw_logout",
     "hw_login_start", "hw_login_finish", "hw_login_cancel",
     "body_sources", "body_set_source", "check_update",
-    "account_info", "garmin_logout",
+    "account_info", "garmin_logout", "data_source",
     "coros_status", "coros_login", "coros_logout", "coros_sync",
     "coros_mcp_status", "coros_mcp_login_url", "coros_mcp_finish",
     "coros_mcp_sleep", "coros_mcp_logout",
@@ -294,16 +294,9 @@ def status() -> dict:
     except Exception as e:
         return {"ok": False, "error": f"数据库打不开：{type(e).__name__}: {e}"}
 
-    auth = GarminCNAuth(HOME)
-    session_ok = False
-    if auth.session_path.exists():
-        try:
-            from .net import Net
-
-            net = Net(auth.session_path)
-            session_ok = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
-        except Exception:
-            session_ok = False
+    # 会话判定抽成 _garmin_session_ok()：计划页也要用它决定显示哪个推送入口，
+    # 两处各写一份迟早会不一致。
+    session_ok = _garmin_session_ok()
 
     today_info = _today(store) if st.get("days") else None
     last_sync = store.get_meta("last_sync")
@@ -1782,6 +1775,41 @@ def _coros_session_ok() -> bool:
         return bool(CorosCloud(HOME).load())
     except Exception:
         return False
+
+
+def _garmin_session_ok() -> bool:
+    """佳明会话是否还在。只看本地 cookie，不联网。"""
+    try:
+        auth = GarminCNAuth(HOME)
+        if not auth.session_path.exists():
+            return False
+        from .net import Net
+
+        net = Net(auth.session_path)
+        return bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
+    except Exception:
+        return False
+
+
+def data_source() -> dict:
+    """当前连了哪些平台，用来决定「计划推到哪」。
+
+    不同用户的数据源不一样：只连高驰的人看到「推到佳明手表」会莫名其妙，
+    反之亦然。所以这个接口只回答「有哪些可以推」，界面按它渲染，
+    不在模板里写死某一个平台。
+    """
+    garmin = _garmin_session_ok()
+    coros = _coros_session_ok()
+    mcp = False
+    if coros:
+        try:
+            mcp = bool(coros_mcp_status().get("authorized"))
+        except Exception:
+            mcp = False
+    return {"ok": True, "garmin": garmin, "coros": coros,
+            # 导入高驰训练走官方 MCP；账号登录了但没授权，仍要引导去授权
+            "coros_import": mcp,
+            "any": garmin or coros}
 
 
 def _backfill_garmin(span_days: int = BACKFILL_SPAN_DAYS) -> dict:
