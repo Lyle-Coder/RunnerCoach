@@ -321,6 +321,32 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
   color:var(--ink2);padding:7px 0;border-bottom:1px solid var(--line2)}
 .kvline:last-child{border-bottom:0}
 .kvline b{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+/* 训练小组 */
+.grow{display:flex;align-items:center;gap:10px;padding:11px 0;
+  border-bottom:1px solid var(--line2);color:inherit;text-decoration:none}
+.grow:last-child{border-bottom:0}
+.grow .gname{flex:1 1 auto;min-width:0;font-size:13.5px;font-weight:600;color:var(--ink);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grow .gmeta{flex:0 0 auto;font-size:11px;color:var(--muted);text-align:right;line-height:1.4}
+.grow .chev{flex:0 0 auto;color:var(--muted);font-size:15px}
+.rank{display:flex;align-items:center;gap:9px;padding:9px 0;
+  border-bottom:1px solid var(--line2)}
+.rank:last-child{border-bottom:0}
+.rank .no{flex:0 0 22px;font-size:11.5px;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+.rank .nm{flex:1 1 auto;min-width:0;font-size:13px;color:var(--ink2);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rank .sub{font-size:11px;color:var(--muted);margin-left:5px}
+.rank .km{flex:0 0 auto;font-size:13px;font-weight:600;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+.rank.me{background:rgba(59,130,246,.08);border-radius:10px;margin:0 -8px;padding:9px 8px}
+.chal{padding:10px 0;border-bottom:1px solid var(--line2)}
+.chal:last-child{border-bottom:0}
+.chal .t{font-size:13px;font-weight:600;color:var(--ink)}
+.chal .m{font-size:11px;color:var(--muted);margin-top:3px}
+.bar{height:5px;border-radius:3px;background:var(--line2);margin-top:7px;overflow:hidden}
+.bar i{display:block;height:100%;background:#3B82F6;border-radius:3px}
+.bar.done i{background:#1D9E75}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，
@@ -1818,6 +1844,17 @@ def me_page() -> str:
     # 账号与数据源：只有这一组继续用竖排行——每行都要说清「登没登、设备是谁」，
     # 网格卡片塞不下这些信息。已登录点进去是账号卡片（查看/更换/退出），
     # 没登录才进登录框。
+    try:
+        from . import account as ACC
+
+        _acc = ACC.state()
+    except Exception:  # noqa: BLE001 - 配置坏了不该让整页打不开
+        _acc = {}
+    _grp_desc = ("建组 / 加入 / 本周榜" if _acc.get("logged_in")
+                 else "未登录 · 先登录")
+    _acc_desc = ((_acc.get("label") or "已登录") if _acc.get("logged_in")
+                 else "未登录 · 去登录")
+
     sources = (row("G", "佳明 Garmin",
                    f"{g} · {esc(_mask_email(st.get('email')) or '未设置账号')}"
                    + (" · 查看 / 更换" if g == "已登录" else ""),
@@ -1855,6 +1892,8 @@ def me_page() -> str:
         act("⚙", "运动设置", "跑步 / 骑行 · FTP", href="/sports"),
         act("⇧", "高驰训练", "跑步 / 骑行 · 预览导入", href="/training"),
         act("▦", "日历提醒", "「该订了」写进系统日历", action="calendarSync"),
+        act("◈", "训练小组", _grp_desc, href="/groups"),
+        act("◉", "账号", _acc_desc, href="/account"),
     ])
     # 数据与备份：导出/导入是「换手机保命」的两个动作，放同一排最显眼
     data_tiles = acts_grid([

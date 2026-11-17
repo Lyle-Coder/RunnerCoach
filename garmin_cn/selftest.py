@@ -666,6 +666,7 @@ def run() -> int:
     from garmin_cn import contentguard as CG
     from garmin_cn import planedit as PE
     from garmin_cn import plangen as PG
+    from garmin_cn import group as GG, groupui as GU
     from garmin_cn import planpush as PP
 
     _pdir = Path(tempfile.mkdtemp())
@@ -840,6 +841,66 @@ def run() -> int:
     PG.discard(_dd)
     assert PG.load_draft(_dd) is None, "放弃草稿后文件还在，下次确认会误用"
     shutil.rmtree(_dd.parent, ignore_errors=True)
+
+    # ---------------- 训练小组 ----------------
+    # 日汇总口径：只有跑步类算里程。骑行 40 km 不能进跑团榜，
+    # 但「次数」要算全部运动——不然骑车通勤的人次数永远是 0。
+    _gdir = Path(tempfile.mkdtemp())
+    from garmin_cn.store import Store as _GStore
+
+    # 必须把 HOME 指到空目录：build_days 会读 data/plan.json 判「当天有没有课」，
+    # 用真实 HOME 会把本机的计划混进测试数据（第一次跑就是这么翻的）。
+    _old_home = os.environ.get("GARMIN_HOME")
+    os.environ["GARMIN_HOME"] = str(_gdir)
+    _gs = _GStore(_gdir / "g.db")
+    try:
+        for _d, _t, _m, _sec in (
+                ("2026-11-16", "running", 8000, 2700),
+                ("2026-11-16", "cycling", 40000, 5400),
+                ("2026-11-17", "trail_running", 12000, 4800),
+                ("2026-11-18", "strength_training", 0, 2700)):
+            _gs.conn.execute(
+                "INSERT INTO activities(activity_id,date,type,distance_m,duration_s)"
+                " VALUES(?,?,?,?,?)", (f"{_d}-{_t}", _d, _t, _m, _sec))
+        _gs.conn.commit()
+        _days = {d["date"]: d for d in GG.build_days(_gs, "2026-11-18", 7)}
+        assert _days["2026-11-16"]["distance_m"] == 8000, \
+            f"骑行混进了里程：{_days['2026-11-16']}"
+        assert _days["2026-11-16"]["acts"] == 2, "次数没算全部运动"
+        assert _days["2026-11-16"]["duration_s"] == 2700 + 5400, "时长应含全部运动"
+        assert _days["2026-11-17"]["distance_m"] == 12000, "越野跑应计入里程"
+        assert _days["2026-11-18"]["distance_m"] == 0, "力量课不该有里程"
+        # 没有活动的日子不凭空出现（不能把「没数据」当成「跑了 0」）
+        assert "2026-11-15" not in _days, "没活动的日期不该出现在上报里"
+        assert _days["2026-11-16"]["plan_done"] is None, \
+            "没有计划的日子 plan_done 应为 None，不能伪造成 False"
+
+        # 队列：同组只留最新一批；退避到上限后不再往后推
+        _box = GG.Outbox(_gs)
+        _box.put(3, {"days": [{"date": "2026-11-16"}]})
+        _box.put(3, {"days": [{"date": "2026-11-16"}, {"date": "2026-11-17"}]})
+        _rows = _box.pending(now=0)
+        assert len(_rows) == 1, f"同组应只有一批，实际 {len(_rows)}"
+        assert '"2026-11-17"' in _rows[0]["payload"], "队列没被最新一批覆盖"
+        assert _box.bump(3, 1) > 0, "第一次失败应退避"
+        assert _box.bump(3, GG.MAX_TRIES) == 0, "超过上限后应立刻可重试"
+        _box.drop(3)
+        assert not _box.pending(now=0), "清空后队列还有残留"
+    finally:
+        _gs.conn.close()
+        if _old_home is None:
+            os.environ.pop("GARMIN_HOME", None)
+        else:
+            os.environ["GARMIN_HOME"] = _old_home
+        shutil.rmtree(_gdir, ignore_errors=True)
+
+    # 账号页的页脚：默认那句「不上传任何第三方」在小组功能上是假的
+    _acc_html = GU.account_page("TOK123", "", "", "")
+    assert "TOK123" in _acc_html, "账号页没带页面令牌"
+    assert "只存在这台手机" in _acc_html, "账号页缺页脚说明"
+    assert "不上传任何第三方" not in _acc_html, "账号页仍在说不上传任何第三方"
+    _g_html = GU.groups_page("TOK123", "")
+    assert "去登录" in _g_html or "还没有加入小组" in _g_html, "小组页未登录分支不对"
 
     # ---------------- 计划生成器 ----------------
     # 分配本身是纯函数：长距离必须是这一周最长的一次，否则「长距离」名不副实。
@@ -3977,7 +4038,9 @@ def run() -> int:
         "三张数值卡没固定高度"
     _ads = re.findall(r'<span class="ad">([^<]*)</span>', _me)
     # 运动设置、高驰训练导入、日历提醒分别有独立入口；副标题仍保持单行。
-    assert len(_ads) == 10 and all(len(a) <= 14 for a in _ads), \
+    # 10 → 12：多了「训练小组」「账号」两个入口。2 列网格保持偶数，
+    # 加单数会让最后一行只挂一张卡，看着像漏了一个。
+    assert len(_ads) == 12 and all(len(a) <= 14 for a in _ads), \
         f"网格卡数量或说明长度不对：{_ads}"
     assert any("系统日历" in a for a in _ads), "「我的」页没有日历提醒入口"
 

@@ -67,6 +67,16 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# 组功能是可选模块：文件缺失时网关照常提供账号/余额/AI 转发，
+# 只是 /v1/group/* 一律 503。不要让一个新增文件拖垮整个服务。
+try:
+    import groups as group_api
+except Exception as _e:  # noqa: BLE001
+    group_api = None
+    _GROUPS_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+else:
+    _GROUPS_IMPORT_ERROR = ""
+
 # ---------------------------------------------------------------- 配置
 UPSTREAM_BASE = os.environ.get("UPSTREAM_BASE", "https://api.deepseek.com/v1").rstrip("/")
 UPSTREAM_KEY = os.environ.get("UPSTREAM_API_KEY", "")
@@ -1111,6 +1121,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "service": "closed" if SERVICE_CLOSED else "open",
                                    "source": ("server" if CLIENT_PLATFORM_BASE
                                               else "builtin")})
+            if self.path.split("?")[0].startswith("/v1/group"):
+                return self._groups("GET")
             if self.path == "/v1/me":
                 return self._json(api_me(_auth(self.headers)))
             if self.path == "/admin/accounts":
@@ -1150,6 +1162,8 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_body()
             ip = self.headers.get("X-Forwarded-For", "").split(",")[0].strip() \
                 or self.client_address[0]
+            if self.path.split("?")[0].startswith("/v1/group"):
+                return self._groups("POST", body)
             if self.path == "/v1/sms/send":
                 return self._json(api_sms_send(body, ip))
             if self.path == "/v1/auth":
@@ -1201,6 +1215,25 @@ class Handler(BaseHTTPRequestHandler):
             if not self.headers_sent():
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
 
+    def do_PATCH(self) -> None:  # noqa: N802
+        try:
+            if self._service_closed():
+                return
+            body = self._read_body()
+            if self.path.split("?")[0].startswith("/v1/group"):
+                return self._groups("PATCH", body)
+            raise Gate(404, "没有这个接口")
+        except Gate as e:
+            self._json({"ok": False, "error": e.message}, e.code)
+
+    def _groups(self, method: str, body: dict | None = None) -> None:
+        """组接口统一入口。鉴权仍走 _auth，不另建一套令牌。"""
+        if group_api is None:
+            raise Gate(503, f"组功能未启用（{_GROUPS_IMPORT_ERROR}）")
+        payload, code = group_api.handle(method, self.path, self.headers,
+                                         body or {}, _auth)
+        self._json(payload, code)
+
     def headers_sent(self) -> bool:
         # 流式转发中途出错时响应头已经发出去，只能断开连接而不是再发一个 JSON
         return getattr(self, "_rc_headers_sent", False)
@@ -1215,6 +1248,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> int:
     init_db()
+    if group_api is not None:
+        group_api.init_db()
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     srv.daemon_threads = True
     print(f"√ RunnerCoach 网关 http://{HOST}:{PORT}")
