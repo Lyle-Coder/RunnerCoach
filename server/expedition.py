@@ -27,6 +27,7 @@ import datetime as dt
 import json
 import random
 import secrets
+import threading
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -222,8 +223,23 @@ def _target_km(c, gid: int, act: int) -> float:
 
 
 # ---------------------------------------------------------------- 开季与推进
+# 结算入口的进程内锁。两个成员同时刷新时，两个线程会都读到 settled_act=0、
+# 各结算一遍——结果是士气扣两次、flags 互相覆盖。SQLite 的写锁只保证不崩，
+# 保证不了「只算一次」。
+#
+# 用一把全局锁而不是按组分段：单实例、热路径 3 ms，排队代价可以忽略；
+# 换成多实例部署时必须改成数据库层的锁（比如条件 UPDATE 抢 settled_act），
+# 进程内锁跨不了进程。
+_SETTLE_LOCK = threading.Lock()
+
+
 def ensure(c, gid: int, today: dt.date):
     """保证赛季存在，并把该结算的幕结算掉。返回 (season 行, 当前幕, 是否已结束)。"""
+    with _SETTLE_LOCK:
+        return _ensure_locked(c, gid, today)
+
+
+def _ensure_locked(c, gid: int, today: dt.date):
     s = _season_of(c, gid)
     if not s:
         mon = today - dt.timedelta(days=today.weekday())
@@ -248,6 +264,7 @@ def ensure(c, gid: int, today: dt.date):
     # 赛季结束：过了最后一周的周日，把第 4 幕结算掉并定格
     if not int(s["ended"]) and today > dt.date.fromisoformat(s["season_end"]):
         if int(s["settled_act"]) < ACTS:
+            draw(c, gid, s, ACTS)     # 同上：先建行再结算，否则第 4 幕恒为 0
             _settle(c, gid, ACTS, s)
             c.execute("UPDATE group_run_season SET settled_act=?, ended=1, updated_at=?"
                       " WHERE group_id=?", (ACTS, G._now(), gid))
