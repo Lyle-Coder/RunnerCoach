@@ -77,6 +77,15 @@ except Exception as _e:  # noqa: BLE001
 else:
     _GROUPS_IMPORT_ERROR = ""
 
+# 远征依赖 groups（共用库与鉴权），所以 groups 起不来它也起不来。
+try:
+    import expedition as expedition_api
+except Exception as _e:  # noqa: BLE001
+    expedition_api = None
+    _EXPEDITION_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+else:
+    _EXPEDITION_IMPORT_ERROR = ""
+
 # ---------------------------------------------------------------- 配置
 UPSTREAM_BASE = os.environ.get("UPSTREAM_BASE", "https://api.deepseek.com/v1").rstrip("/")
 UPSTREAM_KEY = os.environ.get("UPSTREAM_API_KEY", "")
@@ -1227,11 +1236,23 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": e.message}, e.code)
 
     def _groups(self, method: str, body: dict | None = None) -> None:
-        """组接口统一入口。鉴权仍走 _auth，不另建一套令牌。"""
+        """组接口统一入口。鉴权仍走 _auth，不另建一套令牌。
+
+        `/v1/group/{id}/run/*` 是远征，走另一个模块——它和群组是两件事，
+        但共用同一个库。分流放在这里而不是丢给 groups 再 404 兜底，
+        是因为「404 之后重试」会让每次远征请求都白跑一遍路由。
+        """
         if group_api is None:
             raise Gate(503, f"组功能未启用（{_GROUPS_IMPORT_ERROR}）")
-        payload, code = group_api.handle(method, self.path, self.headers,
-                                         body or {}, _auth)
+        path = self.path.split("?")[0]
+        if re.search(r"/v1/group/\d+/run(/|$)", path):
+            if expedition_api is None:
+                raise Gate(503, f"远征未启用（{_EXPEDITION_IMPORT_ERROR}）")
+            payload, code = expedition_api.handle(method, self.path, self.headers,
+                                                  body or {}, _auth)
+        else:
+            payload, code = group_api.handle(method, self.path, self.headers,
+                                             body or {}, _auth)
         self._json(payload, code)
 
     def headers_sent(self) -> bool:
@@ -1250,6 +1271,8 @@ def main() -> int:
     init_db()
     if group_api is not None:
         group_api.init_db()
+    if expedition_api is not None:
+        expedition_api.init_db()
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     srv.daemon_threads = True
     print(f"√ RunnerCoach 网关 http://{HOST}:{PORT}")
