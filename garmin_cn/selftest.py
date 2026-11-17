@@ -797,6 +797,24 @@ def run() -> int:
     assert "TOK456" in _dh and "为什么这么排" in _dh and "用这份计划" in _dh, \
         "草稿页缺令牌、理由或确认按钮"
 
+    # 推送入口按数据源渲染：只连高驰的人不该看到「推到佳明手表」
+    from garmin_cn import appapi as _API2
+    _ds = _API2.data_source()
+    assert set(_ds) >= {"ok", "garmin", "coros", "coros_import", "any"}, \
+        f"data_source 字段不全：{sorted(_ds)}"
+    _src_g = {"garmin": True, "coros": False, "coros_import": False}
+    _src_c = {"garmin": False, "coros": True, "coros_import": False}
+    _src_n = {"garmin": False, "coros": False, "coros_import": False}
+    _hg = U.plan_edit_page("TOK", data=_fake, rules={"race_deload": True}, src=_src_g)
+    _hc = U.plan_edit_page("TOK", data=_fake, rules={"race_deload": True}, src=_src_c)
+    _hn = U.plan_edit_page("TOK", data=_fake, rules={"race_deload": True}, src=_src_n)
+    assert "推到佳明手表" in _hg and "导入到高驰" not in _hg, \
+        "只连佳明却出现了高驰导入入口"
+    assert "导入到高驰" in _hc and "推到佳明手表" not in _hc, \
+        "只连高驰却出现了推到佳明的按钮——高驰用户看到会很困惑"
+    assert "佳明" not in _hc, "高驰用户视角的编辑页里还提到了佳明"
+    assert "去「我的」连接账号" in _hn, "一个平台都没连时没有引导"
+
     # 服务端路由与令牌
     _sv = (ROOT / "garmin_cn/serve.py").read_text(encoding="utf-8")
     assert 'startswith("/__plan/")' in _sv, "计划写接口没接路由"

@@ -1287,7 +1287,7 @@ def _today_plan_card(pl: dict) -> str:
     # 本地兜底（备赛课表 / 今日处方）不是佳明课表，必须写出来 —— 而且要写原因：
     # 只说「本地推算」，用户不知道该去重新登录还是该怪数据。
     _src = str(pl.get("source") or "")
-    _why = str(pl.get("note") or "").strip() or "佳明课表未读到"
+    _why = str(pl.get("note") or "").strip() or "还没读到平台课表"
     local_tag = (f'<div class="n" style="color:var(--amber)">本地推算 · {esc(_why)}</div>'
                  if _src and _src != "calendar" else "")
 
@@ -1347,7 +1347,7 @@ def plan_page(qs: dict | None = None) -> str:
                 f'{esc(r.get("error") or "先回今日页下拉同步一次")}</div>'
                 '<div class="pager"><div class="btn primary" data-act="planRefresh">'
                 '重新读取</div></div></div>')
-        return page("PLAN · 训练计划", "今天练什么", "佳明教练计划",
+        return page("PLAN · 训练计划", "今天练什么", "平台课表与本地建议",
                     sec("状态", body), chip("本机快照"), back=("返回今日", "/"))
 
     ph = r.get("phase") or {}
@@ -1441,7 +1441,10 @@ def plan_page(qs: dict | None = None) -> str:
                      else f"FTP {step['ftp_low'] * 100:.0f}–{step['ftp_high'] * 100:.0f}%（未设置 FTP）")
             steps_html += f'<div class="kvline"><span>{esc(step["name"])} · {step["seconds"] / 60:g} 分钟</span><b>{esc(power)}</b></div>'
     steps_section = sec("骑行步骤", '<div class="card">' + steps_html + '</div>') if steps_html else ""
-    import_link = '<div class="pager"><a class="btn" href="/training">导入本地训练到高驰</a></div>'
+    # 只有连了高驰才显示这个入口：佳明用户点进去只会看到「请先授权高驰」
+    import_link = ('<div class="pager"><a class="btn" href="/training">'
+                   '导入本地训练到高驰</a></div>'
+                   if A.data_source().get("coros") else "")
     # 编辑入口放在「本周」标题右侧，而不是只留在页脚：计划页一进来最想改的就是
     # 这一周，让人滚到底才能编辑，等于没有入口。
     body = (sec("今日", _today_plan_card(r)) + steps_section + import_link +
@@ -1452,7 +1455,7 @@ def plan_page(qs: dict | None = None) -> str:
             '<a class="btn" href="/plan/draft">看草稿</a>'
             '<div class="btn" data-act="planRefresh">刷新计划</div></div>')
     return page("PLAN · 训练计划", "今天练什么",
-                (r.get("name") or "佳明教练计划"), body, chips,
+                (r.get("name") or "平台课表"), body, chips,
                 back=("返回今日", "/"))
 
 
@@ -1465,8 +1468,40 @@ def _num_input(name: str, value, *, step: str = "0.5", lo=0, hi=60,
             f' value="{esc(v)}" placeholder="{esc(ph)}"{dis}>')
 
 
+def _plan_push_block(token: str, src: dict, today: str) -> str:
+    """按「连了哪个平台」渲染推送入口。
+
+    不同用户的数据源不一样：只连高驰的人看到「推到佳明手表」会莫名其妙，
+    只连佳明的人也根本用不上高驰那套导入。所以入口由 `data_source()` 决定，
+    模板里不写死任何一家。
+
+    两家都连的人会看到两个按钮——这不是多余，双修的人确实两边都要推。
+    """
+    blocks = []
+    if src.get("garmin"):
+        blocks.append(
+            '<form action="/__plan/push" method="post">'
+            f'<input type="hidden" name="token" value="{esc(token)}">'
+            '<div class="pager"><button class="btn" type="submit">推到佳明手表</button></div>'
+            '<p class="note">把本周课表建成训练课排进 Connect 日历。只创建自己的课，'
+            '不动官方教练计划；重复推送会先删掉上次推的那几节。</p></form>')
+    if src.get("coros"):
+        href = f'/training?source_date={today}&date={today}'
+        tip = ("先进预览页确认再提交，不会直接写进高驰；导入不覆盖已有课程。"
+               if src.get("coros_import") else
+               "高驰导入要先授权（官方 MCP），点进去按提示完成。")
+        blocks.append(
+            f'<div class="pager"><a class="btn" href="{esc(href)}">导入到高驰</a></div>'
+            f'<p class="note">{esc(tip)}</p>')
+    if not blocks:
+        blocks.append(
+            '<div class="pager"><a class="btn" href="/me">去「我的」连接账号</a></div>'
+            '<p class="note">还没连佳明或高驰。连上之后，这里会出现对应的推送入口。</p>')
+    return "".join(blocks)
+
+
 def plan_edit_page(token: str, message: str = "", data: dict | None = None,
-                   rules: dict | None = None) -> str:
+                   rules: dict | None = None, src: dict | None = None) -> str:
     """计划编辑页：一周 7 天逐块改，改完保存。
 
     只写 `plan_overrides.json`，不动日历快照——下次同步不会把这里改的东西冲掉。
@@ -1512,7 +1547,7 @@ def plan_edit_page(token: str, message: str = "", data: dict | None = None,
         # 不改的日子（多条 / 已过去）**整行不提交**：多条怕覆盖掉另一条，
         # 过去的日子改了会让完成率凭空变化。只留一行说明。
         if multi or past:
-            why = (f'共 {len(its)} 条课次，请到佳明日历里改' if multi else '已经过去')
+            why = (f'共 {len(its)} 条课次，请到平台日历里改' if multi else '已经过去')
             rows += (f'<div class="{cls}">'
                      f'<input type="hidden" name="d{i}_skip" value="1">'
                      f'<div class="p1"><b>{esc(d["dow"])}<span>{esc(d["date"][5:])}</span></b></div>'
@@ -1554,7 +1589,7 @@ def plan_edit_page(token: str, message: str = "", data: dict | None = None,
                  f'<input type="hidden" name="token" value="{esc(token)}">'
                  + sec("本周课表", '<div class="card">' + rows + '</div>')
                  + '<p class="note">只填里程或时长之一也行；留空并选「休息」表示不跑。'
-                   '保存后立即生效，不会改到佳明日历。</p>'
+                   '保存后立即生效，只存在本机，不会改到平台上的日历。</p>'
                  + '<div class="pager"><button class="btn primary" type="submit">保存本周</button>'
                    '<a class="btn" href="/plan">取消</a></div></form>')
 
@@ -1575,19 +1610,20 @@ def plan_edit_page(token: str, message: str = "", data: dict | None = None,
                 '始终生效，这个开关只管「赛前要不要压量」。</p>'
                 '<div class="pager"><button class="btn" type="submit">生成草稿</button></div></form>')
 
-    push_form = (f'<form action="/__plan/push" method="post">'
-                 f'<input type="hidden" name="token" value="{esc(token)}">'
-                 '<div class="pager"><button class="btn" type="submit">推到佳明手表</button></div>'
-                 '<p class="note">只创建自己的课，不动官方教练计划。重复推送会先删掉上次推的。</p></form>')
+    src = src if isinstance(src, dict) else A.data_source()
+    push_form = _plan_push_block(token, src, today)
 
     clear_form = (f'<form action="/__plan/clear" method="post">'
                   f'<input type="hidden" name="token" value="{esc(token)}">'
                   '<div class="pager"><button class="btn" type="submit">撤销所有本地改动</button></div>'
                   '<p class="note">撤销后回到日历/教练计划的原始课表。</p></form>')
 
+    # 区块标题跟着数据源走：只连高驰的人看不到「佳明」两个字
+    _push_title = ("推送到手表" if src.get("garmin") else
+                   "导出到手表" if src.get("coros") else "推送到手表")
     body = msg + stale_tip + save_form + sec("没有计划？按历史生成",
                                              '<div class="card">' + gen_form + '</div>') \
-        + sec("手表", '<div class="card">' + push_form + '</div>') \
+        + sec(_push_title, '<div class="card">' + push_form + '</div>') \
         + sec("改动", '<div class="card">' + clear_form + '</div>') \
         + (f'<p class="note">本周有 {multi_days} 天是多条课次、{past_days} 天已过去，'
            '这些行这里改不了。</p>' if (multi_days or past_days) else "")
