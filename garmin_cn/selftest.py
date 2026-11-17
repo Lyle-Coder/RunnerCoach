@@ -747,6 +747,82 @@ def run() -> int:
     assert _short["week"][0]["done"] is False, "只跑了 60% 也被判为完成"
     shutil.rmtree(_adir, ignore_errors=True)
 
+    # ---------------- 计划编辑页与写接口 ----------------
+    from garmin_cn.serve import _plan_days_from_form
+
+    _form = {
+        "d0_date": "2026-11-16", "d0_kind": "rest", "d0_km": "", "d0_minutes": "",
+        "d1_date": "2026-11-17", "d1_kind": "easy", "d1_km": "8", "d1_minutes": "",
+        "d2_date": "2026-11-18", "d2_kind": "strength", "d2_km": "0", "d2_minutes": "45",
+        "d3_date": "2026-11-19", "d3_skip": "1", "d3_kind": "easy", "d3_km": "99",
+        "d4_date": "2026-11-20", "d4_kind": "easy", "d4_km": "999", "d4_minutes": "",
+    }
+    _days = _plan_days_from_form(_form)
+    assert len(_days) == 4, f"表单解析丢了天：出了 {len(_days)} 天"
+    assert _days[0]["rest"] is True, "空数字没有当成休息"
+    assert _days[1]["items"][0]["km"] == 8, "里程没解析对"
+    assert _days[2]["items"][0]["minutes"] == 45 and _days[2]["items"][0]["km"] == 0, \
+        "力量课应该只带分钟、不带里程"
+    assert all(d["date"] != "2026-11-19" for d in _days), \
+        "标了 skip 的那天仍然被写进去了（会覆盖掉同一天的另一条课）"
+    assert _days[3]["rest"] is True, "离谱里程 999 没有被挡成休息"
+
+    # kind 推断：日历课只有标题，不推断的话力量课会显示成轻松跑
+    assert PE.guess_kind({"name": "力量B 核心", "sport_key": "strength_training"}) == "strength"
+    assert PE.guess_kind({"name": "W2 周三 10km@E", "km": 10}) == "easy"
+    assert PE.guess_kind({"name": "周六 18km@E", "km": 18}) == "long"
+
+    # 页面渲染：拿造的数据跑，不碰真实库
+    _fake = {"ok": True, "monday": "2026-11-16", "stale": False, "week_km": 42,
+             "days": [{"date": f"2026-11-{16 + i:02d}", "dow": PL.DOW[i + 1],
+                       "past": i == 0, "rest": False, "edited": False,
+                       "source": "calendar", "note": "", "km": 8,
+                       "items": [{"name": "轻松跑", "kind": "easy", "label": "轻松跑",
+                                  "km": 8, "minutes": 0, "detail": ""}]} for i in range(7)]}
+    _html = U.plan_edit_page("TOK123", data=_fake,
+                             rules={"race_deload": True, "auto": False})
+    assert "TOK123" in _html, "编辑页没带页面令牌，表单会被 CSRF 保护挡回来"
+    assert _html.count('name="d') >= 7, "编辑页没渲染出七天的字段"
+    assert 'action="/__plan/save"' in _html, "编辑页没有保存表单"
+    assert 'name="race_deload"' in _html, "编辑页没有「按赛事减量」开关"
+    assert "已经过去" in _html, "过去的日子没有说明，改动会被静默丢掉"
+
+    _draft = {"ok": True, "monday": "2026-11-16", "week_km": 30, "days": 3,
+              "factor": 0.7, "reason": ["按历史跑量", "赛前减量"],
+              "week": [{"date": f"2026-11-{16 + i:02d}", "dow": PL.DOW[i + 1],
+                        "items": ([{"name": "轻松跑", "km": 8, "minutes": 45,
+                                    "detail": "能说话"}] if i % 2 == 0 else []),
+                        "rest": i % 2 != 0} for i in range(7)]}
+    _dh = U.plan_draft_page("TOK456", draft=_draft)
+    assert "TOK456" in _dh and "为什么这么排" in _dh and "用这份计划" in _dh, \
+        "草稿页缺令牌、理由或确认按钮"
+
+    # 服务端路由与令牌
+    _sv = (ROOT / "garmin_cn/serve.py").read_text(encoding="utf-8")
+    assert 'startswith("/__plan/")' in _sv, "计划写接口没接路由"
+    assert "plan_token" in _sv, "编辑页没有页面令牌保护（本机其它网页也能改计划）"
+
+    # 赛前减量开关
+    _rr = Path(tempfile.mkdtemp()) / "plan_rules.json"
+    PG.set_rules(path=_rr, race_deload=False)
+    _off = PG.build_draft(None, today="2026-11-17", monday=_mon, run_days=3,
+                          week_km=30, save=False, rules_path=_rr)
+    PG.set_rules(path=_rr, race_deload=True)
+    _on = PG.build_draft(None, today="2026-11-17", monday=_mon, run_days=3,
+                         week_km=30, save=False, rules_path=_rr)
+    assert _off["week_km"] >= _on["week_km"], \
+        f"关掉赛前减量后周量反而更小：关 {_off['week_km']} / 开 {_on['week_km']}"
+    assert PG.rules(_rr)["race_deload"] is True, "开关没落到规则文件里"
+
+    # 放弃草稿
+    _dd = Path(tempfile.mkdtemp()) / "plan_draft.json"
+    PG.build_draft(None, today="2026-11-17", monday=_mon, run_days=3, week_km=20,
+                   path=_dd)
+    assert PG.load_draft(_dd) is not None, "草稿没落盘"
+    PG.discard(_dd)
+    assert PG.load_draft(_dd) is None, "放弃草稿后文件还在，下次确认会误用"
+    shutil.rmtree(_dd.parent, ignore_errors=True)
+
     # ---------------- 计划生成器 ----------------
     # 分配本身是纯函数：长距离必须是这一周最长的一次，否则「长距离」名不副实。
     # 周量允许在赛事/减量周被下调，所以这里只断言「摊完后接近给定周量」，

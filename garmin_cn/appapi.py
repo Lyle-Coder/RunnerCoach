@@ -166,6 +166,7 @@ _API = {
     "history_stats", "backfill_next",
     "plan", "plan_week", "plan_save", "plan_save_week", "plan_clear",
     "plan_overrides", "plan_generate", "plan_draft", "plan_confirm",
+    "plan_discard", "plan_rules", "plan_rules_set",
     "plan_renew", "plan_push", "plan_push_clear", "plan_push_info", "plan_target",
     "set_amap_key", "start_server", "recent", "read_html",
     "db_export", "db_import", "diag_text",
@@ -2270,12 +2271,46 @@ def plan_draft() -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-def plan_confirm() -> dict:
-    """确认草稿：写进改动表，并开启「每周一自动续」。"""
+def plan_confirm(override_manual: bool = False) -> dict:
+    """确认草稿：写进改动表，并开启「每周一自动续」。
+
+    `override_manual=True` 才会盖掉手改过的天；默认只补空缺。
+    """
     from . import plangen as PG
 
     try:
-        return PG.confirm(today=dt.date.today().isoformat())
+        return PG.confirm(today=dt.date.today().isoformat(),
+                          override_manual=bool(override_manual))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_discard() -> dict:
+    """放弃草稿。"""
+    from . import plangen as PG
+
+    try:
+        return PG.discard()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_rules() -> dict:
+    """生成规则现状：自动续、是否按赛事减量、第几周。"""
+    from . import plangen as PG
+
+    try:
+        return {"ok": True, **PG.rules()}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_rules_set(race_deload: bool = True) -> dict:
+    """开关「按赛事减量」。关了之后，赛前不再自动压周量。"""
+    from . import plangen as PG
+
+    try:
+        return {"ok": True, **PG.set_rules(race_deload=bool(race_deload))}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
