@@ -660,6 +660,141 @@ def run() -> int:
     assert _l2["week"][0].get("source") == "calendar", "旧快照每天缺 source 时没补默认值"
     shutil.rmtree(_snap2, ignore_errors=True)
 
+    # ---------------- 计划写入层 ----------------
+    # 本地改动写在 overrides 里，读的时候合并；来源快照永远保持原样，
+    # 所以「改完计划 → 下次同步日历」不会把改动冲掉，改动也不会被落盘固化。
+    from garmin_cn import contentguard as CG
+    from garmin_cn import planedit as PE
+    from garmin_cn import plangen as PG
+    from garmin_cn import planpush as PP
+
+    _pdir = Path(tempfile.mkdtemp())
+    _mon = "2026-11-16"
+    _pw = [{"date": (dt.date.fromisoformat(_mon) + dt.timedelta(days=i)).isoformat(),
+            "dow": PL.DOW[i + 1], "items": [], "rest": True, "source": "calendar"}
+           for i in range(7)]
+    _psnap = {"classify": PL.CLASSIFY_REV, "source": "calendar", "week": _pw,
+              "today": {"date": "2026-11-17", "items": [], "rest": True},
+              "name": "佳明日历"}
+    _pp = _pdir / "plan.json"
+    _pp.write_text(json.dumps(_psnap, ensure_ascii=False), encoding="utf-8")
+
+    assert PL.load(_pp)["week"][2]["rest"] is True, "空周本来该是休息日"
+    PE.save_day("2026-11-18", [{"km": 8, "kind": "easy"}], note="改小", path=_pdir)
+    _merged = PL.load(_pp)
+    assert _merged["week"][2]["items"][0]["km"] == 8, "写入的课没合并进读取结果"
+    assert _merged["week"][2]["source"] == "manual", "改过的天没标成 manual"
+    assert _merged["week"][2].get("edited") is True, "改过的天没有 edited 标记"
+    # 关键：来源重新落盘后改动还在（否则「改完同步就打回原形」）
+    _pp.write_text(json.dumps(_psnap, ensure_ascii=False), encoding="utf-8")
+    assert PL.load(_pp)["week"][2]["items"][0]["km"] == 8, "重新同步把本地改动冲掉了"
+    assert PL.load(_pp)["week"][3]["rest"] is True, "没改的天被误改了"
+    # 课改了，旧的完成判定必须作废，不能还挂着「已完成」
+    assert PL.load(_pp)["week"][2]["done"] is False, "改过的天还留着旧的完成判定"
+
+    _rejected = 0
+    for _bad in ([{"km": -1}], [{"km": 99}], [{"km": 5, "kind": "nope"}], [{}]):
+        try:
+            PE.clean_day(_bad)
+        except ValueError:
+            _rejected += 1
+    assert _rejected == 4, f"非法课次没被拦住：只拦下 {_rejected}/4"
+
+    # 周目标只算跑步类：骑行 20 km 不能顶成跑步的格
+    PE.save_day("2026-11-19", [{"km": 20, "sport": "骑行", "sport_key": "cycling"}],
+                path=_pdir)
+    _tg = PL.week_target(PL.load(_pp), _mon)
+    assert abs(_tg["km"] - 8) < 0.01, f"周目标把骑行算进来了：{_tg['km']}"
+    assert _tg["available"] is True and _tg["days"] == 1, "周目标的可用天数算错"
+    PE.clear_day("2026-11-18", path=_pdir)
+    PE.clear_day("2026-11-19", path=_pdir)
+    assert PL.week_target(PL.load(_pp), _mon)["available"] is False, \
+        "撤销改动后周目标还留着数"
+    shutil.rmtree(_pdir, ignore_errors=True)
+
+    # 日历排课只有标题、没有结构化里程：必须从课名里读，否则周目标永远是 0
+    assert PL._km_in_title("W2 周二 10km@E") == 10, "课名里的 km 没读出来"
+    assert PL._km_in_title("5公里") == 5, "中文「公里」没读出来"
+    assert PL._km_in_title("W2 周四 St24×3") == 0, "楼梯 24 趟被读成了 24 km"
+    assert PL._km_in_title("2026 秦岭山地马拉松 · 43K") == 43, "赛事名里的 43K 没读出来"
+    _kdir = Path(tempfile.mkdtemp())
+    _kp = _kdir / "plan.json"
+    _kp.write_text(json.dumps({
+        "classify": PL.CLASSIFY_REV, "source": "calendar",
+        "today": {"date": "2026-11-17", "items": []},
+        "week": [{"date": "2026-11-17", "dow": "周二", "rest": False,
+                  "items": [{"name": "W2 周二 10km@E", "sport_key": "running"}]}],
+    }, ensure_ascii=False), encoding="utf-8")
+    _kl = PL.load(_kp)
+    assert _kl["week"][0]["items"][0]["km"] == 10, "旧快照课名里的里程没补上"
+    assert PL.week_target(_kl)["km"] == 10, "补了里程但周目标还是算不出来"
+    shutil.rmtree(_kdir, ignore_errors=True)
+
+    # ---------------- 计划生成器 ----------------
+    # 分配本身是纯函数：长距离必须是这一周最长的一次，否则「长距离」名不副实。
+    # 周量允许在赛事/减量周被下调，所以这里只断言「摊完后接近给定周量」，
+    # 赛事系数在下一段单独验。
+    for _n in (2, 3, 5):
+        _sp = PG._spread(30, _n)
+        _kms = [v[1] for v in _sp.values()]
+        assert len(_kms) == _n, f"{_n} 天框架排出了 {len(_kms)} 天"
+        assert abs(sum(_kms) - 30) <= 1.5, f"{_n} 天框架摊完是 {sum(_kms)}，离 30 太远"
+        _long = [v[1] for v in _sp.values() if v[0] == "long"]
+        assert _long and abs(_long[0] - max(_kms)) < 0.01, \
+            f"长距离不是最长的一次：长距离 {_long} / 全部 {_kms}"
+    _d = PG.build_draft(None, today="2026-11-17", monday=_mon,
+                        run_days=3, week_km=30, save=False)
+    assert _d["week_km"] <= 30.5, f"生成量超了给定框架：{_d['week_km']}"
+    assert _d["week_km"] == round(sum(i["km"] for w in _d["week"] for i in w["items"]), 1), \
+        "草稿里的周量和每天课次对不上"
+    assert _d["reason"], "草稿没说明为什么这么排"
+    # 能力不够的人不排强度课：一周两天只练有氧
+    _d2 = PG.build_draft(None, today="2026-11-17", monday=_mon,
+                         run_days=2, week_km=20, save=False)
+    assert not [i for w in _d2["week"] for i in w["items"] if i["kind"] == "tempo"], \
+        "一周只跑两天还排了节奏跑"
+    # from_date 之后才排课：自动续不能给「今天下午」塞一节长课
+    _d3 = PG.build_draft(None, today="2026-11-17", monday=_mon, run_days=3,
+                         week_km=30, from_date="2026-11-18", save=False)
+    assert not _d3["week"][1]["items"], "from_date 之前仍然排了课"
+
+    # 确认草稿：不能盖掉用户手改的那天
+    _gdir = Path(tempfile.mkdtemp())
+    _gpath = _gdir / "plan_draft.json"
+    _grules = _gdir / "plan_rules.json"
+    PG.build_draft(None, today="2026-11-17", monday=_mon, run_days=3, week_km=30,
+                   path=_gpath, rules_path=_grules)
+    PE.save_day("2026-11-20", [{"km": 4}], path=_gdir)
+    _cf = PG.confirm(path=_gpath, rules_path=_grules, today="2026-11-17")
+    assert "2026-11-20" in (_cf.get("skipped_manual") or []), "草稿盖掉了用户手改的那天"
+    assert PG.rules(_grules)["auto"] is True, "确认后没有开启自动续"
+    _kept = json.loads((_gdir / "plan_overrides.json").read_text(encoding="utf-8"))
+    assert _kept["days"]["2026-11-20"]["items"][0]["km"] == 4, "手改的课被草稿改了"
+    assert _kept["days"]["2026-11-18"]["origin"] == "generated", "草稿没标成 generated"
+    # 过去的日子不写：改了历史会让完成率凭空变化
+    assert "2026-11-16" not in _kept["days"], "草稿把过去的日子也写了"
+    shutil.rmtree(_gdir, ignore_errors=True)
+
+    # 推送：kind 映射与周次/星期
+    _pi = PP.info_of({"km": 8, "minutes": 45, "kind": "easy", "name": "轻松跑"}, "2026-11-18")
+    assert _pi["week"] == 47 and _pi["dow"] == "周三", f"推送的周次/星期算错：{_pi['week']}/{_pi['dow']}"
+    assert PP.info_of({"kind": "strength"}, "2026-11-18")["kind"] == "str", \
+        "力量课没映射成 workout 认识的 str"
+    assert PP.push(None, [], dry=True).get("ok") is False, "空计划也允许推送了"
+
+    # ---------------- 剧情内容守卫 ----------------
+    # 远征剧情只在服务器下发：客户端目录里出现事件池/正文就是泄漏
+    _leak = CG.scan(ROOT)
+    assert not _leak, f"客户端目录里混进了剧情内容：{_leak}"
+    _g = Path(tempfile.mkdtemp())
+    (_g / "garmin_cn").mkdir()
+    (_g / "garmin_cn" / "act1.json").write_text('{"events": []}', encoding="utf-8")
+    assert CG.scan(_g), "剧情文件放进客户端目录，守卫没拦住"
+    (_g / "garmin_cn" / "act1.json").unlink()
+    (_g / "garmin_cn" / "x.json").write_text('{"result_brief": {}}', encoding="utf-8")
+    assert CG.scan(_g), "带剧情字段的 JSON，守卫没拦住"
+    shutil.rmtree(_g, ignore_errors=True)
+
     # 一图流读计划快照必须走 GARMIN_HOME：APK 里代码在只读 assets、数据在
     # filesDir，用 __file__ 推路径永远读不到——手机上一图流没计划就是这个坑。
     import os as _os
