@@ -518,7 +518,7 @@ def coverage() -> dict:
 def page(kicker: str, title: str, lede: str, body: str,
          chips: str = "", foot: str = "数据只保存在本机，不上传任何第三方。",
          back: tuple[str, str] | None = None, action: str = "",
-         screen: bool = False) -> str:
+         screen: bool = False, css: str = "", head_bg: str = "") -> str:
     """所有 tab 页与二级页的统一外壳。
 
     `back` 只给二级页（/view、/files）用：一级 tab 之间靠底部导航切换，
@@ -527,6 +527,9 @@ def page(kicker: str, title: str, lede: str, body: str,
     低频但常用的动作放这儿，比在正文里占一整张卡片划算得多。
     `screen=True` 是 0.6.7 起「首屏即一页大屏」用的紧凑页头：去掉副标题、
     压低标题与留白，把视觉重心让给 main 里的 `.rc-hero`。
+    `css` 是这一页独有的样式（远征页的衬线字体），追加在公共样式之后。
+    `head_bg` 是塞进页头最底层的一段装饰 HTML（远征页的山脊剪影），绝对定位、
+    不参与布局——这样不用为了背景图去改页头的结构。
     """
     back_html, head_cls = "", ""
     if back:
@@ -547,9 +550,10 @@ def page(kicker: str, title: str, lede: str, body: str,
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070B12">
 <title>{esc(title)} · RunnerCoach</title>
-<style>{CSS}</style></head><body><div class="{app_cls}">
+<style>{CSS}{css}</style></head><body><div class="{app_cls}">
 {back_html}
 <header class="page-head{head_cls}">
+  {head_bg}
   {action}
   <div class="brandline"><div class="kicker">{esc(kicker)}</div></div>
   <h1>{esc(title)}</h1>{lede_html}

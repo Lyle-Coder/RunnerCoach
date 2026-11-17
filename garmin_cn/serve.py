@@ -151,6 +151,8 @@ class _Handler(SimpleHTTPRequestHandler):
 
             # AI 页有自己的 CSS，只补统一外框与标题节奏，不动它的交互。
             return self._html(_with_fix(aiui.render(), ui.AI_FIX))
+        if u.path.startswith("/fonts/"):
+            return self._font(u.path.rsplit("/", 1)[-1])
         token = getattr(self.server, "token", "")
         if token and not self._gate(u, token):
             return
@@ -167,6 +169,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._html(history.history_page(parse_qs(u.query)))
         if u.path in ("/me", "/me.html"):
             return self._html(ui.me_page())
+        if u.path in ("/run", "/run.html"):
+            return self._html(self._run_page(parse_qs(u.query)))
         # 训练小组：三个页面共用同一个页面令牌，写操作全部 POST + 303
         if u.path in ("/account", "/account.html", "/groups", "/groups.html") \
                 or u.path.startswith("/groups/"):
@@ -1230,6 +1234,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._plan_post(u)
         if u.path.startswith(("/__group/", "/__account/")):
             return self._group_post(u)
+        if u.path.startswith("/__run/"):
+            return self._run_post(u)
         # 回放视频：动画页 `?export=1` 会自己逐帧 POST 上来，这里只负责收。
         if u.path.startswith(("/__frame", "/__done", "/__timeline", "/__diag")):
             return self._frame_post(u)
@@ -1296,6 +1302,101 @@ class _Handler(SimpleHTTPRequestHandler):
         return self._json(out, 200 if out.get("ok") else 400)
 
     # ---------------------------------------------------------------- 计划编辑
+    def _font(self, name: str) -> None:
+        """包内的字体文件。
+
+        只白名单一个文件名，不做路径拼接——`../../` 这类穿越在本地服务上
+        同样能读到用户目录，没必要为了通用性留个洞。
+        """
+        allowed = {"expedition-serif.woff2": "font/woff2"}
+        ctype = allowed.get(name)
+        if not ctype:
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        from pathlib import Path as _P
+
+        f = _P(__file__).resolve().parent / "content" / name
+        if not f.is_file():
+            return self._json({"ok": False,
+                               "error": "字体未构建：python tools/build_font.py"}, 404)
+        data = f.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        # 字体只在重打包时变，长缓存让 WebView 不必每次重新解析 1.5 MB
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _run_page(self, q: dict) -> str:
+        from . import group as G, runsui
+
+        if not self._is_loopback():
+            return runsui.run_page("", "", {"ok": False, "error": "只允许本机操作"})
+        # 页面令牌要在这里也生成：用户可能直接从「我的」点进 /run，
+        # 没经过小组页。不生成的话页面能打开，但一选选项就报「页面已过期」。
+        if not getattr(self.server, "group_token", ""):
+            self.server.group_token = secrets.token_urlsafe(32)
+        gid = 0
+        try:
+            gid = int((q.get("gid") or ["0"])[0])
+        except (TypeError, ValueError):
+            gid = 0
+        if not gid:
+            # 没指定组时取第一个——从「我的」点进来时不该再选一次
+            lst = G.groups()
+            items = lst.get("groups") or []
+            gid = int(items[0]["id"]) if items else 0
+        if not gid:
+            return runsui.run_page("", "", {"ok": False,
+                                            "error": "还没有加入任何小组"})
+        msg = (q.get("msg") or [""])[0]
+        return runsui.run_page(getattr(self.server, "group_token", ""), msg,
+                               G.run_state(gid))
+
+    def _run_post(self, u) -> None:
+        """远征的写接口。和小组页同一套「本机 + 页面令牌 + 303 回跳」。"""
+        from . import group as G
+
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        token = getattr(self.server, "group_token", "")
+        gid = 0
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if not 0 < n <= 65536:
+                raise ValueError("参数过大或为空")
+            vals = {k: v[0] for k, v in
+                    parse_qs(self.rfile.read(n).decode("utf-8"),
+                             keep_blank_values=True).items()}
+            if not token or not hmac.compare_digest(vals.get("token", ""), token):
+                raise PermissionError("页面已过期，请重新打开")
+            gid = int(vals.get("gid") or 0)
+            act = u.path.rstrip("/").split("/")[-1]
+            if act == "fork":
+                r = G.run_fork(gid, vals.get("option") or "")
+            elif act == "event":
+                r = G.run_event(gid, int(vals.get("slot") or 0),
+                                vals.get("option") or "")
+            elif act == "trial":
+                r = G.run_trial(gid, vals.get("trial_id") or "",
+                                str(vals.get("done") or "") in ("1", "true", "True"))
+            elif act == "rescue":
+                r = G.run_rescue(gid, int(vals.get("user_id") or 0))
+            elif act == "target":
+                r = G.run_target(gid, float(vals.get("km") or 0))
+            else:
+                raise ValueError("不支持的操作")
+            msg = "" if r.get("ok") else (r.get("error") or "操作失败")
+        except PermissionError as e:
+            msg = str(e)
+        except (ValueError, TypeError) as e:
+            msg = str(e) or "参数不对"
+        except Exception as e:  # noqa: BLE001 - 网络异常不能让页面白屏
+            msg = f"{type(e).__name__}: {e}"
+        back = f"/run?gid={gid}" if gid else "/groups"
+        sep = "&" if "?" in back else "?"
+        return self._see_other(back + (sep + "msg=" + quote(msg) if msg else ""))
+
     def _see_other(self, url: str) -> None:
         """PRG 回跳。手机上按返回/下拉刷新不会重复提交上一次操作。"""
         self.send_response(303)

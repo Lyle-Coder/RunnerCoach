@@ -475,6 +475,39 @@ def draw(c, gid: int, season, act_no: int) -> None:
 
 
 # ---------------------------------------------------------------- 视图
+def stage_progress(c, gid: int, season, act_no: int) -> tuple[float, float]:
+    """本幕的 (实时格数, 本幕目标)。画「这一段走到哪」用。
+
+    和 `team_progress` 的区别：那个是整季累计（用于「本周 33.9/24 格」这种
+    总量显示），这个是单幕（用于路线上的小旗）。整季进度超额时会 > 100%，
+    小旗会顶到终点，看着像走完了——所以两件事必须分开算。
+    """
+    s, e = _act_span(season, act_no)
+    flags = json.loads(season["flags"] or "{}")
+    stayed: dict[int, float] = {}
+    for r in c.execute("SELECT user_id, week_target_km, pos FROM group_run_member"
+                       " WHERE group_id=? AND act=?", (gid, act_no)).fetchall():
+        stayed[int(r["user_id"])] = float(r["week_target_km"] or 0) or DEFAULT_WEEK_KM
+    dist = {int(r["user_id"]): float(r["d"] or 0) for r in c.execute(
+        "SELECT user_id, SUM(distance_m) AS d FROM group_daily"
+        " WHERE group_id=? AND date BETWEEN ? AND ? GROUP BY user_id",
+        (gid, s.isoformat(), e.isoformat()))}
+    live = 0.0
+    for uid, target in stayed.items():
+        row = c.execute("SELECT pos, status FROM group_run_member WHERE group_id=?"
+                        " AND user_id=? AND act=?", (gid, uid, act_no)).fetchone()
+        if row and row["status"] == "stranded":
+            continue                  # 受困的人这一周不产格
+        live += (min(dist.get(uid, 0.0) / 1000.0, target) / KM_PER_GRID
+                 + int((row["pos"] if row else 0) or 0))
+    bonus = 1 + min(int(season["morale"]) // 3, 3) * 0.05
+    live *= bonus
+    # 本幕目标 = 累计目标的增量
+    total_target = _target_km(c, gid, act_no)
+    prev_target = _target_km(c, gid, act_no - 1) if act_no > 1 else 0.0
+    return live, max(0.1, total_target - prev_target)
+
+
 def team_progress(c, gid: int, season, act_no: int) -> tuple[float, float]:
     """返回 (累计行程, 累计目标)。
 
@@ -500,6 +533,33 @@ def team_progress(c, gid: int, season, act_no: int) -> tuple[float, float]:
         live += (min(dist.get(int(r["user_id"]), 0.0) / 1000.0, target) / KM_PER_GRID
                  + int(r["pos"] or 0))
     return base_done + live, _target_km(c, gid, act_no)
+
+
+def _route() -> dict:
+    """把四幕的名字拆成「路段名 + 主题」+ 途经点。
+
+    客户端要画「四段路」，但路名是内容（「老鹰嘴」「望雪站」），
+    不该硬编码在界面里——换一季就得改客户端。所以由服务端随 state 下发。
+
+    幕名格式是「第N幕 · A → B」，拆出两端；整季的途经点 = 各段起点 + 末段终点。
+    """
+    acts = sorted(pool().get("acts") or [], key=lambda a: int(a.get("act") or 0))
+    out = []
+    stops: list[str] = []
+    for a in acts:
+        name = str(a.get("name") or "")
+        body = name.split("·", 1)[1].strip() if "·" in name else name
+        parts = [x.strip() for x in body.split("→")]
+        if parts and parts[0] and not stops:
+            stops.append(parts[0])
+        if len(parts) > 1 and parts[-1]:
+            stops.append(parts[-1])
+        out.append({"act": int(a.get("act") or 0),
+                    "from": parts[0] if parts else "",
+                    "to": parts[-1] if len(parts) > 1 else "",
+                    "theme": str(a.get("theme") or ""),
+                    "target": int(a.get("stage_target") or 0)})
+    return {"acts": out, "stops": stops}
 
 
 def _event_view(e: dict, row=None) -> dict:
@@ -533,6 +593,7 @@ def api_state(me, gid: int, query: dict) -> dict:
     with G.db() as c:
 
         s, e = _act_span(season, act_no)
+        route = _route()
         fork = _fork_of(act_no, season["seed"])
         rows = c.execute("SELECT * FROM group_run_event WHERE group_id=? AND user_id=?"
                          " AND act=? ORDER BY slot", (gid, uid, act_no)).fetchall()
@@ -541,6 +602,7 @@ def api_state(me, gid: int, query: dict) -> dict:
 
         # 团队进度：本幕已结算的前几幕累加 + 本幕实时（训练格按日累计）
         team_now, target_now = team_progress(c, gid, season, act_no)
+        stage_now, stage_tgt = stage_progress(c, gid, season, act_no)
         pos = int(mine["pos"]) if mine else 0
         stranded = c.execute("SELECT user_id, stranded_at, rescue_by FROM group_run_member"
                              " WHERE group_id=? AND act=? AND status='stranded'",
@@ -556,10 +618,17 @@ def api_state(me, gid: int, query: dict) -> dict:
         "ok": True,
         "season": {"start": season["season_start"], "end": season["season_end"],
                    "act": act_no, "acts": ACTS, "morale": int(season["morale"]),
-                   "ended": ended, "week_from": s.isoformat(), "week_to": e.isoformat()},
+                   "ended": ended, "week_from": s.isoformat(), "week_to": e.isoformat(),
+                   # 幕名、主题、途经点：画「四段路」要用，属于内容所以服务端给
+                   "stage": route["acts"][act_no - 1] if len(route["acts"]) >= act_no else {},
+                   "route": route["acts"], "stops": route["stops"]},
         "progress": {"team": round(team_now, 1),
                      "target": round(target_now, 1),
-                     "stage_hit": team_now >= target_now},
+                     "stage_hit": team_now >= target_now,
+                     # 单幕进度：路线上的小旗按这个放。整季累计在超额时会 >100%，
+                     # 拿它定位小旗会顶到终点。
+                     "stage_team": round(stage_now, 1),
+                     "stage_target": round(stage_tgt, 1)},
         "me": {"pos": pos,
                "supply": int(mine["supply"]) if mine else 0,
                "status": mine["status"] if mine else "moving",

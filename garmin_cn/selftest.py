@@ -667,6 +667,7 @@ def run() -> int:
     from garmin_cn import planedit as PE
     from garmin_cn import plangen as PG
     from garmin_cn import group as GG, groupui as GU
+    from garmin_cn import runsui as RU
     from garmin_cn import planpush as PP
 
     _pdir = Path(tempfile.mkdtemp())
@@ -901,6 +902,77 @@ def run() -> int:
     assert "不上传任何第三方" not in _acc_html, "账号页仍在说不上传任何第三方"
     _g_html = GU.groups_page("TOK123", "")
     assert "去登录" in _g_html or "还没有加入小组" in _g_html, "小组页未登录分支不对"
+
+    # ---------------- 远征界面 ----------------
+    # 小旗必须落在**当前幕那一段**里。整季累计进度在队伍超额时会超过 100%，
+    # 如果拿它定位小旗，第二幕就会顶到最右端，看起来像这一季已经走完了。
+    _xs = [26 + (346 - 26) * i / 4 for i in range(5)]
+    _svg = RU.route_svg(["甲", "乙", "丙", "丁", "戊"], act=2, stage_frac=0.5)
+    _cx = float(re.search(r'<circle cx="([\d.]+)" cy="[\d.]+" r="5\.6"', _svg).group(1))
+    assert abs(_cx - (_xs[1] + _xs[2]) / 2) < 1.5, \
+        f"第二幕的小旗没落在第二段中间：cx={_cx}，应为 {(_xs[1] + _xs[2]) / 2}"
+    assert _cx < _xs[3], "第二幕的小旗跑到了后面几段"
+    # 第一幕在最左段，第四幕满进度才到最右
+    _svg1 = RU.route_svg(["甲", "乙", "丙", "丁", "戊"], act=1, stage_frac=0.0)
+    assert abs(float(re.search(r'<circle cx="([\d.]+)" cy="[\d.]+" r="5\.6"', _svg1).group(1))
+               - _xs[0]) < 1.5, "第一幕的小旗没在第一段起点"
+    _svg4 = RU.route_svg(["甲", "乙", "丙", "丁", "戊"], act=4, stage_frac=1.0)
+    assert abs(float(re.search(r'<circle cx="([\d.]+)" cy="[\d.]+" r="5\.6"', _svg4).group(1))
+               - _xs[4]) < 1.5, "第四幕满进度没到终点"
+    # 超额进度要夹住，不能画到画布外
+    _svgx = RU.route_svg(["甲", "乙", "丙", "丁", "戊"], act=4, stage_frac=3.0)
+    assert '<circle cx="346.0"' in _svgx, "进度超额时小旗没夹在终点"
+
+    # 地名缩写：五个站在 420 宽里排不下，五字的必然压住邻居
+    assert RU._short("采药人小屋") == "小屋", "五字地名没有缩写"
+    assert RU._short("老鹰嘴") == "老鹰嘴", "三字地名不该缩写"
+    assert RU._short("冰河") == "冰河", "两字地名不该缩写"
+
+    # 事件卡：试炼没有 options，必须渲染成两个按钮，而不是一张空卡
+    _trial = {"id": "x_trial", "type": "trial", "act": 1, "title": "渐加速五公里",
+              "text": "把烟袋收进怀里。", "quality": {"metric": "negative_split",
+                                                    "distance_km": 5},
+              "options": [], "chosen": "", "result": ""}
+    _th = RU.event_card(_trial, 0)
+    assert "跑完了" in _th and "没跑成" in _th, "试炼没渲染出上报按钮"
+    assert "渐加速" in _th, "试炼没显示要跑什么"
+    _trial2 = dict(_trial, chosen="success", result="最后两公里，老周没掉队。")
+    _th2 = RU.event_card(_trial2, 0)
+    assert "跑完了" not in _th2 and "老周没掉队" in _th2, "已报的试炼还在催人跑"
+
+    _fork = {"id": "x_fork", "type": "story", "kind": "fork", "act": 1,
+             "title": "雪桥", "text": "溪面结了一层薄冰。", "chosen": "",
+             "options": [{"id": "cross", "label": "直接从冰上过",
+                          "brief": "快，冰要是薄就麻烦了", "time": 0},
+                         {"id": "detour", "label": "绕到上游窄处",
+                          "brief": "稳，多走一段", "time": 1}]}
+    _fh = RU.event_card(_fork, -1)
+    assert "这一刻要定" in _fh and "直接从冰上过" in _fh, "岔路卡缺标题或选项"
+    assert "慢 1 天" in _fh, "带时间成本的选项没标出代价"
+
+    # 数值绝不进页面：服务端不下发 effect，界面也不能自己写死哪个更划算。
+    # 一旦页面上能看到「+3 格」这类数，选择就退化成算术题。
+    assert "effect" not in _fh and "advance" not in _fh, "选项把数值写进了页面"
+
+    # 衬线字体：正文靠它和「数据」区分开。Android 的 WebView 里 serif 对中文
+    # 没有可用字体，不内嵌就 fallback 成无衬线，故事感直接消失。
+    _font = ROOT / "garmin_cn" / "content" / "expedition-serif.woff2"
+    assert _font.is_file(), ("衬线字体没构建：python tools/build_font.py "
+                             "（缺了的话正文会静默退化成正文字体）")
+    assert _font.stat().st_size > 200_000, "字体文件太小，可能只子集到几个字"
+    assert 'font-family:"RC Serif"' in RU.CSS, "正文没用衬线字体族"
+
+    # 字体覆盖：加了新剧情之后没重建字体，正文里就会出现方框
+    _sys_path = sys.path[:]
+    sys.path.insert(0, str(ROOT / "tools"))
+    try:
+        import importlib
+
+        _bf = importlib.import_module("build_font")
+        _miss = _bf.check_coverage(_font, _bf.story_text())
+        assert not _miss, f"这些字不在字体里，正文会显示方框：{''.join(_miss)}"
+    finally:
+        sys.path[:] = _sys_path
 
     # ---------------- 计划生成器 ----------------
     # 分配本身是纯函数：长距离必须是这一周最长的一次，否则「长距离」名不副实。

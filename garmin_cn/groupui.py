@@ -278,7 +278,15 @@ def group_page(token: str, gid: int, message: str = "") -> str:
     chips = (f'<span class="chip">{int(g.get("member_count") or 0)} 人</span>'
              f'<span class="chip">{_km(total_m)} km 本周</span>')
 
+    # 远征入口。放在榜单之前：榜单是每天看的，远征是这一季的进度，
+    # 两者都不该埋在页面底部。只做入口不拉 state——组详情页要秒开。
+    trail = ('<div class="card"><a class="grow" href="/run?gid=' + str(gid) + '">'
+             '<div class="gname">雪线之前</div>'
+             '<div class="gmeta">这一季的路</div>'
+             '<div class="chev">›</div></a></div>')
+
     body = (msg
+            + sec("远征", trail)
             + sec("本周榜", '<div class="card">' + rank_rows + '</div>',
                   more=("月榜", f"/groups/{gid}?range=month") if False else "")
             + sec("赛事", '<div class="card">' + ch_rows + '</div>'

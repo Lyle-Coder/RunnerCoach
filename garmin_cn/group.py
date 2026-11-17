@@ -286,3 +286,48 @@ def challenge_get(gid: int, cid: int, today: str | None = None) -> dict:
 
 def challenge_close(gid: int, cid: int) -> dict:
     return _call("POST", f"/v1/group/{int(gid)}/challenge/{int(cid)}/close", {})
+
+
+# ---------------------------------------------------------------- 远征
+# 接口清单见 docs/用户组设计.md 11.9。`today` 必须带：服务器不知道用户在哪个
+# 时区，「第几幕」按用户本地日期算，不带就会差一天。
+def run_state(gid: int, today: str | None = None) -> dict:
+    d = today or dt.date.today().isoformat()
+    return _call("GET", f"/v1/group/{int(gid)}/run/state?today={d}")
+
+
+def run_fork(gid: int, option: str, today: str | None = None) -> dict:
+    d = today or dt.date.today().isoformat()
+    return _call("POST", f"/v1/group/{int(gid)}/run/fork",
+                 {"option": option, "today": d})
+
+
+def run_event(gid: int, slot: int, option: str, today: str | None = None) -> dict:
+    d = today or dt.date.today().isoformat()
+    return _call("POST", f"/v1/group/{int(gid)}/run/event",
+                 {"slot": int(slot), "option": option, "today": d})
+
+
+def run_trial(gid: int, trial_id: str, done: bool,
+              activity_id: str = "", today: str | None = None) -> dict:
+    d = today or dt.date.today().isoformat()
+    return _call("POST", f"/v1/group/{int(gid)}/run/trial",
+                 {"trial_id": trial_id, "done": bool(done),
+                  "activity_id": activity_id, "today": d})
+
+
+def run_rescue(gid: int, user_id: int, today: str | None = None) -> dict:
+    d = today or dt.date.today().isoformat()
+    return _call("POST", f"/v1/group/{int(gid)}/run/rescue",
+                 {"user_id": int(user_id), "today": d})
+
+
+def run_target(gid: int, week_target_km: float, today: str | None = None) -> dict:
+    d = today or dt.date.today().isoformat()
+    return _call("POST", f"/v1/group/{int(gid)}/run/target",
+                 {"week_target_km": float(week_target_km), "today": d})
+
+
+def run_outcome(gid: int, today: str | None = None) -> dict:
+    d = today or dt.date.today().isoformat()
+    return _call("GET", f"/v1/group/{int(gid)}/run/outcome?today={d}")
