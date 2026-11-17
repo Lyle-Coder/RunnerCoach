@@ -237,13 +237,35 @@ def main() -> int:
     st, r = req("GET", f"/v1/group/{gid}/run/outcome?today=2026-11-23", None, a)
     check("没结束时不剧透", st == 200 and r.get("ended") is False, f"{st} {r}")
 
-    st, d = state(gid, a, "2026-12-20")
+    st, d = state(gid, a, "2026-12-14")
     check("赛季结束", d["season"]["ended"] is True, str(d.get("season")))
-    st, r = req("GET", f"/v1/group/{gid}/run/outcome?today=2026-12-20", None, a)
+    st, r = req("GET", f"/v1/group/{gid}/run/outcome?today=2026-12-14", None, a)
     check("结局 200", st == 200 and r.get("ended") is True, f"{st} {r}")
     check("结局是四种之一",
           r.get("ending") in ("arrive", "detour", "lost", "discoverer"), str(r.get("ending")))
     check("结局带团队总量", "team" in r, str(r))
+
+    # ---------------- 翻篇
+    print("\n9b. 翻篇（结束后留一天看结果，第二天开新的一季）")
+    # 拿自动开季那个组：它的赛季是 11-16~12-13，12-14 是结束后第一天
+    st, dg = state(gid_auto, c3, "2026-12-14")
+    check("赛季结束后第一天还能看到结果", dg["season"]["ended"] is True,
+          str(dg.get("season")))
+    st, dg = state(gid_auto, c3, "2026-12-15")
+    check("第二天自动开新的一季",
+          dg["season"]["ended"] is False and dg["season"]["act"] == 1,
+          str(dg.get("season")))
+    check("新的一季从当周周一开始",
+          dg["season"]["start"] == "2026-12-14", str(dg["season"].get("start")))
+    last = dg["season"].get("last") or {}
+    check("上一季的结论带过来了", last.get("ending") in
+          ("arrive", "detour", "lost", "discoverer"), str(last))
+    check("翻篇后补给回 3、行程回 0",
+          dg["me"]["supply"] == 3 and dg["me"]["pos"] == 0,
+          f'supply={dg["me"]["supply"]} pos={dg["me"]["pos"]}')
+    st, r = req("GET", f"/v1/group/{gid_auto}/run/outcome?today=2026-12-15", None, c3)
+    check("新季里 outcome 是进度 + 上一季",
+          r.get("ended") is False and bool(r.get("last")), f"{st} {r}")
 
     # ---------------- cron 预热
     print("\n10. cron 预热")

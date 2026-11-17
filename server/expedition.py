@@ -56,6 +56,7 @@ MIN_LAP_M = 200             # 200 m 以下的残圈不参与判定
 WALK_PACE_S = 390           # 6:30/km，爬坡试炼里低于这个速度算「走了一段」
 CLIMB_NEED_M = 200          # 爬坡试炼的最低爬升
 MAX_EVIDENCE = 3            # 最多收 3 条候选活动，挑最好的一条算
+GRACE_DAYS = 1              # 赛季结束后留一天看结果，第二天开新的一季
 
 POOL_PATH = Path(__file__).resolve().parent / "content" / "expedition_events.json"
 _pool = {"mtime": 0.0, "data": None}
@@ -416,6 +417,42 @@ def _is_ready(s: dict, today: dt.date) -> bool:
     return True
 
 
+def _is_over(s: dict, today: dt.date) -> bool:
+    """这一季该翻篇了：已经结束，并且已经过了留给人看结果的那一天。
+
+    留一天是必要的：结束是在「赛季最后一天之后」才判定的，判定和翻篇落在
+    同一次请求里的话，结算页还没渲染就被下一季顶掉了——玩家永远看不到结果。
+    """
+    if not int(s["ended"]):
+        return False
+    end = dt.date.fromisoformat(s["season_end"]) + dt.timedelta(days=GRACE_DAYS)
+    return today > end
+
+
+def _summary_of(season) -> dict:
+    """把一季算成一句结论。只用 `flags` 里记下的数，不读成员行——
+    翻篇之后成员行已经清空了，靠行算会把上一季算成 0。"""
+    flags = json.loads(season["flags"] or "{}")
+    stages = flags.get("stages") or {}
+    targets = flags.get("targets") or {}
+    total = sum(float(stages.get(str(i), 0)) for i in range(1, ACTS + 1))
+    need = float(targets.get(str(ACTS), 0) or 0)
+    relics = flags.get("relics") or []
+    morale = int(season["morale"])
+    if len(relics) >= 3:
+        key = "discoverer"
+    elif total >= need > 0 and morale >= 3:
+        key = "arrive"
+    elif total >= need > 0:
+        key = "detour"
+    else:
+        key = "lost"
+    return {"start": season["season_start"], "end": season["season_end"],
+            "ending": key, "title": _ending_view(key)["title"],
+            "team": round(total, 1), "target": round(need, 1),
+            "morale": morale, "relics": len(relics)}
+
+
 def ensure(gid: int, today: dt.date) -> tuple[dict, int, bool]:
     """保证赛季存在且已结算到该到的一幕。返回 (season, 当前幕, 是否已结束)。
 
@@ -431,6 +468,8 @@ def ensure(gid: int, today: dt.date) -> tuple[dict, int, bool]:
     而先算后抢在抢不到时白算一次，且两次结果若不同会让状态来回跳。
     """
     s = _read(gid)
+    if s and _is_over(s, today):
+        return _settle_path(gid, today)     # 冷路径里翻篇：归档结论 + 开新的一季
     if s and _is_ready(s, today):
         act = _cur_act(s)
         if _has_draw(gid, act):
@@ -441,12 +480,24 @@ def ensure(gid: int, today: dt.date) -> tuple[dict, int, bool]:
 def _settle_path(gid: int, today: dt.date) -> tuple[dict, int, bool]:
     with G.db(immediate=True) as c:
         s = _season_of(c, gid)
+        carried = "{}"
+        if s is not None and _is_over(dict(s), today):
+            # 翻篇。上一季的结论压进 flags.prev —— 不另开一张历史表：
+            # 每组只留「上一季」，而玩家真正要的也就是上一季的成绩。
+            # 三张玩家表必须清掉：它们的主键是 (组, 人, 幕)，不清就会把上季的
+            # 补给、行程和试炼当成这一季的，试炼还会因为「已报过」直接判死。
+            carried = json.dumps({"prev": _summary_of(s)}, ensure_ascii=False)
+            for t in ("group_run_member", "group_run_event", "group_run_trial"):
+                c.execute(f"DELETE FROM {t} WHERE group_id=?", (gid,))
+            c.execute("DELETE FROM group_run_season WHERE group_id=?", (gid,))
+            s = None
         if not s:
             mon = today - dt.timedelta(days=today.weekday())
             end = mon + dt.timedelta(days=SEASON_DAYS - 1)
             c.execute("INSERT INTO group_run_season(group_id,season_start,season_end,act,morale,"
-                      "seed,flags,settled_act,ended,updated_at) VALUES(?,?,?,1,5,?, '{}',0,0,?)",
-                      (gid, mon.isoformat(), end.isoformat(), secrets.token_hex(8), G._now()))
+                      "seed,flags,settled_act,ended,updated_at) VALUES(?,?,?,1,5,?,?,0,0,?)",
+                      (gid, mon.isoformat(), end.isoformat(), secrets.token_hex(8),
+                       carried, G._now()))
             s = _season_of(c, gid)
             if s is None:
                 raise G.GroupError(500, "赛季创建失败")
@@ -815,6 +866,9 @@ def api_state(me, gid: int, query: dict) -> dict:
         "season": {"start": season["season_start"], "end": season["season_end"],
                    "act": act_no, "acts": ACTS, "morale": int(season["morale"]),
                    "ended": ended, "week_from": s.isoformat(), "week_to": e.isoformat(),
+                   # 上一季的结论：新的一季开场时在页脚留一句，「上周太忙没打开」
+                   # 不该等于「那一季没有过」。
+                   "last": _last_of(season),
                    # 幕名、主题、途经点：画「四段路」要用，属于内容所以服务端给
                    "stage": route["acts"][act_no - 1] if len(route["acts"]) >= act_no else {},
                    "route": route["acts"], "stops": route["stops"]},
@@ -1115,6 +1169,14 @@ def api_rescue(me, gid: int, body: dict) -> dict:
     return {"ok": True, "rescued": target}
 
 
+def _last_of(season) -> dict:
+    """上一季的结论（翻篇时压进 `flags.prev`）。没有就是空 dict。"""
+    try:
+        return json.loads(season["flags"] or "{}").get("prev") or {}
+    except (ValueError, KeyError, TypeError):
+        return {}
+
+
 def _ending_view(key: str) -> dict:
     """结局的标题与文案。
 
@@ -1167,7 +1229,10 @@ def api_outcome(me, gid: int, query: dict) -> dict:
             team_now, target_now = team_progress(c, gid, season, act_no)
         return {"ok": True, "ended": False, "act": act_no,
                 "team": round(team_now, 1), "target": round(target_now, 1),
-                "stage_hit": team_now >= target_now}
+                "stage_hit": team_now >= target_now,
+                # 上一季的成绩。翻篇之后没有人再能看到它，所以随这里带一份
+                # ——「上周太忙没打开」不该等于「没有过这一季」。
+                "last": _last_of(season)}
     if len(relics) >= 3:
         ending = "discoverer"
     elif reach and morale >= 3:
