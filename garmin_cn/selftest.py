@@ -643,6 +643,23 @@ def run() -> int:
         "计划接口直接用缓存里的完成度，同步后不会更新"
     assert PL._months("2026-11-07")[0] == (2026, 10), "要连上个月一起拉，兼容月份语义"
 
+    # 计划层：来源必须按天标注，冲突按优先级（manual > calendar > coach > raceplan > coros > generated）
+    assert PL.source_rank("manual") < PL.source_rank("calendar") < PL.source_rank("coach")
+    assert PL.source_rank("raceplan") < PL.source_rank("coros") < PL.source_rank("generated")
+    _cal0 = PL.from_calendar([], today="2026-11-17")
+    assert len(_cal0["week"]) == 7 and all(w.get("source") == "calendar" for w in _cal0["week"]), \
+        "日历计划没有按天标来源"
+    # 旧快照没有 source：load 时要补默认值，否则优先级合并会算错
+    _snap2 = Path(tempfile.mkdtemp())
+    _p2 = _snap2 / "plan.json"
+    _p2.write_text(json.dumps({"classify": PL.CLASSIFY_REV, "today": {"date": "2026-11-17"},
+                               "week": [{"date": "2026-11-17", "dow": "周二",
+                                         "items": [], "rest": True}]}), encoding="utf-8")
+    _l2 = PL.load(_p2)
+    assert _l2 and _l2.get("source") == "calendar", "旧快照顶层缺 source 时没补默认值"
+    assert _l2["week"][0].get("source") == "calendar", "旧快照每天缺 source 时没补默认值"
+    shutil.rmtree(_snap2, ignore_errors=True)
+
     # 一图流读计划快照必须走 GARMIN_HOME：APK 里代码在只读 assets、数据在
     # filesDir，用 __file__ 推路径永远读不到——手机上一图流没计划就是这个坑。
     import os as _os

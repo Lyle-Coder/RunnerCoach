@@ -46,6 +46,22 @@ EFFECT = {
     "MAINTAIN": "维持",
 }
 LEVEL = {"Beginner": "初级", "Intermediate": "中级", "Advanced": "高级"}
+
+# 计划来源与优先级：数字越小越优先。冲突按**天**判定，用户改过的那天永远最高。
+SOURCE_PRIORITY = {
+    "manual": 0,       # 用户自建 / 改过
+    "calendar": 1,     # 佳明 Connect 日历
+    "coach": 2,        # 佳明教练计划（Garmin Coach / FBT）
+    "raceplan": 3,     # 本地备赛课表
+    "coros": 4,        # 高驰课表导入
+    "generated": 5,    # 自动生成
+}
+DEFAULT_SOURCE = "calendar"
+
+
+def source_rank(name: str | None) -> int:
+    """来源优先级；未知来源排在最后，不参与覆盖。"""
+    return SOURCE_PRIORITY.get(str(name or ""), 99)
 # 向前看多久：备赛周期常到 20 周（140 天），只拉一个月会看不到远期课
 LOOKAHEAD_DAYS = 140
 
@@ -106,6 +122,7 @@ def normalize(detail: dict, today: str | None = None,
             "dow": DOW[dt.date.fromisoformat(date).isoweekday()],
             "items": items,
             "rest": not items,
+            "source": "coach",
         })
 
     today_items = [x for x in by_date.get(today, []) if not x["rest"]]
@@ -397,7 +414,7 @@ def from_calendar(items: list[dict] | None, today: str | None = None,
         act = acts.get(date, [])
         week.append({"date": date, "dow": DOW[dt.date.fromisoformat(date).isoweekday()],
                      "items": its, "acts": act,
-                     "rest": not its and not act})
+                     "rest": not its and not act, "source": "calendar"})
 
     today_items = workouts.get(today, [])
     today_acts = acts.get(today, [])
@@ -612,6 +629,15 @@ def load(path: Path) -> dict | None:
         return None
     if int(data.get("classify") or 0) < CLASSIFY_REV:
         return None
+    # 旧快照没有 source：读的时候补默认值，不写回文件，避免无谓的磁盘改动
+    src = str(data.get("source") or DEFAULT_SOURCE)
+    data["source"] = src
+    for w in data.get("week") or []:
+        if isinstance(w, dict):
+            w.setdefault("source", src)
+    t = data.get("today")
+    if isinstance(t, dict):
+        t.setdefault("source", src)
     return data
 
 
@@ -705,7 +731,8 @@ def from_coach(res: dict, today: str | None = None,
                     "note": info.get("note") or "",
                 })
         week.append({"date": date, "dow": DOW[day.isoweekday()],
-                     "items": items, "rest": not items})
+                     "items": items, "rest": not items,
+                     "source": "raceplan" if has_race else "coach"})
 
     today_items = next((w["items"] for w in week if w["date"] == today), [])
     from_coach_source = "raceplan"
