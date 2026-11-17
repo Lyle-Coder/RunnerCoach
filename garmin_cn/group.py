@@ -309,11 +309,74 @@ def run_event(gid: int, slot: int, option: str, today: str | None = None) -> dic
 
 
 def run_trial(gid: int, trial_id: str, done: bool,
-              activity_id: str = "", today: str | None = None) -> dict:
+              activity_id: str = "", today: str | None = None,
+              evidence: dict | None = None) -> dict:
+    """报一条试炼。
+
+    `evidence` 是**原始分圈**（`trial_evidence()` 抽出来的），不是「我达标了」。
+    交结论等于没交——服务端必须能自己重算，否则这个机制只是装饰。
+    """
     d = today or dt.date.today().isoformat()
-    return _call("POST", f"/v1/group/{int(gid)}/run/trial",
-                 {"trial_id": trial_id, "done": bool(done),
-                  "activity_id": activity_id, "today": d})
+    body = {"trial_id": trial_id, "done": bool(done),
+            "activity_id": activity_id, "today": d}
+    if evidence:
+        body["evidence"] = evidence
+    return _call("POST", f"/v1/group/{int(gid)}/run/trial", body)
+
+
+# ---------------------------------------------------------------- 试炼证据
+EVIDENCE_MAX = 3          # 最多带 3 条候选：一条不达标不代表这周没跑成
+EVIDENCE_MIN_LAP = 200    # 与 server/expedition.py 的 MIN_LAP_M 对齐
+
+
+def trial_evidence(store, quality: dict, start: str, end: str) -> dict:
+    """从本周的活动里抽出「每公里一圈」的原始数据，供服务端复算。
+
+    三条取舍：
+
+    * **只抽原始数字**（距离、用时、步频、心率、爬升），不抽判定。判定一定
+      在服务端做，否则客户端改一行就能过。
+    * **窗口内取距离最长的几条**。跑 10 km 去应 5 km 的试炼时，服务端只截
+      前 5 km，所以长距离跑不会因为「后面那段正好匀」白捡。
+    * **判不了就返回空**，让服务端落到 unverified（只算一半）。宁可少给，
+      也不假装核验过。
+    """
+    need = float((quality or {}).get("distance_km") or 0)
+    floor = need * 0.85 * 1000          # 差太多的连候选都不当
+    try:
+        with store.conn:
+            rows = store.conn.execute(
+                "SELECT activity_id, date, type, distance_m FROM activities"
+                " WHERE date BETWEEN ? AND ? AND distance_m >= ?"
+                " ORDER BY distance_m DESC", (start, end, floor)).fetchall()
+    except Exception:                    # noqa: BLE001 - 老库没有这张表也不能崩
+        return {}
+    out = []
+    for r in rows:
+        if not _is_run(r["type"]):
+            continue
+        try:
+            detail = store.get_detail(r["activity_id"])
+        except Exception:                # noqa: BLE001
+            detail = None
+        laps = []
+        for l in ((detail or {}).get("laps") or []):
+            d, t = l.get("dist_m") or 0, l.get("dur_s") or 0
+            if d < EVIDENCE_MIN_LAP or t <= 0:
+                continue
+            laps.append({"dist_m": round(float(d)),
+                         "dur_s": round(float(t), 1),
+                         "cad": l.get("cad"), "hr": l.get("hr_avg"),
+                         "ele": l.get("ele_gain")})
+        if len(laps) < 3:
+            continue
+        out.append({"activity_id": str(r["activity_id"]),
+                    "date": str(r["date"])[:10],
+                    "distance_km": round(float(r["distance_m"] or 0) / 1000, 2),
+                    "laps": laps})
+        if len(out) >= EVIDENCE_MAX:
+            break
+    return {"activities": out} if out else {}
 
 
 def run_rescue(gid: int, user_id: int, today: str | None = None) -> dict:

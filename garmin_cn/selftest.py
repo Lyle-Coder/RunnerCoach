@@ -940,6 +940,45 @@ def run() -> int:
     _th2 = RU.event_card(_trial2, 0)
     assert "跑完了" not in _th2 and "老周没掉队" in _th2, "已报的试炼还在催人跑"
 
+    # 试炼是「数据说了算」不是「自己说了算」：点之前就要说清楚会去核，
+    # 点完之后要能看出这次是核过、没核过、还是没跑成。三种说法不能混。
+    assert "核一遍" in _th and "只算一半" in _th, "试炼没说明会按记录核验"
+    assert "核过" not in _th, "还没报就先把结论写出来了"
+    _tv = RU.event_card(dict(_trial, chosen="ok", level="verified", result="对得上"), 0)
+    _tu = RU.event_card(dict(_trial, chosen="ok", level="unverified", result=""), 0)
+    _tfa = RU.event_card(dict(_trial, chosen="fail", level="failed", result=""), 0)
+    assert "核验通过" in _tv and "只算一半" not in _tv, "核验通过的卡没标出来"
+    assert "未核验" in _tu and "只算一半" in _tu, "未核验的卡没说明打折"
+    assert "没跑成" in _tfa and "核验通过" not in _tfa, "没跑成的卡写成通过了"
+    # 卡片的根节点必须还是 ecard：改样式时用了一个同名的局部变量，
+    # 结果 class 被覆盖成 "verified"，整张卡掉出面板变成裸文字。
+    for _x in (_th, _tv, _tu, _tfa):
+        assert _x.startswith('<div class="ecard'), "试炼卡丢了 ecard 外壳（会变成裸文字）"
+
+    # 证据只抽原始分圈（距离/用时/步频/心率/爬升），绝不带判定结论。
+    # 带结论等于没核验——客户端改一行就全过了。
+    from garmin_cn.store import Store as _St
+    _evd = Path(tempfile.mkdtemp())
+    _st = _St(_evd / "s.db")
+    _st.conn.execute("INSERT INTO activities(activity_id,date,type,distance_m,duration_s)"
+                     " VALUES(?,?,?,?,?)", ("a1", "2026-11-17", "running", 6000, 1800))
+    _st.conn.execute("INSERT INTO activities(activity_id,date,type,distance_m,duration_s)"
+                     " VALUES(?,?,?,?,?)", ("a2", "2026-11-17", "cycling", 30000, 3600))
+    _st.save_detail("a1", {"laps": [{"dist_m": 1000, "dur_s": 300, "cad": 178,
+                                     "hr_avg": 150, "ele_gain": 10}] * 6})
+    _e = GG.trial_evidence(_st, {"metric": "even_pace", "distance_km": 6},
+                           "2026-11-16", "2026-11-22")
+    assert len(_e.get("activities") or []) == 1, f"证据条数不对：{_e.keys()}"
+    assert _e["activities"][0]["laps"][0]["dur_s"] == 300, "分圈用时没抽出来"
+    assert "verdict" not in json.dumps(_e) and "level" not in json.dumps(_e), \
+        "证据里混进了判定结论"
+    # 骑车的里程不能算成跑的
+    assert all(x["distance_km"] < 10 for x in _e["activities"]), "骑行被当成跑步交了"
+    assert GG.trial_evidence(_st, {"distance_km": 6}, "2026-12-01", "2026-12-07") == {}, \
+        "没有活动的周不该编出证据"
+    _st.conn.close()
+    shutil.rmtree(_evd, ignore_errors=True)
+
     _fork = {"id": "x_fork", "type": "story", "kind": "fork", "act": 1,
              "title": "雪桥", "text": "溪面结了一层薄冰。", "chosen": "",
              "options": [{"id": "cross", "label": "直接从冰上过",

@@ -124,7 +124,56 @@ def main() -> int:
         return next((e["id"] for e in pool["events"]
                      if e.get("act") == act and e.get("type") == "trial"), "")
 
-    # 第一幕：把岔路和支线都走掉，让「已选」的样子也能看到
+    def quality_of(tid):
+        for e in pool["events"]:
+            if e["id"] == tid:
+                return e.get("quality") or {}
+        return {}
+
+    def assigned_trial(st, act, uid=1):
+        """本幕真正抽到的那条试炼；没有就换一条上去。
+
+        不能直接报池子里的第一条——服务端要求「这条试炼在你这次的路上」，
+        挑一条没抽到的会被 404。预览要稳定出图，所以缺了就补。
+        """
+        hit = next((e for e in (st.get("events") or []) if e["type"] == "trial"), None)
+        if hit:
+            return hit["id"]
+        tid = trial_of(act)
+        import expedition as EXP
+
+        with EXP.G.db() as c:
+            rows = c.execute("SELECT slot FROM group_run_event WHERE group_id=?"
+                             " AND user_id=? AND act=? ORDER BY slot", (gid, uid, act)).fetchall()
+            if rows:
+                c.execute("UPDATE group_run_event SET event_id=?, choice='', tag='', ts=?"
+                          " WHERE group_id=? AND user_id=? AND act=? AND slot=?",
+                          (tid, EXP.G._now(), gid, uid, act, rows[-1]["slot"]))
+        return tid
+
+    def evidence(quality, good, date):
+        """一份能算出结论的分圈。预览要看到 level 的三种样子。"""
+        metric = str(quality.get("metric") or "")
+        n = max(3, int(round(float(quality.get("distance_km") or 5))))
+        laps = []
+        for i in range(n):
+            if metric == "negative_split":
+                dur = (330 if i < n // 2 else 300) if good else 330
+            elif metric == "even_pace":
+                dur = 300 if good else (260 if i % 2 == 0 else 340)
+            else:
+                dur = 300
+            laps.append({"dist_m": 1000, "dur_s": dur,
+                         "cad": 178 if good else 165 + i * 6,
+                         "hr": 150 if good else 140 + i * 12,
+                         "ele": 50 if good else 10})
+        return {"activities": [{"activity_id": "preview-1", "date": date,
+                                "distance_km": float(quality.get("distance_km") or 5),
+                                "laps": laps}]}
+
+    pages = {}
+
+    # 第一幕：岔路、支线都走掉，试炼交证据核验通过——「已选 + 核验通过」的样子
     st1 = G.run_state(gid, "2026-11-17")
     if st1.get("fork"):
         G.run_fork(gid, brave(st1["fork"]["id"]), "2026-11-17")
@@ -132,21 +181,35 @@ def main() -> int:
         if ev.get("options"):
             G.run_event(gid, i, ev["options"][0]["id"], "2026-11-17")
             break
-    G.run_trial(gid, trial_of(1), True, "act-1", "2026-11-17")
+    tv1 = assigned_trial(st1, 1)
+    G.run_trial(gid, tv1, True,
+                evidence=evidence(quality_of(tv1), True, "2026-11-17"),
+                today="2026-11-17")
+    pages["act1"] = G.run_state(gid, "2026-11-17")
 
-    # 第二幕
+    # 第二幕：试炼不交证据 → 未核验（格数对折）。这一档必须能看见，
+    # 否则玩家不知道自己为什么只走了一格。
     st2 = G.run_state(gid, "2026-11-24")
     if st2.get("fork"):
         G.run_fork(gid, brave(st2["fork"]["id"]), "2026-11-24")
+    tv2 = assigned_trial(st2, 2)
+    G.run_trial(gid, tv2, True, today="2026-11-24")
+    pages["act2"] = G.run_state(gid, "2026-11-24")
 
-    # 造受困：补给压到 1 + 冒险分支 + 试炼失败
+    # 第三幕：造受困——补给压到 1 + 冒险分支 + 交了证据但没达标
     import groups as GG
 
+    st3 = G.run_state(gid, "2026-12-01")
+    if st3.get("fork"):
+        G.run_fork(gid, brave(st3["fork"]["id"]), "2026-12-01")
     with GG.db() as c:
         c.execute("UPDATE group_run_member SET supply=1 WHERE group_id=? AND user_id=1",
                   (gid,))
-    G.run_trial(gid, trial_of(2), False, "", "2026-11-24")
-    st2s = G.run_state(gid, "2026-11-24")
+    tv3 = assigned_trial(st3, 3)
+    G.run_trial(gid, tv3, True,
+                evidence=evidence(quality_of(tv3), False, "2026-12-01"),
+                today="2026-12-01")
+    pages["act3_stuck"] = G.run_state(gid, "2026-12-01")
 
     # 结算页：先真跑到赛季末，让四幕都结算过——否则 targets 只有前两项，
     # 结算页会把第 3、4 段显示成「没走到」，那是数据不全，不是设计。
@@ -157,7 +220,6 @@ def main() -> int:
     font_url = (ROOT / "garmin_cn/content/expedition-serif.woff2").as_uri()
     wrap = (f"<style>html{{background:#05080d}}"
             f"body{{width:{WIDTH}px;margin:0 auto}}</style>")
-    pages = {"act2": st2, "act2_stuck": st2s}
     for name, data in pages.items():
         h = runsui.run_page("PREVIEW", "", data)
         h = h.replace('url("/fonts/expedition-serif.woff2")', f'url("{font_url}")')
@@ -165,10 +227,12 @@ def main() -> int:
                                           encoding="utf-8")
         print(f"{name}.html  ({len(h)} 字节)")
 
-    print(f"第 2 幕：{st2['season']['act']} | 岔路 "
+    st2, st2s = pages.get("act2") or {}, pages.get("act3_stuck") or {}
+    print(f"第 2 幕：{(st2.get('season') or {}).get('act')} | 岔路 "
           f"{(st2.get('fork') or {}).get('id')} | 本幕 "
-          f"{st2['progress'].get('stage_team')}/{st2['progress'].get('stage_target')}")
-    print(f"受困：{st2s['me']['status']} | 名单 {st2s['stranded']}")
+          f"{(st2.get('progress') or {}).get('stage_team')}/"
+          f"{(st2.get('progress') or {}).get('stage_target')}")
+    print(f"受困：{(st2s.get('me') or {}).get('status')} | 名单 {st2s.get('stranded')}")
     print(f"结局：{ended.get('ending')} | {(ended.get('ending_detail') or {}).get('title')}")
 
     # 四个结局各出一张。用 SQL 改 flags 造状态，走的是和真实一样的分支判定，

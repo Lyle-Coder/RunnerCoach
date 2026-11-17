@@ -14,9 +14,11 @@
    为了让「选过了」有地方记。
 2. **行程只在服务端算**。客户端只说「我这周跑了多少」，格数由服务端按
    `min(里程, 周目标) / 5` 折算。客户端能改自己的数字，改不了换算规则。
-3. **试炼只记不验**。配速分布只有手机算得出来（要 activity_detail 的分圈），
-   服务端收到「完成了」就加格。防不住伪造，所以产品上接受（风险清单里
-   已写明），不做反作弊的假动作——那只会让正常人被误伤。
+3. **试炼由数据判定，不自评**。配速分布只有手机算得出来（要
+   `activity_detail` 的分圈），所以手机交**原始分圈**（每公里的距离与用时），
+   由服务端逐条重算——交结论等于没交，改个包就全过了。判不出来时记
+   `unverified`（只算一半），不直接判失败：一刀切会把「真跑了但手机没数据」
+   的人罚掉，那比自评更糟。
 4. **不做定时任务**。2C2G 不跑常驻进程，所以「周一开新幕」「周日结算」
    全是在有人访问时补算的（懒触发）。代价是没人打开就一直不结算，
    收益是少一个半夜挂掉没人知道的进程。
@@ -27,6 +29,7 @@ import datetime as dt
 import json
 import random
 import secrets
+import statistics
 import threading
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -45,6 +48,14 @@ TYPE_W = (("trial", 40), ("supply", 35), ("story", 25))
 MORALE_MAX = 10
 SUPPLY_MAX = 10
 RESCUE_WINDOW = 24 * 3600   # 受困后 24 小时可被救
+
+# 试炼核验的口径（配套 §11.3「试炼不增加距离，只提高精度」）
+MIN_LAPS = 3                # 少于 3 个整圈没有「分布」可言，判不了
+SHORT_OK = 0.95             # 距离允许差 5%（GPS 少算一点很正常）
+MIN_LAP_M = 200             # 200 m 以下的残圈不参与判定
+WALK_PACE_S = 390           # 6:30/km，爬坡试炼里低于这个速度算「走了一段」
+CLIMB_NEED_M = 200          # 爬坡试炼的最低爬升
+MAX_EVIDENCE = 3            # 最多收 3 条候选活动，挑最好的一条算
 
 POOL_PATH = Path(__file__).resolve().parent / "content" / "expedition_events.json"
 _pool = {"mtime": 0.0, "data": None}
@@ -131,6 +142,161 @@ def init_db() -> None:
           PRIMARY KEY(group_id, user_id, act, trial_id)
         );
         """)
+        # 老库补列。`level` 是「这次是怎么判的」：verified / failed /
+        # unverified（见 api_trial）。解析不出还是 ''（历史数据）。
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(group_run_trial)")}
+        if "level" not in cols:
+            c.execute("ALTER TABLE group_run_trial ADD COLUMN level TEXT NOT NULL DEFAULT ''")
+
+
+# ---------------------------------------------------------------- 试炼核验
+def _num(v) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    return f
+
+
+def _laps_of(cand: dict) -> list[dict]:
+    """把客户端交来的分圈洗成「距离 / 用时 / 步频 / 心率 / 爬升」。
+
+    `dist_m` 与 `dur_s` 都必须是正数——残圈（最后 30 米那种）的 `pace_s`
+    是拿距离除出来的，一段 30 米能算出 0 秒配速，会把「匀速」判成铁定通过。
+    """
+    out = []
+    for l in (cand.get("laps") or []):
+        if not isinstance(l, dict):
+            continue
+        d, t = _num(l.get("dist_m")), _num(l.get("dur_s"))
+        if not d or not t or d < MIN_LAP_M or t <= 0:
+            continue
+        out.append({"d": d, "t": t,
+                    "cad": _num(l.get("cad")), "hr": _num(l.get("hr")),
+                    "ele": _num(l.get("ele")) or 0.0})
+    return out
+
+
+def _window(laps: list[dict], need_m: float) -> list[dict]:
+    """截出「正好这一段距离」的圈。
+
+    跑 10 km 去应一个 5 km 的试炼，只取前 5 km：否则一个 20 km 的长距离
+    跑，前后半程都很慢很匀，什么试炼都能顺手过掉。
+    """
+    if need_m <= 0:
+        return laps if len(laps) >= MIN_LAPS else []
+    out, cum = [], 0.0
+    for l in laps:
+        out.append(l)
+        cum += l["d"]
+        if cum >= need_m:
+            break
+    if cum < need_m * SHORT_OK or len(out) < MIN_LAPS:
+        return []
+    return out
+
+
+def _halves(laps: list[dict]) -> tuple[list[dict], list[dict]]:
+    """按累计距离对半分。跨在中间的那一圈按比例拆开——按「圈数」对半会
+    让 6.4 km 的 7 圈变成 3 圈对 4 圈，前后半程差着一公里。"""
+    cut = sum(l["d"] for l in laps) / 2.0
+    first, second, cum = [], [], 0.0
+    for l in laps:
+        if cum + l["d"] <= cut:
+            first.append(l)
+        elif cum >= cut:
+            second.append(l)
+        else:
+            k = cut - cum
+            first.append({"d": k, "t": l["t"] * k / l["d"], "cad": l["cad"],
+                          "hr": l["hr"], "ele": (l["ele"] or 0) * k / l["d"]})
+            second.append({"d": l["d"] - k, "t": l["t"] * (l["d"] - k) / l["d"],
+                           "cad": l["cad"], "hr": l["hr"],
+                           "ele": (l["ele"] or 0) * (l["d"] - k) / l["d"]})
+        cum += l["d"]
+    return first, second
+
+
+def _pace(ls: list[dict]) -> float:
+    """整段平均配速（秒/公里）。用时加权，不是各圈配速的平均——短圈不该
+    和长圈一样重。"""
+    d = sum(x["d"] for x in ls)
+    return (sum(x["t"] for x in ls) / d * 1000) if d > 0 else 0.0
+
+
+def judge(quality: dict, cand: dict) -> str:
+    """按「一段真实的分圈」判一条试炼。返回 ok / no / bad。
+
+    bad 是「判不了」不是「没过」：数据缺项、圈不够、距离差太多都算 bad，
+    由调用方降级成 unverified。把 bad 当 no 会把没戴心率带的人判成失败。
+    """
+    q = quality or {}
+    metric = str(q.get("metric") or "")
+    need = _num(q.get("distance_km")) or 0.0
+    tol = _num(q.get("tolerance_s")) or 0.0
+
+    laps = _laps_of(cand)
+    win = _window(laps, need * 1000)
+    if not win:
+        return "bad"
+    h1, h2 = _halves(win)
+
+    if metric == "negative_split":
+        return "ok" if _pace(h1) - _pace(h2) >= tol else "no"
+
+    if metric == "even_pace":
+        avg = _pace(win)
+        whole = [l for l in win if l["d"] >= 800] or win
+        return "ok" if all(abs(l["t"] / l["d"] * 1000 - avg) <= tol for l in whole) else "no"
+
+    if metric == "cadence_stable":
+        cads = [l["cad"] for l in win if l["cad"]]
+        if len(cads) < MIN_LAPS:
+            return "bad"
+        return "ok" if statistics.pstdev(cads) <= tol else "no"
+
+    if metric == "hr_drift":
+        hr1 = [l["hr"] for l in h1 if l["hr"]]
+        hr2 = [l["hr"] for l in h2 if l["hr"]]
+        if not hr1 or not hr2:
+            return "bad"
+        return "ok" if statistics.fmean(hr2) - statistics.fmean(hr1) <= tol else "no"
+
+    if metric == "climb_steady":
+        if sum(l["ele"] for l in win) < CLIMB_NEED_M:
+            return "no"
+        return "ok" if all(l["t"] / l["d"] * 1000 <= WALK_PACE_S for l in win) else "no"
+
+    return "bad"
+
+
+def verify_trial(quality: dict, evidence: dict,
+                 start: dt.date, end: dt.date) -> tuple[str, str]:
+    """核验一条试炼。返回 (level, activity_id)。
+
+    多条候选里**任一条达标**就算过；一条都判不了才算 unverified。这样
+    「这周跑了好几次」的人不会因为交上来的第一条不达标就被判失败。
+    """
+    lo, hi = start.isoformat(), end.isoformat()
+    verdicts: list[str] = []
+    passed = ""
+    for cand in ((evidence or {}).get("activities") or [])[:MAX_EVIDENCE]:
+        if not isinstance(cand, dict):
+            continue
+        d = str(cand.get("date") or "")[:10]
+        if not (lo <= d <= hi):
+            continue                  # 不在本幕窗口里的活动不认
+        v = judge(quality, cand)
+        verdicts.append(v)
+        if v == "ok" and not passed:
+            passed = str(cand.get("activity_id") or "")
+    if "ok" in verdicts:
+        return "verified", passed
+    if "no" in verdicts:
+        return "failed", ""
+    return "unverified", ""
 
 
 # ---------------------------------------------------------------- 小工具
@@ -623,12 +789,27 @@ def api_state(me, gid: int, query: dict) -> dict:
                              " WHERE group_id=? AND act=? AND status='stranded'",
                              (gid, act_no)).fetchall()
         fork_sel = _fork_row(c, gid, uid, act_no)
+        # 试炼的结果不在 group_run_event 里，在 group_run_trial 里（带 level）。
+        # 两张表分开是对的：一个事件可能既被选过又被跑过，混一张就说不清了。
+        trs = {r["trial_id"]: dict(r) for r in c.execute(
+            "SELECT * FROM group_run_trial WHERE group_id=? AND user_id=? AND act=?",
+            (gid, uid, act_no)).fetchall()}
 
     evs = []
     for r in rows:
         d = _by_id(r["event_id"])
-        if d:
-            evs.append(_event_view(d, r))
+        if not d:
+            continue
+        v = _event_view(d, r)
+        if d.get("type") == "trial":
+            t = trs.get(d["id"])
+            if t:
+                ok = bool(int(t["done"]))
+                v["chosen"] = "ok" if ok else "fail"
+                v["level"] = t["level"] or ""
+                v["result"] = (d.get("result_brief") or {}).get(
+                    "success" if ok else "fail", "")
+        evs.append(v)
     return {
         "ok": True,
         "season": {"start": season["season_start"], "end": season["season_end"],
@@ -792,12 +973,26 @@ def api_event(me, gid: int, body: dict) -> dict:
 
 
 def api_trial(me, gid: int, body: dict) -> dict:
-    """上报试炼结果。`done=false` 也要报——失败要扣补给，不报不等于没做。"""
+    """上报试炼结果。
+
+    三档，由**数据**定，不由自评定：
+
+    | level | 条件 | 奖励 |
+    |---|---|---|
+    | `verified` | 交了分圈、逐条算过、达标 | 全额 |
+    | `failed` | 交了分圈、算出来没达标 | 按失败（扣补给，可能受困） |
+    | `unverified` | 判不了（室内没圈 / 手表没同步） | 只算一半，不给士气与增益 |
+
+    第三档是刻意留的：一刀切判失败会把「真跑了但手机没数据」的人罚掉，
+    比自评更伤。但「随手点一下」和「跑完回来」拿的东西必须不一样，否则
+    这个机制就只是装饰。
+    """
     uid = int(me["user_id"])
     today = G._today(body.get("today"))
     trial_id = str(body.get("trial_id") or "").strip()
-    done = bool(body.get("done"))
+    claim = bool(body.get("done"))
     activity_id = str(body.get("activity_id") or "")[:40]
+    evidence = body.get("evidence") if isinstance(body.get("evidence"), dict) else None
     with G.db() as c:
         G._require_member(c, gid, uid)
     season, act_no, _ = ensure(gid, today)
@@ -807,16 +1002,53 @@ def api_trial(me, gid: int, body: dict) -> dict:
             raise G.GroupError(400, "不是试炼")
         if int(ev.get("act") or 0) != act_no:
             raise G.GroupError(409, "这条试炼不属于当前这一幕")
+        # 必须是自己抽到的那条。池子不大（每幕三四条），不查这一下就等于
+        # 「随便挑一条试炼来报」——奖励照样给，抽签也就白抽了。
+        mine = c.execute("SELECT 1 FROM group_run_event WHERE group_id=? AND user_id=?"
+                         " AND act=? AND event_id=?",
+                         (gid, uid, act_no, trial_id)).fetchone()
+        if not mine:
+            raise G.GroupError(404, "这条试炼不在你这次的路上")
         old = c.execute("SELECT * FROM group_run_trial WHERE group_id=? AND user_id=?"
                         " AND act=? AND trial_id=?", (gid, uid, act_no, trial_id)).fetchone()
         if old:
-            if int(old["done"]) == int(done):
-                return {"ok": True, "already": True, "done": done}
+            if int(old["done"]) == int(claim):
+                return {"ok": True, "already": True, "done": claim,
+                        "level": old["level"] or ""}
             raise G.GroupError(409, "这条试炼已经报过了")
+
+        # 有证据就由证据说话。没证据才退回自评，并且只给一半。
+        w_start, w_end = _act_span(season, act_no)
+        level, hit = verify_trial(ev.get("quality") or {}, evidence, w_start, w_end)
+        if level == "verified":
+            done = True
+        elif level == "failed":
+            done = False
+        else:
+            done = claim          # 判不了：按用户说的记，但奖励打折
+
+        if done and level == "verified":
+            eff = dict(ev.get("success") or {})
+        elif done:
+            # 未核验：格数对折，士气与增益不给。补给是资源不是奖励，照给。
+            eff = dict(ev.get("success") or {})
+            adv = int(eff.get("advance") or 0)
+            if adv:
+                eff["advance"] = max(1, adv // 2)
+            eff.pop("morale", None)
+            eff.pop("buff", None)
+        else:
+            eff = dict(ev.get("fail") or {})
+
         c.execute("INSERT INTO group_run_trial(group_id,user_id,act,trial_id,done,"
-                  "activity_id,ts) VALUES(?,?,?,?,?,?,?)",
-                  (gid, uid, act_no, trial_id, int(done), activity_id, G._now()))
-        eff = (ev.get("success") if done else ev.get("fail")) or {}
+                  "activity_id,ts,level) VALUES(?,?,?,?,?,?,?,?)",
+                  (gid, uid, act_no, trial_id, int(done),
+                   activity_id or hit, G._now(), level))
+        # 事件行也标一下，否则卡片永远显示「跑完了 / 没跑成」两个按钮，
+        # 用户会一遍遍点，每次都弹「已经报过了」。
+        c.execute("UPDATE group_run_event SET choice=?, ts=? WHERE group_id=? AND user_id=?"
+                  " AND act=? AND event_id=?",
+                  ("ok" if done else "fail", G._now(), gid, uid, act_no, trial_id))
         m = _row(c, gid, uid, act_no)
         supply = max(0, min(SUPPLY_MAX, int(m["supply"] if m else 3) + int(eff.get("supply") or 0)))
         c.execute("UPDATE group_run_member SET supply=?, pos=pos+?, updated_at=?"
@@ -829,8 +1061,16 @@ def api_trial(me, gid: int, body: dict) -> dict:
         # 失败之后立刻判受困：补给刚被扣掉，这一刻三个条件全部已知。
         # 等结算再判就晚了——那一幕已经结束，救援窗口根本打不开。
         stranded = bool(not done and maybe_strand(c, gid, uid, act_no, season))
-    return {"ok": True, "done": done, "supply": supply,
-            "advance": int(eff.get("advance") or 0),
+    note = ""
+    if level == "unverified":
+        note = ("这次没找到能核验的跑步记录，按未核验记：格数只算一半，"
+                "士气与增益不算。" if done else "")
+    elif level == "verified":
+        note = "记录对得上，按达标算。"
+    else:
+        note = "记录里这一段没达到要求，按没跑成算。"
+    return {"ok": True, "done": done, "level": level, "supply": supply,
+            "advance": int(eff.get("advance") or 0), "note": note,
             # 叫 me_stranded 而不是 stranded：state 里的 `stranded` 是**数组**
             # （全组受困名单），同一个名字两种类型，客户端统一建模时会撞。
             "me_stranded": stranded,
