@@ -223,55 +223,110 @@ def _target_km(c, gid: int, act: int) -> float:
 
 
 # ---------------------------------------------------------------- 开季与推进
-# 结算入口的进程内锁。两个成员同时刷新时，两个线程会都读到 settled_act=0、
-# 各结算一遍——结果是士气扣两次、flags 互相覆盖。SQLite 的写锁只保证不崩，
-# 保证不了「只算一次」。
-#
-# 用一把全局锁而不是按组分段：单实例、热路径 3 ms，排队代价可以忽略；
-# 换成多实例部署时必须改成数据库层的锁（比如条件 UPDATE 抢 settled_act），
-# 进程内锁跨不了进程。
-_SETTLE_LOCK = threading.Lock()
+def _read(gid: int) -> dict | None:
+    with G.db() as c:
+        r = _season_of(c, gid)
+        return dict(r) if r else None
 
 
-def ensure(c, gid: int, today: dt.date):
-    """保证赛季存在，并把该结算的幕结算掉。返回 (season 行, 当前幕, 是否已结束)。"""
-    with _SETTLE_LOCK:
-        return _ensure_locked(c, gid, today)
+def _has_draw(gid: int, act: int) -> bool:
+    with G.db() as c:
+        return bool(c.execute("SELECT 1 FROM group_run_event WHERE group_id=? AND act=? LIMIT 1",
+                              (gid, act)).fetchone())
 
 
-def _ensure_locked(c, gid: int, today: dt.date):
-    s = _season_of(c, gid)
-    if not s:
-        mon = today - dt.timedelta(days=today.weekday())
-        end = mon + dt.timedelta(days=SEASON_DAYS - 1)
-        seed = secrets.token_hex(8)
-        c.execute("INSERT INTO group_run_season(group_id,season_start,season_end,act,morale,"
-                  "seed,flags,settled_act,ended,updated_at) VALUES(?,?,?,1,5,?, '{}',0,0,?)",
-                  (gid, mon.isoformat(), end.isoformat(), seed, G._now()))
-        s = _season_of(c, gid)
+def _cur_act(s: dict) -> int:
+    return max(1, min(ACTS, int(s["settled_act"]) + 1))
 
+
+def _is_ready(s: dict, today: dt.date) -> bool:
+    """是否已经结算到「今天该到的地方」。纯判断，不写库。"""
     start = dt.date.fromisoformat(s["season_start"])
-    # 今天应该走到第几幕（超过赛季末就停在最后一幕）
     want = max(1, min(ACTS, (today - start).days // ACT_DAYS + 1))
-    while int(s["settled_act"]) < want - 1:
-        nxt = int(s["settled_act"]) + 1
-        draw(c, gid, s, nxt)          # 先把人拉进这一幕，否则结算时行不存在
-        _settle(c, gid, nxt, s)
-        c.execute("UPDATE group_run_season SET settled_act=?, updated_at=? WHERE group_id=?",
-                  (nxt, G._now(), gid))
-        s = _season_of(c, gid)
-
-    # 赛季结束：过了最后一周的周日，把第 4 幕结算掉并定格
+    if int(s["settled_act"]) < want - 1:
+        return False
     if not int(s["ended"]) and today > dt.date.fromisoformat(s["season_end"]):
-        if int(s["settled_act"]) < ACTS:
-            draw(c, gid, s, ACTS)     # 同上：先建行再结算，否则第 4 幕恒为 0
-            _settle(c, gid, ACTS, s)
-            c.execute("UPDATE group_run_season SET settled_act=?, ended=1, updated_at=?"
-                      " WHERE group_id=?", (ACTS, G._now(), gid))
-        else:
-            c.execute("UPDATE group_run_season SET ended=1 WHERE group_id=?", (gid,))
+        return False
+    return True
+
+
+def ensure(gid: int, today: dt.date) -> tuple[dict, int, bool]:
+    """保证赛季存在且已结算到该到的一幕。返回 (season, 当前幕, 是否已结束)。
+
+    两段式，这是给「cron + 懒触发」并存准备的关键：
+
+    * **热路径**（绝大多数请求）：只读两次，不拿写锁。cron 已经结算过了，
+      用户打开就是最新状态。
+    * **冷路径**（跨周那一刻，cron 没跑到、或 cron 也没赶上）：进
+      `BEGIN IMMEDIATE`，用**条件 UPDATE** 抢 `settled_act`。抢到才结算，
+      没抢到说明别的进程/线程正在算，直接读最新值返回。
+
+    「先抢锁再算」而不是「先算再抢锁」：算错的代价是白算 17 ms，
+    而先算后抢在抢不到时白算一次，且两次结果若不同会让状态来回跳。
+    """
+    s = _read(gid)
+    if s and _is_ready(s, today):
+        act = _cur_act(s)
+        if _has_draw(gid, act):
+            return s, act, bool(s["ended"])
+    return _settle_path(gid, today)
+
+
+def _settle_path(gid: int, today: dt.date) -> tuple[dict, int, bool]:
+    with G.db(immediate=True) as c:
         s = _season_of(c, gid)
-    return s, max(1, min(ACTS, int(s["settled_act"]) + 1)), bool(int(s["ended"]))
+        if not s:
+            mon = today - dt.timedelta(days=today.weekday())
+            end = mon + dt.timedelta(days=SEASON_DAYS - 1)
+            c.execute("INSERT INTO group_run_season(group_id,season_start,season_end,act,morale,"
+                      "seed,flags,settled_act,ended,updated_at) VALUES(?,?,?,1,5,?, '{}',0,0,?)",
+                      (gid, mon.isoformat(), end.isoformat(), secrets.token_hex(8), G._now()))
+            s = _season_of(c, gid)
+            if s is None:
+                raise G.GroupError(500, "赛季创建失败")
+
+        start = dt.date.fromisoformat(s["season_start"])
+        want = max(1, min(ACTS, (today - start).days // ACT_DAYS + 1))
+
+        # 逐幕结算。每一幕先抢 settled_act，抢到才算——抢不到就是别的进程
+        # 已经推进了，直接跳出读最新值。
+        while int(s["settled_act"]) < want - 1:
+            n = int(s["settled_act"]) + 1
+            cur = c.execute("UPDATE group_run_season SET settled_act=?, updated_at=?"
+                            " WHERE group_id=? AND settled_act=?",
+                            (n, G._now(), gid, n - 1))
+            if cur.rowcount != 1:
+                break
+            draw(c, gid, s, n)
+            _settle(c, gid, n, s)
+            s = _season_of(c, gid)
+            if s is None:
+                break
+
+        # 赛季收尾：过了最后一个周日就把第 4 幕结算掉并定格
+        if s is not None and not int(s["ended"]):
+            end = dt.date.fromisoformat(s["season_end"])
+            if today > end:
+                if int(s["settled_act"]) < ACTS:
+                    cur = c.execute("UPDATE group_run_season SET settled_act=?, updated_at=?"
+                                    " WHERE group_id=? AND settled_act=?",
+                                    (ACTS, G._now(), gid, int(s["settled_act"])))
+                    if cur.rowcount == 1:
+                        draw(c, gid, s, ACTS)
+                        _settle(c, gid, ACTS, s)
+                c.execute("UPDATE group_run_season SET ended=1, updated_at=? WHERE group_id=?",
+                          (G._now(), gid))
+                s = _season_of(c, gid)
+
+        if s is None:
+            raise G.GroupError(500, "赛季读取失败")
+
+        # 当前幕如果还没抽签（第一次进入这一幕），补上
+        act = _cur_act(dict(s))
+        if not c.execute("SELECT 1 FROM group_run_event WHERE group_id=? AND act=? LIMIT 1",
+                         (gid, act)).fetchone():
+            draw(c, gid, s, act)
+        return dict(s), act, bool(s["ended"])
 
 
 def _settle(c, gid: int, act_no: int, season) -> None:
@@ -419,8 +474,8 @@ def api_state(me, gid: int, query: dict) -> dict:
     today = G._today((query.get("today") or [None])[0])
     with G.db() as c:
         G._require_member(c, gid, uid)
-        season, act_no, ended = ensure(c, gid, today)
-        draw(c, gid, season, act_no)
+    season, act_no, ended = ensure(gid, today)
+    with G.db() as c:
 
         s, e = _act_span(season, act_no)
         fork = _fork_of(act_no, season["seed"])
@@ -436,14 +491,18 @@ def api_state(me, gid: int, query: dict) -> dict:
             "SELECT SUM(distance_m) AS d FROM group_daily WHERE group_id=? AND date BETWEEN ? AND ?",
             (gid, s.isoformat(), e.isoformat())).fetchone()["d"] or 0
         base_done = sum(float(v) for k, v in stages.items() if int(k) < act_no)
+        # 一次 GROUP BY 拿全组的周里程。原来是人循环里各查一次——50 人组
+        # 就是 51 条 SQL，而 state 是进组页就调的高频接口。
+        dist = {int(r["user_id"]): float(r["d"] or 0) for r in c.execute(
+            "SELECT user_id, SUM(distance_m) AS d FROM group_daily"
+            " WHERE group_id=? AND date BETWEEN ? AND ? GROUP BY user_id",
+            (gid, s.isoformat(), e.isoformat()))}
         live = 0.0
         for r in c.execute("SELECT user_id, week_target_km, pos FROM group_run_member"
                            " WHERE group_id=? AND act=?", (gid, act_no)).fetchall():
-            d = c.execute("SELECT SUM(distance_m) AS d FROM group_daily WHERE group_id=?"
-                          " AND user_id=? AND date BETWEEN ? AND ?",
-                          (gid, r["user_id"], s.isoformat(), e.isoformat())).fetchone()["d"] or 0
             target = float(r["week_target_km"] or 0) or DEFAULT_WEEK_KM
-            live += min(float(d) / 1000.0, target) / KM_PER_GRID + int(r["pos"] or 0)
+            live += (min(dist.get(int(r["user_id"]), 0.0) / 1000.0, target) / KM_PER_GRID
+                     + int(r["pos"] or 0))
         pos = int(mine["pos"]) if mine else 0
         target_now = _target_km(c, gid, act_no)
 
@@ -502,8 +561,8 @@ def api_target(me, gid: int, body: dict) -> dict:
         raise G.GroupError(400, "周目标要在 0–300 km")
     with G.db() as c:
         G._require_member(c, gid, uid)
-        season, act_no, _ = ensure(c, gid, today)
-        draw(c, gid, season, act_no)
+    season, act_no, _ = ensure(gid, today)
+    with G.db() as c:
         # 只能下调，不能上调（文档 11.3：防止为团队多拿格而加练）
         cur = _row(c, gid, uid, act_no)
         if cur and float(cur["week_target_km"] or 0) > 0 and km > float(cur["week_target_km"]) + 0.01:
@@ -519,8 +578,8 @@ def api_fork(me, gid: int, body: dict) -> dict:
     opt_id = str(body.get("option") or "").strip()
     with G.db() as c:
         G._require_member(c, gid, uid)
-        season, act_no, _ = ensure(c, gid, today)
-        draw(c, gid, season, act_no)
+    season, act_no, _ = ensure(gid, today)
+    with G.db() as c:
         fork = _fork_of(act_no, season["seed"])
         if not fork:
             raise G.GroupError(404, "本幕没有岔路")
@@ -556,8 +615,8 @@ def api_event(me, gid: int, body: dict) -> dict:
     opt_id = str(body.get("option") or "").strip()
     with G.db() as c:
         G._require_member(c, gid, uid)
-        season, act_no, _ = ensure(c, gid, today)
-        draw(c, gid, season, act_no)
+    season, act_no, _ = ensure(gid, today)
+    with G.db() as c:
         if slot is None:
             raise G.GroupError(400, "缺少 slot")
         try:
@@ -618,8 +677,8 @@ def api_trial(me, gid: int, body: dict) -> dict:
     activity_id = str(body.get("activity_id") or "")[:40]
     with G.db() as c:
         G._require_member(c, gid, uid)
-        season, act_no, _ = ensure(c, gid, today)
-        draw(c, gid, season, act_no)
+    season, act_no, _ = ensure(gid, today)
+    with G.db() as c:
         ev = _by_id(trial_id)
         if not ev or ev.get("type") != "trial":
             raise G.GroupError(400, "不是试炼")
@@ -658,7 +717,8 @@ def api_rescue(me, gid: int, body: dict) -> dict:
         raise G.GroupError(400, "缺少 user_id")
     with G.db() as c:
         G._require_member(c, gid, uid)
-        season, act_no, _ = ensure(c, gid, today)
+    season, act_no, _ = ensure(gid, today)
+    with G.db() as c:
         if target == uid:
             raise G.GroupError(400, "不能救自己")
         t = _row(c, gid, target, act_no)
@@ -692,7 +752,8 @@ def api_outcome(me, gid: int, query: dict) -> dict:
     today = G._today((query.get("today") or [None])[0])
     with G.db() as c:
         G._require_member(c, gid, uid)
-        season, act_no, ended = ensure(c, gid, today)
+    season, act_no, ended = ensure(gid, today)
+    with G.db() as c:
         flags = json.loads(season["flags"] or "{}")
         stages = flags.get("stages") or {}
         targets = flags.get("targets") or {}

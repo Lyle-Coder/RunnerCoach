@@ -69,7 +69,20 @@ class GroupError(Exception):
 
 # ---------------------------------------------------------------- 存储
 @contextmanager
-def db():
+def db(immediate: bool = False):
+    """数据库连接。
+
+    `immediate=True` 时一开始就拿写锁（`BEGIN IMMEDIATE`），用于**跨进程**
+    的「只做一次」场景（赛季结算）。区别很关键：
+
+    * 默认（deferred）：先 SELECT 拿读锁，真要写时才升级成写锁。两个进程
+      同时读、又同时想写，就会互相等对方的读锁，直接 `database is locked`。
+    * `BEGIN IMMEDIATE`：进门就拿写锁，后到的排队等（timeout 10 秒），
+      等到之后读到的是已经提交过的新值，判断自然成立。
+
+    代价是排队的那段时间里，这个库的所有写都要等——所以只给短事务用，
+    不要拿它包一次扫描全表的批处理。
+    """
     Path(GROUPS_DB).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(GROUPS_DB, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -79,8 +92,21 @@ def db():
             conn.execute("PRAGMA journal_mode=WAL")
         except sqlite3.OperationalError:
             pass
+        if immediate:
+            conn.isolation_level = None          # 关掉隐式事务，手动控制
+            conn.execute("BEGIN IMMEDIATE")
         yield conn
-        conn.commit()
+        if immediate:
+            conn.execute("COMMIT")
+        else:
+            conn.commit()
+    except Exception:
+        if immediate:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+        raise
     finally:
         conn.close()
 

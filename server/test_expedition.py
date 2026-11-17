@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import http.client
 import json
 import os
@@ -27,6 +28,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import app  # noqa: E402
 import expedition as EXP  # noqa: E402
+import tick as TICK  # noqa: E402
 
 PORT = 0
 ok = fail = 0
@@ -87,12 +89,25 @@ def main() -> int:
     st, r = req("POST", "/v1/group/create", {"name": "秦岭跑团", "max_members": 10, "alias": "老李"}, a)
     gid, code = r["group"]["id"], r["group"]["invite_code"]
     req("POST", "/v1/group/join", {"code": code, "alias": "小赵"}, b)
+    # 固定 seed：抽签是确定性的，但种子本身随机。不钉住的话每次跑抽到的
+    # 事件不同，带 if 的断言数量会漂移，失败也复现不了。
+    with EXP.G.db() as c:
+        c.execute("INSERT INTO group_run_season(group_id,season_start,season_end,act,morale,"
+                  "seed,flags,settled_act,ended,updated_at) VALUES(?,?,?,1,5,'fixtureseed','{}',0,0,?)",
+                  (gid, "2026-11-16", "2026-12-13", 1))
     print(f"组 {gid} 建好，两人加入\n")
+
+    # 另起一个组测「自动开季」——主组用了固定赛季，测不到这条
+    st, r = req("POST", "/v1/group/create", {"name": "自动开季组", "alias": "阿甘"}, c3)
+    gid_auto = r["group"]["id"]
+    st, d_auto = state(gid_auto, c3, "2026-11-16")
+    check("没有赛季时自动开季",
+          st == 200 and d_auto.get("season", {}).get("act") == 1, f"{st} {d_auto}")
 
     # ---------------- 开季
     print("1. 开季与抽签")
     st, d = state(gid, a, "2026-11-16")
-    check("自动开季 200", st == 200, f"{st} {d}")
+    check("读取赛季 200", st == 200, f"{st} {d}")
     check("当前是第一幕", d["season"]["act"] == 1, str(d.get("season")))
     check("周区间是 11-16~11-22",
           d["season"]["week_from"] == "2026-11-16" and d["season"]["week_to"] == "2026-11-22",
@@ -233,6 +248,46 @@ def main() -> int:
     check("结局是四种之一",
           r.get("ending") in ("arrive", "detour", "lost", "discoverer"), str(r.get("ending")))
     check("结局带团队总量", "team" in r, str(r))
+
+    # ---------------- cron 预热
+    print("\n10. cron 预热")
+    # a 已经是组长，按「一人不能当两个组长」会被拒，用 b 建
+    st, r = req("POST", "/v1/group/create", {"name": "预热组", "alias": "队长"}, b)
+    gid_t = r["group"]["id"]
+    req("POST", f"/v1/group/{gid_t}/report", {"days": [
+        {"date": "2026-11-16", "distance_m": 12000, "duration_s": 4000, "acts": 1}]}, b)
+    state(gid_t, b, "2026-11-16")          # 让赛季开起来
+    T2 = dt.date(2026, 11, 23)
+    check("tick 能识别需要结算的组", gid_t in TICK.due(T2), str(TICK.due(T2)))
+    rep = TICK.run(today=T2, quiet=True)
+    check("tick 结算成功", rep["settled"] >= 1 and rep["failed"] == 0, str(rep))
+    st, d3 = state(gid_t, b, "2026-11-23")
+    check("tick 之后直接是第二幕", d3["season"]["act"] == 2, str(d3.get("season")))
+    rep2 = TICK.run(today=T2, quiet=True)
+    check("重复 tick 不再结算（幂等）", rep2["due"] == 0, str(rep2))
+    # 其他组也在跑，所以只断言「本组又需要结算了」，不断言列表恰好等于它
+    check("下一周才会重新需要结算",
+          gid_t in TICK.due(dt.date(2026, 11, 30)), str(TICK.due(dt.date(2026, 11, 30))))
+
+    # 并发：cron 和 web 抢同一组，只能算一次
+    errs = []
+    def hammer():
+        try:
+            EXP.ensure(gid_t, dt.date(2026, 11, 30))
+        except Exception as e:  # noqa: BLE001
+            errs.append(f"{type(e).__name__}: {e}")
+    ts = [threading.Thread(target=hammer) for _ in range(10)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    check("10 线程并发结算无报错", not errs, str(errs[:2]))
+    with EXP.G.db() as c:
+        srow = EXP._season_of(c, gid_t)
+        flags = json.loads(srow["flags"])
+    check("并发只推进一幕", int(srow["settled_act"]) == 2, str(srow["settled_act"]))
+    check("各幕只记一次（没有被重复结算）",
+          len(flags.get("stages") or {}) == 2, json.dumps(flags.get("stages")))
 
     print(f"\n通过 {ok} 项，失败 {fail} 项")
     srv.shutdown()
