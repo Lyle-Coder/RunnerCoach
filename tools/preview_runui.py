@@ -213,8 +213,8 @@ def main() -> int:
 
     # 结算页：先真跑到赛季末，让四幕都结算过——否则 targets 只有前两项，
     # 结算页会把第 3、4 段显示成「没走到」，那是数据不全，不是设计。
-    G.run_state(gid, "2026-12-20")
-    ended = G.run_outcome(gid, "2026-12-20")
+    G.run_state(gid, "2026-12-14")
+    ended = G.run_outcome(gid, "2026-12-14")
 
     OUT.mkdir(parents=True, exist_ok=True)
     font_url = (ROOT / "garmin_cn/content/expedition-serif.woff2").as_uri()
@@ -267,7 +267,7 @@ def main() -> int:
             c.execute("UPDATE group_run_season SET flags=?, morale=? WHERE group_id=?",
                       (json.dumps(flags, ensure_ascii=False),
                        2 if key == "detour" else 7, gid))
-        return G.run_outcome(gid, "2026-12-20")
+        return G.run_outcome(gid, "2026-12-14")
 
     for key in ("arrive", "detour", "lost", "discoverer"):
         d = outcome_for(key)
@@ -279,9 +279,19 @@ def main() -> int:
               f"遗迹={d.get('relic_count')} 士气={d.get('morale')} "
               f"acts={[(a['act'], a['got'], a['target'], a['hit']) for a in d.get('acts') or []]}")
 
+    # 翻篇之后的第一幕：页脚多一句「上一季」。这一句是给「上周没打开」的人
+    # 留的——没有它，那一季就等于没发生过。
+    nxt = G.run_state(gid, "2026-12-15")
+    _h = runsui.run_page("PREVIEW", "", nxt)
+    _h = _h.replace('url("/fonts/expedition-serif.woff2")', f'url("{font_url}")')
+    (OUT / "act_next.html").write_text(_h.replace("</body>", wrap + "</body>"),
+                                       encoding="utf-8")
+    print(f"act_next.html  上一季={(nxt.get('season') or {}).get('last')}")
+
     pages = dict(pages)
     pages.update({f"end_{k}": None for k in
                   ("arrive", "detour", "lost", "discoverer")})
+    pages["act_next"] = None
 
     exe = CHROME if Path(CHROME).is_file() else "chrome"
     for name in pages:

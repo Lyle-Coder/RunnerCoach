@@ -979,6 +979,16 @@ def run() -> int:
     _st.conn.close()
     shutil.rmtree(_evd, ignore_errors=True)
 
+    # 空态：三种「打不开」要分开说。混成一句「远征还没开始」的话，
+    # 玩家不知道该去点哪儿——三种情况要办的事完全不同。
+    _e_login = RU.empty_page("login")
+    _e_group = RU.empty_page("nogroup")
+    _e_off = RU.empty_page("offline", "HTTP 500")
+    assert "先知道你是谁" in _e_login and "/account" in _e_login, "未登录空态没有去账号页"
+    assert "你还没有队" in _e_group and "/groups" in _e_group, "没组空态没有建组入口"
+    assert "路还没开出来" in _e_off and "重试" in _e_off, "连不上空态没有重试"
+    assert len({_e_login, _e_group, _e_off}) == 3, "三种空态渲染成了一样的"
+
     _fork = {"id": "x_fork", "type": "story", "kind": "fork", "act": 1,
              "title": "雪桥", "text": "溪面结了一层薄冰。", "chosen": "",
              "options": [{"id": "cross", "label": "直接从冰上过",

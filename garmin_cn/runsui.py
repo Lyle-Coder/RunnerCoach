@@ -147,6 +147,27 @@ CSS = """
 
 .empty{text-align:center;padding:40px 16px;color:var(--muted);font-size:13px}
 .empty a{display:inline-block;margin-top:14px}
+
+/* ---------- 空态 ----------
+   三种「打不开」要分开说：没登录、没队、连不上。混成一句「远征还没开始，
+   xxx」的话，玩家不知道该去点哪儿——三种情况要办的事完全不同。 */
+.emp{padding:44px 6px 0;text-align:center}
+.emp h2{margin:0;font-size:22px;font-weight:650;letter-spacing:-.2px;
+  line-height:1.35;color:var(--ink)}
+.emp .pl{max-width:302px;margin:13px auto 0;text-align:left;
+  font-family:"RC Serif",Georgia,"Songti SC",serif;font-size:14px;
+  line-height:1.95;color:#C6D4E6}
+.emp .why{margin:16px auto 0;max-width:290px;font-size:11.5px;
+  line-height:1.7;color:var(--faint)}
+.emp .cta{margin-top:22px}
+.emp .cta .btn{display:inline-block;min-width:150px;text-align:center}
+.emp .alt{display:inline-block;margin-top:13px;font-size:12px;
+  color:var(--muted);text-decoration:none}
+
+/* 上一季：页脚一句话。不做卡片、不加边框——它是回忆，不是待办 */
+.recap{margin-top:20px;padding-top:14px;border-top:1px solid var(--line2);
+  text-align:center;font-size:11.5px;color:var(--faint);line-height:1.7}
+.recap b{color:var(--ink2);font-weight:600;font-variant-numeric:tabular-nums}
 """
 
 # 试炼类型的中文。这是「怎么演」不是「演什么」——它描述要跑什么，不涉及剧情。
@@ -387,15 +408,64 @@ def event_card(ev: dict, slot: int) -> str:
     return f'<div class="{cls}"><div class="in">{head}{body}{tail}</div></div>'
 
 
+# ---------------------------------------------------------------- 空态
+EMPTY = {
+    "login": {
+        "title": "先知道你是谁",
+        "prose": "远征是按队算的：谁在哪一队、这一周走了多少、上一段是谁先到的。"
+                 "没有账号，这些对不上号。",
+        "why": "账号只用来认人。里程仍然只在这台手机上报。",
+        "cta": ("去连账号", "/account"),
+    },
+    "nogroup": {
+        "title": "你还没有队",
+        "prose": "一个人也能跑。只是这一段路是按全队每周目标折算的——"
+                 "没有队，就没有这一段。",
+        "why": "建一个队，或者拿邀请码加入。",
+        "cta": ("去建队或加入", "/groups"),
+    },
+    "offline": {
+        "title": "路还没开出来",
+        "prose": "服务器没有回应。可能是这会儿没网，也可能正好在开季。",
+        "why": "",
+        "cta": ("重试", ""),
+    },
+}
+
+
+def empty_page(kind: str = "offline", detail: str = "") -> str:
+    """三种空态：没登录 / 没队 / 连不上。
+
+    原来这地方只有一句「远征还没开始。<br>原始错误>[回到小组]」。原始错误
+    对玩家没有意义（「HTTP 403」「你不是这个组的成员」），而且三种情况的
+    出路完全不同：没登录要去账号页、没队要去建组、连不上只需要重试。
+    """
+    e = EMPTY.get(kind) or EMPTY["offline"]
+    label, href = e["cta"]
+    if href:
+        cta = f'<a class="btn primary" href="{esc(href)}">{esc(label)}</a>'
+    else:
+        # 重试不回跳而是重载：连不上时带参数回跳会再做一次同样的失败请求
+        cta = f'<a class="btn primary" href="#" onclick="location.reload();' \
+              f'return false">{esc(label)}</a>'
+    why = esc(detail) if detail else esc(e["why"])
+    body = (f'<div class="emp"><h2>{esc(e["title"])}</h2>'
+            f'<div class="pl">{esc(e["prose"])}</div>'
+            + (f'<div class="why">{why}</div>' if why else "")
+            + f'<div class="cta">{cta}</div>'
+            '<a class="alt" href="/groups">回到小组</a></div>')
+    return ui.page("EXPEDITION · 雪线之前", "", "", body,
+                   css=FONT_CSS + CSS,
+                   head_bg=f'<div id="runbg">{ridge_svg()}</div>',
+                   back=("返回", "/groups"))
+
+
 # ---------------------------------------------------------------- 页面
 def run_page(token: str, message: str = "", data: dict | None = None) -> str:
     """远征主页。`data` 是 `/v1/group/{id}/run/state` 的返回。"""
     if not data or not data.get("ok"):
-        err = (data or {}).get("error") or "还没有赛季数据"
-        body = (f'<div class="empty">远征还没开始。<br>{esc(err)}'
-                '<br><a class="btn" href="/groups">回到小组</a></div>')
-        return ui.page("EXPEDITION", "远征", "雪线之前", body,
-                       css=FONT_CSS + CSS, back=("返回", "/groups"))
+        # 兜底：调用方没说是哪种情况时，别把原始错误糊在玩家脸上
+        return empty_page("offline", str((data or {}).get("error") or "")[:80])
 
     s = data.get("season") or {}
     prog = data.get("progress") or {}
@@ -493,7 +563,14 @@ def run_page(token: str, message: str = "", data: dict | None = None) -> str:
            "</form></div>")
 
     msg = f'<div class="note-box">{esc(message)}</div>' if message else ""
-    body = msg + bar + route + cards + stuck + tgt
+    # 上一季：一句话，放最后。它是回忆不是任务，不占上面任何位置。
+    last = s.get("last") or {}
+    recap = ""
+    if last:
+        # 不带日期：只留一季，说「上一季」就够了。写成 12-13 反而像一段区间。
+        recap = (f'<div class="recap">上一季 · {esc(str(last.get("title") or ""))}'
+                 f' <b>{float(last.get("team") or 0):g}</b> 格</div>')
+    body = msg + bar + route + cards + stuck + tgt + recap
 
     js = ("<script>var TK=" + json.dumps(token) + ";"
           "function post(p,d){var f=new FormData();f.append('token',TK);"
@@ -632,7 +709,7 @@ def outcome_page(token: str, data: dict | None = None) -> str:
             f'<div><b>{relics}<i>/3</i></b><span>旧日志</span></div>'
             "</div>"
             f'<div class="endacts">{acts}</div>'
-            '<p class="note" style="margin-top:14px">下一季周一自动开始。'
+            '<p class="note" style="margin-top:14px">明天开新的一季。'
             "队还在，路会换一段。</p>"
             '<div class="pager"><a class="btn" href="/groups">回到小组</a></div>'
             "</div>")

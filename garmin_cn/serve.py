@@ -1331,7 +1331,7 @@ class _Handler(SimpleHTTPRequestHandler):
         from . import group as G, runsui
 
         if not self._is_loopback():
-            return runsui.run_page("", "", {"ok": False, "error": "只允许本机操作"})
+            return runsui.empty_page("offline", "页面只能在手机上打开")
         # 页面令牌要在这里也生成：用户可能直接从「我的」点进 /run，
         # 没经过小组页。不生成的话页面能打开，但一选选项就报「页面已过期」。
         if not getattr(self.server, "group_token", ""):
@@ -1347,10 +1347,18 @@ class _Handler(SimpleHTTPRequestHandler):
             items = lst.get("groups") or []
             gid = int(items[0]["id"]) if items else 0
         if not gid:
-            return runsui.run_page("", "", {"ok": False,
-                                            "error": "还没有加入任何小组"})
+            return runsui.empty_page("nogroup")
         msg = (q.get("msg") or [""])[0]
         st = G.run_state(gid)
+        if not st.get("ok"):
+            # 三种打不开要分开引导：没登录去账号页、不是成员去建组、其余重试。
+            # 直接把「HTTP 403」糊上去，玩家除了退回上一页没别的可做。
+            if st.get("need_login"):
+                return runsui.empty_page("login")
+            err = str(st.get("error") or "")
+            if "成员" in err or "小组" in err:
+                return runsui.empty_page("nogroup")
+            return runsui.empty_page("offline", err[:60])
         # 赛季结束就直接进结算页：玩家下次打开想看到的是结果，
         # 不是一条停在最后一幕、还在催他跑步的路线。
         if (st.get("season") or {}).get("ended"):

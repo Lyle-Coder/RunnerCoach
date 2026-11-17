@@ -404,10 +404,10 @@ def _season(gid: int, t: dict) -> None:
     _call("41_target_set", "POST", f"/v1/group/{gid}/run/target",
           "报本周目标（只能**下调**，上调会被拒）",
           body={"week_target_km": 30, "today": w4}, token=t["owner"])
-    _call("42_outcome_ended", "GET", f"/v1/group/{gid}/run/outcome?today=2026-12-20",
+    _call("42_outcome_ended", "GET", f"/v1/group/{gid}/run/outcome?today=2026-12-14",
           "赛季结束：`ended=true` + 结局 + `relics`。`ending` 取值见 index.md",
           token=t["owner"])
-    _call("43_state_ended", "GET", f"/v1/group/{gid}/run/state?today=2026-12-20",
+    _call("43_state_ended", "GET", f"/v1/group/{gid}/run/state?today=2026-12-14",
           "**赛季结束后再打开 App** 会拿到这个：`season.ended` 为 true，"
           "`act` 停在最后一幕。前端要据此显示「本赛季结束」而不是继续催跑步",
           token=t["owner"])
@@ -421,7 +421,7 @@ def _season(gid: int, t: dict) -> None:
         c.execute("UPDATE group_run_season SET flags=? WHERE group_id=?",
                   (json.dumps(flags, ensure_ascii=False), gid))
     _call("44_outcome_discoverer", "GET",
-          f"/v1/group/{gid}/run/outcome?today=2026-12-20",
+          f"/v1/group/{gid}/run/outcome?today=2026-12-14",
           "隐藏结局：三处遗迹集齐 → `ending: discoverer`，`relics` 是 tag 数组",
           token=t["owner"])
 
@@ -476,6 +476,14 @@ def _errors(gid: int, t: dict) -> None:
           token=t["owner"], expect=409)
     _call("56_err_group_not_found", "GET", "/v1/group/9999",
           "组不存在或已解散 → 404", token=t["owner"], expect=404)
+
+    # 翻篇放最后：它会把赛季重置成第一幕，前面那些「按第四幕算」的用例全会失真
+    _call("45_state_next_season", "GET",
+          f"/v1/group/{gid}/run/state?today=2026-12-15",
+          "**翻篇之后的第一幕**：`season.start` 变成新的一周、`ended` 回 false、"
+          "`season.last` 是上一季的结论（这里显示「发现者」是因为上一步刚好把 "
+          "flags 改成了三个遗迹）。补给与行程都从干净状态重来",
+          token=t["owner"])
 
 
 # ---------------------------------------------------------------- 索引
