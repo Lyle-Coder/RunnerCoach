@@ -342,6 +342,14 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .prow.past{opacity:.5}
 .prow.cur{background:rgba(59,130,246,.08);border-radius:12px;
   margin:0 -10px;padding:10px}
+/* 整块可点的计划条：点击面积从「一个小链接」扩到整张卡。
+   里面的排版全交给 .rc-plan 的 flex，这里只负责别把链接样式漏进去。 */
+a.rc-plan-link{color:inherit;text-decoration:none;cursor:pointer;
+  -webkit-tap-highlight-color:transparent;transition:border-color .16s}
+a.rc-plan-link:active{transform:scale(.997)}
+a.rc-plan-link:focus-visible{outline:2px solid rgba(96,165,250,.6);outline-offset:2px}
+a.rc-plan-link .chev{flex:0 0 auto;font-size:19px;line-height:1;color:var(--muted);
+  opacity:.65;margin-left:2px}
 /* 表单里的数字输入统一收窄：默认宽度会把卡片撑破（手机上尤其明显） */
 .kvline b{flex:0 0 auto;min-width:0;display:flex;justify-content:flex-end}
 .kvline input[type=number]{width:88px;min-width:88px;padding:5px 6px;
@@ -1052,14 +1060,16 @@ def home_page() -> str:
     # 这种能一眼判断的信息，体积不变、信息量更大。
     _wp, _wd = int(pl.get("week_planned") or 0), int(pl.get("week_done") or 0)
     win_txt = (f"本周 {_wd}/{_wp} 完成" if _wp else "本周未排课")
-    plan_html = (f'<section class="rc-panel rc-plan-panel">'
+    # 整块可点：原来只有右上角「课表 →」那个小链接能点，手机上根本点不准。
+    # 现在整张卡就是一个链接，右侧留个 › 作为「可以进去」的暗示。
+    plan_html = (f'<a class="rc-panel rc-plan-panel rc-plan-link" href="/plan?from=today">'
                  f'<div class="rc-panel-hd"><span class="rc-eyebrow">{esc(eyebrow)}</span>'
                  f'<span class="rc-win">{esc(win_txt)}</span></div>'
                  f'<div class="rc-plan"><div class="when"><b>{esc(when)}</b>'
                  f'{esc(subwhen)}</div><div class="what"><div class="t">'
                  f'{esc(title)}</div>{desc_html}</div>'
-                 f'<a class="go" href="/plan?from=today">课表 →</a>'
-                 f'</div></section>')
+                 f'<span class="chev" aria-hidden="true">›</span>'
+                 f'</div></a>')
 
     # ---- 最近 7 天 ≈300：一个大数 + 7 根柱 + 3 条样本 --------------------
     dates = [(d0 - dt.timedelta(days=6 - i)).isoformat() for i in range(7)]
