@@ -556,7 +556,7 @@ def page(kicker: str, title: str, lede: str, body: str,
   {head_bg}
   {action}
   <div class="brandline"><div class="kicker">{esc(kicker)}</div></div>
-  <h1>{esc(title)}</h1>{lede_html}
+  {(f"<h1>{esc(title)}</h1>" if title else "")}{lede_html}
   <div class="meta">{chips}</div>
 </header>
 <main>{body}</main>

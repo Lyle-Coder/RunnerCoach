@@ -216,7 +216,7 @@ def _target_km(c, gid: int, act: int) -> float:
         if not rows:
             continue
         for r in rows:
-            if r["excluded"]:
+            if int(r["excluded"] or 0) >= 2:      # 连续两幕没动才剔除
                 continue
             total += float(r["week_target_km"] or 0) or DEFAULT_WEEK_KM
     return total / KM_PER_GRID * STAGE_RATIO
@@ -430,13 +430,17 @@ def _settle(c, gid: int, act_no: int, season) -> None:
             continue
         moved = dist.get(uid, 0.0) > 0 or int(row["pos"]) > 0 or uid in trial_ok
         prev = _row(c, gid, uid, act_no - 1) if act_no > 1 else None
-        idle_prev = bool(prev and int(prev["excluded"]) == 0 and prev["week_target_km"] == 0
-                         and not dist.get(uid, 0.0))
-        # 用副表记连续次数会多一张表；直接用 excluded 的单调性：
-        # 本幕没动且上一幕也没动 → 剔除。上一幕的判断看它有没有产格。
-        if not moved and idle_prev:
-            c.execute("UPDATE group_run_member SET excluded=1"
-                      " WHERE group_id=? AND user_id=? AND act=?", (gid, uid, act_no))
+        # `excluded` 记的是**连续没动的幕数**：0 正常、1 本幕没动、2 该剔除。
+        #
+        # 原来的判定是「本幕没动 + 上一幕 week_target_km == 0 + 本幕没里程」，
+        # 而 week_target_km 在用户不报目标时**一直是 0**（兜底 25 km 是在
+        # 算目标时补的，不回写表）。于是「连续两幕」退化成「只要有一幕没动」，
+        # 踢得比设计严一倍，段目标也跟着变小。
+        prev_idle = int(prev["excluded"]) if prev else 0
+        nxt = 0 if moved else min(2, prev_idle + 1)
+        if nxt != int(row["excluded"] or 0):
+            c.execute("UPDATE group_run_member SET excluded=?"
+                      " WHERE group_id=? AND user_id=? AND act=?", (nxt, gid, uid, act_no))
 
     # 6) 记本幕总量，供 outcome 用
     flags = json.loads(season["flags"] or "{}")
@@ -449,11 +453,24 @@ def _settle(c, gid: int, act_no: int, season) -> None:
 
 # ---------------------------------------------------------------- 抽签落库
 def draw(c, gid: int, season, act_no: int) -> None:
-    """为本幕生成每个人的支线（幂等：已有就不重抽）。"""
+    """为本幕生成每个人的支线与状态行（幂等）。
+
+    两件事必须分开做：**建成员行**和**抽支线**。原来用「本幕已有事件」做
+    提前返回，把建行也一起跳过了——只要这一幕先前被 draw 过一次（比如用户
+    中途打开 App 看了一眼），后面结算时成员行就不存在，`_target_km` 会把
+    这一幕的目标算成 0，段目标凭空少掉一整周。
+    """
+    uids = _members(c, gid, act_no)
+    for uid in uids:
+        if _row(c, gid, uid, act_no):
+            continue
+        prev = _row(c, gid, uid, act_no - 1) if act_no > 1 else None
+        c.execute("INSERT OR IGNORE INTO group_run_member(group_id,user_id,act,supply,"
+                  "week_target_km,status,updated_at) VALUES(?,?,?,?,?,'moving',?)",
+                  (gid, uid, act_no, int(prev["supply"]) if prev else 3, 0, G._now()))
     if c.execute("SELECT 1 FROM group_run_event WHERE group_id=? AND act=? LIMIT 1",
                  (gid, act_no)).fetchone():
         return
-    uids = _members(c, gid, act_no)
     relic = _relic_of(act_no, season["seed"], uids)
     for uid in uids:
         sides = _sides_of(act_no, season["seed"], uid)
@@ -463,15 +480,7 @@ def draw(c, gid: int, season, act_no: int) -> None:
             c.execute("INSERT OR IGNORE INTO group_run_event(group_id,user_id,act,slot,"
                       "event_id,choice,tag,ts) VALUES(?,?,?,?,?,'','',?)",
                       (gid, uid, act_no, slot, eid, G._now()))
-    # 本幕的初始状态：补给继承上一幕，没有就按 3 起
-    for uid in uids:
-        if _row(c, gid, uid, act_no):
-            continue
-        prev = _row(c, gid, uid, act_no - 1) if act_no > 1 else None
-        c.execute("INSERT INTO group_run_member(group_id,user_id,act,supply,week_target_km,"
-                  "status,updated_at) VALUES(?,?,?,?,?,'moving',?)",
-                  (gid, uid, act_no, int(prev["supply"]) if prev else 3,
-                   0, G._now()))
+
 
 
 # ---------------------------------------------------------------- 视图
@@ -578,6 +587,12 @@ def _event_view(e: dict, row=None) -> dict:
     }
     if e.get("quality"):
         out["quality"] = e["quality"]
+    # 遗迹（旧日志）：界面要把这类事件标出来，否则玩家会直接划过去，
+    # 三处集齐的隐藏结局就变成了运气。只给「是否特殊」，不给任何用处说明——
+    # 标得越明显越像任务清单，那就不叫探索了。
+    if any(str(t).startswith("relic_") for t in
+           [str(o.get("tag") or "") for o in (e.get("options") or [])]):
+        out["relic"] = True
     if row is not None:
         out["chosen"] = row["choice"]
         out["result"] = (e.get("result_brief") or {}).get(row["choice"], "")
@@ -860,6 +875,21 @@ def api_rescue(me, gid: int, body: dict) -> dict:
     return {"ok": True, "rescued": target}
 
 
+def _ending_view(key: str) -> dict:
+    """结局的标题与文案。
+
+    文案是**内容**，和事件正文一样只在服务端：客户端平时只知道 `ending`
+    这个键，到赛季结束才拿到具体文字。这样哪怕有人去抓包，「另一个结局
+    是什么样」也得真的再走一季才知道。
+    """
+    ends = pool().get("endings") or {}
+    one = ends.get(key) or {}
+    return {"key": key,
+            "title": str(one.get("title") or key),
+            "line": str(one.get("line") or ""),
+            "text": str(one.get("text") or "")}
+
+
 def api_outcome(me, gid: int, query: dict) -> dict:
     """赛季结局。没到结束就返回当前进度，不提前剧透。"""
     uid = int(me["user_id"])
@@ -875,6 +905,23 @@ def api_outcome(me, gid: int, query: dict) -> dict:
         reach = total >= float(targets.get(str(ACTS), _target_km(c, gid, ACTS)))
         relics = flags.get("relics") or []
         morale = int(season["morale"])
+        # 逐幕记录：结算页要显示「哪几段走够了」。前端不该自己从总分反推——
+        # 各幕的目标是逐周算的，反推出来会和当时实际判定的不一样。
+        route = _route()
+        acts = []
+        for i in range(1, len(route["acts"]) + 1):
+            got = float(stages.get(str(i), 0))
+            # 注意：`targets[i]` 是**到第 i 幕为止的累计目标**，而 `stages[i]`
+            # 是**第 i 幕自己的产出**。直接比会把第 2 幕的 13 格拿去和
+            # 「前两幕合计 24」比，于是每一段都判成没走够。
+            # 要减出本段份额：targets[i] - targets[i-1]。
+            prev = float(targets.get(str(i - 1), 0)) if i > 1 else 0.0
+            need = max(0.0, float(targets.get(str(i), 0)) - prev)
+            acts.append({"act": i,
+                         "theme": (route["acts"][i - 1].get("theme") if i <= len(route["acts"]) else ""),
+                         "got": round(got, 1), "target": round(need, 1),
+                         "hit": need > 0 and got >= need})
+        members = len(_members(c, gid, ACTS))
     if not ended:
         with G.db() as c:
             team_now, target_now = team_progress(c, gid, season, act_no)
@@ -889,8 +936,12 @@ def api_outcome(me, gid: int, query: dict) -> dict:
         ending = "detour"
     else:
         ending = "lost"
-    return {"ok": True, "ended": True, "ending": ending, "team": round(total, 1),
-            "morale": morale, "relics": relics}
+    return {"ok": True, "ended": True, "ending": ending,
+            "ending_detail": _ending_view(ending),
+            "team": round(total, 1), "morale": morale, "relics": relics,
+            "acts": acts, "members": members, "relic_count": len(relics),
+            "start": season["season_start"], "end": season["season_end"],
+            "season": pool().get("season") or "雪线之前"}
 
 
 # ---------------------------------------------------------------- 分发
