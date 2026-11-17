@@ -314,7 +314,43 @@ class MainActivity : Activity() {
         startSplashAnim()
         sp.postDelayed({ hideSplash() }, 9000L)
 
+        // 签名校验放在 UI 挂好之后、服务启动之前：不阻塞冷启动，
+        // 也不会因为弹窗盖在开屏上而看不见。
+        warnIfRepackaged()
+
         thread { bootServer() }
+    }
+
+    /**
+     * 官方签名指纹（SHA-256，release 证书）。
+     *
+     * 重新打包必然换签名，所以这个值对不上就说明包被人动过——软件园的
+     * 二次打包、加广告的魔改版都会露馅。不阻断使用（真盗版的人会删掉
+     * 这段代码），但要让用户知道手里的包不是官方的。
+     */
+    private fun warnIfRepackaged() {
+        // debug 包不校验：debug 证书和 release 不是同一张，自己开发时会误报
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) return
+        val want = "B4:9A:77:4A:C8:14:26:B9:9A:21:32:EB:CA:7E:53:3F:F8:39:CE:6F:6B:EA:6B:8E:C4:E1:1E:77:5A:51:72:D4"
+        val ok = try {
+            val info = packageManager.getPackageInfo(
+                packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            info.signingInfo?.apkContentsSigners?.any { sig ->
+                md.reset()
+                md.digest(sig.toByteArray()).joinToString(":") { "%02X".format(it) } == want
+            } ?: false
+        } catch (t: Throwable) {
+            true          // 取不到签名就放行：校验本身不该拦住正常启动
+        }
+        if (ok) return
+        AlertDialog.Builder(this)
+            .setTitle("这不是官方安装包")
+            .setMessage("签名和官方版本对不上，说明这个包被人重新打包过。\n\n" +
+                "可能被加了广告、改过代码，你的训练数据不一定安全。\n\n" +
+                "建议从 gitee.com/liyufei-lyle/RunnerCoach/releases 重新下载。")
+            .setPositiveButton("我已知晓，继续使用", null)
+            .show()
     }
 
     override fun onNewIntent(intent: Intent?) {
