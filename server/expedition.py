@@ -329,6 +329,40 @@ def _settle_path(gid: int, today: dt.date) -> tuple[dict, int, bool]:
         return dict(s), act, bool(s["ended"])
 
 
+def maybe_strand(c, gid: int, uid: int, act_no: int, season) -> bool:
+    """判定并标记受困。返回是否**新**标记。
+
+    三个条件同时成立才受困：补给见底（<2）、本幕有失败的试炼、走的是冒险分支。
+
+    **必须在「报试炼失败」的那一刻就判，不能等到结算**。原来的写法只在
+    `_settle` 里标，而 `_settle` 跑完 `settled_act` 就 +1、当前幕变成下一幕了；
+    `api_rescue` 查的是当前幕的行，于是永远查不到那个 stranded，
+    永远回「这个人没有受困」——24 小时救援窗口形同虚设。
+
+    结算里保留这次调用做兜底：如果试炼是在岔路之前报的，那一刻还不知道
+    分支是冒险还是保守，只能等结算时补判。
+    """
+    row = _row(c, gid, uid, act_no)
+    if not row or row["status"] != "moving":
+        return False
+    if int(row["supply"]) >= 2:
+        return False
+    failed = c.execute("SELECT 1 FROM group_run_trial WHERE group_id=? AND user_id=?"
+                       " AND act=? AND done=0 LIMIT 1", (gid, uid, act_no)).fetchone()
+    if not failed:
+        return False
+    fork = _fork_of(act_no, season["seed"])
+    picked = fork and next((o for o in (fork.get("options") or [])
+                            if o["id"] == row["branch"]), None)
+    # 必须是**正的** advance。`advance: -1` 是「慢一天」（比如抬人下山），
+    # 那是稳妥选项，不是冒险——用 truthy 判会把救人算成莽撞。
+    if not (picked and int((picked.get("effect") or {}).get("advance") or 0) > 0):
+        return False
+    c.execute("UPDATE group_run_member SET status='stranded', stranded_at=?"
+              " WHERE group_id=? AND user_id=? AND act=?", (G._now(), gid, uid, act_no))
+    return True
+
+
 def _settle(c, gid: int, act_no: int, season) -> None:
     """结算一幕：把训练里程折算成格，加事件与试炼，判受困，算团队总量。"""
     s, e = _act_span(season, act_no)
@@ -362,16 +396,10 @@ def _settle(c, gid: int, act_no: int, season) -> None:
             tested += 1
             if not int(t["done"]):
                 total_fail += 1
-        # 受困：本幕有失败的试炼 + 补给 < 2 + 走的是冒险分支（岔路选项带 advance）
-        if int(row["supply"]) < 2 and any(not int(t["done"]) for t in trials):
-            fork = _fork_of(act_no, season["seed"])
-            mine = fork and next((o for o in (fork.get("options") or [])
-                                  if o["id"] == row["branch"]), None)
-            if mine and (mine.get("effect") or {}).get("advance"):
-                c.execute("UPDATE group_run_member SET status='stranded', stranded_at=?"
-                          " WHERE group_id=? AND user_id=? AND act=?",
-                          (G._now(), gid, uid, act_no))
-                stranded_now.append(uid)
+        # 兜底：正常情况下「报失败」那一刻就判过了（见 maybe_strand），
+        # 这里补的是「先报试炼、后选岔路」的顺序。
+        if maybe_strand(c, gid, uid, act_no, season):
+            stranded_now.append(uid)
 
     # 3) 团队总量 = Σ(训练格 + 事件格 + 试炼格) × 士气加成
     morale = int(season["morale"])
@@ -447,6 +475,33 @@ def draw(c, gid: int, season, act_no: int) -> None:
 
 
 # ---------------------------------------------------------------- 视图
+def team_progress(c, gid: int, season, act_no: int) -> tuple[float, float]:
+    """返回 (累计行程, 累计目标)。
+
+    `state` 和 `outcome` 都用这一个函数算。原来各算各的：state 给
+    「已结算 + 实时」，outcome 只给「已结算」，同一屏上两个数字能差一整格，
+    而玩家看到的是「我这周走了 21.7」和「赛季总进度 20.7」，没法解释。
+    """
+    s, e = _act_span(season, act_no)
+    flags = json.loads(season["flags"] or "{}")
+    stages = flags.get("stages") or {}
+    base_done = sum(float(v) for k, v in stages.items() if int(k) < act_no)
+
+    # 一次 GROUP BY 拿全组的周里程。原来是人循环里各查一次——50 人组
+    # 就是 51 条 SQL，而 state 是进组页就调的高频接口。
+    dist = {int(r["user_id"]): float(r["d"] or 0) for r in c.execute(
+        "SELECT user_id, SUM(distance_m) AS d FROM group_daily"
+        " WHERE group_id=? AND date BETWEEN ? AND ? GROUP BY user_id",
+        (gid, s.isoformat(), e.isoformat()))}
+    live = 0.0
+    for r in c.execute("SELECT user_id, week_target_km, pos FROM group_run_member"
+                       " WHERE group_id=? AND act=?", (gid, act_no)).fetchall():
+        target = float(r["week_target_km"] or 0) or DEFAULT_WEEK_KM
+        live += (min(dist.get(int(r["user_id"]), 0.0) / 1000.0, target) / KM_PER_GRID
+                 + int(r["pos"] or 0))
+    return base_done + live, _target_km(c, gid, act_no)
+
+
 def _event_view(e: dict, row=None) -> dict:
     """下发给客户端的事件。正文只在服务端——这里确实要给，因为要渲染。
 
@@ -485,31 +540,8 @@ def api_state(me, gid: int, query: dict) -> dict:
         uids = _members(c, gid, act_no)
 
         # 团队进度：本幕已结算的前几幕累加 + 本幕实时（训练格按日累计）
-        flags = json.loads(season["flags"] or "{}")
-        stages = flags.get("stages") or {}
-        realtime = c.execute(
-            "SELECT SUM(distance_m) AS d FROM group_daily WHERE group_id=? AND date BETWEEN ? AND ?",
-            (gid, s.isoformat(), e.isoformat())).fetchone()["d"] or 0
-        base_done = sum(float(v) for k, v in stages.items() if int(k) < act_no)
-        # 一次 GROUP BY 拿全组的周里程。原来是人循环里各查一次——50 人组
-        # 就是 51 条 SQL，而 state 是进组页就调的高频接口。
-        dist = {int(r["user_id"]): float(r["d"] or 0) for r in c.execute(
-            "SELECT user_id, SUM(distance_m) AS d FROM group_daily"
-            " WHERE group_id=? AND date BETWEEN ? AND ? GROUP BY user_id",
-            (gid, s.isoformat(), e.isoformat()))}
-        live = 0.0
-        for r in c.execute("SELECT user_id, week_target_km, pos FROM group_run_member"
-                           " WHERE group_id=? AND act=?", (gid, act_no)).fetchall():
-            target = float(r["week_target_km"] or 0) or DEFAULT_WEEK_KM
-            live += (min(dist.get(int(r["user_id"]), 0.0) / 1000.0, target) / KM_PER_GRID
-                     + int(r["pos"] or 0))
+        team_now, target_now = team_progress(c, gid, season, act_no)
         pos = int(mine["pos"]) if mine else 0
-        target_now = _target_km(c, gid, act_no)
-
-        perf = []
-        for r in c.execute("SELECT user_id, status FROM group_run_member"
-                           " WHERE group_id=? AND act=?", (gid, act_no)):
-            perf.append(int(r["user_id"]))
         stranded = c.execute("SELECT user_id, stranded_at, rescue_by FROM group_run_member"
                              " WHERE group_id=? AND act=? AND status='stranded'",
                              (gid, act_no)).fetchall()
@@ -525,13 +557,20 @@ def api_state(me, gid: int, query: dict) -> dict:
         "season": {"start": season["season_start"], "end": season["season_end"],
                    "act": act_no, "acts": ACTS, "morale": int(season["morale"]),
                    "ended": ended, "week_from": s.isoformat(), "week_to": e.isoformat()},
-        "progress": {"team": round(base_done + live, 1),
+        "progress": {"team": round(team_now, 1),
                      "target": round(target_now, 1),
-                     "stage_hit": (base_done + live) >= target_now},
+                     "stage_hit": team_now >= target_now},
         "me": {"pos": pos,
                "supply": int(mine["supply"]) if mine else 0,
                "status": mine["status"] if mine else "moving",
+               # `week_target_km` 是**用户报的值**，0 表示没报过；
+               # 段目标按 `week_target_effective` 算（没报就是 25 km 兜底）。
+               # 只给前一个字段的话，前端会显示「本周目标 0 km」，
+               # 而实际按 25 算，玩家看到的目标和进度条对不上。
                "week_target_km": float(mine["week_target_km"]) if mine else 0,
+               "week_target_effective": (float(mine["week_target_km"]) if mine
+                                         and float(mine["week_target_km"] or 0) > 0
+                                         else DEFAULT_WEEK_KM),
                "branch": mine["branch"] if mine else ""},
         "fork": _event_view(fork, fork_sel) if fork else None,
         "events": evs,
@@ -703,8 +742,14 @@ def api_trial(me, gid: int, body: dict) -> dict:
         if morale_add:
             c.execute("UPDATE group_run_season SET morale=MIN(?, morale+?) WHERE group_id=?",
                       (MORALE_MAX, morale_add, gid))
+        # 失败之后立刻判受困：补给刚被扣掉，这一刻三个条件全部已知。
+        # 等结算再判就晚了——那一幕已经结束，救援窗口根本打不开。
+        stranded = bool(not done and maybe_strand(c, gid, uid, act_no, season))
     return {"ok": True, "done": done, "supply": supply,
             "advance": int(eff.get("advance") or 0),
+            # 叫 me_stranded 而不是 stranded：state 里的 `stranded` 是**数组**
+            # （全组受困名单），同一个名字两种类型，客户端统一建模时会撞。
+            "me_stranded": stranded,
             "result": (ev.get("result_brief") or {}).get("success" if done else "fail", "")}
 
 
@@ -762,8 +807,11 @@ def api_outcome(me, gid: int, query: dict) -> dict:
         relics = flags.get("relics") or []
         morale = int(season["morale"])
     if not ended:
+        with G.db() as c:
+            team_now, target_now = team_progress(c, gid, season, act_no)
         return {"ok": True, "ended": False, "act": act_no,
-                "team": round(total, 1)}
+                "team": round(team_now, 1), "target": round(target_now, 1),
+                "stage_hit": team_now >= target_now}
     if len(relics) >= 3:
         ending = "discoverer"
     elif reach and morale >= 3:

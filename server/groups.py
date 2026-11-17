@@ -697,7 +697,9 @@ def _challenge_view(ch, today: dt.date, current: int | None = None) -> dict:
     }
     if current is not None:
         out["current"] = current
-        out["pct"] = min(100, round(current * 100 / ch["target"], 1)) if ch["target"] else 0
+        # 分母为 0 时也要返回小数：`else 0` 是 int，而正常路径是 float，
+        # 同一个字段两种类型会让客户端强类型模型直接崩。
+        out["pct"] = min(100.0, round(current * 100 / ch["target"], 1)) if ch["target"] else 0.0
     return out
 
 
@@ -815,7 +817,7 @@ def api_challenge_get(me, gid: int, cid: int, query: dict) -> dict:
         rows.append({
             "alias": m["alias"], "is_me": u == uid,
             "current": cur,
-            "pct": min(100, round(cur * 100 / target, 1)) if target else 0,
+            "pct": min(100.0, round(cur * 100 / target, 1)) if target else 0.0,
             "done_at": done_at.get(u),
         })
     # 已达成按达成日期升序，未达成按完成率降序
