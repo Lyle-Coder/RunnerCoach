@@ -730,6 +730,23 @@ def run() -> int:
     assert PL.week_target(_kl)["km"] == 10, "补了里程但周目标还是算不出来"
     shutil.rmtree(_kdir, ignore_errors=True)
 
+    # 自建计划也要能被完成判定认出来：否则「改了计划」之后，完成率永远是 0
+    _adir = Path(tempfile.mkdtemp())
+    _ap = _adir / "plan.json"
+    _ap.write_text(json.dumps({
+        "classify": PL.CLASSIFY_REV, "source": "calendar",
+        "today": {"date": "2026-11-17", "items": []},
+        "week": [{"date": "2026-11-18", "dow": "周三", "rest": False, "source": "manual",
+                  "items": [{"name": "轻松跑", "km": 8, "sport_key": "running"}]}],
+    }, ensure_ascii=False), encoding="utf-8")
+    _ok = PL.annotate(PL.load(_ap), {"2026-11-18"}, "2026-11-17",
+                      [{"date": "2026-11-18", "type": "running", "distance_m": 8200}])
+    assert _ok["week"][0]["done"] is True, "跑够了却没被判为完成"
+    _short = PL.annotate(PL.load(_ap), {"2026-11-18"}, "2026-11-17",
+                         [{"date": "2026-11-18", "type": "running", "distance_m": 5000}])
+    assert _short["week"][0]["done"] is False, "只跑了 60% 也被判为完成"
+    shutil.rmtree(_adir, ignore_errors=True)
+
     # ---------------- 计划生成器 ----------------
     # 分配本身是纯函数：长距离必须是这一周最长的一次，否则「长距离」名不副实。
     # 周量允许在赛事/减量周被下调，所以这里只断言「摊完后接近给定周量」，
