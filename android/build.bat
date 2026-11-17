@@ -49,9 +49,9 @@ if defined BUILDPY goto :pyready
 for /f "delims=" %%P in ('py -3.13 -c "import sys;print(sys.executable)" 2^>nul') do set "BUILDPY=%%P"
 :pyready
 
-rem Expedition story must never ship inside the APK: the client only renders
-rem what the server sends. tools/guard_content.py fails the build if any event
-rem pool or story text ended up under garmin_cn/ or the assets.
+rem Protected content must never ship inside the APK: the client only reads
+rem it at runtime. tools/guard_content.py fails the build if any protected
+rem dataset ended up under garmin_cn/ or the assets.
 if not defined BUILDPY goto :guard_skip
 "%BUILDPY%" "..\tools\guard_content.py"
 if errorlevel 1 exit /b 1

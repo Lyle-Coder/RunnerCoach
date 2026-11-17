@@ -875,17 +875,17 @@ def run() -> int:
         "力量课没映射成 workout 认识的 str"
     assert PP.push(None, [], dry=True).get("ok") is False, "空计划也允许推送了"
 
-    # ---------------- 剧情内容守卫 ----------------
-    # 远征剧情只在服务器下发：客户端目录里出现事件池/正文就是泄漏
+    # ---------------- 受保护内容守卫 ----------------
+    # 受保护内容只在服务端下发：客户端目录里出现数据集/正文就是泄漏
     _leak = CG.scan(ROOT)
-    assert not _leak, f"客户端目录里混进了剧情内容：{_leak}"
+    assert not _leak, f"客户端目录里混进了受保护内容：{_leak}"
     _g = Path(tempfile.mkdtemp())
     (_g / "garmin_cn").mkdir()
     (_g / "garmin_cn" / "act1.json").write_text('{"events": []}', encoding="utf-8")
-    assert CG.scan(_g), "剧情文件放进客户端目录，守卫没拦住"
+    assert CG.scan(_g), "受保护数据放进客户端目录，守卫没拦住"
     (_g / "garmin_cn" / "act1.json").unlink()
     (_g / "garmin_cn" / "x.json").write_text('{"result_brief": {}}', encoding="utf-8")
-    assert CG.scan(_g), "带剧情字段的 JSON，守卫没拦住"
+    assert CG.scan(_g), "带受保护字段的 JSON，守卫没拦住"
     shutil.rmtree(_g, ignore_errors=True)
 
     # 一图流读计划快照必须走 GARMIN_HOME：APK 里代码在只读 assets、数据在

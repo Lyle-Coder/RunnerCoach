@@ -22,8 +22,8 @@ rem Shipping ~1900 assertion lines just wastes APK size.
 if exist "app\src\main\python\garmin_cn\selftest.py" del /q "app\src\main\python\garmin_cn\selftest.py"
 
 rem contentguard runs at build time only (tools/guard_content.py). Leaving it in
-rem the APK would ship the story-detection keywords for no reason; the runtime
-rem never imports it.
+rem the APK would ship the detection keywords for no reason; the runtime never
+rem imports it.
 if exist "app\src\main\python\garmin_cn\contentguard.py" del /q "app\src\main\python\garmin_cn\contentguard.py"
 
 set N=0

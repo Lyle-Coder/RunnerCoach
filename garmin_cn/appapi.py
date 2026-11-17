@@ -2376,7 +2376,7 @@ def plan_push_info() -> dict:
 
 
 def plan_target(date: str | None = None) -> dict:
-    """本周计划里的跑步里程合计——用户组的周目标直接读这个。
+    """本周计划里的跑步里程合计——需要周目标的地方直接读这个。
 
     返回 `available/km/days/rest_days/source/by_date`。没有计划时
     `available=false`，上层据此提示「先设置本周计划」，不要自己编一个数。
