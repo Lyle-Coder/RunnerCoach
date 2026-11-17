@@ -248,6 +248,23 @@ def _dur_seconds(it: dict, *, race: bool = False) -> float:
     return 0.0
 
 
+def _km_in_title(text) -> float:
+    """从课名里读里程：「W2 周二 10km@E」→ 10。
+
+    为什么非做不可：佳明日历的排课项**只有标题，没有 structuredDistance**
+    （自己推的课尤其如此），于是 `km` 和 `minutes` 全是空的。周目标按里程算，
+    读不到里程就等于「有计划但算不出量」，赛季的格数直接归零。
+
+    只认带单位的写法，且卡 1–60 km：`St24×3`（楼梯 24 趟）不能被读成 24 km，
+    「43K」这种赛事名读成 43 正好是比赛距离，也是对的。
+    """
+    m = re.search(r"(\d{1,3}(?:\.\d)?)\s*(?:km|公里|K)\b", str(text or ""), re.IGNORECASE)
+    if not m:
+        return 0.0
+    km = float(m.group(1))
+    return km if 1 <= km <= 60 else 0.0
+
+
 def _cal_item(it: dict) -> dict:
     """把一个日历项折成课表行。字段名各地区略有差异，这里都兜一遍。"""
     is_race = (bool(it.get("isRace"))
@@ -257,8 +274,11 @@ def _cal_item(it: dict) -> dict:
     dist = _num(it.get("estimatedDistanceInMeters"))
     km = dist / 1000.0 if dist > 0 else _distance_km(it.get("distance"), dur)
     sport_key = it.get("sportTypeKey") or (it.get("activityType") or {}).get("typeKey")
+    title = it.get("title") or it.get("workoutName") or "训练"
+    if not km:
+        km = _km_in_title(title)
     return {
-        "name": it.get("title") or it.get("workoutName") or "训练",
+        "name": title,
         "detail": it.get("description") or "",
         "sport": SPORT.get(sport_key),
         "sport_key": sport_key,
@@ -587,7 +607,10 @@ def fetch(client, today: str | None = None, out_path: Path | None = None,
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 out_path.write_text(json.dumps(cal, ensure_ascii=False, indent=1),
                                     encoding="utf-8")
-            return cal
+            # 落盘存**来源原样**，返回前才合并本地改动：这样再拉一次日历也不会
+            # 把用户的修改冲掉，改动表始终是唯一真相。
+            return apply_overrides(
+                cal, load_overrides(out_path.parent / OVERRIDES_NAME) if out_path else {})
         if source == "calendar":
             return cal
 
@@ -610,16 +633,112 @@ def fetch(client, today: str | None = None, out_path: Path | None = None,
     if out_path:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        return apply_overrides(data, load_overrides(out_path.parent / OVERRIDES_NAME))
     return data
 
 
-def load(path: Path) -> dict | None:
+# ------------------------------------------------------------ 本地改动合并
+# 用户改过的那一天必须压过数据源。否则「改完计划 → 下次同步日历 → 打回原形」，
+# 改了等于没改，还会让人以为 App 把自己的计划吞了。
+#
+# 存两份文件、各管一件事：
+#   data/plan.json           数据源快照（日历/教练/高驰），永远是原样
+#   data/plan_overrides.json 用户改动，按日期存，只增不减直到手动清除
+# 读取时合并（load），写入时只动 overrides —— 快照不参与编辑，才能反复重拉。
+OVERRIDES_NAME = "plan_overrides.json"
+
+
+def load_overrides(path: Path | None = None) -> dict:
+    """读改动表，返回 {日期: 那天的课}。文件不存在或坏了都当空表。"""
+    p = Path(path) if path else (_home() / "data" / OVERRIDES_NAME)
+    if p.is_dir() or p.suffix != ".json":
+        p = p / OVERRIDES_NAME
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    days = d.get("days") if isinstance(d, dict) else None
+    return days if isinstance(days, dict) else {}
+
+
+def _apply_day(day: dict, ov: dict) -> None:
+    """用一条改动覆盖某天。只换课表，不动当天的完成证据（acts）。"""
+    items = ov.get("items")
+    day["items"] = [dict(x) for x in items if isinstance(x, dict)] if isinstance(items, list) else []
+    day["rest"] = not day["items"]
+    day["source"] = "manual"
+    day["edited"] = True
+    if ov.get("note"):
+        day["note"] = ov["note"]
+    # 课改了，原先「完成 / 未完成」的判定就作废：按新目标重算之前不显示结论，
+    # 免得「把 10 km 改成 4 km」之后还挂着旧的「已完成」。
+    day["done"] = False
+    day["missed"] = False
+
+
+def apply_overrides(data: dict | None, days: dict | None,
+                    today: str | None = None) -> dict | None:
+    """把本地改动盖到来源课表上。
+
+    只覆盖本周与今天：超过一周的改动等到那周再看，不为一个远期日期提前改结构。
+    """
+    if not data or not days:
+        return data
+    today = today or (data.get("today") or {}).get("date") or dt.date.today().isoformat()
+    touched = 0
+    week = data.get("week") or []
+    for w in week:
+        if not isinstance(w, dict):
+            continue
+        ov = days.get(w.get("date"))
+        if isinstance(ov, dict):
+            _apply_day(w, ov)
+            touched += 1
+    t = data.get("today")
+    if isinstance(t, dict) and isinstance(days.get(t.get("date")), dict):
+        _apply_day(t, days[t["date"]])
+        touched += 1
+    if touched:
+        data["week_planned"] = sum(1 for w in week if w.get("items"))
+        data["week_done"] = sum(1 for w in week if w.get("done"))
+        data["rest_days_in_week"] = sum(1 for w in week if w.get("rest"))
+        data["edited"] = touched
+    return data
+
+
+def _fill_km(data: dict) -> dict:
+    """给缺里程的课次从课名里补上。
+
+    旧快照、以及所有「只有标题没有 structuredDistance」的日历项都需要这一步。
+    不补的话 `week_target()` 会认为「有计划但没里程」，赛季的格数直接归零。
+    幂等：已经有 km 的不动。
+    """
+    def _one(items):
+        for it in items or []:
+            if isinstance(it, dict) and not _num(it.get("km")):
+                km = _km_in_title(it.get("name"))
+                if km:
+                    it["km"] = km
+
+    for w in data.get("week") or []:
+        if isinstance(w, dict):
+            _one(w.get("items"))
+    t = data.get("today")
+    if isinstance(t, dict):
+        _one(t.get("items"))
+    return data
+
+
+def load(path: Path, overrides: bool = True) -> dict | None:
     """读本地缓存的计划快照（看板/MCP 用，避免每次联网）。
 
     旧口径（classify < CLASSIFY_REV）的快照直接作废：那份里的 `items` / `acts`
     是按老规则分的（把已完成的活动当成计划），而原始日历项没有存下来，
     没法就地修正。宁可当作「没有计划」让上层重新拉一次，也不要拿错的课表
     继续骗人 —— 手机上换版本后一直显示错数据，就是这个原因。
+
+    `overrides=True` 时把 `plan_overrides.json` 合并进来（默认开）。
+    传 False 只给「我要看数据源原样」的场景用，比如重新生成草稿前的比对。
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -638,7 +757,73 @@ def load(path: Path) -> dict | None:
     t = data.get("today")
     if isinstance(t, dict):
         t.setdefault("source", src)
+    _fill_km(data)
+    if overrides:
+        days = load_overrides(Path(path).parent / OVERRIDES_NAME)
+        data = apply_overrides(data, days)
     return data
+
+
+def week_target(data: dict | None, monday: str | None = None) -> dict:
+    """本周计划里的**跑步类**里程合计，给赛季目标用。
+
+    赛季的周目标是「允许你拿几格」，不是考核，所以这里只做一件事：
+    把计划里能算成跑步里程的部分加起来，算不出来就老实说没有。
+
+    三条口径：
+
+    1. 只统计跑步类（`sports.family` 判 run）——骑行 30 km 折不成跑步的格；
+    2. 只统计**有里程**的课次，只有时长的课按 `minutes` 记进 `minutes` 字段，
+       不猜配速硬折成公里（猜错就把目标抬高了）；
+    3. 休息日不计入分母，但单独报 `rest_days`，让上层知道这周本来就在减量。
+    """
+    from .sports import item_family
+
+    out = {"available": False, "km": 0.0, "minutes": 0, "days": 0,
+           "rest_days": 0, "source": "", "by_date": [], "monday": monday}
+    if not isinstance(data, dict):
+        return out
+    week = [w for w in (data.get("week") or []) if isinstance(w, dict)]
+    if not week:
+        return out
+    if monday:
+        mon = str(monday)[:10]
+        if week[0].get("date") != mon:
+            out["reason"] = "计划快照不是这一周"
+            return out
+
+    by_date, km, minutes, days = [], 0.0, 0, 0
+    for w in week:
+        row_km = row_min = 0.0
+        for it in w.get("items") or []:
+            if not isinstance(it, dict) or it.get("rest"):
+                continue
+            if item_family(it) != "run":
+                continue
+            row_km += _num(it.get("km"))
+            row_min += _num(it.get("minutes"))
+        if row_km > 0:
+            days += 1
+        km += row_km
+        minutes += row_min
+        by_date.append({"date": w.get("date"),
+                        "km": round(row_km, 2),
+                        "minutes": int(round(row_min)),
+                        "rest": bool(w.get("rest"))})
+    out.update({
+        "available": km > 0,
+        "km": round(km, 2),
+        "minutes": int(round(minutes)),
+        "days": days,
+        "rest_days": sum(1 for w in week if w.get("rest")),
+        "source": str(data.get("source") or ""),
+        "by_date": by_date,
+    })
+    # 有课但没里程（例如只有「力量 40 分钟」）：仍然算「有计划但算不出跑步量」，
+    # 上层据此提示「补一个跑步里程」，而不是当成「没有计划」。
+    if not out["available"] and days == 0:
+        out["reason"] = "本周计划里没有跑步里程"
+    return out
 
 
 def _home() -> Path:

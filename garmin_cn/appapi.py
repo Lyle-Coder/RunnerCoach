@@ -164,7 +164,10 @@ _API = {
     "env_info", "status", "login", "submit_mfa", "sync", "sync_range",
     "dashboard", "card_html", "act_card_html", "runs", "activities", "days_index",
     "history_stats", "backfill_next",
-    "plan", "set_amap_key", "start_server", "recent", "read_html",
+    "plan", "plan_week", "plan_save", "plan_save_week", "plan_clear",
+    "plan_overrides", "plan_generate", "plan_draft", "plan_confirm",
+    "plan_renew", "plan_push", "plan_push_clear", "plan_push_info", "plan_target",
+    "set_amap_key", "start_server", "recent", "read_html",
     "db_export", "db_import", "diag_text",
     "motion_html", "motion_status", "motion_cleanup", "motion_audio",
     "clips_list", "clips_add", "clips_remove", "clips_reprobe",
@@ -2096,7 +2099,7 @@ def _plan_local(today: str, days: set[str], note: str = "") -> dict:
     返回 ok:false，今日页整块课表就不渲染。现在退成「备赛计划 > 今日处方」，
     至少让人看到今天该练什么。
     """
-    from .plan import from_coach
+    from .plan import annotate, apply_overrides, from_coach, load_overrides
 
     try:
         store = Store(DB)
@@ -2105,6 +2108,9 @@ def _plan_local(today: str, days: set[str], note: str = "") -> dict:
         finally:
             store.conn.close()
         data = from_coach(res, today, days)
+        # 本地兜底同样要吃用户改动，否则「没登录佳明」的人改完计划跟没改一样
+        data = apply_overrides(data, load_overrides(HOME / "data"), today)
+        data = annotate(data, days, today, res.get("activities") or [])
     except Exception as e:  # noqa: BLE001 - 兜底失败就老实说，别假装有计划
         from . import diag
 
@@ -2163,6 +2169,194 @@ def plan(refresh: bool = False, date: str | None = None,
     finally:
         store.conn.close()
     return {"ok": True, **annotate(data, days, today, evidence)}
+
+
+def plan_week(date: str | None = None) -> dict:
+    """本周课表的编辑视图：每天当前的课、来源、是不是本地改过、过去没有。"""
+    from . import planedit as PE
+
+    try:
+        data = plan(date=date)
+        if not data.get("ok"):
+            return data
+        return PE.week_edit_view(data, today=date or dt.date.today().isoformat())
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_save(date: str, items: str = "", rest: bool = False,
+              note: str = "") -> dict:
+    """保存某一天的课。`items` 是 JSON 字符串（桥只传 JSON）。
+
+    只写 `data/plan_overrides.json`，不动日历快照——这样下次同步不会把它冲掉。
+    """
+    from . import planedit as PE
+
+    try:
+        rows = json.loads(items) if isinstance(items, str) and items.strip() else []
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"items 不是合法 JSON：{e}"}
+    try:
+        return PE.save_day(date, rows, rest=bool(rest), note=note)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_save_week(days: str) -> dict:
+    """整周保存。`days` 是 JSON 字符串：[{date, items, rest, note}, ...]。
+
+    一天不合法就整体不落盘：宁可让用户改那一行，也不要留半周改一半的计划。
+    """
+    from . import planedit as PE
+
+    try:
+        rows = json.loads(days) if isinstance(days, str) and days.strip() else []
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"days 不是合法 JSON：{e}"}
+    try:
+        return PE.save_week(rows)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_clear(date: str = "") -> dict:
+    """撤销改动。传日期只撤那天，不传就全撤，回到数据源的说法。"""
+    from . import planedit as PE
+
+    try:
+        return PE.clear_all() if not str(date or "").strip() else PE.clear_day(date)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_overrides() -> dict:
+    """列出所有本地改动（「哪些天被我改过」）。"""
+    from . import planedit as PE
+
+    try:
+        return PE.list_overrides()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_generate(run_days: int = 0, week_km: float = 0.0) -> dict:
+    """按近 4 周跑量生成一份下周草稿。**不落正式计划**，要 `plan_confirm`。"""
+    from . import plangen as PG
+
+    try:
+        store = Store(DB)
+        try:
+            return PG.build_draft(store, today=dt.date.today().isoformat(),
+                                  run_days=int(run_days) or None,
+                                  week_km=float(week_km) or None)
+        finally:
+            store.conn.close()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_draft() -> dict:
+    """读现有草稿（上次生成但还没确认的那一份）。"""
+    from . import plangen as PG
+
+    try:
+        d = PG.load_draft()
+        return {"ok": True, "draft": d} if d else {"ok": False, "empty": True}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_confirm() -> dict:
+    """确认草稿：写进改动表，并开启「每周一自动续」。"""
+    from . import plangen as PG
+
+    try:
+        return PG.confirm(today=dt.date.today().isoformat())
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_renew() -> dict:
+    """App 启动时调一次：每周一给确认过的生成型计划自动续下周。"""
+    from . import plangen as PG
+
+    try:
+        store = Store(DB)
+        try:
+            return PG.auto_renew(store, today=dt.date.today().isoformat())
+        finally:
+            store.conn.close()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_push(dry: bool = False, phase: str = "BASE") -> dict:
+    """把本周计划推成佳明训练课并排进日历。`dry=True` 只返回将要提交的内容。"""
+    from . import planpush as PP
+    from .plan import week_target
+
+    try:
+        data = plan()
+        if not data.get("ok"):
+            return data
+        week = data.get("week") or []
+        if not [w for w in week if w.get("items")]:
+            return {"ok": False, "error": "本周没有排课，不用推送"}
+        km = week_target(data).get("km") or 0
+        if dry:
+            return PP.push(None, week, km, phase, dry=True)
+        return PP.push(_client(), week, km, phase)
+    except AuthError as e:
+        return {"ok": False, "need_login": True, "error": f"佳明未登录：{e}"}
+    except SessionExpired:
+        return {"ok": False, "need_login": True, "error": "佳明会话已过期，请重新登录"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_push_clear() -> dict:
+    """删掉自己推到佳明的课（只删记录里的，不碰官方计划）。"""
+    from . import planpush as PP
+
+    try:
+        return PP.clear(_client())
+    except AuthError as e:
+        return {"ok": False, "need_login": True, "error": f"佳明未登录：{e}"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_push_info() -> dict:
+    """已推送到佳明的课（按日期）。"""
+    from . import planpush as PP
+
+    try:
+        return PP.record()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def plan_target(date: str | None = None) -> dict:
+    """本周计划里的跑步里程合计——用户组的周目标直接读这个。
+
+    返回 `available/km/days/rest_days/source/by_date`。没有计划时
+    `available=false`，上层据此提示「先设置本周计划」，不要自己编一个数。
+    """
+    from .plan import week_target
+
+    try:
+        data = plan(date=date)
+        if not data.get("ok"):
+            return {"ok": False, "available": False,
+                    "error": data.get("error") or "读不到计划"}
+        return {"ok": True, **week_target(data)}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "available": False,
+                "error": f"{type(e).__name__}: {e}"}
 
 
 def runs(limit: int = 30, days: int = 180) -> dict:
