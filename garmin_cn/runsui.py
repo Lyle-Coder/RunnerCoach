@@ -126,6 +126,13 @@ CSS = """
 .treq{display:flex;align-items:center;gap:7px;margin-top:9px;padding:8px 11px;
   border-radius:8px;background:rgba(34,211,238,.07);
   border:1px solid rgba(34,211,238,.14);font-size:12px;color:#9FD9E4}
+/* 核验说明：一句话而已，但要放在按钮上面——点完才解释就成了借口 */
+.thint{margin-top:7px;font-size:11px;line-height:1.55;color:var(--faint)}
+/* 结论的三种口径。未核验用灰，不是警告色——那不是惩罚，是「这次判断不了」 */
+.lev{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11.5px}
+.lev.verified{color:#6FD2A8}
+.lev.claimed{color:var(--faint)}
+.lev.failed{color:#F58C90}
 
 /* ---------- 受困 ---------- */
 .stuck{margin-top:14px;padding:13px 14px;border-radius:12px;
@@ -174,6 +181,11 @@ def _icon(name: str, size: int = 16) -> str:
                  ' opacity=".65"/>'),
         "check": ('<path d="M1 6.5 L4.5 10 L11 2.5" stroke="currentColor"'
                   ' stroke-width="1.6" fill="none" stroke-linecap="round"/>'),
+        # 试炼的「要求」用一个靶心，不用对勾——对勾已经给了「核验通过」，
+        # 两个对勾并排会让「要跑什么」和「跑成没跑成」看起来是同一件事。
+        "target": ('<circle cx="8" cy="8" r="5.1" stroke="currentColor"'
+                   ' stroke-width="1.2" fill="none"/>'
+                   '<circle cx="8" cy="8" r="1.5" fill="currentColor"/>'),
     }
     p = paths.get(name)
     if not p:
@@ -325,7 +337,10 @@ def event_card(ev: dict, slot: int) -> str:
         cls += " done"
 
     label = "旧物" if relic else (KIND_ZH.get(kind) or TYPE_ZH.get(etype) or "事件")
-    when = "这一刻要定" if (kind == "fork" and not chosen) else ("已选" if chosen else "")
+    # 试炼不写「已选」：它的结论是「核验通过 / 未核验」，下面那行已经说了，
+    # 头上再挂一个「已选」会让「试炼已选」连成一串，看着像个状态而不是标签。
+    when = ("这一刻要定" if (kind == "fork" and not chosen)
+            else ("已选" if (chosen and etype != "trial") else ""))
     head = (f'<span class="tag">{esc(label)}</span>'
             + (f'<span class="when">{esc(when)}</span>' if when else "")
             + f'<h3>{esc(ev.get("title") or "")}</h3>')
@@ -338,17 +353,28 @@ def event_card(ev: dict, slot: int) -> str:
         km = q.get("distance_km")
         req = " · ".join(x for x in ((f"{km:g} km" if km else ""), metric) if x)
         if req:
-            tail += f'<div class="treq">{_icon("check", 13)}<span>{esc(req)}</span></div>'
+            tail += f'<div class="treq">{_icon("target", 13)}<span>{esc(req)}</span></div>'
         if chosen:
             tail += f'<div class="res">{esc(ev.get("result") or "")}</div>'
-            tail += ('<div class="gain">' + _icon("check", 12)
-                     + "<span>已记录</span></div>")
+            lv = str(ev.get("level") or "")
+            if lv == "verified":
+                verdict, vcls = "核验通过 · 这段记录对得上", "verified"
+            elif lv == "unverified":
+                verdict, vcls = "未核验 · 没找到记录，格数只算一半", "claimed"
+            elif lv == "failed" or chosen == "fail":
+                verdict, vcls = "没跑成", "failed"
+            else:
+                verdict, vcls = "已记录", "claimed"
+            tail += (f'<div class="lev {vcls}">{_icon("check", 12)}'
+                     f"<span>{esc(verdict)}</span></div>")
         else:
             tid = json.dumps(str(ev.get("id") or ""))
             tail += ('<div class="tbtns">'
                      f'<button class="ok" onclick="rcTrial({tid},true)">跑完了</button>'
                      f'<button onclick="rcTrial({tid},false)">没跑成</button>'
-                     "</div>")
+                     "</div>"
+                     '<div class="thint">会拿本周的活动记录核一遍：'
+                     "没有记录就按未核验记，格数只算一半。</div>")
     elif chosen:
         res = str(ev.get("result") or "")
         if res:

@@ -139,6 +139,65 @@ def _call(name: str, method: str, path: str, note: str, *,
     return payload
 
 
+# ---------------------------------------------------------------- 试炼
+def _force_trial(gid: int, uid: int, act: int, pool: dict) -> str:
+    """把这个人本幕的最后一个槽位换成试炼，返回试炼 id。
+
+    试炼是抽出来的（每槽位 40%），样例要覆盖它就不能靠运气。换掉而不是
+    追加第三个槽位：追加会让 state 里出现「每人三条支线」，和文档对不上，
+    前端照着样例写就会多渲染一格。
+    """
+    import expedition as EXP
+
+    cand = sorted(e["id"] for e in pool["events"]
+                  if int(e.get("act") or 0) == act and e.get("type") == "trial")
+    if not cand:
+        raise SystemExit(f"事件池里没有第 {act} 幕的试炼")
+    with EXP.G.db() as c:
+        rows = c.execute("SELECT slot, event_id FROM group_run_event WHERE group_id=?"
+                         " AND user_id=? AND act=? ORDER BY slot", (gid, uid, act)).fetchall()
+        hit = next((r["event_id"] for r in rows if r["event_id"] in cand), None)
+        if hit:
+            return hit
+        slot = rows[-1]["slot"] if rows else 0
+        c.execute("UPDATE group_run_event SET event_id=?, choice='', tag='', ts=?"
+                  " WHERE group_id=? AND user_id=? AND act=? AND slot=?",
+                  (cand[0], EXP.G._now(), gid, uid, act, slot))
+    return cand[0]
+
+
+def _quality(pool: dict, eid: str) -> dict:
+    for e in pool["events"]:
+        if e["id"] == eid:
+            return e.get("quality") or {}
+    return {}
+
+
+def _trial_evidence(quality: dict, good: bool, date: str) -> dict:
+    """造一份分圈证据。`good=True` 刚好达标，`False` 明确不达标。
+
+    样例要展示的是 `level` 的三种形态，所以证据本身不用好看，只要能让
+    服务端算出对应结论。
+    """
+    metric = str((quality or {}).get("metric") or "")
+    need = float((quality or {}).get("distance_km") or 5)
+    n = max(3, int(round(need)))
+    laps = []
+    for i in range(n):
+        if metric == "negative_split":
+            dur = (330 if i < n // 2 else 300) if good else 330
+        elif metric == "even_pace":
+            dur = 300 if good else (260 if i % 2 == 0 else 340)
+        else:
+            dur = 300
+        laps.append({"dist_m": 1000, "dur_s": dur,
+                     "cad": 178 if good else 165 + i * 6,
+                     "hr": 150 if good else 140 + i * 12,
+                     "ele": 50 if good else 10})
+    return {"activities": [{"activity_id": "fx-act-1", "date": date,
+                            "distance_km": need, "laps": laps}]}
+
+
 # ---------------------------------------------------------------- 群组
 def _groups(t: dict) -> int:
     print("1. 群组接口")
@@ -213,6 +272,16 @@ def _groups(t: dict) -> int:
 def _season(gid: int, t: dict) -> None:
     print("\n2. 远征 · 第一幕")
     w1 = "2026-11-17"       # 第一幕内（周二）
+    # 种子固定：不然每次跑出来的岔路、支线、遗迹都不一样，样例就没法当参考，
+    # 字段还可能在两次之间多一个少一个（比如「两条支线都有 options」那组
+    # 用例时有时无）。跟 test_expedition 用同一个种子，好对照。
+    import expedition as EXP
+
+    with EXP.G.db() as c:
+        c.execute("INSERT OR IGNORE INTO group_run_season(group_id,season_start,"
+                  "season_end,act,morale,seed,flags,settled_act,ended,updated_at)"
+                  " VALUES(?,?,?,1,5,'fixtureseed','{}',0,0,?)",
+                  (gid, "2026-11-16", "2026-12-13", EXP.G._now()))
     st0 = _call("20_state_act1_fresh", "GET",
                 f"/v1/group/{gid}/run/state?today={w1}",
                 "刚进第一幕：岔路未选、支线未选。这是首页要渲染的形状",
@@ -267,13 +336,17 @@ def _season(gid: int, t: dict) -> None:
                     "option": side["options"][0]["id"], "today": w1},
               token=t["owner"])
 
-    trial = next((e for e in st0["events"] if e["type"] == "trial"), None) or \
-        {"id": next(e["id"] for e in pool["events"]
-                    if e["act"] == 1 and e["type"] == "trial")}
+    # 试炼必须出现在样例里，但它是抽出来的（每槽 40%）。这里无条件补上：
+    # 抽到了就沿用，没抽到就把最后一个槽位换成本幕的一条试炼。样例文件数是
+    # 固定的，前端不会因为「这次没抽到」少一个参考。
+    tid1 = _force_trial(gid, 1, 1, pool)
+    trial = {"id": tid1, "quality": _quality(pool, tid1)}
     _call("26_trial_done", "POST", f"/v1/group/{gid}/run/trial",
-          "试炼成功：+3 格。`result` 是成功文案",
+          "试炼达标。**带分圈证据**由服务端复算：`level: verified` 拿全额格。"
+          "`evidence` 只交原始分圈（距离/用时/步频/心率/爬升），不交判定结论",
           body={"trial_id": trial["id"], "done": True, "today": w1,
-                "activity_id": "fx-act-1"}, token=t["owner"])
+                "evidence": _trial_evidence(trial.get("quality"), True, w1)},
+          token=t["owner"])
     _call("27_trial_repeat", "POST", f"/v1/group/{gid}/run/trial",
           "同结果重复报：already=true",
           body={"trial_id": trial["id"], "done": True, "today": w1}, token=t["owner"])
@@ -301,13 +374,14 @@ def _season(gid: int, t: dict) -> None:
     _call("31_fork_act2", "POST", f"/v1/group/{gid}/run/fork",
           "第二幕岔路（选冒险项，后面才能受困）",
           body={"option": brave, "today": w2}, token=t["owner"])
-    trial2 = next((e for e in st2["events"] if e["type"] == "trial"), None) or \
-        {"id": next(e["id"] for e in pool["events"]
-                    if e["act"] == 2 and e["type"] == "trial")}
+    tid2 = _force_trial(gid, 1, 2, pool)
+    trial2 = {"id": tid2, "quality": _quality(pool, tid2)}
     _call("32_trial_fail_stranded", "POST", f"/v1/group/{gid}/run/trial",
-          "试炼失败 → 补给见底 + 冒险分支 → **当场受困**，返回 `me_stranded: true`"
+          "**交了证据但没达标**：`level: failed`，扣补给 → 加上冒险分支 → "
+          "当场受困，返回 `me_stranded: true`。"
           "（叫 me_ 前缀是因为 state 里的 `stranded` 是全组名单数组，同名会撞）",
-          body={"trial_id": trial2["id"], "done": False, "today": w2},
+          body={"trial_id": trial2["id"], "done": True, "today": w2,
+                "evidence": _trial_evidence(trial2.get("quality"), False, w2)},
           token=t["owner"])
     _call("33_state_stranded", "GET", f"/v1/group/{gid}/run/state?today={w2}",
           "受困后的 state：`stranded` 非空、`me.status` 变 stranded",

@@ -179,19 +179,15 @@ def main() -> int:
     print("\n4. 试炼")
     trial_id = next((e["id"] for e in POOL["events"]
                      if e["act"] == 1 and e["type"] == "trial"), None)
-    before = d["me"]["pos"]
     print(f"  （抽到的试炼：{[t['id'] for t in trials] or '无'}）")
-    st, r = req("POST", f"/v1/group/{gid}/run/trial",
-                {"trial_id": trial_id, "done": True, "today": "2026-11-16"}, a)
-    check("报试炼成功 200", st == 200 and r.get("done") is True, f"{st} {r}")
-    st, d = state(gid, a, "2026-11-16")
-    check("成功后加 3 格", d["me"]["pos"] == before + 3, f'{before} -> {d["me"]["pos"]}')
-    st, r = req("POST", f"/v1/group/{gid}/run/trial",
-                {"trial_id": trial_id, "done": True, "today": "2026-11-16"}, a)
-    check("重复报同结果是幂等", st == 200 and r.get("already") is True, f"{st} {r}")
     st, r = req("POST", f"/v1/group/{gid}/run/trial",
                 {"trial_id": "not_a_trial", "done": True, "today": "2026-11-16"}, a)
     check("乱报 id 被拒（400）", st == 400, f"{st} {r}")
+    # 池子里有、但这条不在你这次的路上：不能挑一条最划算的来报
+    if trial_id and trial_id not in [x["id"] for x in d["events"]]:
+        st, r = req("POST", f"/v1/group/{gid}/run/trial",
+                    {"trial_id": trial_id, "done": True, "today": "2026-11-16"}, a)
+        check("没抽到的试炼被拒（404）", st == 404, f"{st} {r}")
 
     # ---------------- 周目标
     print("\n5. 周目标")
@@ -288,6 +284,138 @@ def main() -> int:
     check("并发只推进一幕", int(srow["settled_act"]) == 2, str(srow["settled_act"]))
     check("各幕只记一次（没有被重复结算）",
           len(flags.get("stages") or {}) == 2, json.dumps(flags.get("stages")))
+
+    # ---------------- 试炼核验
+    print("\n11. 试炼核验（数据说了算）")
+
+    def _ev(eid):
+        return next(e for e in POOL["events"] if e["id"] == eid)
+
+    def _mk(metric, need_km, good, date="2026-11-17", aid="ev-1"):
+        """造一份分圈：`good=True` 是刚好达标，`False` 是明确不达标。
+
+        每公里一圈、每圈 1000 m，这是「至少有 3 个整圈」那条门槛的正常形态。
+        """
+        n = max(3, int(round(need_km)))
+        laps = []
+        for i in range(n):
+            if metric == "negative_split":
+                t = (330 if i < n // 2 else 300) if good else 330
+            elif metric == "even_pace":
+                t = 300 if good else (260 if i % 2 == 0 else 340)
+            else:
+                t = 300
+            cad = 178 if good else 165 + i * 6
+            hr = 150 if good else 140 + i * 12
+            ele = 50 if good else 10
+            laps.append({"dist_m": 1000, "dur_s": t, "cad": cad, "hr": hr, "ele": ele})
+        return {"activities": [{"activity_id": aid, "date": date,
+                                "distance_km": need_km, "laps": laps}]}
+
+    start, end = dt.date(2026, 11, 16), dt.date(2026, 11, 22)
+    for metric, tol, need in (("negative_split", 15, 5), ("even_pace", 5, 6),
+                              ("cadence_stable", 3, 5), ("hr_drift", 5, 8),
+                              ("climb_steady", 30, 5)):
+        qz = {"metric": metric, "distance_km": need, "tolerance_s": tol}
+        got = EXP.verify_trial(qz, _mk(metric, need, True), start, end)[0]
+        check(f"{metric}：达标判 verified", got == "verified", got)
+        got = EXP.verify_trial(qz, _mk(metric, need, False), start, end)[0]
+        check(f"{metric}：不达标判 failed", got == "failed", got)
+
+    check("没有证据判 unverified",
+          EXP.verify_trial({"metric": "even_pace", "distance_km": 6, "tolerance_s": 5},
+                           {}, start, end)[0] == "unverified")
+    few = {"activities": [{"activity_id": "x", "date": "2026-11-17", "distance_km": 6,
+                           "laps": [{"dist_m": 1000, "dur_s": 300},
+                                    {"dist_m": 1000, "dur_s": 300}]}]}
+    check("圈数不够判 unverified（不当失败处理）",
+          EXP.verify_trial({"metric": "even_pace", "distance_km": 6, "tolerance_s": 5},
+                           few, start, end)[0] == "unverified")
+    out_of_week = _mk("even_pace", 6, True, date="2026-11-10")
+    check("上周的活动不认",
+          EXP.verify_trial({"metric": "even_pace", "distance_km": 6, "tolerance_s": 5},
+                           out_of_week, start, end)[0] == "unverified")
+    # 跑 10 km 去应 5 km 的试炼：只截前 5 km。整条跑看「后半比前半快」是成立的，
+    # 但前 5 km 全程匀速——不截窗口，长距离跑能白捡任何试炼。
+    laps = ([{"dist_m": 1000, "dur_s": 330} for _ in range(5)]
+            + [{"dist_m": 1000, "dur_s": 280} for _ in range(5)])
+    ten = {"activities": [{"activity_id": "long", "date": "2026-11-17",
+                           "distance_km": 10, "laps": laps}]}
+    check("10 km 跑不动 5 km 的负分割（只截前 5 km）",
+          EXP.verify_trial({"metric": "negative_split", "distance_km": 5,
+                            "tolerance_s": 15}, ten, start, end)[0] == "failed")
+    # 三份候选里只要有一份达标就算过——本周跑了好几次的人不该被第一条拖死
+    mix = _mk("even_pace", 6, False, aid="bad")
+    mix["activities"].append(dict(_mk("even_pace", 6, True, aid="good")["activities"][0]))
+    lvl, aid = EXP.verify_trial({"metric": "even_pace", "distance_km": 6,
+                                 "tolerance_s": 5}, mix, start, end)
+    check("多条候选里有一条达标就算过", lvl == "verified" and aid == "good", f"{lvl} {aid}")
+
+    # ---- 端到端：真的走一遍 /run/trial
+    d4 = login("trial@test.local")
+    # 把抽签逼成「必出试炼」，否则这一节要靠运气才跑得起来
+    old_w = EXP.TYPE_W
+    EXP.TYPE_W = (("trial", 1),)
+    try:
+        st, r = req("POST", "/v1/group/create", {"name": "试炼组", "alias": "阿试"}, d4)
+        gid_v = r["group"]["id"]
+        st, dv = state(gid_v, d4, "2026-11-16")
+    finally:
+        EXP.TYPE_W = old_w
+    tvs = [x for x in dv["events"] if x["type"] == "trial"]
+    check("逼出来的支线里有试炼", bool(tvs), str([x["id"] for x in dv["events"]]))
+
+    def post_trial(tid, done, evidence, today="2026-11-16"):
+        body = {"trial_id": tid, "done": done, "today": today}
+        if evidence:
+            body["evidence"] = evidence
+        return req("POST", f"/v1/group/{gid_v}/run/trial", body, d4)
+
+    if tvs:
+        tv = tvs[0]
+        q = tv["quality"]
+        full = int(_ev(tv["id"]).get("success", {}).get("advance") or 0)
+        st, r = post_trial(tv["id"], True, _mk(q["metric"], q["distance_km"], True))
+        check("交分圈且达标 → verified", st == 200 and r.get("level") == "verified",
+              f"{st} {r}")
+        check("核验通过拿全额格", r.get("advance") == full, f'{r.get("advance")} vs {full}')
+        st, dv = state(gid_v, d4, "2026-11-16")
+        card = next((x for x in dv["events"] if x["id"] == tv["id"]), {})
+        check("核验后卡片显示已选（不再给两个按钮）", card.get("chosen") == "ok", str(card)[:120])
+        check("卡片带 level，界面能写「核验通过」", card.get("level") == "verified",
+              str(card.get("level")))
+        st, r = post_trial(tv["id"], True, _mk(q["metric"], q["distance_km"], True))
+        check("重复报同结果是幂等", st == 200 and r.get("already") is True, f"{st} {r}")
+
+    if len(tvs) > 1:
+        tv = tvs[1]
+        half = max(1, int(_ev(tv["id"]).get("success", {}).get("advance") or 0) // 2)
+        st, r = post_trial(tv["id"], True, None)
+        check("没交证据 → unverified", st == 200 and r.get("level") == "unverified",
+              f"{st} {r}")
+        check("未核验只给一半格", r.get("advance") == half,
+              f'{r.get("advance")} vs {half}')
+    else:
+        check("本幕只有一条试炼（跳过未核验用例）", True)
+
+    # 失败场景放到第二幕：一幕只有两三条试炼，不能全用在同一个分支上
+    EXP.TYPE_W = (("trial", 1),)
+    try:
+        st, dv2 = state(gid_v, d4, "2026-11-23")
+    finally:
+        EXP.TYPE_W = old_w
+    tvs2 = [x for x in dv2["events"] if x["type"] == "trial"]
+    if tvs2:
+        q2 = tvs2[0]["quality"]
+        sup = int(dv2["me"]["supply"])
+        st, r = post_trial(tvs2[0]["id"], True,
+                           _mk(q2["metric"], q2["distance_km"], False, date="2026-11-24"),
+                           today="2026-11-23")
+        check("交分圈但没达标 → failed", st == 200 and r.get("level") == "failed",
+              f"{st} {r}")
+        check("failed 按失败扣补给", r.get("supply") == sup - 1, f'{sup} -> {r.get("supply")}')
+    else:
+        check("第二幕没试炼（跳过失败用例）", True)
 
     print(f"\n通过 {ok} 项，失败 {fail} 项")
     srv.shutdown()

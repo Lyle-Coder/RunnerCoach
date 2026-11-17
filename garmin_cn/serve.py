@@ -1366,6 +1366,7 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._json({"ok": False, "error": "只允许本机操作"}, 403)
         token = getattr(self.server, "group_token", "")
         gid = 0
+        note = ""
         try:
             n = int(self.headers.get("Content-Length") or 0)
             if not 0 < n <= 65536:
@@ -1383,8 +1384,11 @@ class _Handler(SimpleHTTPRequestHandler):
                 r = G.run_event(gid, int(vals.get("slot") or 0),
                                 vals.get("option") or "")
             elif act == "trial":
-                r = G.run_trial(gid, vals.get("trial_id") or "",
-                                str(vals.get("done") or "") in ("1", "true", "True"))
+                tid = vals.get("trial_id") or ""
+                done = str(vals.get("done") or "") in ("1", "true", "True")
+                evid, note = self._trial_evidence(gid, tid)
+                r = G.run_trial(gid, tid, done, evidence=evid)
+                note = note or (r.get("note") or "")
             elif act == "rescue":
                 r = G.run_rescue(gid, int(vals.get("user_id") or 0))
             elif act == "target":
@@ -1392,6 +1396,8 @@ class _Handler(SimpleHTTPRequestHandler):
             else:
                 raise ValueError("不支持的操作")
             msg = "" if r.get("ok") else (r.get("error") or "操作失败")
+            if not msg and note:
+                msg = note
         except PermissionError as e:
             msg = str(e)
         except (ValueError, TypeError) as e:
@@ -1420,6 +1426,36 @@ class _Handler(SimpleHTTPRequestHandler):
             return G.report_group(store, gid, first=not G.seen(gid, store))
         finally:
             store.conn.close()
+
+    def _trial_evidence(self, gid: int, trial_id: str) -> tuple[dict, str]:
+        """给一条试炼配证据：从本周活动里抽原始分圈。
+
+        返回 (evidence, 提示)。提示只用来解释「为什么没核验成」，不预判结论——
+        结论由服务端算，这里说「达标了」就成了第二个判定点。
+        """
+        from . import appapi as A, group as G
+        from .store import Store
+
+        try:
+            st = G.run_state(gid)
+            season = (st or {}).get("season") or {}
+            ev = next((e for e in ((st or {}).get("events") or [])
+                       if e.get("id") == trial_id), None)
+            q = (ev or {}).get("quality") or {}
+            if not q or not season.get("week_from"):
+                return {}, ""
+            store = Store(A.DB)
+            try:
+                evid = G.trial_evidence(store, q,
+                                        str(season["week_from"])[:10],
+                                        str(season["week_to"])[:10])
+            finally:
+                store.conn.close()
+        except Exception:            # noqa: BLE001 - 抽不到证据不该让上报失败
+            return {}, ""
+        if not evid:
+            return {}, "本周还没同步到能核验的跑步记录，先按未核验记。"
+        return evid, ""
 
     def _group_post(self, u) -> None:
         """训练小组的写接口：登录、建组、加入、共享、上报、赛事、退出。"""
