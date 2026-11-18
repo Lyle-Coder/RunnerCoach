@@ -1,0 +1,11 @@
+# 镜像里不要的东西：本地库、缓存、密钥、部署产物
+__pycache__/
+*.pyc
+data/
+env
+.env
+relay/secrets.json
+deploy/certs/
+*.db
+*.db-wal
+*.db-shm

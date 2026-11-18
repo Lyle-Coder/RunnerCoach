@@ -21,6 +21,7 @@ import urllib.error
 import urllib.request
 
 from . import llm
+from . import tlstrust as _TLS
 
 # 本地/内测时可以指到 http://192.168.x.x:8300，正式环境留空走配置里的平台地址
 ENV_BASE = "RC_API_BASE"
@@ -93,6 +94,8 @@ def request(method: str, path: str, body=None, *, need_auth: bool = True,
 
     调用方全是界面逻辑，抛异常只会变成 500 页面；统一返回要比让人到处 try 好。
     """
+    # 自签证书要在第一次 HTTPS 之前装进信任链，否则报 CERTIFICATE_VERIFY_FAILED
+    _TLS.install()
     base = _base()
     if not base:
         return False, {"ok": False, "error": "还没有服务器地址，先在「模型服务」里配好"}

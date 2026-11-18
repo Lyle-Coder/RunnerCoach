@@ -34,6 +34,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+
+from . import _buildcfg as _BC
 from pathlib import Path
 
 # 项目根目录：桌面/Termux 是代码所在目录；APK 里由 GARMIN_HOME 指到 filesDir
@@ -111,8 +113,10 @@ DEFAULT_PROVIDER = "deepseek"
 # 业务地址优先由服务端 GET /v1/client/config 下发（见 sync_platform_config），
 # 值写在网关的 .env：RC_PUBLIC_BASE / RC_SHARE_CODE。换域名、轮换分享码
 # 只改服务端并重启容器即可，不必重新发版。
-BUILTIN_PLATFORM_BASE = "https://garmin-daily-dashboard.app.workbuddy.host"
-BUILTIN_PLATFORM_SHARE_CODE = "ORT7NXCECR"
+# 地址与分享码集中在 `_buildcfg.py`（由 tools/set_server.py 生成），
+# 这里只做转发：换服务器时改一处就够，不会出现「地址换了分享码没换」。
+BUILTIN_PLATFORM_BASE = _BC.PLATFORM_BASE
+BUILTIN_PLATFORM_SHARE_CODE = _BC.PLATFORM_SHARE_CODE
 CLIENT_CONFIG_PATH = "/v1/client/config"
 CLIENT_CONFIG_TTL = 6 * 3600    # 下发结果的缓存时长（秒）
 
@@ -500,6 +504,18 @@ def _pick_auth_error(errs: list[tuple[int, str]]) -> tuple[int, str]:
     return errs[-1] if errs else (0, "")
 
 
+def _install_ca() -> None:
+    """发请求前确保自签证书已进信任链。幂等，没有证书时是空操作。
+
+    放在这里而不是只在启动时调一次：`chat()` 可能在 `sync_platform_config()`
+    之前被调用（比如用户直接从对话页进），漏一次就是一条
+    CERTIFICATE_VERIFY_FAILED，而错误文案看起来像「服务器挂了」。
+    """
+    from . import tlstrust
+
+    tlstrust.install()
+
+
 def _post(url: str, token: str, payload: dict, timeout: int = READ_TIMEOUT,
           stream: bool = False, extra_headers: dict | None = None,
           cfg: dict | None = None):
@@ -523,6 +539,7 @@ def _post(url: str, token: str, payload: dict, timeout: int = READ_TIMEOUT,
         for k, v in _auth_headers(style, token).items():
             req.add_header(k, v)
         try:
+            _install_ca()
             resp = urllib.request.urlopen(req, timeout=timeout)
         except urllib.error.HTTPError as e:
             try:
@@ -808,6 +825,9 @@ def sync_platform_config(force: bool = False) -> dict:
     引导请求固定走出厂内置入口（带内置分享码）；整个同步失败静默——
     隧道没开、断网、网关升级中都不影响用内置值继续登录。
     """
+    from . import tlstrust as _TLS
+
+    _TLS.install()
     cfg = load_config()
     if not cfg.get("platform_auto", True):
         return cfg
@@ -819,6 +839,7 @@ def sync_platform_config(force: bool = False) -> dict:
         req = urllib.request.Request(
             BUILTIN_PLATFORM_BASE + CLIENT_CONFIG_PATH, method="GET")
         req.add_header("X-Share-Code", BUILTIN_PLATFORM_SHARE_CODE)
+        _install_ca()
         with urllib.request.urlopen(req, timeout=3) as r:
             data = json.loads(r.read().decode("utf-8", "replace"))
         base = str(data.get("platform_base") or "").strip().rstrip("/")
