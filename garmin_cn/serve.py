@@ -31,7 +31,7 @@ from functools import partial
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from . import history, ui
 
@@ -68,14 +68,14 @@ def _title(name: str) -> tuple[str, str, str]:
     if stem == "demo":
         return "演示看板（仿真数据）", "今日", kind
     if stem == "card":
-        return "最新一图流", "今日", kind
+        return "最新每日看板", "今日", kind
     if stem == "act":
         return "最新活动图", "今日", kind
     if stem.startswith("dashboard-"):
         return f"看板 {stem[10:]}", "看板", kind
     if stem.startswith("card-"):
         tail = "" if ext == ".png" else " · 网页"
-        return f"一图流 {stem[5:]}{tail}", "图", kind
+        return f"每日看板 {stem[5:]}{tail}", "图", kind
     if stem.startswith("act-"):
         day = stem[4:].rsplit("-", 1)[0]
         label = "活动图" if ext == ".png" else "活动详情"
@@ -151,6 +151,10 @@ class _Handler(SimpleHTTPRequestHandler):
 
             # AI 页有自己的 CSS，只补统一外框与标题节奏，不动它的交互。
             return self._html(_with_fix(aiui.render(), ui.AI_FIX))
+        if u.path.startswith("/fonts/"):
+            return self._font(u.path.rsplit("/", 1)[-1])
+        if u.path.startswith("/content/"):
+            return self._content(u.path.rsplit("/", 1)[-1])
         token = getattr(self.server, "token", "")
         if token and not self._gate(u, token):
             return
@@ -167,6 +171,29 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._html(history.history_page(parse_qs(u.query)))
         if u.path in ("/me", "/me.html"):
             return self._html(ui.me_page())
+        if u.path in ("/run", "/run.html"):
+            return self._html(self._run_page(parse_qs(u.query)))
+        # 训练小组：三个页面共用同一个页面令牌，写操作全部 POST + 303
+        if u.path in ("/account", "/account.html", "/groups", "/groups.html") \
+                or u.path.startswith("/groups/"):
+            if not self._is_loopback():
+                return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+            if not getattr(self.server, "group_token", ""):
+                self.server.group_token = secrets.token_urlsafe(32)
+            tok = self.server.group_token
+            q = parse_qs(u.query)
+            msg = (q.get("msg") or [""])[0]
+            from . import groupui
+            if u.path.startswith("/account"):
+                return self._html(groupui.account_page(
+                    tok, msg, (q.get("account") or [""])[0], (q.get("code") or [""])[0]))
+            if u.path.rstrip("/") in ("/groups", "/groups.html"):
+                return self._html(groupui.groups_page(tok, msg))
+            seg = u.path.rstrip("/").split("/")[2:]
+            if len(seg) == 1 and seg[0].isdigit():
+                rng = "month" if (q.get("range") or [""])[0] == "month" else "week"
+                return self._html(groupui.group_page(tok, int(seg[0]), msg, rng))
+            return self._json({"ok": False, "error": "没有这个页面"}, 404)
         if u.path == "/sports":
             if not self._is_loopback():
                 return self._json({"ok": False, "error": "只允许本机操作"}, 403)
@@ -516,9 +543,9 @@ class _Handler(SimpleHTTPRequestHandler):
         # 并且给一条绿条确认。错误仍然回同一块，红条就出现在出错的地方。
         anchor = {"/__event/fuel": "fuel", "/__event/target": "adjust",
                   "/__event/course": "adjust"}.get(u.path, "")
-        okmsg = ("补给参数已保存，各段用量已重算" if u.path == "/__event/fuel"
-                 else "CP 表已保存，余量已重算" if u.path == "/__event/course"
-                 else "目标已保存，余量与补给已重算")
+        okmsg = ("已保存补给设置，并更新各段的建议用量" if u.path == "/__event/fuel"
+                 else "已保存检查点表，并更新预计到达时间和关门时间对比" if u.path == "/__event/course"
+                 else "已保存目标，并更新预计到达时间和补给安排")
         self._back(slug, err=err, ok=okmsg, anchor=anchor)
 
     def _event_file(self, path: str) -> None:
@@ -816,7 +843,7 @@ class _Handler(SimpleHTTPRequestHandler):
             elif act == "rules":
                 E.set_booking_rules(slug, {k: one(k) for k in
                                            ("flight", "train", "stay")})
-                okmsg = "预订提前量已更新，待办已重算"
+                okmsg = "已更新预订提醒时间"
             elif act in ("book", "unbook"):
                 kind = one("kind") or ""
                 if not kind and one("idx"):
@@ -1208,6 +1235,10 @@ class _Handler(SimpleHTTPRequestHandler):
             return
         if u.path.startswith("/__plan/"):
             return self._plan_post(u)
+        if u.path.startswith(("/__group/", "/__account/")):
+            return self._group_post(u)
+        if u.path.startswith("/__run/"):
+            return self._run_post(u)
         # 回放视频：动画页 `?export=1` 会自己逐帧 POST 上来，这里只负责收。
         if u.path.startswith(("/__frame", "/__done", "/__timeline", "/__diag")):
             return self._frame_post(u)
@@ -1274,6 +1305,316 @@ class _Handler(SimpleHTTPRequestHandler):
         return self._json(out, 200 if out.get("ok") else 400)
 
     # ---------------------------------------------------------------- 计划编辑
+    def _font(self, name: str) -> None:
+        """包内的字体文件。
+
+        只白名单一个文件名，不做路径拼接——`../../` 这类穿越在本地服务上
+        同样能读到用户目录，没必要为了通用性留个洞。
+        """
+        allowed = {"expedition-serif.woff2": "font/woff2"}
+        ctype = allowed.get(name)
+        if not ctype:
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        from . import contentpack
+
+        f = contentpack.path(name)
+        if f is None:
+            # 素材是按需下发的：第一次进远征页时可能还没下完。回 404，
+            # CSS 那边有系统衬线兜底，页面照常可读。
+            return self._json({"ok": False, "error": "素材还没下发"}, 404)
+        data = f.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        # 字体只在重打包时变，长缓存让 WebView 不必每次重新解析 1.5 MB
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.end_headers()
+        self.wfile.write(data)
+
+    # 白名单：结局底图。和字体同一个理由——只认文件名，不做路径拼接，
+    # 免得 `../../` 在这条本地服务上读出用户目录。
+    CONTENT_TYPES = {".webp": "image/webp", ".png": "image/png",
+                     ".jpg": "image/jpeg", ".woff2": "font/woff2"}
+
+    def _content(self, name: str) -> None:
+        """包内静态资源（结局底图、字体）。"""
+        import os as _os
+        from pathlib import Path as _P
+
+        ctype = self.CONTENT_TYPES.get(_os.path.splitext(name)[1].lower())
+        if not ctype or "/" in name or "\\" in name or name.startswith("."):
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        from . import contentpack
+
+        f = contentpack.path(name)
+        if f is None:
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        data = f.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _run_page(self, q: dict) -> str:
+        from . import group as G, runsui
+
+        if not self._is_loopback():
+            return runsui.empty_page("offline", "页面只能在手机上打开")
+        # 页面令牌要在这里也生成：用户可能直接从「我的」点进 /run，
+        # 没经过小组页。不生成的话页面能打开，但一选选项就报「页面已过期」。
+        if not getattr(self.server, "group_token", ""):
+            self.server.group_token = secrets.token_urlsafe(32)
+        gid = 0
+        try:
+            gid = int((q.get("gid") or ["0"])[0])
+        except (TypeError, ValueError):
+            gid = 0
+        if not gid:
+            # 没指定组时取第一个——从「我的」点进来时不该再选一次
+            lst = G.groups()
+            items = lst.get("groups") or []
+            gid = int(items[0]["id"]) if items else 0
+        if not gid:
+            return runsui.empty_page("nogroup")
+        msg = (q.get("msg") or [""])[0]
+        st = G.run_state(gid)
+        if not st.get("ok"):
+            # 三种打不开要分开引导：没登录去账号页、不是成员去建组、其余重试。
+            # 直接把「HTTP 403」糊上去，玩家除了退回上一页没别的可做。
+            if st.get("need_login"):
+                return runsui.empty_page("login")
+            err = str(st.get("error") or "")
+            if "成员" in err or "小组" in err:
+                return runsui.empty_page("nogroup")
+            return runsui.empty_page("offline", err[:60])
+        # 赛季结束就直接进结算页：玩家下次打开想看到的是结果，
+        # 不是一条停在最后一幕、还在催他跑步的路线。
+        if (st.get("season") or {}).get("ended"):
+            return runsui.outcome_page(getattr(self.server, "group_token", ""),
+                                       G.run_outcome(gid))
+        return runsui.run_page(getattr(self.server, "group_token", ""), msg, st)
+
+    def _run_post(self, u) -> None:
+        """远征的写接口。和小组页同一套「本机 + 页面令牌 + 303 回跳」。"""
+        from . import group as G
+
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        token = getattr(self.server, "group_token", "")
+        gid = 0
+        note = ""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if not 0 < n <= 65536:
+                raise ValueError("参数过大或为空")
+            vals = {k: v[0] for k, v in
+                    parse_qs(self.rfile.read(n).decode("utf-8"),
+                             keep_blank_values=True).items()}
+            if not token or not hmac.compare_digest(vals.get("token", ""), token):
+                raise PermissionError("页面已过期，请重新打开")
+            gid = int(vals.get("gid") or 0)
+            act = u.path.rstrip("/").split("/")[-1]
+            if act == "fork":
+                r = G.run_fork(gid, vals.get("option") or "")
+            elif act == "event":
+                r = G.run_event(gid, int(vals.get("slot") or 0),
+                                vals.get("option") or "")
+            elif act == "trial":
+                tid = vals.get("trial_id") or ""
+                done = str(vals.get("done") or "") in ("1", "true", "True")
+                evid, note = self._trial_evidence(gid, tid)
+                r = G.run_trial(gid, tid, done, evidence=evid)
+                note = note or (r.get("note") or "")
+            elif act == "rescue":
+                r = G.run_rescue(gid, int(vals.get("user_id") or 0))
+            elif act == "target":
+                r = G.run_target(gid, float(vals.get("km") or 0))
+            else:
+                raise ValueError("不支持的操作")
+            msg = "" if r.get("ok") else (r.get("error") or "操作失败")
+            if not msg and note:
+                msg = note
+        except PermissionError as e:
+            msg = str(e)
+        except (ValueError, TypeError) as e:
+            msg = str(e) or "参数不对"
+        except Exception as e:  # noqa: BLE001 - 网络异常不能让页面白屏
+            msg = f"{type(e).__name__}: {e}"
+        back = f"/run?gid={gid}" if gid else "/groups"
+        sep = "&" if "?" in back else "?"
+        return self._see_other(back + (sep + "msg=" + quote(msg) if msg else ""))
+
+    def _see_other(self, url: str) -> None:
+        """PRG 回跳。手机上按返回/下拉刷新不会重复提交上一次操作。"""
+        self.send_response(303)
+        self.send_header("Location", url)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        self.close_connection = True
+
+    def _group_report(self, gid: int) -> dict:
+        """手动上报一次。首次加入发 30 天，之后 14 天。"""
+        from . import appapi as A, group as G
+        from .store import Store
+
+        store = Store(A.DB)
+        try:
+            return G.report_group(store, gid, first=not G.seen(gid, store))
+        finally:
+            store.conn.close()
+
+    def _trial_evidence(self, gid: int, trial_id: str) -> tuple[dict, str]:
+        """给一条试炼配证据：从本周活动里抽原始分圈。
+
+        返回 (evidence, 提示)。提示只用来解释「为什么没核验成」，不预判结论——
+        结论由服务端算，这里说「达标了」就成了第二个判定点。
+        """
+        from . import appapi as A, group as G
+        from .store import Store
+
+        try:
+            st = G.run_state(gid)
+            season = (st or {}).get("season") or {}
+            ev = next((e for e in ((st or {}).get("events") or [])
+                       if e.get("id") == trial_id), None)
+            q = (ev or {}).get("quality") or {}
+            if not q or not season.get("week_from"):
+                return {}, ""
+            store = Store(A.DB)
+            try:
+                evid = G.trial_evidence(store, q,
+                                        str(season["week_from"])[:10],
+                                        str(season["week_to"])[:10])
+            finally:
+                store.conn.close()
+        except Exception:            # noqa: BLE001 - 抽不到证据不该让上报失败
+            return {}, ""
+        if not evid:
+            return {}, "本周还没同步到能核验的跑步记录，先按未核验记。"
+        return evid, ""
+
+    def _group_post(self, u) -> None:
+        """训练小组的写接口：登录、建组、加入、共享、上报、赛事、退出。"""
+        from . import account as AC, group as G
+
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        token = getattr(self.server, "group_token", "")
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if not 0 < n <= 65536:
+                raise ValueError("参数过大或为空")
+            values = {k: v[0] for k, v in
+                      parse_qs(self.rfile.read(n).decode("utf-8"),
+                               keep_blank_values=True).items()}
+            if not token or not hmac.compare_digest(values.get("token", ""), token):
+                raise PermissionError("页面已过期，请重新打开")
+        except PermissionError as e:
+            return self._see_other("/groups?msg=" + quote(str(e)))
+        except (ValueError, OSError) as e:
+            return self._see_other("/groups?msg=" + quote(str(e)))
+
+        def as_int(v, default=0):
+            try:
+                return int(str(v).strip() or 0)
+            except (TypeError, ValueError):
+                return default
+
+        parts = [p for p in u.path.strip("/").split("/") if p]
+        msg, back = "", "/groups"
+        try:
+            if parts and parts[0] == "__account":
+                act = parts[1] if len(parts) > 1 else ""
+                acct = (values.get("account") or "").strip()
+                if act == "send":
+                    r = AC.send_code(acct)
+                    if r.get("ok"):
+                        q = {"account": acct, "sent": "1"}
+                        if r.get("dev_code"):
+                            q["code"] = r["dev_code"]
+                        return self._see_other("/account?" + urlencode(q))
+                    msg, back = r.get("error") or "发送失败", "/account"
+                elif act == "login":
+                    # 昵称只在服务端判定为新账号时生效，老账号传了也不会被覆盖
+                    r = AC.verify(acct, values.get("code"),
+                                  values.get("nickname") or "")
+                    if r.get("ok"):
+                        return self._see_other("/groups")
+                    msg = r.get("error") or "登录失败"
+                    back = "/account?" + urlencode({"account": acct})
+                elif act == "nickname":
+                    r = AC.set_nickname(values.get("nickname") or "")
+                    if r.get("ok"):
+                        return self._see_other(
+                            "/account?" + urlencode({"msg": f"昵称已改成「{r['nickname']}」"}))
+                    msg, back = r.get("error") or "改名失败", "/account"
+                elif act == "logout":
+                    AC.logout()
+                    return self._see_other("/account")
+                else:
+                    raise ValueError("不支持的操作")
+            else:
+                second = parts[1] if len(parts) > 1 else ""
+                if second == "create":
+                    r = G.create(values.get("name"), values.get("intro"),
+                                 as_int(values.get("max_members"), 20), values.get("alias"))
+                    if r.get("ok"):
+                        return self._see_other(f"/groups/{r['group']['id']}")
+                    msg = r.get("error") or "建组失败"
+                elif second == "join":
+                    r = G.join(values.get("code"), values.get("alias"))
+                    if r.get("ok"):
+                        return self._see_other(f"/groups/{r['group']['id']}")
+                    msg = r.get("error") or "加入失败"
+                else:
+                    gid = as_int(second)
+                    if not gid:
+                        raise ValueError("组 id 不对")
+                    act = parts[2] if len(parts) > 2 else ""
+                    back = f"/groups/{gid}"
+                    if act == "leave":
+                        r = G.leave(gid)
+                        if r.get("ok"):
+                            back = "/groups"
+                        else:
+                            msg = r.get("error") or "退出失败"
+                    elif act == "share":
+                        r = G.set_share(gid, values.get("share") or "summary")
+                        msg = "已保存" if r.get("ok") else (r.get("error") or "保存失败")
+                    elif act == "alias":
+                        r = G.set_alias(gid, values.get("alias") or "")
+                        msg = (f'昵称已改成「{r.get("alias")}」' if r.get("changed")
+                               else "昵称没变") if r.get("ok") \
+                            else (r.get("error") or "改名失败")
+                    elif act == "report":
+                        r = self._group_report(gid)
+                        msg = (f'已上报 {r.get("saved", 0)} 天'
+                               if r.get("ok") else (r.get("error") or "上报失败，已排队"))
+                    elif act == "rotate":
+                        r = G.rotate(gid)
+                        msg = (f'新邀请码 {r["invite_code"]}' if r.get("ok")
+                               else (r.get("error") or "换码失败"))
+                    elif act == "challenge":
+                        if len(parts) > 3 and parts[3].isdigit() and parts[-1] == "close":
+                            r = G.challenge_close(gid, int(parts[3]))
+                            msg = "已结束" if r.get("ok") else (r.get("error") or "结束失败")
+                        else:
+                            r = G.challenge_create(
+                                gid, values.get("title"), values.get("kind") or "distance",
+                                as_int(values.get("target")),
+                                values.get("start_date") or "", values.get("end_date") or "")
+                            msg = "已建赛事" if r.get("ok") else (r.get("error") or "建赛事失败")
+                    else:
+                        raise ValueError("不支持的操作")
+        except (ValueError, TypeError) as e:
+            msg = str(e)
+        except Exception as e:  # noqa: BLE001 - 网络异常不能让页面白屏
+            msg = f"{type(e).__name__}: {e}"
+        sep = "&" if "?" in back else "?"
+        return self._see_other(f"{back}{sep}msg=" + quote(msg or ""))
+
     def _plan_post(self, u) -> None:
         """计划的写接口：保存 / 生成 / 确认 / 放弃 / 推送 / 撤销 / 开关。
 
@@ -1324,11 +1665,11 @@ class _Handler(SimpleHTTPRequestHandler):
                     back = "/plan/draft"
                 else:
                     msg = (r.get("error") or r.get("reason")
-                           or "没有可参考的跑量，先在今日页同步几次")
+                           or "还没有跑量可参考。可以填写每周跑量，或在今日页同步跑步记录后重试。")
             elif act == "confirm":
                 r = A.plan_confirm(values.get("override") == "1")
                 back = "/plan"
-                msg = (f'已写入 {r.get("saved")} 天，下周一起自动续'
+                msg = (f'已保存 {r.get("saved")} 天的训练安排，下周起会自动安排训练'
                        if r.get("ok") else (r.get("error") or "确认失败"))
             elif act == "discard":
                 A.plan_discard()
@@ -1345,7 +1686,7 @@ class _Handler(SimpleHTTPRequestHandler):
                 r = A.plan_push(False)
                 back = "/plan"
                 if r.get("ok"):
-                    msg = (f'已推送 {r.get("created")} 节课，覆盖 {r.get("days")} 天'
+                    msg = (f'已发送 {r.get("created")} 节训练到佳明日历，共 {r.get("days")} 天'
                            if r.get("created") else "没有需要推送的课")
                 elif r.get("need_login"):
                     msg = r.get("error") or "佳明未登录，先去「我的」登录"
@@ -1456,6 +1797,14 @@ def run_server(root: Path, lan: bool = False, port: int = 8765,
         return 3
     srv.token = token or ""  # type: ignore[attr-defined]
     srv.daemon_threads = True
+
+    # 素材（远征字体 / 结局插画）后台补。放在服务起来之后：先让首屏能开，
+    # 再慢慢下那 1.7 MB。失败也不影响任何页面（有兜底）。
+    try:
+        from . import contentpack
+        contentpack.prefetch_async()
+    except Exception:      # noqa: BLE001
+        pass
 
     q = f"?k={token}" if token else ""
     print("√ 只读看板服务已启动（关掉本窗口即停止）")

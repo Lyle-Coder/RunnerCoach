@@ -54,7 +54,7 @@ object ClipTrimmer {
                 }
                 list.add(Tr(i, mux.addTrack(f), isVideo))
             }
-            if (list.none { it.video }) return Result(false, "源文件里没有视频轨")
+            if (list.none { it.video }) return Result(false, "文件中没有可裁剪的视频画面")
 
             // 时间原点取视频轨里 startMs 之前最近的关键帧。所有轨都按它对齐，
             // 音画才不会各走各的。
@@ -95,7 +95,7 @@ object ClipTrimmer {
                 ex.unselectTrack(t.src)
             }
             mux.stop()
-            if (lastUs < 0) return Result(false, "选中的区间里没有可用的样本")
+            if (lastUs < 0) return Result(false, "所选片段没有可保存的画面")
             return Result(true, "ok", lastUs / 1000, vw, vh, baseUs / 1000)
         } catch (t: Throwable) {
             dst.delete()

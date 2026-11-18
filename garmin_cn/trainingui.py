@@ -73,11 +73,11 @@ def render(qs=None, token=""):
     form = ('<form method="get" action="/training" class="card" data-nopush>'
             '<input type="hidden" name="preview" value="1">'
             '<label>训练项目<select name="sport">' + options((("auto", "跟随运动设置"), ("run", "跑步"), ("bike", "骑行")), sport) + '</select></label>'
-            f'<label>本地课表日期<input type="date" name="source_date" value="{esc(source_date)}" required></label>'
-            '<label>导入位置<select name="destination">' + options((("calendar", "指定日期的训练日历"), ("library", "训练库（不指定日期）")), destination) + '</select></label>'
-            f'<label id="date-label">安排日期<input type="date" name="date" value="{esc(date)}" min="{today}" max="{(dt.date.today() + dt.timedelta(days=90)).isoformat()}"></label>'
-            '<label class="check"><input type="checkbox" name="no_intensity" value="1"' + (' checked' if no_intensity else '') + '>不设置强度提醒，仅保留时间/距离及文字说明</label>'
-            '<p class="note">今日建议根据恢复状态生成；其它日期仅支持已配置的本地备赛课。导入不会覆盖高驰原有课程。</p>'
+            f'<label>训练原定日期<input type="date" name="source_date" value="{esc(source_date)}" required></label>'
+            '<label>导入位置<select name="destination">' + options((("calendar", "高驰训练日历"), ("library", "高驰训练库（不指定日期）")), destination) + '</select></label>'
+            f'<label id="date-label">高驰日历中的训练日期<input type="date" name="date" value="{esc(date)}" min="{today}" max="{(dt.date.today() + dt.timedelta(days=90)).isoformat()}"></label>'
+            '<label class="check"><input type="checkbox" name="no_intensity" value="1"' + (' checked' if no_intensity else '') + '>只保留时间、距离和说明，关闭强度提醒</label>'
+            '<p class="note">今天的训练建议会参考恢复情况。选其他日期时，当天需要已有备赛课程。高驰里已有的课程会保留。</p>'
             '<button class="btn primary" type="submit">预览训练</button></form>')
     status = A.coros_mcp_status()
     authorized = bool(status.get("authorized"))
@@ -91,7 +91,7 @@ def render(qs=None, token=""):
             history += (f'<div class="card"><b>{esc(row["name"])}</b><p class="note">{esc(date_label)} · {state}</p>'
                         + (f'<button class="btn recheck" data-import-key="{row["import_key"]}" type="button">核对这条记录</button>' if row["state"] != "verified" else '') + '</div>')
     auth = ('<div class="card"><b>高驰官方授权</b><p class="note">' +
-            ('已授权。训练写入高驰账户后，仍需通过高驰 App 同步到设备。' if authorized else '请先授权高驰账户；预览不需要联网，点击导入后才会发送训练。') +
+            ('高驰已连接。导入后，打开高驰 App 把课程同步到设备。' if authorized else '可以先预览，导入时再连接高驰账号。') +
             '</p><button class="btn" id="coros-auth" type="button">' + ('重新授权' if authorized else '授权高驰') + '</button></div>')
     preview, content, preview_id = {}, "", ""
     if value("preview") == "1":
@@ -106,7 +106,7 @@ def render(qs=None, token=""):
                             '<p class="note" style="white-space:pre-wrap">' + esc(course["courseDescription"]) + '</p></div>')
             content += ''.join('<div class="card note">' + esc(w) + '</div>' for w in preview["warnings"])
             content += ('<div class="card"><b>' + esc('安排到 ' + preview["date"] if destination == "calendar" else '仅存入高驰训练库') +
-                        '</b><p class="note">请核对课程内容。高驰同日原有训练会保留，请考虑当天总训练量。训练导入与路线导航分别管理。</p>'
+                        '</b><p class="note">确认课程和日期后再导入。如果同一天已有训练，记得一起算进当天的训练量。</p>'
                         '<div class="pager"><button class="btn primary" id="coros-submit" type="button"' + ('' if authorized else ' disabled') +
                         '>导入高驰</button><button class="btn" id="coros-check" type="button">检查导入结果</button></div></div>')
     style = '<style>.training form label{display:block;margin:12px 0}.training input:not([type=checkbox]),.training select{display:block;box-sizing:border-box;width:100%;padding:10px;margin-top:6px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px}.training .check{display:flex;gap:10px;align-items:start}.training .kvline{gap:12px;flex-wrap:wrap}.training .card{overflow-wrap:anywhere}.training button:disabled{opacity:.45}</style>'
@@ -130,13 +130,13 @@ b.disabled=true;c.disabled=true;show(check?'正在核对高驰账户…':'正在
 post(check?'check':'submit',{preview_id:root.dataset.preview}).then(function(r){
 var lines=[r.message||r.error||'操作结束'];(r.items||[]).forEach(function(i){lines.push((i.name||'训练')+'：'+(i.ok?(i.duplicate?'已导入，未重复创建':'已核验'):i.error));});
 show(lines.join('\\n'));if(!r.ok&&!r.uncertain)b.disabled=false;c.disabled=false;
-}).catch(function(){show('连接中断，结果尚未确认。请先检查导入结果，避免重复创建。');c.disabled=false;});}
+}).catch(function(){show('连接断了，暂时不知道是否已导入。请先点「检查导入结果」，再决定要不要重试。');c.disabled=false;});}
 var b=document.getElementById('coros-submit'),c=document.getElementById('coros-check');
 if(b)b.onclick=function(){send(false);};if(c)c.onclick=function(){send(true);};
 document.querySelectorAll('.recheck').forEach(function(button){button.onclick=function(){
 button.disabled=true;show('正在核对导入记录…');post('recheck',{import_key:button.dataset.importKey}).then(function(r){
 show(r.message||r.error||'核对完成');button.disabled=false;if(r.ok){button.parentNode.querySelector('.note').textContent='已核验，可在高驰 App 同步到设备';button.hidden=true;}
-}).catch(function(){button.disabled=false;show('暂时无法核对，请稍后再试；不会自动重发训练。');});};});
+}).catch(function(){button.disabled=false;show('暂时查不到导入结果，请稍后再检查。');});};});
 var dest=document.querySelector('[name=destination]');function toggle(){var input=document.querySelector('[name=date]');input.disabled=dest.value==='library';document.getElementById('date-label').hidden=input.disabled;}dest.onchange=toggle;toggle();
 })();</script>'''
     body = (style + f'<div class="training" id="training" data-token="{esc(token)}" data-preview="{esc(preview_id)}">' +
@@ -144,5 +144,5 @@ var dest=document.querySelector('[name=destination]');function toggle(){var inpu
             (ui.sec("导入预览", content) if content else '') +
             (ui.sec("最近导入", history) if history else '') +
             '<div class="card" id="training-result" role="status" aria-live="polite" style="white-space:pre-wrap">预览后点击「导入高驰」才会提交。</div></div>' + script)
-    return ui.page("TRAINING · 高驰", "导入跑步与骑行训练", "本地生成 · 预览后导入", body,
+    return ui.page("TRAINING · 高驰", "导入跑步与骑行训练", "从本机课表选择训练，预览后导入高驰", body,
                    foot="仅在点击导入后，将所选训练发送至高驰账户。设备同步由高驰 App 完成。", back=("返回训练计划", "/plan"))

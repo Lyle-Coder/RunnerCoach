@@ -34,6 +34,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+
+from . import _buildcfg as _BC
 from pathlib import Path
 
 # 项目根目录：桌面/Termux 是代码所在目录；APK 里由 GARMIN_HOME 指到 filesDir
@@ -111,10 +113,14 @@ DEFAULT_PROVIDER = "deepseek"
 # 业务地址优先由服务端 GET /v1/client/config 下发（见 sync_platform_config），
 # 值写在网关的 .env：RC_PUBLIC_BASE / RC_SHARE_CODE。换域名、轮换分享码
 # 只改服务端并重启容器即可，不必重新发版。
-BUILTIN_PLATFORM_BASE = "https://garmin-daily-dashboard.app.workbuddy.host"
-BUILTIN_PLATFORM_SHARE_CODE = "ORT7NXCECR"
+# 地址与分享码集中在 `_buildcfg.py`（由 tools/set_server.py 生成），
+# 这里只做转发：换服务器时改一处就够，不会出现「地址换了分享码没换」。
+BUILTIN_PLATFORM_BASE = _BC.PLATFORM_BASE
+BUILTIN_PLATFORM_SHARE_CODE = _BC.PLATFORM_SHARE_CODE
 CLIENT_CONFIG_PATH = "/v1/client/config"
-CLIENT_CONFIG_TTL = 6 * 3600    # 下发结果的缓存时长（秒）
+CLIENT_CONFIG_TTL = 6 * 3600    # 下发成功后的缓存时长（秒）
+# 同步失败后的重试间隔。短到「换个网络就有救」，长到不会每次请求都等一个超时。
+SYNC_RETRY = 60
 
 DEFAULTS = {
     "mode": "own",              # own=自配 API / platform=平台额度
@@ -125,11 +131,17 @@ DEFAULTS = {
     "platform_auto": True,      # True=用官方服务（内置/服务端下发）；False=自定义地址
     "platform_base": "",        # 当前生效的平台地址（由 _resolve_platform 计算）
     "platform_share_code": "",  # 当前生效的分享码
-    "platform_token": "",
+    "platform_token": "",       # 旧字段：AI 网关令牌，账号体系上线后逐步让位给
+                                # account_token；保留一版做迁移与兼容（别再往这里写）
+    # 账号级令牌：登录后拿到的设备令牌，组功能与 AI 平台额度共用同一个账号。
+    # 和 AI 分开存，是因为关掉 AI 平台模式不该让人进不了组。
+    "account_token": "",
+    "account_label": "",
     # 服务端下发结果（内部字段，界面白名单不含，防止被 config.set 篡改）
     "platform_served_base": "",
     "platform_served_share_code": "",
     "platform_sync_at": 0,      # 上次尝试下发的时刻（成功失败都记，避免反复等超时）
+    "platform_sync_ok": False,  # 上次是否真的问到了（决定缓存 6 小时还是 60 秒）
     "temperature": 0.6,
     "auto_advice": True,        # 打开看板时自动生成今日建议
     # AI 总开关：关掉后不再调用模型（教练页、看板点评、拍照识热量都停），
@@ -194,7 +206,12 @@ def load_config() -> dict:
     # 平台额度模式的地址兼容字段名
     if not cfg.get("platform_base") and cfg.get("gateway"):
         cfg["platform_base"] = cfg["gateway"]
-    return _resolve_platform(cfg)
+    cfg = _resolve_platform(cfg)
+    # 平台额度关着的时候，老用户存下来的 mode=platform 一律按 own 走：
+    # 否则他会在"问答"上撞一个 503，而界面上根本看不出是额度关了。
+    if not _BC.PLATFORM_QUOTA and cfg.get("mode") == "platform":
+        cfg["mode"] = "own"
+    return cfg
 
 
 def save_config(**patch) -> dict:
@@ -257,6 +274,8 @@ def public_config() -> dict:
                             else ("server" if cfg.get("platform_served_base")
                                   else "builtin")),
         "platform_hint": (token[:4] + "…（" + str(len(token)) + " 位）") if token else "",
+        # 界面据此决定要不要显示「平台额度」这个选项
+        "platform_quota": bool(_BC.PLATFORM_QUOTA),
         "has_platform_token": bool(token),
         "temperature": cfg["temperature"],
         "auto_advice": cfg["auto_advice"],
@@ -495,6 +514,18 @@ def _pick_auth_error(errs: list[tuple[int, str]]) -> tuple[int, str]:
     return errs[-1] if errs else (0, "")
 
 
+def _install_ca() -> None:
+    """发请求前确保自签证书已进信任链。幂等，没有证书时是空操作。
+
+    放在这里而不是只在启动时调一次：`chat()` 可能在 `sync_platform_config()`
+    之前被调用（比如用户直接从对话页进），漏一次就是一条
+    CERTIFICATE_VERIFY_FAILED，而错误文案看起来像「服务器挂了」。
+    """
+    from . import tlstrust
+
+    tlstrust.install()
+
+
 def _post(url: str, token: str, payload: dict, timeout: int = READ_TIMEOUT,
           stream: bool = False, extra_headers: dict | None = None,
           cfg: dict | None = None):
@@ -518,6 +549,7 @@ def _post(url: str, token: str, payload: dict, timeout: int = READ_TIMEOUT,
         for k, v in _auth_headers(style, token).items():
             req.add_header(k, v)
         try:
+            _install_ca()
             resp = urllib.request.urlopen(req, timeout=timeout)
         except urllib.error.HTTPError as e:
             try:
@@ -798,22 +830,35 @@ def _valid_public_base(url: str) -> bool:
 
 
 def sync_platform_config(force: bool = False) -> dict:
-    """向网关问一次「现在该连哪个地址」，结果缓存 6 小时。
+    """向网关问一次「现在该连哪个地址」。成功缓存 6 小时，失败只缓存 60 秒。
 
     引导请求固定走出厂内置入口（带内置分享码）；整个同步失败静默——
     隧道没开、断网、网关升级中都不影响用内置值继续登录。
+
+    为什么失败要单独算：老用户的 config.json 里存着上一代服务器地址
+    （`platform_served_base`），而它优先于出厂内置地址。换服务器之后，
+    第一次启动若恰好断网，同步失败 → 继续用那个死地址；如果失败也记
+    6 小时，用户会被钉在死地址上最多 6 小时，表现是「装上新包还是连不上」，
+    而界面上没有任何提示告诉他再等等。失败只等 60 秒，下次请求就重试。
     """
+    from . import tlstrust as _TLS
+
+    _TLS.install()
     cfg = load_config()
     if not cfg.get("platform_auto", True):
         return cfg
     now = time.time()
-    if not force and now - float(cfg.get("platform_sync_at") or 0) < CLIENT_CONFIG_TTL:
+    ttl = CLIENT_CONFIG_TTL if cfg.get("platform_sync_ok") else SYNC_RETRY
+    if not force and now - float(cfg.get("platform_sync_at") or 0) < ttl:
         return cfg
-    patch: dict = {"platform_sync_at": int(now)}
+    # 先按「这次同步失败」记，成功了再改回 True——有答案（哪怕服务端
+    # 说「没配」）才算成功，连不上不算。
+    patch: dict = {"platform_sync_at": int(now), "platform_sync_ok": False}
     try:
         req = urllib.request.Request(
             BUILTIN_PLATFORM_BASE + CLIENT_CONFIG_PATH, method="GET")
         req.add_header("X-Share-Code", BUILTIN_PLATFORM_SHARE_CODE)
+        _install_ca()
         with urllib.request.urlopen(req, timeout=3) as r:
             data = json.loads(r.read().decode("utf-8", "replace"))
         base = str(data.get("platform_base") or "").strip().rstrip("/")
@@ -825,6 +870,9 @@ def sync_platform_config(force: bool = False) -> dict:
         else:
             # 服务端没配（或配错）：清掉旧下发值，回落出厂内置
             patch.update(platform_served_base="", platform_served_share_code="")
+        # 这里两种情况都算「问到了」：服务端明确说没配，也是有效答案，
+        # 不该每分钟重问一遍。
+        patch["platform_sync_ok"] = True
     except Exception:
         pass
     return save_config(**patch)

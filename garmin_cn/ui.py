@@ -321,6 +321,78 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
   color:var(--ink2);padding:7px 0;border-bottom:1px solid var(--line2)}
 .kvline:last-child{border-bottom:0}
 .kvline b{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+/* 训练小组 */
+.grow{display:flex;align-items:center;gap:10px;padding:11px 0;
+  border-bottom:1px solid var(--line2);color:inherit;text-decoration:none}
+.grow:last-child{border-bottom:0}
+/* 组名后面的角色小标签（组长/成员）：不给样式会直接粘成名的一部分 */
+.grow .gname .sub{font-size:11px;font-weight:400;color:var(--faint);margin-left:6px}
+.grow .gname{flex:1 1 auto;min-width:0;font-size:13.5px;font-weight:600;color:var(--ink);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grow .gmeta{flex:0 0 auto;font-size:11px;color:var(--muted);text-align:right;line-height:1.4}
+.grow .chev{flex:0 0 auto;color:var(--muted);font-size:15px}
+.rank{display:flex;align-items:center;gap:9px;padding:9px 0;
+  border-bottom:1px solid var(--line2)}
+.rank:last-child{border-bottom:0}
+.rank .no{flex:0 0 22px;font-size:11.5px;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+.rank .nm{flex:1 1 auto;min-width:0;font-size:13px;color:var(--ink2);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rank .sub{font-size:11px;color:var(--muted);margin-left:5px}
+.rank .km{flex:0 0 auto;font-size:13px;font-weight:600;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+.rank.me{background:rgba(59,130,246,.08);border-radius:10px;margin:0 -8px;padding:9px 8px}
+.chal{padding:10px 0;border-bottom:1px solid var(--line2)}
+.chal:last-child{border-bottom:0}
+.chal .t{font-size:13px;font-weight:600;color:var(--ink)}
+.chal .m{font-size:11px;color:var(--muted);margin-top:3px}
+.bar{height:5px;border-radius:3px;background:var(--line2);margin-top:7px;overflow:hidden}
+.bar i{display:block;height:100%;background:#3B82F6;border-radius:3px}
+.bar.done i{background:#1D9E75}
+/* 无框区块：组页里除了「远征」那张入口，其余数据块都直接铺在页面上。
+   每条卡都有 1px 边框 + 圆角 + 内阴影，六个区块叠起来就是一堵墙；
+   数据本身有分隔线，不需要再给它们各发一个盒子。 */
+.flat{padding:2px 0}
+/* 折叠：一年用一次的（建赛事、换邀请码）默认收起，行本身当标题用。
+   summary 去掉默认三角，换成右侧一个会转的 ›，展开与否一眼能看出来。 */
+.fold{border-top:1px solid var(--line2);margin-top:6px}
+.fold>summary{list-style:none;cursor:pointer;display:flex;align-items:center;
+  gap:8px;min-height:44px;font-size:12.5px;color:var(--brand-ink)}
+.fold>summary::-webkit-details-marker{display:none}
+.fold>summary .fx{margin-left:auto;color:var(--muted);transition:transform .15s}
+.fold[open]>summary .fx{transform:rotate(90deg)}
+/* 设置项一行一个：左边名字、右边控件，没有外框，只靠间距分组 */
+.setrow{display:flex;align-items:center;gap:10px;min-height:44px;
+  border-bottom:1px solid var(--line2)}
+.setrow:last-of-type{border-bottom:0}
+.setrow>span{flex:0 0 44px;font-size:12.5px;color:var(--muted)}
+.setrow input,.setrow select{flex:1 1 auto;min-width:0}
+.setrow>.btn,.setrow>button{flex:0 0 auto}
+.btn.sm{min-height:34px;padding:0 12px;font-size:12.5px;border-radius:10px}
+/* 「我的」页三个数字一行说完：它们是一句话的三个分句，不需要各发一张卡 */
+.minirow{display:flex;flex-wrap:wrap;gap:4px 16px;padding:2px 0;
+  font-size:12px;color:var(--muted)}
+.minirow b{font-size:13.5px;font-weight:600;color:var(--ink);
+  font-variant-numeric:tabular-nums;margin-right:2px}
+/* 一行小字：把「还有谁没共享 / 谁是组长」这种备注压在榜单底下，
+   不再单开一个「成员」区块——成员就是榜上那些人。 */
+.tinyline{font-size:11px;color:var(--faint);margin-top:8px;line-height:1.5}
+/* 本周成绩条：我第几、多少分、穿着哪件衫。一行说完，不做榜单页。 */
+.sline{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 9px;
+  padding:9px 0 2px}
+.sline .rk{font-size:12.5px;color:var(--ink2);font-weight:600}
+.sline b{font-size:19px;font-weight:600;color:var(--ink);
+  font-variant-numeric:tabular-nums;letter-spacing:-.4px;line-height:1}
+.sline b i{font-style:normal;font-size:11px;font-weight:400;
+  color:var(--faint);margin-left:2px}
+.sline .tt{font-size:11px;color:#F5C26B;background:rgba(245,165,36,.09);
+  border:1px solid rgba(245,165,36,.22);border-radius:99px;padding:1px 7px}
+/* 衫：一个小色块 + 名字。六件同时出现也不会挤，因为字号压到 10.5 */
+.sbit{display:inline-flex;align-items:center;gap:4px;font-size:11px;
+  color:var(--muted);white-space:nowrap}
+.sbit i{width:8px;height:8px;border-radius:50%;flex:0 0 8px;
+  box-shadow:0 0 0 1px rgba(255,255,255,.16) inset}
+.sline2{display:flex;flex-wrap:wrap;gap:4px 10px;padding:2px 0 8px}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，
@@ -492,7 +564,7 @@ def coverage() -> dict:
 def page(kicker: str, title: str, lede: str, body: str,
          chips: str = "", foot: str = "数据只保存在本机，不上传任何第三方。",
          back: tuple[str, str] | None = None, action: str = "",
-         screen: bool = False) -> str:
+         screen: bool = False, css: str = "", head_bg: str = "") -> str:
     """所有 tab 页与二级页的统一外壳。
 
     `back` 只给二级页（/view、/files）用：一级 tab 之间靠底部导航切换，
@@ -501,6 +573,9 @@ def page(kicker: str, title: str, lede: str, body: str,
     低频但常用的动作放这儿，比在正文里占一整张卡片划算得多。
     `screen=True` 是 0.6.7 起「首屏即一页大屏」用的紧凑页头：去掉副标题、
     压低标题与留白，把视觉重心让给 main 里的 `.rc-hero`。
+    `css` 是这一页独有的样式（远征页的衬线字体），追加在公共样式之后。
+    `head_bg` 是塞进页头最底层的一段装饰 HTML（远征页的山脊剪影），绝对定位、
+    不参与布局——这样不用为了背景图去改页头的结构。
     """
     back_html, head_cls = "", ""
     if back:
@@ -521,12 +596,13 @@ def page(kicker: str, title: str, lede: str, body: str,
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070B12">
 <title>{esc(title)} · RunnerCoach</title>
-<style>{CSS}</style></head><body><div class="{app_cls}">
+<style>{CSS}{css}</style></head><body><div class="{app_cls}">
 {back_html}
 <header class="page-head{head_cls}">
+  {head_bg}
   {action}
   <div class="brandline"><div class="kicker">{esc(kicker)}</div></div>
-  <h1>{esc(title)}</h1>{lede_html}
+  {(f"<h1>{esc(title)}</h1>" if title else "")}{lede_html}
   <div class="meta">{chips}</div>
 </header>
 <main>{body}</main>
@@ -686,7 +762,7 @@ def nav_html(day: str, cov: dict, from_: str = "history") -> str:
   <form method="get" action="/view" data-nopush>
     <input type="hidden" name="from" value="{src}">
     <input type="date" name="date" min="{esc(first)}" max="{esc(last)}" value="{esc(day)}">
-    <button type="submit">跳</button>
+    <button type="submit">查看</button>
   </form>
   {n}
   <a href="/view?date={esc(last)}&from={src}" data-nopush>最新</a>
@@ -756,7 +832,7 @@ def _vital(label: str, value, unit: str, sub: str, spark: str,
 
 
 def _upcoming_html(days: int = 30, limit: int = 3) -> str:
-    """首页「临近」：未来 N 天里的时间点 + 该订的待办（最多 limit 条）。
+    """首页「赛事提醒」：未来 N 天里的时间点 + 该订的待办（最多 limit 条）。
 
     一条都没有就整块不出现，不留空盒子。提醒开关走表单（/__event/remind），
     不依赖 JS。预订待办的文案带「该订」并强制标热色，避免和「开赛」混在一起。
@@ -803,8 +879,7 @@ def _upcoming_html(days: int = 30, limit: int = 3) -> str:
             f'aria-label="{"取消提醒" if on else "设为提醒"}">'
             f'{"🔔" if on else "🔕"}</button></form></div>')
     return ('<section class="rc-panel rc-up-panel">'
-            '<div class="rc-panel-hd"><span class="rc-eyebrow">临近</span>'
-            f'<span class="rc-win">未来 {days} 天</span></div>'
+            '<div class="rc-panel-hd"><span class="rc-eyebrow">赛事提醒</span></div>'
             + "".join(out) + "</section>")
 
 
@@ -836,7 +911,7 @@ def _reading_card(limit: int = 8) -> str:
         for i, it in enumerate(items))
     return ('<section class="rc-panel rc-rd-panel" id="rc-read">'
             '<div class="rc-panel-hd"><span class="rc-eyebrow">延伸阅读</span>'
-            f'<span class="rc-win">共 {len(items)} 条 · 每 6 秒换一条</span></div>'
+            '</div>'
             f'<div class="rc-rd">{slides}</div></section>'
             '<script>(function(){var b=document.getElementById("rc-read");'
             'if(!b)return;var s=b.querySelectorAll(".rdi");'
@@ -898,9 +973,9 @@ def home_page() -> str:
     # ---- L1 结论条 44：一句话判断 + 窗口标签（28 天基线） ------------------
     delta = _baseline_delta(hist, score)
     if delta is None:
-        meta = "28 天基线样本不足"
+        meta = "记录不足，暂无 28 天基准"
     else:
-        meta = f"较 28 天基线 {'+' if delta >= 0 else '−'}{abs(delta)}"
+        meta = f"比近 28 天基准 {'+' if delta >= 0 else '−'}{abs(delta)}"
     verdict = (f'<section class="rc-verdict"><span class="v">'
                f'{esc(_verdict(score))}</span><span class="m">{esc(meta)}</span>'
                f'</section>')
@@ -918,8 +993,8 @@ def home_page() -> str:
     advice = (f'<div class="rc-advice"><b>今日建议</b> {esc(_session(res))}'
               + (f' · {esc(flag_txt)}' if flag_txt else "") + "</div>")
     hero = (f'<section class="rc-panel rc-hero-panel">'
-            f'<div class="rc-panel-hd"><span class="rc-eyebrow">恢复度 · 今日</span>'
-            f'<span class="rc-win">28 天基线分项</span></div>'
+            f'<div class="rc-panel-hd"><span class="rc-eyebrow">今日恢复度</span>'
+            f'<span class="rc-win">与近 28 天基准对比</span></div>'
             f'<div class="rc-hero">{SC.ring_svg(score, alert=alert)}'
             f'<div class="rc-hero-side"><div class="rc-parts">'
             f'{SC.part_rows(rd.get("parts") or [], 3)}</div>{advice}</div>'
@@ -929,11 +1004,11 @@ def home_page() -> str:
     acute, ctl, tsb = load.get("acute_7d"), load.get("ctl"), load.get("tsb")
     items = (
         ("7 天负荷", f"{acute:.0f}" if isinstance(acute, (int, float)) else "—",
-         "统一心率 TRIMP · 近 7 天累计"),
-        ("CTL 体能", f"{ctl:.1f}" if isinstance(ctl, (int, float)) else "—",
-         "42 天指数均线"),
-        ("TSB 状态", f"{tsb:+.1f}" if isinstance(tsb, (int, float)) else "—",
-         "体能 − 疲劳 · 7 天"),
+         "按心率估算（TRIMP）"),
+        ("长期负荷", f"{ctl:.1f}" if isinstance(ctl, (int, float)) else "—",
+         "42 天均值"),
+        ("训练状态", f"{tsb:+.1f}" if isinstance(tsb, (int, float)) else "—",
+         "长期与短期负荷之差"),
     )
     load_html = ('<section class="rc-load rc-load-panel">' + "".join(
         f'<div class="item"><div class="k">{esc(k)}</div>'
@@ -961,7 +1036,7 @@ def home_page() -> str:
             + f"{_sc:.0f}")
     _debt = (sleep.get("debt") or {}).get("deficit_h")
     if _debt:
-        _sleep_sub.append(f"7 日欠债 {_debt:.1f}h")
+        _sleep_sub.append(f"近 7 天少睡 {_debt:.1f} 小时")
     _hrv = today_row.get("hrv_night")
     _rhr = today_row.get("resting_hr")
     # 「今天没同步」时 derive 会用库里最后一天顶上（见 metrics.derive）。
@@ -980,13 +1055,13 @@ def home_page() -> str:
     if body.get("stale_days") and body["stale_days"] >= 3:
         _wsub.append(f"{body['stale_days']} 天未称重")
     if body.get("avg7"):
-        _wsub.append(f"7 日均 {body['avg7']:.1f}")
+        _wsub.append(f"7 天平均 {body['avg7']:.1f}")
     _dw = body.get("delta_w")
     if _dw is not None and abs(_dw) >= 0.05:
         _wsub.append(f"较前 7 天 {_dw:+.1f} kg")
     cells = (
         SC.body_cell(f"睡眠 · {_dd}", f"{sleep['total_h']:.1f}" if sleep.get("total_h") else None,
-                     "h", " · ".join(_sleep_sub) or "7 日均 —",
+                     "h", " · ".join(_sleep_sub) or "暂无 7 天平均值",
                      _spark((series.get("sleep_h") or [])[-14:], h=22)),
         SC.body_cell(f"HRV · {_dd}", f"{_hrv:.0f}" if _hrv else None, "ms",
                      f"28 天基线 {hrv_base:.0f} · {_wk('hrv')}" if hrv_base else _wk("hrv"),
@@ -995,7 +1070,7 @@ def home_page() -> str:
                      f"28 天基线 {rhr_base:.0f} · {_wk('rhr')}" if rhr_base else _wk("rhr"),
                      _spark((series.get("rhr") or [])[-14:], h=22)),
         # 体重刻意给完整一行：不再 nowrap + ellipsis 把「较…」切掉。
-        SC.body_cell("体重 · 7 日变化", f"{_w:.2f}" if _w else None, "kg",
+        SC.body_cell("体重 · 近 7 天", f"{_w:.2f}" if _w else None, "kg",
                      " · ".join(_wsub) or "还没有体重记录",
                      _spark((body.get("series") or [])[-14:], h=22)),
     )
@@ -1029,7 +1104,7 @@ def home_page() -> str:
                        if not x.get("rest")]
     nxt = pl.get("next_date")
     nxt_items = pl.get("next_items") or []
-    when, subwhen, title, desc = "—", "", "按恢复度安排", "本周暂无排课"
+    when, subwhen, title, desc = "—", "", "按恢复度安排", "本周暂无训练安排"
     eyebrow, pick = "训练计划 · 今天", None
     if today_items or (nxt and str(nxt) == real_today and nxt_items):
         # next_date 偶尔就是今天（日历/教练两种数据源口径不同），一并归今天。
@@ -1059,7 +1134,7 @@ def home_page() -> str:
     # 右上角原来写死「按日课表」，重复说明了这一块是什么；换成「本周 3 练」
     # 这种能一眼判断的信息，体积不变、信息量更大。
     _wp, _wd = int(pl.get("week_planned") or 0), int(pl.get("week_done") or 0)
-    win_txt = (f"本周 {_wd}/{_wp} 完成" if _wp else "本周未排课")
+    win_txt = (f"本周已完成 {_wd}/{_wp} 次" if _wp else "本周暂无训练安排")
     # 整块可点：原来只有右上角「课表 →」那个小链接能点，手机上根本点不准。
     # 现在整张卡就是一个链接，右侧留个 › 作为「可以进去」的暗示。
     plan_html = (f'<a class="rc-panel rc-plan-panel rc-plan-link" href="/plan?from=today">'
@@ -1099,10 +1174,10 @@ def home_page() -> str:
                     f'<span class="t">{esc(shown)}</span>'
                     f'<span class="d">{esc(_act_metric(a))}</span></div>')
     if not samples:
-        samples = ('<div class="rc-sample"><span class="t">还没有活动数据，'
-                   '同步一次就能看到近 7 天</span></div>')
+        samples = ('<div class="rc-sample"><span class="t">最近 7 天还没有活动记录。'
+                   '如果设备上有记录，可以下拉同步。</span></div>')
     week_html = (f'<section class="rc-panel rc-week-panel">'
-                 f'<div class="rc-panel-hd"><span class="rc-eyebrow">活动概述</span>'
+                 f'<div class="rc-panel-hd"><span class="rc-eyebrow">最近活动</span>'
                  f'<span class="rc-win">最近 7 天</span></div>'
                  f'<div class="rc-week"><div class="rc-week-hd">'
                  f'<div class="big-num rc-num">{km7:.1f}'
@@ -1119,30 +1194,30 @@ def home_page() -> str:
     # 0.6.13 起统一收进「我的」页的低频动作列表。
     # 数据停在旧日期时，把「上次同步」胶囊换成可执行的提示。胶囊数不变，
     # 不会碰到横屏 .rc-screen 的命名 grid 区域。
-    _sync_chip = (f"数据停在 {_dd} · 下拉刷新" if _stale else
+    _sync_chip = (f"数据截至 {_dd} · 下拉同步" if _stale else
                   f"上次同步 {esc(str(st.get('last_sync') or '—')[5:16])}")
     chips = (chip(f"{st.get('days') or 0} 天数据") + chip(_sync_chip))
     return page("TODAY · 今日", "今天该怎么练", "", body_html_all, chips,
                 screen=True,
-                foot=("本机计算 · 不上传轨迹 · 离线可用。"
-                      "静息心率取数据源每日值，与设备 App 里用于心率区间的设定值口径可能不同。"))
+                foot=("数据在本机计算，离线也能查看，轨迹不会上传。"
+                      "静息心率来自每天同步的记录，可能和设备里设置心率区间时用的数值不同。"))
 
 
 def _verdict(score) -> str:
     """结论条的一句话判断：先给答案，再给数字。"""
     if score is None:
-        return "先同步数据，再谈今天怎么练"
+        return "同步设备后查看训练建议"
     try:
         s = float(score)
     except (TypeError, ValueError):
-        return "先同步数据，再谈今天怎么练"
+        return "同步设备后查看训练建议"
     if s >= 85:
-        return "状态在线，按计划练"
+        return "今天可以按计划练"
     if s >= 70:
         return "可以练，别加量"
     if s >= 55:
-        return "轻松活动，留点余量"
-    return "休息，补恢复"
+        return "今天轻松活动就好"
+    return "今天先休息"
 
 
 def _baseline_delta(hist: list, score) -> int | None:
@@ -1287,8 +1362,8 @@ def _today_plan_card(pl: dict) -> str:
     # 本地兜底（备赛课表 / 今日处方）不是佳明课表，必须写出来 —— 而且要写原因：
     # 只说「本地推算」，用户不知道该去重新登录还是该怪数据。
     _src = str(pl.get("source") or "")
-    _why = str(pl.get("note") or "").strip() or "还没读到平台课表"
-    local_tag = (f'<div class="n" style="color:var(--amber)">本地推算 · {esc(_why)}</div>'
+    _why = str(pl.get("note") or "").strip() or "暂未同步到平台课表"
+    local_tag = (f'<div class="n" style="color:var(--amber)">本地训练安排 · {esc(_why)}</div>'
                  if _src and _src != "calendar" else "")
 
     if items:
@@ -1314,7 +1389,7 @@ def _today_plan_card(pl: dict) -> str:
         # 本地兜底给的「为什么休息」比「本周没有排课」有用得多
         tip = esc(t["note"])
     else:
-        tip = "本周没有排课，按恢复度安排轻松活动"
+        tip = "本周还没排课。想活动的话，按今天的状态轻松练一练。"
 
     # 今天确实练过：单独列一行，语气是「记录」而不是「课表」
     done_html = ""
@@ -1328,7 +1403,7 @@ def _today_plan_card(pl: dict) -> str:
     elif trained:
         # 本地库有活动但日历没有记录（高驰的活动不进佳明日历）。
         # 这句说的是「练过了」，不是「完成了课表」。
-        done_html = '<div class="n">今天练过：训练记录已同步（含高驰）</div>'
+        done_html = '<div class="n">今天的活动已同步，可在历史页查看。</div>'
 
     return (f'<div class="plan-hero"><div class="t">今天休息</div>'
             f'<div class="d">{tip}</div>{done_html}{local_tag}</div>')
@@ -1347,8 +1422,8 @@ def plan_page(qs: dict | None = None) -> str:
                 f'{esc(r.get("error") or "先回今日页下拉同步一次")}</div>'
                 '<div class="pager"><div class="btn primary" data-act="planRefresh">'
                 '重新读取</div></div></div>')
-        return page("PLAN · 训练计划", "今天练什么", "平台课表与本地建议",
-                    sec("状态", body), chip("本机快照"), back=("返回今日", "/"))
+        return page("PLAN · 训练计划", "今天练什么", "查看已同步的课表和本机训练建议",
+                    sec("状态", body), chip("本机记录"), back=("返回今日", "/"))
 
     ph = r.get("phase") or {}
     if r.get("source") == "calendar":
@@ -1440,7 +1515,7 @@ def plan_page(qs: dict | None = None) -> str:
             power = (f"{ftp * step['ftp_low']:.0f}–{ftp * step['ftp_high']:.0f} W" if ftp
                      else f"FTP {step['ftp_low'] * 100:.0f}–{step['ftp_high'] * 100:.0f}%（未设置 FTP）")
             steps_html += f'<div class="kvline"><span>{esc(step["name"])} · {step["seconds"] / 60:g} 分钟</span><b>{esc(power)}</b></div>'
-    steps_section = sec("骑行步骤", '<div class="card">' + steps_html + '</div>') if steps_html else ""
+    steps_section = sec("骑行训练步骤", '<div class="card">' + steps_html + '</div>') if steps_html else ""
     # 只有连了高驰才显示这个入口：佳明用户点进去只会看到「请先授权高驰」
     import_link = ('<div class="pager"><a class="btn" href="/training">'
                    '导入本地训练到高驰</a></div>'
@@ -1448,11 +1523,11 @@ def plan_page(qs: dict | None = None) -> str:
     # 编辑入口放在「本周」标题右侧，而不是只留在页脚：计划页一进来最想改的就是
     # 这一周，让人滚到底才能编辑，等于没有入口。
     body = (sec("今日", _today_plan_card(r)) + steps_section + import_link +
-            sec("本周", f'<div class="wk">{rows}</div>', more=("改课表", "/plan/edit")) +
+            sec("本周", f'<div class="wk">{rows}</div>', more=("编辑课表", "/plan/edit")) +
             next_sec +
             sec("计划信息", info) +
-            '<div class="pager"><a class="btn primary" href="/plan/edit">编辑本周</a>'
-            '<a class="btn" href="/plan/draft">看草稿</a>'
+            '<div class="pager"><a class="btn primary" href="/plan/edit">编辑本周课表</a>'
+            '<a class="btn" href="/plan/draft">查看草稿</a>'
             '<div class="btn" data-act="planRefresh">刷新计划</div></div>')
     return page("PLAN · 训练计划", "今天练什么",
                 (r.get("name") or "平台课表"), body, chips,
@@ -1483,20 +1558,20 @@ def _plan_push_block(token: str, src: dict, today: str) -> str:
             '<form action="/__plan/push" method="post">'
             f'<input type="hidden" name="token" value="{esc(token)}">'
             '<div class="pager"><button class="btn" type="submit">推到佳明手表</button></div>'
-            '<p class="note">把本周课表建成训练课排进 Connect 日历。只创建自己的课，'
-            '不动官方教练计划；重复推送会先删掉上次推的那几节。</p></form>')
+            '<p class="note">本周的训练会排进佳明 Connect 日历，佳明教练原有的计划会保留。'
+            '再次推送时，会替换上次从这里发出的课程。</p></form>')
     if src.get("coros"):
         href = f'/training?source_date={today}&date={today}'
-        tip = ("先进预览页确认再提交，不会直接写进高驰；导入不覆盖已有课程。"
+        tip = ("先预览课程，确认后再导入。高驰里已有的课程会保留。"
                if src.get("coros_import") else
-               "高驰导入要先授权（官方 MCP），点进去按提示完成。")
+               "第一次导入时，按页面提示登录高驰并授权。")
         blocks.append(
             f'<div class="pager"><a class="btn" href="{esc(href)}">导入到高驰</a></div>'
             f'<p class="note">{esc(tip)}</p>')
     if not blocks:
         blocks.append(
             '<div class="pager"><a class="btn" href="/me">去「我的」连接账号</a></div>'
-            '<p class="note">还没连佳明或高驰。连上之后，这里会出现对应的推送入口。</p>')
+            '<p class="note">连接佳明或高驰后，就能从这里发送训练。</p>')
     return "".join(blocks)
 
 
@@ -1519,11 +1594,11 @@ def plan_edit_page(token: str, message: str = "", data: dict | None = None,
     rules = rules if isinstance(rules, dict) else PG.rules()
     today = _dt.date.today().isoformat()
     if not r.get("ok"):
-        body = ('<div class="card"><div class="empty"><b>读不到本周计划</b>'
+        body = ('<div class="card"><div class="empty"><b>暂时打不开本周课表</b>'
                 f'{esc(r.get("error") or "先回今日页下拉同步一次")}</div>'
                 '<div class="pager"><div class="btn primary" data-act="planRefresh">'
                 '重新读取</div></div></div>')
-        return page("PLAN · 编辑计划", "编辑本周", "还没读到课表",
+        return page("PLAN · 编辑计划", "编辑本周课表", "暂未加载课表",
                     body, back=("返回计划", "/plan"))
 
     rows, multi_days, past_days = "", 0, 0
@@ -1547,7 +1622,7 @@ def plan_edit_page(token: str, message: str = "", data: dict | None = None,
         # 不改的日子（多条 / 已过去）**整行不提交**：多条怕覆盖掉另一条，
         # 过去的日子改了会让完成率凭空变化。只留一行说明。
         if multi or past:
-            why = (f'共 {len(its)} 条课次，请到平台日历里改' if multi else '已经过去')
+            why = (f'当天有 {len(its)} 节训练，请在平台日历里修改' if multi else '日期已过')
             rows += (f'<div class="{cls}">'
                      f'<input type="hidden" name="d{i}_skip" value="1">'
                      f'<div class="p1"><b>{esc(d["dow"])}<span>{esc(d["date"][5:])}</span></b></div>'
@@ -1556,8 +1631,8 @@ def plan_edit_page(token: str, message: str = "", data: dict | None = None,
 
         opts = ""
         for key, label in (("rest", "休息"), ("easy", "轻松跑"), ("tempo", "节奏跑"),
-                           ("long", "长距离"), ("interval", "间歇"),
-                           ("strength", "力量"), ("race", "比赛")):
+                           ("long", "长距离跑"), ("interval", "间歇跑"),
+                           ("strength", "力量训练"), ("race", "比赛")):
             sel = " selected" if key == kind else ""
             opts += f'<option value="{key}"{sel}>{label}</option>'
 
@@ -1579,18 +1654,18 @@ def plan_edit_page(token: str, message: str = "", data: dict | None = None,
 
     chips = (chip(f'本周 {r.get("week_km") or 0:g} km', "ok") +
              chip(f'{r.get("monday")} 起') +
-             (chip("有本地改动") if r.get("edited") else "") +
-             (chip("快照过期", "") if r.get("stale") else ""))
+             (chip("本机课表已修改") if r.get("edited") else "") +
+             (chip("课表需要刷新", "") if r.get("stale") else ""))
     msg = f'<p class="note">{esc(message)}</p>' if message else ""
-    stale_tip = ('<p class="note">快照不是这一周：先点右上「刷新」或回今日页下拉同步，'
-                 '再回来编辑，否则改的是上一周。</p>' if r.get("stale") else "")
+    stale_tip = ('<p class="note">现在显示的是之前的课表。先返回计划页点「刷新计划」，'
+                 '或在今日页下拉同步，再回来编辑。</p>' if r.get("stale") else "")
 
     save_form = (f'<form action="/__plan/save" method="post">'
                  f'<input type="hidden" name="token" value="{esc(token)}">'
                  + sec("本周课表", '<div class="card">' + rows + '</div>')
-                 + '<p class="note">只填里程或时长之一也行；留空并选「休息」表示不跑。'
-                   '保存后立即生效，只存在本机，不会改到平台上的日历。</p>'
-                 + '<div class="pager"><button class="btn primary" type="submit">保存本周</button>'
+                 + '<p class="note">按训练类型填写里程或时长。休息日选「休息」即可。'
+                   '保存后会立即更新本机课表。</p>'
+                 + '<div class="pager"><button class="btn primary" type="submit">保存本周课表</button>'
                    '<a class="btn" href="/plan">取消</a></div></form>')
 
     gen_form = (f'<form action="/__plan/generate" method="post">'
@@ -1598,17 +1673,17 @@ def plan_edit_page(token: str, message: str = "", data: dict | None = None,
                 + '<div class="card">'
                 '<div class="kvline"><span>每周跑几天</span><b>'
                 '<input type="number" inputmode="numeric" name="run_days" min="2" max="6"'
-                ' step="1" value="" placeholder="按历史"></b></div>'
-                '<div class="kvline"><span>周量 km</span><b>'
+                ' step="1" value="" placeholder="参考最近 4 周"></b></div>'
+                '<div class="kvline"><span>每周跑量（km）</span><b>'
                 '<input type="number" inputmode="decimal" name="week_km" min="0" max="200"'
-                ' step="1" value="" placeholder="按历史"></b></div>'
-                '<div class="kvline"><span>按赛事减量</span><b>'
+                ' step="1" value="" placeholder="参考最近 4 周"></b></div>'
+                '<div class="kvline"><span>赛前减量</span><b>'
                 f'<label class="tsw"><input type="checkbox" name="race_deload" value="1"'
                 f'{" checked" if rules["race_deload"] else ""}><i></i></label>'
                 '</b></div></div>'
-                '<p class="note">留空就按近 4 周实际跑量算。强制减量周（每第 4 周）'
-                '始终生效，这个开关只管「赛前要不要压量」。</p>'
-                '<div class="pager"><button class="btn" type="submit">生成草稿</button></div></form>')
+                '<p class="note">留空会参考最近 4 周的跑步记录。开关只控制赛前是否减量，'
+                '每 4 周安排的减量照常。</p>'
+                '<div class="pager"><button class="btn" type="submit">生成计划草稿</button></div></form>')
 
     src = src if isinstance(src, dict) else A.data_source()
     push_form = _plan_push_block(token, src, today)
@@ -1621,13 +1696,13 @@ def plan_edit_page(token: str, message: str = "", data: dict | None = None,
     # 区块标题跟着数据源走：只连高驰的人看不到「佳明」两个字
     _push_title = ("推送到手表" if src.get("garmin") else
                    "导出到手表" if src.get("coros") else "推送到手表")
-    body = msg + stale_tip + save_form + sec("没有计划？按历史生成",
+    body = msg + stale_tip + save_form + sec("根据跑步记录生成计划",
                                              '<div class="card">' + gen_form + '</div>') \
         + sec(_push_title, '<div class="card">' + push_form + '</div>') \
-        + sec("改动", '<div class="card">' + clear_form + '</div>') \
-        + (f'<p class="note">本周有 {multi_days} 天是多条课次、{past_days} 天已过去，'
-           '这些行这里改不了。</p>' if (multi_days or past_days) else "")
-    return page("PLAN · 编辑计划", "编辑本周", f'{r.get("monday")} 起这一周',
+        + sec("恢复原课表", '<div class="card">' + clear_form + '</div>') \
+        + (f'<p class="note">本周有 {multi_days} 天安排了多节训练，{past_days} 天已过去。 '
+           '这些日期在此页仅供查看。</p>' if (multi_days or past_days) else "")
+    return page("PLAN · 编辑计划", "编辑本周课表", f'{r.get("monday")} 起这一周',
                 body, chips, back=("返回计划", "/plan"))
 
 
@@ -1638,9 +1713,9 @@ def plan_draft_page(token: str, message: str = "", draft: dict | None = None) ->
     d = draft if isinstance(draft, dict) else PG.load_draft()
     if not d or not d.get("week"):
         body = ('<div class="card"><div class="empty"><b>没有待确认的草稿</b>'
-                '回计划页点「按历史生成」</div>'
-                '<div class="pager"><a class="btn primary" href="/plan/edit">去生成</a></div></div>')
-        return page("PLAN · 草稿", "生成计划", "还没有草稿",
+                '可以根据最近的跑步记录生成一份训练计划。</div>'
+                '<div class="pager"><a class="btn primary" href="/plan/edit">前往生成计划</a></div></div>')
+        return page("PLAN · 草稿", "训练计划草稿", "还没有草稿",
                     body, back=("返回计划", "/plan"))
 
     rows = ""
@@ -1666,7 +1741,7 @@ def plan_draft_page(token: str, message: str = "", draft: dict | None = None) ->
     chips = (chip(f'{d.get("week_km") or 0:g} km', "ok") +
              chip(f'{d.get("days") or 0} 天') +
              chip(f'{d.get("monday")} 起') +
-             (chip(f'系数 ×{d.get("factor"):g}') if d.get("factor") not in (None, 1) else ""))
+             (chip(f'目标跑量 ×{d.get("factor"):g}') if d.get("factor") not in (None, 1) else ""))
     msg = f'<p class="note">{esc(message)}</p>' if message else ""
 
     # 三个动作放进同一个表单，用 formaction 区分：两个 form 并排会让按钮和
@@ -1675,18 +1750,18 @@ def plan_draft_page(token: str, message: str = "", draft: dict | None = None) ->
                f'<input type="hidden" name="token" value="{esc(token)}">'
                '<div class="pager">'
                '<button class="btn primary" type="submit">用这份计划</button>'
-               '<a class="btn" href="/plan/edit">改框架重生成</a>'
-               '<button class="btn" type="submit" formaction="/__plan/discard">放弃</button>'
+               '<a class="btn" href="/plan/edit">调整目标</a>'
+               '<button class="btn" type="submit" formaction="/__plan/discard">放弃草稿</button>'
                '</div>'
                '<label class="override"><input type="checkbox" name="override" value="1">'
-               '覆盖我手改过的天（默认只补空缺）</label></form>')
+               '替换手动安排的课程和休息日</label></form>')
     body = (msg
             + sec("为什么这么排", '<div class="card">' + reasons + '</div>')
             + sec("这一周", f'<div class="wk">{rows}</div>')
             + ok_form
-            + '<p class="note">确认后写进本地改动表，并从下周一自动续。'
-              '默认只补你没安排的天。</p>')
-    return page("PLAN · 草稿", "生成计划", "确认前不落盘",
+            + '<p class="note">确认后，草稿会加入本机课表，之后会自动安排下一周的训练。'
+              '手动安排的课程和休息日默认保留。</p>')
+    return page("PLAN · 草稿", "训练计划草稿", "先看看这一周怎么练，再决定是否采用。",
                 body, chips, back=("返回计划", "/plan"))
 
 
@@ -1720,26 +1795,26 @@ def sports_page(token: str, message: str = "") -> str:
     for key, name in (("run", "跑步"), ("bike", "骑行")):
         p = S.profile(key, cfg)
         inputs = []
-        for field, label, lo, hi in (("max_hr", "最大心率 bpm", 80, 240), ("lthr", "阈值心率 bpm", 60, 230), ("ftp_w", "FTP W", 30, 1000)):
+        for field, label, lo, hi in (("max_hr", "最大心率（次/分）", 80, 240), ("lthr", "阈值心率（次/分）", 60, 230), ("ftp_w", "功能阈值功率（FTP，瓦）", 30, 1000)):
             if key == "run" and field == "ftp_w":
                 continue
             inputs.append(f'<label style="display:block;margin:12px 0">{label} '
                           f'<input type="number" name="{key}_{field}" min="{lo}" max="{hi}" step="1" value="{esc(p.get(field) or "")}" placeholder="未设置"></label>')
         names = ','.join(p.get("hr_zone_names") or [])
         if key == "bike":
-            inputs.append('<label style="display:block;margin:12px 0">本地骑行模板 <select name="bike_workout">' + ''.join(
+            inputs.append('<label style="display:block;margin:12px 0">骑行课表类型 <select name="bike_workout">' + ''.join(
                 f'<option value="{v}"{" selected" if p.get("workout", "endurance") == v else ""}>{label}</option>'
-                for v, label in (("endurance", "有氧"), ("recovery", "恢复"), ("intervals", "功率间歇"))) + '</select></label>')
-        inputs.append(f'<label style="display:block">Z1–Z5 名称 <input name="{key}_hr_zone_names" value="{esc(names)}" placeholder="热身,轻松,有氧,阈值,极限" style="width:100%;margin-top:8px"></label>')
+                for v, label in (("endurance", "有氧耐力骑行"), ("recovery", "轻松恢复骑行"), ("intervals", "功率间歇"))) + '</select></label>')
+        inputs.append(f'<label style="display:block">心率区间名称（Z1–Z5） <input name="{key}_hr_zone_names" value="{esc(names)}" placeholder="热身,轻松,有氧,阈值,极限" style="width:100%;margin-top:8px"></label>')
         fields.append(sec(name, '<div class="card">' + ''.join(inputs) + '</div>'))
     body = (f'<p class="note">{esc(message)}</p>' if message else '')
     body += (f'<form action="/__sports" method="post"><input type="hidden" name="token" value="{esc(token)}">'
              + sec("训练偏好", '<div class="card">' + select + '</div>') + ''.join(fields)
-             + '<div class="note">睡眠、HRV、体重仍共用。最大心率用于分项目负荷估算；阈值心率用于骑行课表目标说明，'
-               '设备心率分区时长保持原始口径。FTP 留空时不计算 IF / TSS；历史骑行按当前 FTP 复算。'
-               'VO₂max 的现有日汇总尚未按运动分项，请勿将它视为骑行专项指标。</div>'
+             + '<div class="note">跑步与骑行共用睡眠、心率变异性（HRV）和体重数据。App 用各项目的最大心率估算训练负荷，骑行课表会参考阈值心率。'
+               '各心率区间的时长以设备记录为准。设置 FTP 后，App 会按当前数值计算历史骑行的强度系数（IF）和训练压力分数（TSS）。'
+               '每日汇总中的最大摄氧量（VO₂max）目前只有一个数值，供一般参考。</div>'
                '<div class="pager"><button class="btn primary" type="submit">保存运动设置</button></div></form>')
-    return page("SPORTS · 运动设置", "运动设置", "跑步与骑行分别配置", body, back=("返回我的", "/me"))
+    return page("SPORTS · 运动设置", "运动设置", "可以分别设置跑步和骑行的参数", body, back=("返回我的", "/me"))
 
 
 def me_page() -> str:
@@ -1774,22 +1849,25 @@ def me_page() -> str:
     # 睡眠授权并进高驰这一行：登录成功时会直接问一次意向，没同意也能从
     # 账号卡片里补，不必再单独占一行「高驰睡眠」。
     c_sub = (f"{c_ok} · {'睡眠已授权' if _sleep_ok else '睡眠未授权'}"
-             + (" · 查看 / 更换" if c_ok == "已登录" else " · 可独立同步活动"))
+             + (" · 可查看或更换账号" if c_ok == "已登录" else " · 登录后可同步活动"))
     # 小米/华为只检查本地凭据文件在不在，刻意不联网验证。写「已登录」会被
     # 读成「凭据现在还有效」，于是同步报 401 时看着像 App 自相矛盾。
-    m_ok = "已存凭据" if m.get("logged_in") else "未连接"
-    h_ok = "已存凭据" if h.get("logged_in") else "未连接"
+    m_ok = "已保存登录信息" if m.get("logged_in") else "未连接"
+    h_ok = "已保存登录信息" if h.get("logged_in") else "未连接"
     try:
         k_ok = "已登录" if A.keep_status().get("logged_in") else "未连接"
     except Exception:
         k_ok = "未连接"
     # Keep 只有运动摘要（没有轨迹/分圈），文案里先说清楚，免得用户以为漏了图
-    k_sub = (f"{k_ok} · 运动摘要，无轨迹"
-             + (" · 查看 / 更换" if k_ok == "已登录" else ""))
+    k_sub = (f"{k_ok} · 仅同步运动摘要（无轨迹）"
+             + (" · 可查看或更换账号" if k_ok == "已登录" else ""))
     bs = A.body_sources()
     pref = bs.get("preferred", "mi")
     pref_label = bs.get("labels", {}).get(pref, pref)
-    chips = (chip("本机数据", "ok") + chip(f"v{VER}") + chip("零第三方依赖"))
+    # 页头只留一个「本机数据」：版本号在「关于与诊断」里已经写着，
+    # 三个数字在「本地数据」那一行也说了。同一份信息写两遍，读者会以为
+    # 上面那个和下面那个不一样——这是把页面读长最省力的方式。
+    chips = chip("数据只在本机", "ok")
 
     # AI 模型服务：和数据源并列——这两类都在回答「这台机器现在连着什么服务」。
     # 副标题要能一眼看出「开没开 / 用哪个模型 / 打到哪个域名」，
@@ -1806,21 +1884,32 @@ def me_page() -> str:
     except Exception:
         _simple = False
     if not ai_on:
-        ai_sub = "已关闭 · 点这里重新打开"
+        ai_sub = "已关闭 · 点击设置"
     elif not ai.get("configured"):
-        ai_sub = "未配置 · 点这里填 API Key"
+        ai_sub = "未设置 · 点击填写 API 密钥"
     else:
         _base = str(ai.get("base_url") or "")
         _host = _base.split("//")[-1].split("/")[0] if _base else "本地"
-        ai_sub = (("平台额度" if ai.get("mode") == "platform" else "自配 API")
+        ai_sub = (("平台额度" if ai.get("mode") == "platform" else "自己的 API 密钥")
                   + f" · {ai.get('model') or '未指定模型'} · {_host}")
 
     # 账号与数据源：只有这一组继续用竖排行——每行都要说清「登没登、设备是谁」，
     # 网格卡片塞不下这些信息。已登录点进去是账号卡片（查看/更换/退出），
     # 没登录才进登录框。
+    try:
+        from . import account as ACC
+
+        _acc = ACC.state()
+    except Exception:  # noqa: BLE001 - 配置坏了不该让整页打不开
+        _acc = {}
+    _grp_desc = ("建组 / 加入 / 本周榜" if _acc.get("logged_in")
+                 else "未登录 · 先登录")
+    _acc_desc = ((_acc.get("label") or "已登录") if _acc.get("logged_in")
+                 else "未登录 · 去登录")
+
     sources = (row("G", "佳明 Garmin",
                    f"{g} · {esc(_mask_email(st.get('email')) or '未设置账号')}"
-                   + (" · 查看 / 更换" if g == "已登录" else ""),
+                   + (" · 可查看或更换账号" if g == "已登录" else ""),
                    act="login:garmin") +
                row("C", "高驰 COROS", c_sub,
                    act="login:coros", tone="b") +
@@ -1828,7 +1917,7 @@ def me_page() -> str:
                # 三个体重行并成一行：小米/华为的登录放进来源选择器的「登录账号」，
                # 少两行，语义反而更清楚（都在说「体重数据从哪来」）。
                row("W", "体重数据",
-                   f"小米 {m_ok} · 华为 {h_ok} · 当前用 {esc(pref_label)}",
+                   f"小米 {m_ok} · 华为 {h_ok} · 当前来源 {esc(pref_label)}",
                    act="bodySource", tone="a") +
                # 开关自己带 data-act，点它不会顺带打开设置；点行的其它地方才进配置
                row("◍", "AI 模型服务", ai_sub, act="aiSettings", tone="b", go=False,
@@ -1836,8 +1925,8 @@ def me_page() -> str:
                # 简洁模式：把「先不用」的模块整个藏起来，而不是灰掉。
                # 灰按钮只会让人去点它试试，然后发现没什么用。
                row("◐", "简洁模式",
-                   ("已开启 · 只留今日 / 历史 · 教练只看今日与体重" if _simple
-                    else "关 · 教练含对话 / 备赛 / 力量"),
+                   ("已开启 · 教练页仅显示今日建议和体重" if _simple
+                    else "已关闭 · 教练页显示全部功能"),
                    act="simpleToggle", tone="a", go=False,
                    switch=("on" if _simple else "off"), sw_act="simpleToggle"))
 
@@ -1847,31 +1936,35 @@ def me_page() -> str:
     # 常用动作走 2 列网格：每张卡固定 68px，和账号行一样高。
     # 说明文字一律控制在一行内（≤14 字），长文案改去别处说。
     tool_tiles = acts_grid([
-        act("⇪", "今日一图流", "1080×1920 看板", action="export"),
-        act("✂", "素材", f"{_clip_count()} 个 · 回放插入", action="clips"),
+        act("⇪", "导出今日看板", "生成长图", action="export"),
+        act("✂", "回放素材", f"{_clip_count()} 项照片和视频", action="clips"),
         act("⌖", "地图底图",
-            "已配置 · 带底图" if _map_on() else "未配置 · 矢量轨迹",
+            "已设置 · 显示地图" if _map_on() else "未设置 · 仅显示轨迹",
             action="amap"),
-        act("⚙", "运动设置", "跑步 / 骑行 · FTP", href="/sports"),
-        act("⇧", "高驰训练", "跑步 / 骑行 · 预览导入", href="/training"),
-        act("▦", "日历提醒", "「该订了」写进系统日历", action="calendarSync"),
+        # 文案按 jack 那版的精简（一行内 ≤14 字），但保留他基线上不存在的
+        # 「训练小组」「账号」两项——那是后来加的功能，不能因为合分支丢掉。
+        act("⚙", "运动设置", "心率区间与骑行 FTP", href="/sports"),
+        act("⇧", "导入到高驰", "预览训练课表", href="/training"),
+        act("▦", "日历提醒", "同步到系统日历", action="calendarSync"),
+        act("◈", "训练小组", _grp_desc, href="/groups"),
+        act("◉", "账号", _acc_desc, href="/account"),
     ])
     # 数据与备份：导出/导入是「换手机保命」的两个动作，放同一排最显眼
     data_tiles = acts_grid([
         act("⇩", "导出数据", "打包历史与设置", action="dbExport"),
         act("⇧", "导入数据", "先备份再覆盖", action="dbImport"),
-        act("◫", "产物文件", "图片 / 视频清单", href="/files"),
+        act("◫", "导出文件", "查看图片和视频", href="/files"),
         act("⭡", "检查更新", f"当前 v{VER}", action="update"),
     ])
     # 诊断日志单独一行、样式压低：它只在出问题时才需要，不该抢网格的位置，
     # 但也不能藏进二级菜单——崩溃时用户复述不清，能一键复制才有用。
-    diag_row = row("!", "诊断日志", "出问题时把这段发出来，能定位到具体一步",
+    diag_row = row("!", "诊断日志", "遇到问题时，可以复制日志帮助排查",
                    act="diag", tone="a")
 
-    about = ('<div class="card rc-about"><div class="rc-about-h">' +
+    about_inner = ('<div class="rc-about"><div class="rc-about-h">' +
              BR.badge_html(30) +
              f'<div><div class="lab">RunnerCoach · v{esc(VER)}</div>' +
-             '<div class="note" style="margin-top:2px">本地优先的跑步教练</div>'
+             '<div class="note" style="margin-top:2px">跑步与骑行训练助手</div>'
              '</div></div>'
              '<div class="note" style="margin-top:8px;font-size:12px;line-height:1.65">'
              '数据只存本机 App 私有目录，看板 / 图片 / 回放全本地生成；'
@@ -1879,25 +1972,32 @@ def me_page() -> str:
              '<a class="link-act" href="/privacy"> 隐私说明 →</a>'
              '</div></div>')
 
-    stat_line = (f'<div class="grid three">' +
-                 stat("日汇总", f"{cov['days']} 天",
-                      f"{str(cov['first'])[5:]} ~ {str(cov['last'])[5:]}") +
-                 stat("活动", f"{cov['activities']} 条", "全部本地") +
-                 stat("上次同步", str(st.get("last_sync") or "—")[5:10],
-                     (str(st.get("last_sync") or "")[11:16] + " 同步 · 可下拉刷新").lstrip(" ·")) +
-                 '</div>'
-                 '<div class="note" style="margin-top:8px;line-height:1.6">'
-                 '历史在后台自动补齐，进度看标题栏；补完就不再请求，无需手动操作。</div>')
+    # 三个数字没必要各发一张卡：它们是一句话的三个分句。
+    # 原来 3 张 stat 卡约 110px，换一行 30px，且一眼能连起来读。
+    _ls = str(st.get("last_sync") or "")
+    stat_line = (f'<div class="minirow">'
+                 f'<span><b>{cov["days"]}</b> 天数据</span>'
+                 f'<span><b>{cov["activities"]}</b> 条活动</span>'
+                 f'<span>上次同步 <b>{_ls[5:16] or "—"}</b></span></div>'
+                 f'<div class="tinyline">'
+                 f'{esc(str(cov["first"])[5:])} ~ {esc(str(cov["last"])[5:])}'
+                 ' · 后台自动补齐历史记录，进度在页面顶部</div>')
+
+    # 关于与诊断合成一块折叠：这两样都是「装完基本不再看」的东西，
+    # 却原来各占一整块（logo + 两段说明 + 一行诊断），加起来接近半屏。
+    # 默认收起时只留一行版本号——需要时点开，信息一条不少。
+    about = ('<details class="fold"><summary>关于与诊断 · v' + esc(VER) +
+             '<span class="fx">›</span></summary>' + about_inner +
+             '<div class="me-diag">' + diag_row + '</div></details>')
 
     body = ('<div class="me">' +
             sec("账号与数据", sources) +
             sec("常用", tool_tiles) +
             sec("数据与备份", data_tiles) +
-            '<div class="me-diag">' + diag_row + '</div>' +
             sec("本地数据", stat_line) +
             sec("关于", about) +
             '</div>')
-    return page("ME · 我的", "数据与设置", "账号、同步、产物和隐私都在这里", body, chips)
+    return page("ME · 我的", "数据与设置", "管理账号、数据备份和隐私", body, chips)
 
 
 def privacy_page() -> str:
@@ -1914,12 +2014,12 @@ def privacy_page() -> str:
         "「诊断日志」只写在这台设备上，发不发由你决定。")
 
     where = p(
-        "日汇总、活动、明细、体成分、素材清单都存 App 私有目录里的 SQLite，"
-        "卸载即清空。<b>账号密码不进数据库</b>：佳明/高驰的会话保存在私有目录，"
-        "安卓版密码放在系统的 Keystore 里。")
+        "每日数据、活动记录、体成分和回放素材清单都保存在 App 的本地数据库中，"
+        "卸载 App 后会清除这些数据。佳明、高驰的登录状态保存在 App 私有目录，"
+        "Android 版使用系统的 Keystore 保护密码。")
 
     net = p(
-        "只有三类请求会出网，且都由你主动触发：<br>"
+        "以下三类服务需要联网，由你选择使用。<br>"
         "1. <b>官方接口</b>：佳明国区、高驰、小米健康云，用你自己的账号登录后同步；<br>"
         "2. <b>AI 服务</b>（可选）：你填自己的 base_url 与 key，提问内容直连你选的服务商；<br>"
         "3. <b>高德底图</b>（可选）：只请求地图瓦片，用于活动图与回放底图。<br>"
@@ -1927,18 +2027,18 @@ def privacy_page() -> str:
 
     share = p(
         "活动图与轨迹回放<b>包含 GPS 轨迹</b>，起终点可能暴露住址。"
-        "出图前会先问脱敏档位（裁剪 / 隐藏），脱敏在生成产物之前完成，"
-        "产物里不留原始折线。是否分享由你决定。")
+        "生成前可以选择裁剪起点和终点，或隐藏整条轨迹。"
+        "导出文件只包含你选择保留的轨迹。")
 
     never = p(
         "不做代登录服务（佳明条款不允许把凭据交给第三方）；"
         "不把任何数据托管到服务器；不转卖、不用于训练模型。")
 
-    body = (sec("收集", collect) + sec("存在哪里", where) +
-            sec("什么时候出网", net) + sec("分享前", share) +
+    body = (sec("收集哪些数据", collect) + sec("存在哪里", where) +
+            sec("什么时候会联网", net) + sec("分享前", share) +
             sec("不会做的事", never))
     return page("PRIVACY · 隐私", "隐私说明",
-                "数据留在本机；出网的只有你自己触发的请求",
+                "数据保存在这台设备上，以下是联网和分享时的处理方式",
                 body, chip("本地优先"), back=("返回我的", "/me"))
 
 
@@ -1979,7 +2079,7 @@ def files_page(root: Path) -> str:
                  f'{esc(_size(p.stat().st_size))}</span></span>'
                  f'<a class="go" href="{esc(href)}" data-nopush>›</a></div>')
     if not rows:
-        rows = '<div class="empty">还没有生成任何产物。同步或出一次图，这里就会出现文件。</div>'
+        rows = '<div class="empty">还没有导出文件。同步后可查看每日看板，也可以导出活动图或回放视频。</div>'
 
     # 批量管理：全选 / 反选 / 二次确认删除。确认走页面内联，
     # 不用 window.confirm —— WebView 没挂 WebChromeClient，confirm 点了没反应。
@@ -2033,7 +2133,7 @@ body.has-pick{{padding-bottom:74px}}
   }}
   function sync() {{
     var n = chosen().length;
-    info.textContent = n ? ('已选 ' + n + ' 项') : '点左侧方框选择要删除的产物';
+    info.textContent = n ? ('已选 ' + n + ' 项') : '勾选要删除的文件';
     bar.classList.toggle('on', n > 0);
     document.body.classList.toggle('has-pick', n > 0);
     if (!n) reset();
@@ -2161,6 +2261,6 @@ body.has-pick{{padding-bottom:74px}}
 """
     manage_btn = ('<button class="btn manage-btn" id="pickmode" type="button">'
                   '管理</button>' if files else "")
-    return page("FILES · 产物", "本机产物文件", "看板、图片、视频都只存在这台设备上",
+    return page("FILES · 导出文件", "本机导出文件", "看板、图片、视频都只存在这台设备上",
                 jobs + sec("最近生成", rows, manage_btn) + picker,
                 chip(f"{len(files)} 个"), back=("返回我的", "/me"))

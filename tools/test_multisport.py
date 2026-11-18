@@ -9,6 +9,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import sys
+
+# 从仓库根或 tools/ 里跑都能导入：这个脚本被 build.bat 直接调用过，
+# 而调用方的工作目录不一定是仓库根。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from garmin_cn import activity, actcard, appapi, brief, card, coach, cycling, dedupe, workout
 from garmin_cn import history, hrzones, metrics, plan, sports, ui, event
 from garmin_cn.store import Store
@@ -207,7 +213,7 @@ class AppTest(unittest.TestCase):
         detail = {"summary": {"cad_avg": 85}, "series": {"points": points()}, "cycling": cycling.analyze(points(), 200)}
         doc = actcard.build_html(self.row, detail)
         self.assertIn("踏频 rpm", doc)
-        self.assertIn("NP W", doc)
+        self.assertIn("标准化功率 W", doc)
         self.assertIn("TSS", doc)
         self.assertIn("功率与心率", doc)
         self.assertIn("踏频 85 rpm", brief._numbers(self.row, detail))
@@ -273,7 +279,7 @@ class AppTest(unittest.TestCase):
         data = {"ok": True, "today": {"date": self.day, "items": [workout]}, "week": []}
         with patch.object(appapi, "plan", return_value=data):
             doc = ui.plan_page()
-        self.assertIn("骑行步骤", doc)
+        self.assertIn("骑行训练步骤", doc)
         self.assertIn("180–200 W", doc)
 
     def test_bundle_round_trip_preserves_all_feature_extras(self):

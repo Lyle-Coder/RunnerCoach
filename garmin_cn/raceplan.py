@@ -18,8 +18,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# 包内资源（tools/）用 ROOT；**用户的覆盖文件**必须跟 GARMIN_HOME，
+# 否则代码包挂载后会读写 HOME/code/<ver>/data/，每次发版丢一次用户设置。
+_HOME = (Path(__import__("os").environ["GARMIN_HOME"]).expanduser()
+         if __import__("os").environ.get("GARMIN_HOME") else ROOT)
 TOOLS = ROOT / "tools"
-OVERRIDES = ROOT / "data" / "week_overrides.json"
+OVERRIDES = _HOME / "data" / "week_overrides.json"
 
 _CACHE: dict = {}
 

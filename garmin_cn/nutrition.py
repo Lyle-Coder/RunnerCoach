@@ -44,7 +44,9 @@ GOALS = {
 # GARMIN_HOME 走了，只有这里漏了。
 _HOME_ENV = (_os.environ.get("GARMIN_HOME") or "").strip()
 HOME = Path(_HOME_ENV).expanduser() if _HOME_ENV else Path(__file__).resolve().parent.parent
-_LEGACY_HOME = Path(__file__).resolve().parent.parent
+# 迁移源同样是「旧数据在哪」，在 Android 上就是 filesDir——和 HOME 一致。
+# 用 __file__ 的话，代码包挂载后会指向 HOME/code/<ver>/，那儿永远没有旧文件。
+_LEGACY_HOME = HOME
 
 CONF = HOME / "config.json"
 # 饮食记录是可选的一层：有就拿来对账，没有就只显示目标，不强制记账。

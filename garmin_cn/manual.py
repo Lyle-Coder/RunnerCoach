@@ -24,7 +24,10 @@ from pathlib import Path
 _HOME_ENV = (_os.environ.get("GARMIN_HOME") or "").strip()
 _HOME = Path(_HOME_ENV).expanduser() if _HOME_ENV else Path(__file__).resolve().parent.parent
 PATH = _HOME / "data" / "manual.json"
-_LEGACY = Path(__file__).resolve().parent.parent / "data" / "manual.json"
+# 迁移源也必须跟 GARMIN_HOME：用 __file__ 的话，代码包挂载后它指向
+# HOME/code/<ver>/data/manual.json，那里永远没有文件，等于升级一次就丢一次
+# 老手册数据（而且丢得很安静：不报错，只是空的）。
+_LEGACY = _HOME / "data" / "manual.json"
 _migrated = False
 
 

@@ -62,3 +62,16 @@ server/relay/card.png
 
 # 未定稿的调研笔记：只写在工作区，不进仓库
 docs/小程序可行性评估.md
+
+# 赛季内容（事件池、文案、结局参数）：只放服务器，永不入库。
+# 公网仓库（含 GitHub 镜像）能看到这个仓库的一切，剧情进 git 就等于公开。
+# 部署时单独把 expedition_events.json 传到服务器 server/content/。
+server/content/*.json
+
+# 部署产物：环境变量与自签私钥。env 里有 ADMIN_TOKEN / SMTP 授权码 / 上游 Key，
+# certs/ 里有服务器私钥——都只该存在于那台机器上。
+deploy/env
+deploy/certs/
+
+# 素材下载缓存（开发时 HOME 就是仓库根，contentpack 会写这里）
+/content/

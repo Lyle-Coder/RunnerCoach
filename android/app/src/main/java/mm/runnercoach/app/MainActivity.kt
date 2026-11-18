@@ -160,6 +160,19 @@ class MainActivity : Activity() {
             fatal("Python 启动失败", t)
         }
 
+        // 代码包：把已下载的覆盖包挂到 garmin_cn.__path__ 最前面，然后后台
+        // 检查有没有更新的。**顺序不能反**——必须在任何业务模块被 import
+        // 之前挂上，否则一部分模块来自旧代码，比不更新更糟。
+        // 这一步整体用 try 包住：没有代码包、模块挂了、或者老包没有这个文件，
+        // 都只该退回「用包里那份」，绝不能拦住启动。
+        try {
+            val pack = Python.getInstance().getModule("garmin_cn.codepack")
+            pack.callAttr("apply")
+            pack.callAttr("refresh_async")
+        } catch (t: Throwable) {
+            Log.w(TAG, "代码包挂载失败，继续用包内代码：" + t.message)
+        }
+
         // 内容根必须不透明：windowBackground 是带图标的开屏底，Activity 画出来
         // 之后若不盖住，1px 分割线和留白处会漏出那枚图标。
         val shell = LinearLayout(this).apply {
@@ -197,7 +210,9 @@ class MainActivity : Activity() {
         }
         titles.addView(subtitle)
         toolbar.addView(titles, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        // 顶栏只留标题与副标题：同步走今日页下拉，动作都在页面卡片里。
+        // 顶栏不放按钮：小组入口已经进了底部导航第 3 位（那里才找得到），
+        // 同步走今日页下拉，动作都在页面卡片里。
+        // 以前右上角挂过「⟳」「⋮」「小组」，和底部 tab、页内入口重复了三遍。：同步走今日页下拉，动作都在页面卡片里。
         // 以前右上角挂过「⟳」和「⋮」，和底部 tab、页内入口重复了三遍。
         chromeBars.add(toolbar)
         shell.addView(toolbar, LinearLayout.LayoutParams(MATCH_PARENT, toolH))
@@ -558,6 +573,7 @@ class MainActivity : Activity() {
                     "amap" -> showAmapDialog()
                     "clips" -> showClips()
                     "update" -> checkUpdate(silent = false)
+                    "runShare" -> exportRunCard()
                     "dbExport" -> doExportData()
                     "dbImport" -> doImportData()
                     "diag" -> showDiag()
@@ -582,18 +598,21 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------ 底部导航
-    // 教练排第二位：它是每天要点的东西，不该比「历史」还靠后。
-    private val TAB_NAMES = arrayOf("今日", "教练", "历史", "我的")
-    private val TAB_URLS = arrayOf("/", "/ai", "/history", "/me")
+    // 顺序：今日 / 教练 / 小组 / 历史 / 我的。
+    // 小组插在教练后面：它是主打功能，而底部是「一天里会主动点进去」的地方；
+    // 之前塞在顶栏右上角做成一枚胶囊，位置既不像入口也不像按钮，用户找不到。
+    private val TAB_NAMES = arrayOf("今日", "教练", "小组", "历史", "我的")
+    private val TAB_URLS = arrayOf("/", "/ai", "/groups", "/history", "/me")
     private val TAB_ICONS = intArrayOf(
         R.drawable.ic_tab_today, R.drawable.ic_tab_coach,
-        R.drawable.ic_tab_history, R.drawable.ic_tab_me)
+        R.drawable.ic_tab_group, R.drawable.ic_tab_history, R.drawable.ic_tab_me)
 
-    // 语义化索引：顺序调过一次（教练 3→2），别再往逻辑里写裸数字
+    // 语义化索引：顺序调过两次（教练 3→2，小组插到 2），别再往逻辑里写裸数字
     private val TAB_TODAY = 0
     private val TAB_COACH = 1
-    private val TAB_HISTORY = 2
-    private val TAB_ME = 3
+    private val TAB_GROUP = 2
+    private val TAB_HISTORY = 3
+    private val TAB_ME = 4
 
     private fun buildTabBar(): LinearLayout {
         val nav = LinearLayout(this).apply {
@@ -665,6 +684,9 @@ class MainActivity : Activity() {
     private fun syncTabByUrl(url: String) {
         val path = url.substringAfter(":$port", url)
         val t = when {
+            // 小组这条线包括列表、组详情、远征（/run）——从组详情点进远征时
+            // 底部应该停在「小组」，否则用户会以为自己掉出来了。
+            path.startsWith("/groups") || path.startsWith("/run") -> TAB_GROUP
             path.startsWith("/ai") -> TAB_COACH
             path.startsWith("/me") || path.startsWith("/files") ||
                 path.startsWith("/privacy") || path.startsWith("/sports") -> TAB_ME
@@ -719,7 +741,7 @@ class MainActivity : Activity() {
                     Log.i(TAG, "backfill seg=$seg $a~$b fetched=${r.optInt("fetched")} " +
                         "skipped=${r.optInt("skipped")}")
                     ui {
-                        subtitle.text = "补齐历史 第 $seg 段：$a ~ $b（新拉 ${r.optInt("fetched")} 天）"
+                        subtitle.text = "同步历史记录 · 新增 ${r.optInt("fetched")} 天"
                         // 一段要跑一分多钟：停在「历史」页时每补完一段就刷一次，
                         // 否则用户盯着的是几分钟前的列表，以为没拉到东西。
                         if (activeTab == TAB_HISTORY) web.reload()
@@ -737,7 +759,7 @@ class MainActivity : Activity() {
                 if (seg > 0 && fetched > 0) {
                     val tail = if (done && earliest.isNotEmpty())
                         "，已到最早记录 $earliest" else "，下次刷新继续补齐"
-                    toast("已补 $seg 段历史：新拉 $fetched 天$tail")
+                    toast("已同步 $fetched 天的历史数据$tail")
                 }
                 thread {
                     setStatus(apiCall("status"))
@@ -1425,8 +1447,8 @@ class MainActivity : Activity() {
 
     private fun askMealPhoto() {
         AlertDialog.Builder(this)
-            .setTitle("记饮食")
-            .setItems(arrayOf("拍照", "从相册选", "直接描述（吃完了没拍）")) { _, which ->
+            .setTitle("记录一餐")
+            .setItems(arrayOf("拍摄食物照片", "从相册选择", "用文字描述")) { _, which ->
                 when (which) {
                     0 -> takeMealPhoto()
                     1 -> pickMealPhoto()
@@ -1591,7 +1613,7 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this)
             .setTitle("识别结果 · ${total.optInt("kcal")} kcal")
             .setMessage(sb.toString().trim())
-            .setPositiveButton("记下") { _, _ -> saveMeal(items) }
+            .setPositiveButton("保存饮食记录") { _, _ -> saveMeal(items) }
             .setNegativeButton("取消", null)
             .show()
     }
@@ -1684,7 +1706,7 @@ class MainActivity : Activity() {
                     return@ui
                 }
                 AlertDialog.Builder(this)
-                    .setTitle("顺便授权睡眠数据？")
+                    .setTitle("同步高驰睡眠数据？")
                     .setMessage(
                         "活动、HRV、静息心率已经能同步了；睡眠不在高驰的网页接口里，" +
                             "要再用官方 MCP 授权一次才能读到睡眠评分和深/浅/REM。\n\n" +
@@ -1692,7 +1714,7 @@ class MainActivity : Activity() {
                             "不会把手机上的高驰 App 挤下线，数据也不经过我们的服务器。"
                     )
                     .setPositiveButton("去授权") { _, _ -> startCorosMcpAuth() }
-                    .setNegativeButton("暂不") { _, _ -> doSync() }
+                    .setNegativeButton("暂不授权") { _, _ -> doSync() }
                     .setOnCancelListener { doSync() }
                     .show()
             }
@@ -1832,7 +1854,7 @@ class MainActivity : Activity() {
             setPadding(dp(20), dp(10), dp(20), 0)
         }
         box.addView(TextView(this).apply {
-            text = "填高德「Web 服务」Key 后，活动图会铺一张真实地图底图。\n\n" +
+            text = "填写高德地图的 Web 服务密钥后，活动图会显示地图底图。\n\n" +
                    "换取底图时会把这次跑步的轨迹中心点发给高德；不填则只画矢量轨迹。\n" +
                    "Key 只保存在本机，不会上传。"
             textSize = 13f
@@ -1932,13 +1954,13 @@ class MainActivity : Activity() {
             clipSelecting = false
             clipChecked.clear()
             AlertDialog.Builder(this)
-                .setTitle("素材")
+                .setTitle("回放素材")
                 .setMessage("还没有素材。\n\n" +
                     "可以加图片或视频：\n" +
                     "· 图片直接插到回放对应位置；\n" +
                     "· 视频能裁出想要的几秒（只搬样本不重编码，几秒就完成）。\n\n" +
                     "插入位置取文件里的拍摄时间；没有时间信息时按数量均匀铺在整段活动里。")
-                .setPositiveButton("添加") { _, _ -> pickMedia() }
+                .setPositiveButton("添加素材") { _, _ -> pickMedia() }
                 .setNegativeButton("关闭", null)
                 .show()
             return
@@ -2091,7 +2113,7 @@ class MainActivity : Activity() {
                                     .append("：").append(o.optString("error")).append("\n")
                             }
                             AlertDialog.Builder(this@MainActivity)
-                                .setTitle("有 $failN 个没删掉")
+                                .setTitle("有 $failN 项素材未能删除")
                                 .setMessage(sb.toString().trim())
                                 .setPositiveButton("知道了", null)
                                 .show()
@@ -2937,7 +2959,7 @@ class MainActivity : Activity() {
                 }
                 val names = arrayOf("小米", "华为")
                 AlertDialog.Builder(this)
-                    .setTitle("首选体重来源")
+                    .setTitle("首选体重数据来源")
                     .setSingleChoiceItems(names, ids.indexOf(preferred)) { dialog, which ->
                         dialog.dismiss()
                         thread {
@@ -3031,7 +3053,7 @@ class MainActivity : Activity() {
                     .setNegativeButton("关闭", null)
                 if (logged) {
                     dlg.setPositiveButton("同步体重") { _, _ -> doHwSync() }
-                    dlg.setNeutralButton("体检") { _, _ -> doHwProbe() }
+                    dlg.setNeutralButton("检查连接") { _, _ -> doHwProbe() }
                     dlg.setNegativeButton("退出登录") { _, _ -> doHwLogout() }
                 } else {
                     dlg.setPositiveButton("登录华为账号") { _, _ -> askHwLogin() }
@@ -3128,7 +3150,7 @@ class MainActivity : Activity() {
             ui {
                 busy(false)
                 if (!r.optBoolean("ok")) {
-                    toast("体检失败：${r.optString("error")}")
+                    toast("连接检查失败：${r.optString("error")}")
                     return@ui
                 }
                 val gates = r.optJSONObject("gates")
@@ -3139,8 +3161,8 @@ class MainActivity : Activity() {
                     "${if (g.optBoolean("ok")) "√" else "×"} $label　${g.optString("detail")}"
                 }
                 AlertDialog.Builder(this)
-                    .setTitle(if (r.optBoolean("all_ok")) "体检通过" else "体检未通过")
-                    .setMessage(lines.joinToString("\n").ifBlank { "没有返回体检明细" })
+                    .setTitle(if (r.optBoolean("all_ok")) "连接检查通过" else "连接检查未通过")
+                    .setMessage(lines.joinToString("\n").ifBlank { "没有收到连接检查结果" })
                     .setPositiveButton("关闭", null)
                     .show()
             }
@@ -3347,12 +3369,12 @@ class MainActivity : Activity() {
         val brand = if (huawei) "华为" else "小米"
         val healthApp = if (huawei) "华为运动健康" else "小米运动健康"
         busy(true)
-        ui { subtitle.text = "正在拉取${brand}体重…" }
+        ui { subtitle.text = "正在同步${brand}体重数据…" }
         thread {
             val r = apiCall(if (huawei) "hw_sync" else "mi_sync", 60)
             ui {
                 busy(false)
-                subtitle.text = "下拉同步 · 点活动名出图"
+                subtitle.text = "下拉同步 · 点击活动查看图片"
                 if (r.optBoolean("ok")) {
                     val n = r.optInt("count")
                     val msg = if (n > 0)
@@ -3446,7 +3468,7 @@ class MainActivity : Activity() {
                 if (silent && prefs.getString("update_skipped", "") == tag) return@ui
                 val notes = r.optString("notes", "")
                 val tv = TextView(this).apply {
-                    text = notes.ifBlank { "本次更新未提供说明，下载后可从系统下载记录打开安装。" }
+                    text = notes.ifBlank { "本次更新未提供说明。下载完会自动打开发安装器。" }
                     textSize = 13f
                     setPadding(dp(20), dp(8), dp(20), dp(8))
                 }
@@ -3454,10 +3476,17 @@ class MainActivity : Activity() {
                 AlertDialog.Builder(this)
                     .setTitle("发现新版本 " + tag)
                     .setView(sv)
-                    .setPositiveButton(if (r.optString("apk").isBlank()) "查看发布页" else "下载 APK") { _, _ ->
+                    .setPositiveButton(if (r.optString("apk").isBlank()) "查看发布页" else "下载安装包") { _, _ ->
                         downloadUpdate(r)
                     }
-                    .setNeutralButton("下载记录") { _, _ -> openUpdateDownloads() }
+                    .setNeutralButton("手动下载") { _, _ ->
+                        try {
+                            startActivity(Intent(Intent.ACTION_VIEW,
+                                Uri.parse(r.optString("url"))))
+                        } catch (_: Exception) {
+                            toast("打不开浏览器")
+                        }
+                    }
                     .setNegativeButton("稍后") { _, _ ->
                         prefs.edit().putString("update_skipped", tag).apply()
                     }
@@ -3473,41 +3502,84 @@ class MainActivity : Activity() {
             openUpdatePage(release.optString("page", release.optString("url")))
             return
         }
+        // 走 Python 下载（8443 加密），不用系统下载管理器。原因写在
+        // appapi.apk_fetch 的注释里：下载管理器只信系统根证书，认不了自签
+        // 证书；退回明文 http 又会被 networkSecurityConfig 拦掉（targetSdk 34
+        // 默认禁明文，DownloadManager 同样受约束），表现就是「下载失败 0.00 B」。
+        val tls = release.optString("url_tls")
+        if (tls.isBlank()) {
+            // 老服务端没有 url_tls：给浏览器兜底，别再往下载管理器里塞明文地址
+            tipsDownloadFailed(release, "这个版本的更新信息缺少加密下载地址")
+            return
+        }
+        val sizeMb = release.optInt("size", 0) / 1048576.0
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("正在下载 " + release.optString("latest"))
+            .setMessage(if (sizeMb > 0.5)
+                String.format("安装包 %.0f MB，请保持网络畅通。下载完会自动打开发安装器。", sizeMb)
+            else "正在下载，下载完会自动打开发安装器。")
+            .setCancelable(false)
+            .create()
+        dlg.show()
         thread {
-            try {
-                val state = ApkDownload.enqueue(applicationContext, release.optString("url"), name)
-                ui {
-                    when (state) {
-                        ApkDownload.State.QUEUED -> toast("已开始下载 APK，完成后点系统下载通知安装；文件在「下载/RunnerCoach」")
-                        ApkDownload.State.RUNNING -> {
-                            toast("该版本正在下载，可在系统下载记录查看进度")
-                            openUpdateDownloads()
-                        }
-                        ApkDownload.State.DOWNLOADED -> {
-                            toast("该版本已下载，请在下载记录中打开 APK 安装")
-                            openUpdateDownloads()
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "无法启动 APK 下载", e)
-                ui {
-                    AlertDialog.Builder(this)
-                        .setTitle("无法开始下载")
-                        .setMessage("请确认系统下载管理器已启用，并检查下载目录是否可用。也可以到发布页手动下载。")
-                        .setPositiveButton("查看发布页") { _, _ -> openUpdatePage(release.optString("page")) }
-                        .setNegativeButton("关闭", null)
-                        .show()
+            // 走 Python 下载（8443 加密）：系统下载管理器只信系统根证书，
+            // 认不了自签证书；明文又会被 networkSecurityConfig 拦掉。
+            val r = apiCall("apk_fetch", tls, release.optString("sha256"), name)
+            ui {
+                dlg.dismiss()
+                val path = r.optString("path")
+                if (r.optBoolean("ok") && path.isNotBlank()) {
+                    installApk(path)
+                } else {
+                    tipsDownloadFailed(release, r.optString("error", "未知原因"))
                 }
             }
         }
     }
 
-    private fun openUpdateDownloads() {
+    /** 下载失败：说清原因，并给一条「用浏览器打开」的路（浏览器不拦明文）。 */
+    private fun tipsDownloadFailed(release: JSONObject, why: String) {
+        val http = release.optString("url")
+        AlertDialog.Builder(this)
+            .setTitle("下载失败")
+            .setMessage(why + "\n\n可以改用浏览器下载：打开链接后点安装即可。")
+            .setPositiveButton("用浏览器打开") { _, _ ->
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(http)))
+                } catch (_: Exception) {
+                    toast("打不开浏览器，请手动复制链接")
+                }
+            }
+            .setNeutralButton("复制链接") { _, _ ->
+                copyText(http, "链接已复制")
+            }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    /**
+     * 拉起系统安装器。
+     *
+     * 必须用 content://（ApkProvider），file:// 在 Android 7+ 会直接抛
+     * FileUriExposedException。第一次装会弹「允许安装未知应用」，
+     * 引导用户去设置授权是系统行为，这里不用自己处理。
+     */
+    private fun installApk(path: String) {
+        val f = java.io.File(path)
+        if (!f.isFile) {
+            toast("安装包不在了，请重新下载")
+            return
+        }
+        val uri = Uri.parse("content://$packageName.apk/" + f.name)
+        val it = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
         try {
-            startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS))
-        } catch (_: Exception) {
-            toast("请在文件管理器的「下载/RunnerCoach」中查看 APK")
+            startActivity(it)
+        } catch (e: Exception) {
+            Log.w(TAG, "拉起安装器失败", e)
+            toast("打不开安装器：" + (e.message ?: e.javaClass.simpleName))
         }
     }
 
@@ -3519,6 +3591,46 @@ class MainActivity : Activity() {
         } catch (_: Exception) {
             toast("打不开发布页，请稍后重试")
         }
+    }
+
+    private fun copyText(text: String, tip: String) {
+        val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+            as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("diag", text))
+        toast(tip)
+    }
+
+    /**
+     * 清空诊断日志。先问一句——这个弹窗唯一的用途是「把这段发给你」，
+     * 误触清空等于把证据删了。
+     *
+     * 中间那个键是「复制后清空」：一按就关掉原弹窗，文字看不着了，
+     * 所以把「怕丢」的那条路直接做在按钮上，比写一句提示管用。
+     */
+    private fun clearDiag(shown: String) {
+        fun doClear() {
+            thread {
+                val r = apiCall("diag_clear")
+                ui {
+                    if (r.optBoolean("ok")) {
+                        toast(String.format("已清空 %.0f KB",
+                            r.optInt("bytes", 0) / 1024.0))
+                    } else {
+                        toast("清不掉：" + r.optString("error", "未知原因"))
+                    }
+                }
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("清空诊断日志？")
+            .setMessage("只删本机的日志文件，不影响任何数据。")
+            .setPositiveButton("清空") { _, _ -> doClear() }
+            .setNeutralButton("复制后清空") { _, _ ->
+                copyText(shown, "已复制，然后清空")
+                doClear()
+            }
+            .setNegativeButton("算了", null)
+            .show()
     }
 
     /**
@@ -3545,11 +3657,12 @@ class MainActivity : Activity() {
                     .setView(sv)
                     .setPositiveButton("关闭", null)
                     .setNeutralButton("复制") { _, _ ->
-                        val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                            as android.content.ClipboardManager
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("diag", txt))
-                        toast("已复制，直接发给开发者即可")
+                        copyText(txt, "已复制，直接发给开发者即可")
                     }
+                    // 清空放第三个键：日志是 append-only 的，老条目会一直留着，
+                    // 有些噪音（比如几周前那批 motion clips）早在代码里删掉了，
+                    // 却还挂在文件里，导致真正要看的那条被淹。
+                    .setNegativeButton("清空") { _, _ -> clearDiag(txt) }
                     .show()
             }
         }
@@ -3713,7 +3826,7 @@ class MainActivity : Activity() {
                         "$days 天日汇总 / $acts 条活动。\n" +
                             (if (bak.isEmpty()) "" else "\n原库已备份到：\n${File(bak).name}")
                     )
-                    .setPositiveButton("好") { _, _ ->
+                    .setPositiveButton("确定") { _, _ ->
                         goTab(0)
                         reload()
                     }
@@ -3735,7 +3848,7 @@ class MainActivity : Activity() {
             ui {
                 if (!r.optBoolean("ok")) {
                     busy(false)
-                    toast("出图失败：${r.optString("error")}")
+                    toast("生成图片失败：${r.optString("error")}")
                     return@ui
                 }
                 renderToPng(
@@ -3761,17 +3874,14 @@ class MainActivity : Activity() {
         val found = PRIVACY_MODES.indexOf(saved)
         var checked = if (found >= 0) found else 1
         AlertDialog.Builder(this)
-            .setTitle("分享前脱敏")
+            .setTitle("分享时如何显示轨迹")
             .setMessage(
-                "这张活动图含你的 GPS 轨迹，起终点可能暴露住址或常跑路线。\n" +
-                    "选好档位后才会生成图片并分享；原图会先存进相册。\n" +
-                    "配过地图 Key 时，「原图」和「裁剪」会铺地图底图（裁剪档只用中间段取景），" +
-                    "「隐藏轨迹」不显示地图。\n\n" +
-                    "回放视频在后台生成（通常一两分钟），可以先切到别的页面，"
-                    + "进度看「我的 → 产物文件」。"
+                "完整轨迹可能暴露住址或常走的路线。活动图会先保存到相册。\n\n" +
+                    "设置地图密钥后，底图会按保留的轨迹取景。隐藏轨迹时也会隐藏地图。\n\n" +
+                    "回放视频在后台生成，可在「我的 → 导出文件」查看进度。"
             )
             .setSingleChoiceItems(PRIVACY_LABELS, checked) { _, which -> checked = which }
-            .setNeutralButton("回放视频（后台）") { _, _ ->
+            .setNeutralButton("生成回放") { _, _ ->
                 val mode = PRIVACY_MODES[checked]
                 prefs.edit().putString("share_privacy", mode).apply()
                 exportMotion(id, mode, 30)
@@ -3786,8 +3896,39 @@ class MainActivity : Activity() {
             .show()
     }
 
-    /** 单次活动图：先出 HTML（画布 1080×2250），再截成 1080×1920 的 PNG 分享。 */
-    private fun exportActivity(id: String, privacy: String = "trim") {
+    /**
+     * 赛季结算分享图。结算页上的「保存这张图」按钮通过 `data-act="runShare"` 走到这里。
+     *
+     * 图片本身不含 GPS、昵称和别人名字（`runcard` 只放结局、总行程、士气与四段路），
+     * 所以不需要像活动图那样先问一次脱敏档位——问一次反而显得图里有什么见不得人。
+     */
+    private fun exportRunCard() {
+        if (port == 0) {
+            toast("还在启动，稍等一下")
+            return
+        }
+        busy(true)
+        thread {
+            val r = apiCall("expedition_card_html", 0)
+            ui {
+                if (!r.optBoolean("ok")) {
+                    busy(false)
+                    toast("出图失败：${r.optString("error")}")
+                    return@ui
+                }
+                renderToPng(
+                    fileUrl(r.optString("html")),
+                    r.optInt("width", 1080), r.optInt("height", 1920),
+                    "garmin-run", "分享这一季：${r.optString("title")}",
+                    r.optInt("export_width", 1080), r.optInt("export_height", 1920),
+                    r.optString("export_bg", "#0F1319"),
+                    r.optBoolean("export_trim", true),
+                )
+            }
+        }
+    }
+
+    /** 单次活动图：先出 HTML（画布 1080×2250），再截成 1080×1920 的 PNG 分享。 */    private fun exportActivity(id: String, privacy: String = "trim") {
         if (port == 0) {
             toast("还在启动，稍等一下")
             return
@@ -4441,7 +4582,7 @@ class MainActivity : Activity() {
         view.postDelayed({
             if (!done) {
                 done = true
-                toast("出图超时，请重试")
+                toast("生成图片超时，请重试")
                 cleanup(view)
             }
         }, 10000)
@@ -5053,7 +5194,7 @@ class MainActivity : Activity() {
                 "手动删掉的事件下次同步会补回；要彻底停止请点「关闭并清除」。\n\n" +
                 "当前状态：" + (if (on) "已开启" else "未开启"))
             .setPositiveButton("立即同步") { _, _ -> startCalendarSync(false) }
-            .setNegativeButton("关闭并清除") { _, _ -> disableCalendar() }
+            .setNegativeButton("关闭并删除提醒") { _, _ -> disableCalendar() }
             .setNeutralButton("取消", null)
             .show()
     }
@@ -5275,7 +5416,7 @@ class MainActivity : Activity() {
             startCalendarSync(false)
         } else {
             AlertDialog.Builder(this)
-                .setTitle("日历权限没开")
+                .setTitle("需要日历权限")
                 .setMessage(
                     "没有日历读写权限就写不进提醒。可以在 系统设置 → 应用 → " +
                     "RunnerCoach → 权限 里打开；不开也不影响 App 内的「该订了」清单。")
@@ -5338,9 +5479,9 @@ class MainActivity : Activity() {
         /** 与 garmin_cn/privacy.py 的 MODES 一一对应，顺序不能改。 */
         val PRIVACY_MODES = arrayOf("none", "trim", "hide")
         val PRIVACY_LABELS = arrayOf<CharSequence>(
-            "原图（含完整 GPS 轨迹）",
-            "裁首尾各 200 m（推荐）",
-            "完全隐藏轨迹与起跑时间",
+            "保留完整轨迹",
+            "隐藏首尾各 200 米（推荐）",
+            "隐藏整条轨迹和出发时间",
         )
 
         /** postVisualStateCallback 的请求号，非零即可，两个阶段各用一个。 */

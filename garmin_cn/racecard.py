@@ -288,7 +288,7 @@ def build_html(race: dict, detail: dict, week_rows: list[dict],
             f'<span class="wb">{esc(r.get("main") or "")}</span>'
             f'<span class="ws">{esc(r.get("sub") or "")}</span></div>')
 
-    # 跑法画像：填掉心率分区卡下方的空白，同时把「怎么跑的」补齐。
+    # 跑步技术与节奏：填掉心率分区卡下方的空白，同时把「怎么跑的」补齐。
     # 最快/最慢公里直接从分段里取，一眼能看出这场的节奏分布。
     tech = []
     cad_avg = num(summary.get("cad_avg"))
@@ -391,7 +391,7 @@ def build_html(race: dict, detail: dict, week_rows: list[dict],
   <div class="meta">{extra_html}</div>
 
   <div class="card">
-    <div class="ctitle">分段表现<span>每 3 km 合并 · 累计时间 / 较目标差</span></div>
+    <div class="ctitle">分段表现<span>每 3 km 一段 · 累计用时与目标差距</span></div>
     <div class="shead"><span>段</span><span></span><span>配速</span><span>心率</span><span>累计</span><span>差</span></div>
     {_svg_splits(rows, 0, 0)}
     {f'<div class="drift">{drift_txt}</div>' if drift_txt else ''}
@@ -401,7 +401,7 @@ def build_html(race: dict, detail: dict, week_rows: list[dict],
     <div class="card">
       <div class="ctitle">心率分区<span>占比 / 时长</span></div>
       {_zone_block(raw)}
-      <div class="ctitle tech-t">跑法画像<span>技术与节奏</span></div>
+      <div class="ctitle tech-t">跑步表现<span>技术与节奏</span></div>
       <div class="tgrid">{tech_html}</div>
     </div>
     <div class="card wkcard">

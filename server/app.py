@@ -50,6 +50,7 @@ App 不直接持有上游 API Key；它用手机号或邮箱验证码登录拿�
 from __future__ import annotations
 
 import base64
+import threading
 import hashlib
 import hmac
 import json
@@ -67,6 +68,25 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# 组功能是可选模块：文件缺失时网关照常提供账号/余额/AI 转发，
+# 只是 /v1/group/* 一律 503。不要让一个新增文件拖垮整个服务。
+try:
+    import groups as group_api
+except Exception as _e:  # noqa: BLE001
+    group_api = None
+    _GROUPS_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+else:
+    _GROUPS_IMPORT_ERROR = ""
+
+# 远征依赖 groups（共用库与鉴权），所以 groups 起不来它也起不来。
+try:
+    import expedition as expedition_api
+except Exception as _e:  # noqa: BLE001
+    expedition_api = None
+    _EXPEDITION_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+else:
+    _EXPEDITION_IMPORT_ERROR = ""
+
 # ---------------------------------------------------------------- 配置
 UPSTREAM_BASE = os.environ.get("UPSTREAM_BASE", "https://api.deepseek.com/v1").rstrip("/")
 UPSTREAM_KEY = os.environ.get("UPSTREAM_API_KEY", "")
@@ -74,9 +94,62 @@ UPSTREAM_MODEL = os.environ.get("UPSTREAM_MODEL", "deepseek-chat")
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
 DB_PATH = os.environ.get("DB_PATH", str(Path(__file__).resolve().parent / "data.db"))
 MARGIN = float(os.environ.get("MARGIN", "1.15"))            # 平台加价倍率
-FREE_GRANT = int(os.environ.get("FREE_GRANT", "500_000"))   # 新用户赠送（微元，默认 0.5 元）
+# 新用户赠送额度（微元）。**默认 0**：平台额度与支付在资质办下来之前不开放，
+# 默认值必须是"关"。要送就显式配 FREE_GRANT=500000。
+FREE_GRANT = int(os.environ.get("FREE_GRANT", "0"))
+# 平台代理总开关。关掉时 /v1/chat/completions 直接 503 并提示"用自己的 Key"，
+# 不留半开状态：不卖额度却还替人转发请求，等于无资质提供生成式 AI 服务。
+AI_PROXY = os.environ.get("AI_PROXY", "off").strip().lower() in ("1", "on", "yes", "true")
 HOST = os.environ.get("BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8300"))
+
+# ── HTTPS（无域名部署方式）──────────────────────────────────────────────
+# 没有域名就没有 Let's Encrypt，也不该让 App 走明文 HTTP（令牌会被同网段
+# 的人看见）。所以直接用自签证书 + IP SAN：证书里把服务器 IP 写进
+# subjectAltName，App 端把这一个证书当成唯一的根，校验照样成立。
+# 两个变量任一为空就不启 TLS，本地开发仍然是 http。
+TLS_CERT = os.environ.get("RC_TLS_CERT", "").strip()
+TLS_KEY = os.environ.get("RC_TLS_KEY", "").strip()
+# 开发模式（验证码回显）会让人**登录任意账号**。绑在公网地址上时默认拒绝
+# 启动；内网联调确实需要的话显式设 RC_ALLOW_DEV_ECHO=1。
+ALLOW_DEV_ECHO = os.environ.get("RC_ALLOW_DEV_ECHO", "") == "1"
+
+# ── 内容包（字体 / 结局插画按需下发）─────────────────────────────────
+# 这些东西占了包体的 8%，但大部分人一辈子不会打开远征页。放在服务器上：
+# 首包小一截，而且改文案/换插画不用发版。
+# 注意：**不是剧情**。剧情（expedition_events.json）也在这台机器上，
+# 但走的是 /run/* 接口按幕下发，和这里的静态素材是两回事。
+# 放在 server/assets/：**入库**（要版本控制，改错了能回滚），但**不进 APK**。
+# 之前它们在 garmin_cn/content/ 里，跟着客户端一起打包，1.7 MB 白送。
+CONTENT_DIR = Path(os.environ.get(
+    "RC_CONTENT_DIR", str(Path(__file__).resolve().parent / "assets")))
+CONTENT_MIME = {
+    ".woff2": "font/woff2", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".svg": "image/svg+xml", ".webp": "image/webp",
+}
+_content_index: dict | None = None      # name → {size, sha256, mime}
+
+
+# ── APK 分发（只读 http，单独端口）────────────────────────────────────
+# 为什么单独一个明文端口：手机端用系统 DownloadManager 下载安装包，它只信
+# 系统根证书，我们这张自签证书它不认（握手直接失败）。而 APK 本身是公开物，
+# 安装时 Android 会校验签名，明文传输的风险只是"下载到什么"，不是"泄露什么"。
+# 元数据（版本号、SHA256）仍走 8443，加密通道上取，取到再用。
+# 0 = 关闭这个端口。
+APK_PORT = int(os.environ.get("RC_APK_PORT", "0") or 0)
+# ── 代码包（覆盖式更新）──────────────────────────────────────────────
+# APK 里带完整代码，这里下发的是「补丁包」：只含变更过的 .py，解压到客户端
+# 私有目录后挂在 garmin_cn.__path__ 最前面，包里的同名模块就被盖掉。
+# 为什么是 .py 而不是 .pyc：pyc 的魔数和解释器版本绑死，哪天真升了 Python，
+# 旧包会**静默**失效；源码包一样大，还能直接 diff。
+# 没下过 / 校验不过 / 目录坏掉 → 客户端一律回落到包内那份，不能因为更新
+# 挂了就打不开。
+CODEPACK_DIR = Path(os.environ.get(
+    "RC_CODEPACK_DIR", str(Path(__file__).resolve().parent / "codepack")))
+
+APK_DIR = Path(os.environ.get("RC_APK_DIR",
+                              str(Path(__file__).resolve().parent / "apk")))
+
 # 每日看板静态目录（site/index.html、site/card.png，由 daily.bat 生成）
 SITE_DIR = Path(os.environ.get("RC_SITE_DIR",
                                str(Path(__file__).resolve().parent.parent / "site")))
@@ -119,7 +192,11 @@ SMTP_HOST = os.environ.get("SMTP_HOST", "")                 # 如 smtp.qq.com
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))         # 465=SSL / 587=STARTTLS
 SMTP_USER = os.environ.get("SMTP_USER", "")                 # 发件邮箱
 SMTP_PASS = os.environ.get("SMTP_PASS", "")                 # SMTP 授权码（不是登录密码）
-SMTP_FROM = os.environ.get("SMTP_FROM", "") or SMTP_USER    # 显示的发件人，默认同 SMTP_USER
+# 显示的发件人，留空就用 SMTP_USER。顺手把模板里的中文占位值当空处理——
+# "你的发件邮箱@qq.com" 这种如果被当成真地址，报错会是一句看不懂的 501。
+_smtp_from_raw = os.environ.get("SMTP_FROM", "").strip()
+SMTP_FROM = (SMTP_USER if (not _smtp_from_raw or "@" not in _smtp_from_raw)
+             else _smtp_from_raw)
 
 # 单价表：元 / 百万 token，只列平台实际会跑的模型
 # deepseek-flash 取高峰价（闲时减半），按贵的扣不会亏
@@ -259,6 +336,9 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY,
             phone TEXT UNIQUE NOT NULL,              -- 账号：手机号或邮箱；匿名兼容账号为 ''
             balance INTEGER NOT NULL DEFAULT 0,      -- 微元（流水推导的缓存）
+            -- 账号昵称：建组 / 入组时的默认名字。没有它的话每建一个组都要
+            -- 重新想一次「我在这个组叫什么」，而同一个人本来就叫那个名字。
+            nickname TEXT NOT NULL DEFAULT '',
             created_at INTEGER NOT NULL,
             revoked INTEGER NOT NULL DEFAULT 0
         );
@@ -319,6 +399,7 @@ def init_db() -> None:
             phone TEXT NOT NULL, ip TEXT DEFAULT '', ts INTEGER NOT NULL
         );
         """)
+    _migrate_users()
 
 
 class Gate(Exception):
@@ -351,6 +432,14 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _migrate_users() -> None:
+    """老库补 nickname 列。CREATE TABLE IF NOT EXISTS 不会改已有表。"""
+    with db() as c:
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(users)")}
+        if "nickname" not in cols:
+            c.execute("ALTER TABLE users ADD COLUMN nickname TEXT NOT NULL DEFAULT ''")
+
+
 def _auth(headers) -> sqlite3.Row:
     """验证设备令牌，返回 device 行（JOIN users）。"""
     raw = headers.get("Authorization") or ""
@@ -366,7 +455,7 @@ def _auth(headers) -> sqlite3.Row:
     with db() as c:
         row = c.execute("""
             SELECT d.id AS dev_id, d.user_id, d.name AS dev_name, d.revoked AS dev_revoked,
-                   d.last_seen, u.phone, u.balance, u.revoked
+                   d.last_seen, u.phone, u.balance, u.revoked, u.nickname
             FROM devices d JOIN users u ON u.id=d.user_id WHERE d.token_hash=?
         """, (_hash(token),)).fetchone()
     if not row or row["dev_revoked"] or row["revoked"]:
@@ -431,6 +520,11 @@ def api_sms_send(body: dict, ip: str) -> dict:
     if kind == "phone":
         if not _PHONE_RE.match(account):
             raise Gate(400, "手机号格式不对（大陆 11 位）")
+        # 短信走 dev 时验证码会回显在响应里：那等于谁都能登录任意手机号的账号。
+        # 邮箱通道配好之后手机号本来也用不上，索性直接关掉这条路，
+        # 而不是留一个"只有内测知道怎么用"的暗门。
+        if SMS_PROVIDER == "dev" and not ALLOW_DEV_ECHO:
+            raise Gate(400, "手机号登录未开通，请用邮箱接收验证码。")
     elif kind == "email":
         pass                                   # account_kind 已校验
     else:
@@ -488,6 +582,9 @@ def api_auth(body: dict, ip: str) -> dict:
     account = raw.lower() if "@" in raw else raw
     code = str(body.get("code") or "").strip()
     dev_name = str(body.get("device_name") or "")[:40]
+    # 昵称只在**新号**时写入，老号不覆盖：登录接口不知道用户是不是有意改名，
+    # 每次登录都刷一遍会把他在别处改过的名字打回去。
+    nick = str(body.get("nickname") or "").strip()[:16]
     if account_kind(account) is None:
         raise Gate(400, "请输入正确的手机号或邮箱")
     if not code:
@@ -505,8 +602,8 @@ def api_auth(body: dict, ip: str) -> dict:
         c.execute("DELETE FROM sms_pending WHERE phone=?", (account,))
         u = c.execute("SELECT * FROM users WHERE phone=?", (account,)).fetchone()
         if u is None:
-            cur = c.execute("INSERT INTO users(phone,balance,created_at) VALUES(?,?,?)",
-                            (account, 0, now))
+            cur = c.execute("INSERT INTO users(phone,balance,nickname,created_at)"
+                            " VALUES(?,?,?,?)", (account, 0, nick, now))
             user_id = cur.lastrowid
             after = _ledger(c, user_id, "grant", FREE_GRANT, "新用户赠送")
             created = True
@@ -558,11 +655,22 @@ def api_me(row: sqlite3.Row) -> dict:
         devices = c.execute("SELECT id,name,last_seen,revoked FROM devices"
                             " WHERE user_id=? ORDER BY id DESC", (row["user_id"],)).fetchall()
     return {"ok": True, "phone_masked": _mask(row["phone"]),
+            "nickname": str(row["nickname"] or ""),
             "balance": row["balance"] / 1e6, "currency": "CNY",
             "used_month": used / 1e6,
             "devices": [{"id": d["id"], "name": d["name"],
                          "last_seen": d["last_seen"], "revoked": bool(d["revoked"])}
                         for d in devices]}
+
+
+def api_set_nickname(row: sqlite3.Row, body: dict) -> dict:
+    """改账号昵称。组内昵称是另一件事（group_members.alias），互不影响。"""
+    nick = str(body.get("nickname") or "").strip()[:16]
+    if not nick:
+        raise Gate(400, "昵称不能为空")
+    with db() as c:
+        c.execute("UPDATE users SET nickname=? WHERE id=?", (nick, row["user_id"]))
+    return {"ok": True, "nickname": nick}
 
 
 def api_redeem(row: sqlite3.Row, body: dict) -> dict:
@@ -652,9 +760,9 @@ def api_order_create(row: sqlite3.Row, body: dict) -> dict:
     elif PAY_PROVIDER == "demo":
         code_url = "demo://pending"              # admin/orders/pay 模拟到账
     else:
-        raise Gate(503, "在线支付尚未开通：服务端未配置支付通道。"
-                        "目前可先用兑换码充值，新用户赠送额度也可直接问答；"
-                        "开通微信支付需商户资料并配置 PAY_PROVIDER")
+        raise Gate(503, "在线支付与平台额度暂未开放。请在自己的"
+                        "「模型服务」里填 API Key 直连使用（例如 DeepSeek），"
+                        "或先用 App 的自带功能。")
     with db() as c:
         cur = c.execute("INSERT INTO orders(out_trade_no,user_id,amount,status,channel,"
                         "code_url,created_at) VALUES(?,?,?,?,?,?,?)",
@@ -1037,6 +1145,94 @@ class Handler(BaseHTTPRequestHandler):
                     "error": SERVICE_CLOSED_MESSAGE}, 400)
         return True
 
+    def _send_apk(self, name: str) -> None:
+        """加密端口上的安装包下载。
+
+        8088 那条明文端口是给「浏览器手动下」和旧版客户端兜底的；App 内部的
+        更新走这里——系统下载管理器认不了自签证书，但 Python 认（内置 CA）。
+        走加密端口还能顺手解决 networkSecurityConfig 禁明文那条限制。
+        """
+        base = os.path.basename(name)
+        if (not base or base != name or ".." in base
+                or not base.lower().endswith(".apk")):
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        f = APK_DIR / base
+        if not f.is_file():
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        size = f.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.android.package-archive")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            with f.open("rb") as fh:
+                while True:
+                    chunk = fh.read(256 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        self.close_connection = True
+
+    def _send_code(self, name: str) -> None:
+        """代码包下载。只认目录里真实存在的 .zip，不做路径拼接。"""
+        base = os.path.basename(name)
+        if not base or base != name or not base.endswith(".zip"):
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        f = CODEPACK_DIR / base
+        if not f.is_file():
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        data = f.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except BrokenPipeError:
+            pass
+        self.close_connection = True
+
+    def _send_content(self, name: str) -> None:
+        """按需下发的素材（字体 / 结局插画）。
+
+        只认素材目录里真实存在、且扩展名在白名单里的文件——不做路径拼接。
+        带上 ETag：客户端第二次带上 If-None-Match 就能拿 304，省掉重复的
+        1.5 MB 传输。
+        """
+        base = os.path.basename(name)
+        if not base or base != name or base.startswith("."):
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        mime = CONTENT_MIME.get(Path(base).suffix.lower())
+        f = CONTENT_DIR / base
+        if not mime or not f.is_file():
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        data = f.read_bytes()
+        etag = '"%s"' % hashlib.sha256(data).hexdigest()[:16]
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.end_headers()
+            self.close_connection = True
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "public, max-age=604800")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except BrokenPipeError:
+            pass
+        self.close_connection = True
+
     def _json(self, obj, code: int = 200) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -1102,7 +1298,28 @@ class Handler(BaseHTTPRequestHandler):
                     channel = "email(dev)/sms:" + SMS_PROVIDER
                 return self._json({"ok": True, "model": UPSTREAM_MODEL,
                                    "sms": SMS_PROVIDER, "email": smtp_ready(),
-                                   "channel": channel, "service": "open"})
+                                   "channel": channel, "service": "open",
+                                   # 这两个字段是给部署自检看的：
+                                   # dev_echo=true 表示验证码明文回显（不能上公网），
+                                   # tls=true 表示这条连接已经是 HTTPS
+                                   "dev_echo": _dev_echo(),
+                                   "tls": bool(TLS_CERT),
+                                   # 平台额度/支付没开时是 false，客户端据此
+                                   # 只显示"自配 Key"
+                                   "ai_proxy": AI_PROXY,
+                                   "pay": PAY_PROVIDER != ""})
+            if self.path.split("?")[0] == "/v1/app/latest":
+                return self._json(api_app_latest())
+            if self.path.split("?")[0] == "/v1/code/latest":
+                return self._json(api_code_latest())
+            if self.path.split("?")[0].startswith("/v1/code/"):
+                return self._send_code(self.path.split("?")[0][len("/v1/code/"):])
+            if self.path.split("?")[0].startswith("/v1/apk/"):
+                return self._send_apk(self.path.split("?")[0][len("/v1/apk/"):])
+            if self.path.split("?")[0] == "/v1/content/index":
+                return self._json(api_content_index())
+            if self.path.split("?")[0].startswith("/v1/content/"):
+                return self._send_content(self.path.split("?")[0][len("/v1/content/"):])
             if self.path == "/v1/client/config":
                 # 公开接口：只回「App 该连哪」，不含任何密钥。App 校验为 https 后才采用。
                 return self._json({"ok": True,
@@ -1111,6 +1328,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "service": "closed" if SERVICE_CLOSED else "open",
                                    "source": ("server" if CLIENT_PLATFORM_BASE
                                               else "builtin")})
+            if self.path.split("?")[0].startswith("/v1/group"):
+                return self._groups("GET")
             if self.path == "/v1/me":
                 return self._json(api_me(_auth(self.headers)))
             if self.path == "/admin/accounts":
@@ -1150,6 +1369,8 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_body()
             ip = self.headers.get("X-Forwarded-For", "").split(",")[0].strip() \
                 or self.client_address[0]
+            if self.path.split("?")[0].startswith("/v1/group"):
+                return self._groups("POST", body)
             if self.path == "/v1/sms/send":
                 return self._json(api_sms_send(body, ip))
             if self.path == "/v1/auth":
@@ -1161,6 +1382,8 @@ class Handler(BaseHTTPRequestHandler):
                 except Gate:
                     row = None
                 return self._json(api_device(row, body))
+            if self.path == "/v1/me/nickname":
+                return self._json(api_set_nickname(_auth(self.headers), body))
             if self.path == "/v1/redeem":
                 return self._json(api_redeem(_auth(self.headers), body))
             if self.path == "/v1/orders":
@@ -1170,6 +1393,12 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/v1/wechat/notify":
                 return self._json(api_wechat_notify(body, self.headers))
             if self.path == "/v1/chat/completions":
+                if not AI_PROXY:
+                    return self._json({
+                        "ok": False,
+                        "error": "平台额度未开放。请在 App 右上角 ⚙「模型服务」里"
+                                 "填自己的 API Key（例如 DeepSeek），直连使用。",
+                        "code": "proxy_disabled"}, 503)
                 row = _auth(self.headers)
                 return api_chat(row, body, self)   # 流式时直接写完响应
             if self.path == "/admin/codes":
@@ -1201,6 +1430,37 @@ class Handler(BaseHTTPRequestHandler):
             if not self.headers_sent():
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
 
+    def do_PATCH(self) -> None:  # noqa: N802
+        try:
+            if self._service_closed():
+                return
+            body = self._read_body()
+            if self.path.split("?")[0].startswith("/v1/group"):
+                return self._groups("PATCH", body)
+            raise Gate(404, "没有这个接口")
+        except Gate as e:
+            self._json({"ok": False, "error": e.message}, e.code)
+
+    def _groups(self, method: str, body: dict | None = None) -> None:
+        """组接口统一入口。鉴权仍走 _auth，不另建一套令牌。
+
+        `/v1/group/{id}/run/*` 是远征，走另一个模块——它和群组是两件事，
+        但共用同一个库。分流放在这里而不是丢给 groups 再 404 兜底，
+        是因为「404 之后重试」会让每次远征请求都白跑一遍路由。
+        """
+        if group_api is None:
+            raise Gate(503, f"组功能未启用（{_GROUPS_IMPORT_ERROR}）")
+        path = self.path.split("?")[0]
+        if re.search(r"/v1/group/\d+/run(/|$)", path):
+            if expedition_api is None:
+                raise Gate(503, f"远征未启用（{_EXPEDITION_IMPORT_ERROR}）")
+            payload, code = expedition_api.handle(method, self.path, self.headers,
+                                                  body or {}, _auth)
+        else:
+            payload, code = group_api.handle(method, self.path, self.headers,
+                                             body or {}, _auth)
+        self._json(payload, code)
+
     def headers_sent(self) -> bool:
         # 流式转发中途出错时响应头已经发出去，只能断开连接而不是再发一个 JSON
         return getattr(self, "_rc_headers_sent", False)
@@ -1213,17 +1473,225 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("  %s %s\n" % (self.address_string(), self.path.split("?")[0]))
 
 
+# ---------------------------------------------------------------- APK 分发
+def _apk_host() -> str:
+    """从已配置的公开地址里取主机名（APK 走明文端口，主机与业务同一个）。"""
+    base = (CLIENT_PLATFORM_BASE or "").strip().rstrip("/")
+    if "://" in base:
+        base = base.split("://", 1)[1]
+    return base.split("/")[0].split(":")[0]
+
+
+def api_content_index() -> dict:
+    """素材清单：名字、大小、sha256。客户端靠它判断本地缓存要不要更新。
+
+    sha256 只在第一次请求时算一遍然后缓存在内存里；素材是发版时才变的，
+    每次请求都读 1.7 MB 去算哈希，纯属浪费。
+    """
+    global _content_index
+    if _content_index is None:
+        idx = {}
+        if CONTENT_DIR.is_dir():
+            for f in sorted(CONTENT_DIR.iterdir()):
+                if not f.is_file():
+                    continue
+                mime = CONTENT_MIME.get(f.suffix.lower())
+                if not mime:
+                    continue
+                data = f.read_bytes()
+                idx[f.name] = {"size": len(data),
+                               "sha256": hashlib.sha256(data).hexdigest(),
+                               "mime": mime}
+        _content_index = idx
+    return {"ok": True, "files": [dict(name=k, **v) for k, v in _content_index.items()]}
+
+
+def api_code_latest() -> dict:
+    """最新代码包的元数据。没发布过就 ok=False，客户端按「没有更新」处理。"""
+    meta_path = CODEPACK_DIR / "latest.json"
+    if not meta_path.is_file():
+        return {"ok": False, "error": "还没有发布过代码包"}
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as e:      # noqa: BLE001
+        return {"ok": False, "error": f"latest.json 读不出来：{type(e).__name__}"}
+    fname = str(meta.get("file") or "")
+    if not fname or not (CODEPACK_DIR / fname).is_file():
+        return {"ok": False, "error": "代码包文件不存在"}
+    return {"ok": True,
+            "version": str(meta.get("version") or ""),
+            "file": fname,
+            "size": int(meta.get("size") or 0),
+            "sha256": str(meta.get("sha256") or ""),
+            "notes": str(meta.get("notes") or "")[:400],
+            "published": str(meta.get("published") or ""),
+            # 部分包（只含几个模块）也允许发布，但客户端要按不同标准校验：
+            # 整包必须有 appapi.py，部分包只要求「至少一个模块」。
+            "partial": bool(meta.get("partial")),
+            # 客户端据此判断「这个包能不能装在我这个 APK 上」
+            "base_version": str(meta.get("base_version") or ""),
+            # 走加密端口：下载是 Python 干的，它信任内置那张证书。
+            # 不像 APK 那样受系统下载管理器限制。
+            "url": f"/v1/code/{fname}"}
+
+
+def api_app_latest() -> dict:
+    """最新安装包的元数据。没发布过就 ok=False，客户端按「不提示」处理。
+
+    `url` 指向明文端口：手机端用系统下载管理器，不认自签证书。
+    `sha256` 是给下载后核对用的（脚本发布时算好写进 latest.json）。
+    """
+    meta_path = APK_DIR / "latest.json"
+    if not meta_path.is_file():
+        return {"ok": False, "error": "还没有发布过安装包"}
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"latest.json 读不出来：{type(e).__name__}"}
+    fname = str(meta.get("file") or "")
+    if not fname or not (APK_DIR / fname).is_file():
+        return {"ok": False, "error": "安装包文件不存在"}
+    url = (f"http://{_apk_host()}:{APK_PORT}/apk/{fname}" if APK_PORT else "")
+    return {"ok": True,
+            # 加密地址：App 内部更新走这条（系统下载管理器不认自签证书，
+            # 明文又会被 networkSecurityConfig 拦，所以只能 Python + TLS）
+            "url_tls": f"/v1/apk/{fname}",
+            "version": str(meta.get("version") or ""),
+            "version_code": int(meta.get("version_code") or 0),
+            "file": fname,
+            "url": url,
+            "size": int(meta.get("size") or 0),
+            "sha256": str(meta.get("sha256") or ""),
+            "notes": str(meta.get("notes") or "")[:900],
+            "published": str(meta.get("published") or "")}
+
+
+class ApkHandler(BaseHTTPRequestHandler):
+    """只读、只认 /apk/<名字>.apk。没有目录列表、没有别的路径。"""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):        # 别把每个字节都写进日志
+        pass
+
+    def _send(self, code: int, body: bytes, ctype: str = "text/plain; charset=utf-8"):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+        self.close_connection = True
+
+    def do_HEAD(self):
+        self.do_GET()
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if not path.startswith("/apk/"):
+            return self._send(404, b"not found")
+        name = path[len("/apk/"):]
+        if (not name or "/" in name or "\\" in name or ".." in name
+                or not name.lower().endswith(".apk")):
+            return self._send(404, b"not found")
+        f = APK_DIR / name
+        if not f.is_file():
+            return self._send(404, b"not found")
+        size = f.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.android.package-archive")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if self.command == "HEAD":
+            self.close_connection = True
+            return
+        try:
+            with f.open("rb") as fh:
+                while True:
+                    chunk = fh.read(256 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        self.close_connection = True
+
+
+def _start_apk_server() -> ThreadingHTTPServer:
+    srv = ThreadingHTTPServer(("0.0.0.0", APK_PORT), ApkHandler)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def _dev_echo() -> bool:
+    """邮箱验证码是否会明文回显（没配 SMTP 就会）。
+
+    短信 dev 模式不在这里算——那条路已经在 send 里直接关掉了（400），
+    不存在回显。把两者混在一起会让"只配了邮箱"的正常部署被护栏挡在门外，
+    而真正危险的那条路反而没关。
+    """
+    return not smtp_ready()
+
+
+def _loopback_bind() -> bool:
+    return HOST in ("127.0.0.1", "localhost", "::1")
+
+
+def _tls_context():
+    """自签证书 + IP SAN 的服务器上下文。只在 RC_TLS_CERT 配了时用。"""
+    import ssl
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(TLS_CERT, TLS_KEY or None)
+    return ctx
+
+
 def main() -> int:
+    # 先拦最危险的一种启动方式：绑在公网、验证码却明文回显。那样等于
+    # 把「登录任意账号」公布在互联网上，一条 curl 就能复现。
+    if _dev_echo() and not _loopback_bind() and not ALLOW_DEV_ECHO:
+        print(f"× 拒绝启动：邮箱验证码会明文回显，而服务绑在 {HOST}:{PORT}。")
+        print("  任何拿到地址的人都能登录任意账号，读到他们小组的数据。")
+        print("  修法：配 SMTP_HOST / SMTP_USER / SMTP_PASS（QQ 邮箱授权码，免费）")
+        print("  只在内网联调、且明确接受风险时：RC_ALLOW_DEV_ECHO=1")
+        return 2
     init_db()
+    if group_api is not None:
+        group_api.init_db()
+    if expedition_api is not None:
+        expedition_api.init_db()
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     srv.daemon_threads = True
-    print(f"√ RunnerCoach 网关 http://{HOST}:{PORT}")
+    if TLS_CERT:
+        try:
+            srv.socket = _tls_context().wrap_socket(srv.socket, server_side=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"× TLS 起不来（证书/私钥不匹配，或权限不足）：{type(e).__name__}: {e}")
+            return 2
+    scheme = "https" if TLS_CERT else "http"
+    print(f"√ RunnerCoach 网关 {scheme}://{HOST}:{PORT}")
+    if APK_PORT:
+        try:
+            _start_apk_server()
+            print(f"  安装包下载 http://{HOST}:{APK_PORT}/apk/  （明文，只读）")
+        except OSError as e:
+            print(f"  ！安装包端口 {APK_PORT} 起不来：{e}")
     print(f"  上游 {UPSTREAM_BASE} · 模型 {UPSTREAM_MODEL} · 加价 {MARGIN}×")
     if smtp_ready():
         print(f"  邮箱验证码 {SMTP_USER} → {SMTP_HOST}:{SMTP_PORT}")
     else:
         print("  邮箱验证码 未配置 SMTP（开发模式：验证码回显）")
-    print(f"  短信通道 {SMS_PROVIDER}{'（开发模式：验证码回显，上线前务必切换）' if SMS_PROVIDER == 'dev' else ''}")
+    # 短信走 dev 时手机号通道是关的（见 /v1/sms/send），别再打印"验证码回显"
+    # ——那句话现在不成立，会让人以为可以拿手机号登录。
+    if SMS_PROVIDER == "dev":
+        print("  手机号登录 关闭（SMS_PROVIDER=dev，用邮箱登录）")
+    else:
+        print(f"  短信通道 {SMS_PROVIDER}")
     print(f"  管理 {'已启用（ADMIN_TOKEN 已配置）' if ADMIN_TOKEN else '未配置 ADMIN_TOKEN，管理接口关闭'}")
     print(f"  数据库 {DB_PATH}")
     try:

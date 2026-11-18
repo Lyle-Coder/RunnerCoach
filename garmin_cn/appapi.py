@@ -162,14 +162,15 @@ def _today(store: Store) -> dict:
 # 两边都不用做类型映射，嵌套结构也不会丢。
 _API = {
     "env_info", "status", "login", "submit_mfa", "sync", "sync_range",
-    "dashboard", "card_html", "act_card_html", "runs", "activities", "days_index",
+    "dashboard", "card_html", "act_card_html", "expedition_card_html",
+    "runs", "activities", "days_index",
     "history_stats", "backfill_next",
     "plan", "plan_week", "plan_save", "plan_save_week", "plan_clear",
     "plan_overrides", "plan_generate", "plan_draft", "plan_confirm",
     "plan_discard", "plan_rules", "plan_rules_set",
     "plan_renew", "plan_push", "plan_push_clear", "plan_push_info", "plan_target",
     "set_amap_key", "start_server", "recent", "read_html",
-    "db_export", "db_import", "diag_text",
+    "db_export", "db_import", "diag_text", "diag_clear", "apk_fetch",
     "motion_html", "motion_status", "motion_cleanup", "motion_audio",
     "clips_list", "clips_add", "clips_remove", "clips_reprobe",
     "clips_remove_many", "clips_update",
@@ -2785,6 +2786,45 @@ def act_card_html(activity_id: str, title: str | None = None,
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
+def expedition_card_html(gid: int = 0) -> dict:
+    """赛季结算分享图：出 1080 宽 HTML，App 的离屏 WebView 截成 1080×1920。
+
+    和活动图走同一条出图链路（契约见 `exportspec.py`），只是内容不同：
+    这张图不带任何 GPS、不带昵称、不带别人的名字——只写「一队人这一季走到了
+    哪里」。分享出去最多暴露「我参加了一个跑步小组」，不会暴露住址或谁跑得
+    多谁跑得少（榜单才看得到那种东西，这张图刻意没有）。
+
+    没结束的赛季**拒绝出图**：那时候没有结局，出出来的是一张空壳，
+    而「分享一张没有结论的图」比不能分享更尴尬。
+    """
+    try:
+        from . import group as G
+        from . import runcard as RC
+
+        gid = int(gid or 0)
+        if not gid:
+            items = (G.groups() or {}).get("groups") or []
+            gid = int(items[0]["id"]) if items else 0
+        if not gid:
+            return {"ok": False, "error": "还没有加入任何小组"}
+        d = G.run_outcome(gid)
+        if not d.get("ok"):
+            return {"ok": False, "error": d.get("error") or "拿不到赛季结果"}
+        if not d.get("ended"):
+            return {"ok": False, "error": "这一季还没结束，先走到终点"}
+
+        html = RC.build_html(d)
+        out = OUT / f"run-share-{gid}.html"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(html, encoding="utf-8")
+        return {"ok": True, "html": str(out), "ending": d.get("ending"),
+                "title": (d.get("ending_detail") or {}).get("title") or "",
+                "width": RC.W, "height": RC.H,
+                **export_spec(RC.BG)}
+    except Exception as e:  # noqa: BLE001 - 出图失败要让界面能说话
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 def set_amap_key(key: str = "") -> dict:
     """保存高德 Web 服务 Key（只落本机 `data/amap.json`，0600，不上传）。
 
@@ -2936,7 +2976,7 @@ def motion_html(activity_id: str, fps: int = 24, duration: int = 30,
         detail = dict(detail)
         track_trim, _ = PV.mask_track(detail.get("track") or [], mode)
         if len(track_trim) < 2:
-            return {"ok": False, "error": "这个脱敏档位下没有可用的轨迹"}
+            return {"ok": False, "error": "按所选方式处理后，没有可用于回放的轨迹"}
         detail["track"] = track_trim
         # 轨迹被裁过，旧时间轴不能再用；缓存里也没有带时间的原始折线，
         # 所以统一按「累计里程」把 track 与 1Hz 序列对齐后现场合成一条。
@@ -3842,13 +3882,158 @@ def check_update() -> dict:
 
 
 def diag_text(lines: int = 200) -> dict:
-    """最近若干条异常，给「我的 → 诊断日志」弹窗用。"""
+    """最近若干条异常，给「我的 → 诊断日志」弹窗用。
+
+    开头几行是「现在跑的是哪份代码」：版本、代码包有没有挂上、挂的是哪一版。
+    代码包是覆盖式的，出问题时最先要分清的就是「这是包里的代码还是下发的那份」，
+    否则同一个 bug 在两个版本上表现不同，排查会绕很远。
+    """
+    from . import __version__ as VER
     from . import diag
 
+    head = [f"RunnerCoach {VER}"]
+    # 连的是哪个服务器：换过 IP、或者用户手填了地址时，这一行是第一现场。
+    try:
+        from . import llm
+        head.append(f"服务端 {llm.load_config().get('platform_base') or '（未配置）'}")
+    except Exception:      # noqa: BLE001
+        pass
+    try:
+        from . import codepack
+        st = codepack.status()
+        if st.get("applied"):
+            _b = st.get("base_version") or ""
+            head.append(f"代码包 {st['applied']}（已挂载"
+                        + (f"，适用 {_b}" if _b else "，未标注适用版本") + "）")
+        elif st.get("pending"):
+            head.append(f"代码包 未挂载（已下载 {st['pending']}，重启后生效）")
+        else:
+            head.append(f"代码包 未使用（{st.get('note') or '没有代码包'}）")
+    except Exception as e:      # noqa: BLE001 - 老包没有这个模块
+        head.append(f"代码包 不可用（{type(e).__name__}）")
+    try:
+        # 发布验证用的探针：只有「代码包真的接管了导入」才 import 得到
+        from . import _packprobe
+        head.append(f"包外代码 {getattr(_packprobe, 'VERSION', '?')}")
+    except Exception:           # noqa: BLE001
+        pass
     txt = diag.read_text(lines)
     return {"ok": True,
-            "text": txt or "（还没有异常记录）",
+            "text": "\n".join(head) + "\n\n" + (txt or "（还没有异常记录）"),
             "path": str(diag.log_path())}
+
+
+def diag_clear() -> dict:
+    """清空诊断日志（「我的 → 诊断日志」里的那个按钮）。"""
+    from . import diag
+
+    r = diag.clear()
+    r["path"] = str(diag.log_path())
+    return r
+
+
+UPDATES = HOME / "updates"
+APK_MAX_BYTES = 200 * 1024 * 1024       # 200 MB 上限，防止被喂一个巨大的文件
+
+
+def apk_fetch(url: str = "", sha256: str = "", name: str = "") -> dict:
+    """把更新安装包下载到 HOME/updates/，返回本地路径给 Kotlin 去安装。
+
+    为什么不用系统下载管理器
+    ------------------------
+    它跑在系统进程里，**只认系统根证书**，我们这张自签证书握手直接失败；
+    而退回明文 http 又会被 networkSecurityConfig 拦住（targetSdk 34 默认禁
+    明文，这条策略同样覆盖 DownloadManager），表现就是任务创建后立刻失败、
+    0 字节——用户看到的就是「下载失败 0.00 B」。
+
+    Python 这条链路已经在用了（代码包就走它），所以安装包也走它：
+    HTTPS + 内置证书 + sha256 校验。额外好处是**不用再开着 8088 明文端口**。
+
+    参数给空就按「用已配置的服务器 + 最新版本」推出来，方便手动调用。
+    """
+    import hashlib
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    from . import __version__ as _VER
+    from . import llm, tlstrust
+
+    tlstrust.install()
+
+    if not url:
+        # 不给 url 就自己查一次最新版本（手动触发时用）
+        from . import update
+        r = update.check(current=_VER)
+        if not r.get("ok") or not r.get("newer"):
+            return {"ok": False, "error": "已经是最新版本"}
+        url = str(r.get("url_tls") or r.get("url") or "")
+        sha256 = str(r.get("sha256") or sha256)
+        name = str(r.get("apk") or name)
+
+    # 只走 https：明文既过不了策略，也没必要
+    if not url.startswith("https://") or "://" not in url:
+        return {"ok": False, "error": f"安装包地址必须是 https（收到 {url[:40]}）"}
+
+    base = os.path.basename(urllib.parse.urlsplit(url).path) or "RunnerCoach.apk"
+    fname = os.path.basename(name) if name else base
+    if not fname.lower().endswith(".apk") or "/" in fname or "\\" in fname:
+        return {"ok": False, "error": "安装包文件名不合法"}
+
+    UPDATES.mkdir(parents=True, exist_ok=True)
+    dest = UPDATES / fname
+    part = dest.with_suffix(dest.suffix + ".part")
+
+    # 已经下过并且校验通过：直接给路径，不重复下 21 MB
+    if dest.is_file() and dest.stat().st_size > 0:
+        if not sha256:
+            return {"ok": True, "path": str(dest), "size": dest.stat().st_size,
+                    "sha256": "", "reused": True}
+        h = hashlib.sha256(dest.read_bytes()).hexdigest()
+        if h == sha256:
+            return {"ok": True, "path": str(dest), "size": dest.stat().st_size,
+                    "sha256": h, "reused": True}
+
+    req = urllib.request.Request(url, headers={"User-Agent": f"RunnerCoach/{_VER}"})
+    h = hashlib.sha256()
+    got = 0
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r, open(part, "wb") as f:
+            while True:
+                chunk = r.read(256 * 1024)
+                if not chunk:
+                    break
+                got += len(chunk)
+                if got > APK_MAX_BYTES:
+                    raise ValueError(f"安装包超过 {APK_MAX_BYTES // 1048576} MB，已中止")
+                h.update(chunk)
+                f.write(chunk)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        try:
+            part.unlink()
+        except OSError:
+            pass
+        return {"ok": False, "error": f"下载失败：{type(e).__name__}: {e}"}
+
+    digest = h.hexdigest()
+    if sha256 and digest != sha256:
+        try:
+            part.unlink()
+        except OSError:
+            pass
+        return {"ok": False,
+                "error": f"校验不通过（拿到 {digest[:12]}…，应为 {sha256[:12]}…）"}
+    if got < 1024:
+        try:
+            part.unlink()
+        except OSError:
+            pass
+        return {"ok": False, "error": f"下载到的文件太小（{got} 字节）"}
+
+    # 先写 part 再改名：中途失败不会留下一个「看起来完整」的包
+    part.replace(dest)
+    return {"ok": True, "path": str(dest), "size": got,
+            "sha256": digest, "reused": False}
 
 
 def read_html(path: str) -> dict:

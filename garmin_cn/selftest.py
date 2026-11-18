@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import inspect
 import io
 import json
 import os
@@ -59,6 +60,10 @@ OUT = ROOT / "output"
 def run() -> int:
     """跑完整自检，返回进程退出码（0 = 全过）。"""
     """不联网的自检：解析、指标、渲染全链路。"""
+    # 关掉素材下载：自检必须离线，也不该在仓库目录里造下载缓存。
+    # 放在第一行——后面任何一次页面渲染都可能去补那 1.7 MB 素材。
+    from garmin_cn import contentpack as _CPK
+    _CPK.ENABLED = False
     from garmin_cn.sync import parse_activity, parse_hrv, parse_sleep
 
     assert parse_hrv({"hrvSummary": {"lastNightAvg": 62, "weeklyAvg": 55, "status": "BALANCED"}})["hrv_night"] == 62
@@ -131,7 +136,7 @@ def run() -> int:
     import inspect as _inspect
     from garmin_cn import ui as _U
     _me_src = _inspect.getsource(_U.me_page)
-    assert 'm_ok = "已存凭据"' in _me_src and 'h_ok = "已存凭据"' in _me_src, \
+    assert 'm_ok = "已保存登录信息"' in _me_src and 'h_ok = "已保存登录信息"' in _me_src, \
         "体重行还写着「已登录」"
 
     # 浏览器托管登录：Cookie 过滤 / 会话判定是纯函数，改坏了登录会静默失败。
@@ -467,7 +472,7 @@ def run() -> int:
     from garmin_cn import ui as U
 
     idx = HW.index_section(U.coverage())
-    assert "/view?date=" in idx and "日汇总覆盖" in idx
+    assert "/view?date=" in idx and "每日数据" in idx
     hp = HW.history_page({"type": ["run"]})
     assert "page-head" in hp and 'name="start"' in hp
     assert "data-aid=" in hp and "GC.activity" in hp
@@ -666,6 +671,8 @@ def run() -> int:
     from garmin_cn import contentguard as CG
     from garmin_cn import planedit as PE
     from garmin_cn import plangen as PG
+    from garmin_cn import group as GG, groupui as GU
+    from garmin_cn import runsui as RU
     from garmin_cn import planpush as PP
 
     _pdir = Path(tempfile.mkdtemp())
@@ -785,7 +792,7 @@ def run() -> int:
     assert _html.count('name="d') >= 7, "编辑页没渲染出七天的字段"
     assert 'action="/__plan/save"' in _html, "编辑页没有保存表单"
     assert 'name="race_deload"' in _html, "编辑页没有「按赛事减量」开关"
-    assert "已经过去" in _html, "过去的日子没有说明，改动会被静默丢掉"
+    assert "日期已过" in _html, "过去的日子没有说明，改动会被静默丢掉"
 
     _draft = {"ok": True, "monday": "2026-11-16", "week_km": 30, "days": 3,
               "factor": 0.7, "reason": ["按历史跑量", "赛前减量"],
@@ -840,6 +847,690 @@ def run() -> int:
     PG.discard(_dd)
     assert PG.load_draft(_dd) is None, "放弃草稿后文件还在，下次确认会误用"
     shutil.rmtree(_dd.parent, ignore_errors=True)
+
+    # ---------------- 训练小组 ----------------
+    # 日汇总口径：只有跑步类算里程。骑行 40 km 不能进跑团榜，
+    # 但「次数」要算全部运动——不然骑车通勤的人次数永远是 0。
+    _gdir = Path(tempfile.mkdtemp())
+    from garmin_cn.store import Store as _GStore
+
+    # 必须把 HOME 指到空目录：build_days 会读 data/plan.json 判「当天有没有课」，
+    # 用真实 HOME 会把本机的计划混进测试数据（第一次跑就是这么翻的）。
+    _old_home = os.environ.get("GARMIN_HOME")
+    os.environ["GARMIN_HOME"] = str(_gdir)
+    _gs = _GStore(_gdir / "g.db")
+    try:
+        for _d, _t, _m, _sec in (
+                ("2026-11-16", "running", 8000, 2700),
+                ("2026-11-16", "cycling", 40000, 5400),
+                ("2026-11-17", "trail_running", 12000, 4800),
+                ("2026-11-18", "strength_training", 0, 2700)):
+            _gs.conn.execute(
+                "INSERT INTO activities(activity_id,date,type,distance_m,duration_s)"
+                " VALUES(?,?,?,?,?)", (f"{_d}-{_t}", _d, _t, _m, _sec))
+        _gs.conn.commit()
+        _days = {d["date"]: d for d in GG.build_days(_gs, "2026-11-18", 7)}
+        assert _days["2026-11-16"]["distance_m"] == 8000, \
+            f"骑行混进了里程：{_days['2026-11-16']}"
+        assert _days["2026-11-16"]["acts"] == 2, "次数没算全部运动"
+        assert _days["2026-11-16"]["duration_s"] == 2700 + 5400, "时长应含全部运动"
+        assert _days["2026-11-17"]["distance_m"] == 12000, "越野跑应计入里程"
+        assert _days["2026-11-18"]["distance_m"] == 0, "力量课不该有里程"
+        # 没有活动的日子不凭空出现（不能把「没数据」当成「跑了 0」）
+        assert "2026-11-15" not in _days, "没活动的日期不该出现在上报里"
+        assert _days["2026-11-16"]["plan_done"] is None, \
+            "没有计划的日子 plan_done 应为 None，不能伪造成 False"
+
+        # 队列：同组只留最新一批；退避到上限后不再往后推
+        _box = GG.Outbox(_gs)
+        _box.put(3, {"days": [{"date": "2026-11-16"}]})
+        _box.put(3, {"days": [{"date": "2026-11-16"}, {"date": "2026-11-17"}]})
+        _rows = _box.pending(now=0)
+        assert len(_rows) == 1, f"同组应只有一批，实际 {len(_rows)}"
+        assert '"2026-11-17"' in _rows[0]["payload"], "队列没被最新一批覆盖"
+        assert _box.bump(3, 1) > 0, "第一次失败应退避"
+        assert _box.bump(3, GG.MAX_TRIES) == 0, "超过上限后应立刻可重试"
+        _box.drop(3)
+        assert not _box.pending(now=0), "清空后队列还有残留"
+    finally:
+        _gs.conn.close()
+        if _old_home is None:
+            os.environ.pop("GARMIN_HOME", None)
+        else:
+            os.environ["GARMIN_HOME"] = _old_home
+        shutil.rmtree(_gdir, ignore_errors=True)
+
+    # 账号页的页脚：默认那句「不上传任何第三方」在小组功能上是假的
+    _acc_html = GU.account_page("TOK123", "", "", "")
+    assert "TOK123" in _acc_html, "账号页没带页面令牌"
+    assert "只存在这台手机" in _acc_html, "账号页缺页脚说明"
+    assert "不上传任何第三方" not in _acc_html, "账号页仍在说不上传任何第三方"
+    _g_html = GU.groups_page("TOK123", "")
+    assert "去登录" in _g_html or "还没有加入小组" in _g_html, "小组页未登录分支不对"
+
+    # ---------------- 远征界面 ----------------
+    # 小旗必须落在**当前幕那一段**里。整季累计进度在队伍超额时会超过 100%，
+    # 如果拿它定位小旗，第二幕就会顶到最右端，看起来像这一季已经走完了。
+    _xs = [26 + (346 - 26) * i / 4 for i in range(5)]
+    _svg = RU.route_svg(["甲", "乙", "丙", "丁", "戊"], act=2, stage_frac=0.5)
+    _cx = float(re.search(r'<circle cx="([\d.]+)" cy="[\d.]+" r="5\.6"', _svg).group(1))
+    assert abs(_cx - (_xs[1] + _xs[2]) / 2) < 1.5, \
+        f"第二幕的小旗没落在第二段中间：cx={_cx}，应为 {(_xs[1] + _xs[2]) / 2}"
+    assert _cx < _xs[3], "第二幕的小旗跑到了后面几段"
+    # 第一幕在最左段，第四幕满进度才到最右
+    _svg1 = RU.route_svg(["甲", "乙", "丙", "丁", "戊"], act=1, stage_frac=0.0)
+    assert abs(float(re.search(r'<circle cx="([\d.]+)" cy="[\d.]+" r="5\.6"', _svg1).group(1))
+               - _xs[0]) < 1.5, "第一幕的小旗没在第一段起点"
+    _svg4 = RU.route_svg(["甲", "乙", "丙", "丁", "戊"], act=4, stage_frac=1.0)
+    assert abs(float(re.search(r'<circle cx="([\d.]+)" cy="[\d.]+" r="5\.6"', _svg4).group(1))
+               - _xs[4]) < 1.5, "第四幕满进度没到终点"
+    # 超额进度要夹住，不能画到画布外
+    _svgx = RU.route_svg(["甲", "乙", "丙", "丁", "戊"], act=4, stage_frac=3.0)
+    assert '<circle cx="346.0"' in _svgx, "进度超额时小旗没夹在终点"
+
+    # 地名缩写：五个站在 420 宽里排不下，五字的必然压住邻居
+    assert RU._short("采药人小屋") == "小屋", "五字地名没有缩写"
+    assert RU._short("老鹰嘴") == "老鹰嘴", "三字地名不该缩写"
+    assert RU._short("冰河") == "冰河", "两字地名不该缩写"
+
+    # 事件卡：试炼没有 options，必须渲染成两个按钮，而不是一张空卡
+    _trial = {"id": "x_trial", "type": "trial", "act": 1, "title": "渐加速五公里",
+              "text": "把烟袋收进怀里。", "quality": {"metric": "negative_split",
+                                                    "distance_km": 5},
+              "options": [], "chosen": "", "result": ""}
+    _th = RU.event_card(_trial, 0)
+    assert "跑完了" in _th and "没跑成" in _th, "试炼没渲染出上报按钮"
+    assert "渐加速" in _th, "试炼没显示要跑什么"
+    _trial2 = dict(_trial, chosen="success", result="最后两公里，谁也没掉队。")
+    _th2 = RU.event_card(_trial2, 0)
+    assert "跑完了" not in _th2 and "没掉队" in _th2, "已报的试炼还在催人跑"
+
+    # 试炼是「数据说了算」不是「自己说了算」：点之前就要说清楚会去核，
+    # 点完之后要能看出这次是核过、没核过、还是没跑成。三种说法不能混。
+    assert "核一遍" in _th and "只算一半" in _th, "试炼没说明会按记录核验"
+    assert "核过" not in _th, "还没报就先把结论写出来了"
+    _tv = RU.event_card(dict(_trial, chosen="ok", level="verified", result="对得上"), 0)
+    _tu = RU.event_card(dict(_trial, chosen="ok", level="unverified", result=""), 0)
+    _tfa = RU.event_card(dict(_trial, chosen="fail", level="failed", result=""), 0)
+    assert "核验通过" in _tv and "只算一半" not in _tv, "核验通过的卡没标出来"
+    assert "未核验" in _tu and "只算一半" in _tu, "未核验的卡没说明打折"
+    assert "没跑成" in _tfa and "核验通过" not in _tfa, "没跑成的卡写成通过了"
+    # 卡片的根节点必须还是 ecard：改样式时用了一个同名的局部变量，
+    # 结果 class 被覆盖成 "verified"，整张卡掉出面板变成裸文字。
+    for _x in (_th, _tv, _tu, _tfa):
+        assert _x.startswith('<div class="ecard'), "试炼卡丢了 ecard 外壳（会变成裸文字）"
+
+    # 证据只抽原始分圈（距离/用时/步频/心率/爬升），绝不带判定结论。
+    # 带结论等于没核验——客户端改一行就全过了。
+    from garmin_cn.store import Store as _St
+    _evd = Path(tempfile.mkdtemp())
+    _st = _St(_evd / "s.db")
+    _st.conn.execute("INSERT INTO activities(activity_id,date,type,distance_m,duration_s)"
+                     " VALUES(?,?,?,?,?)", ("a1", "2026-11-17", "running", 6000, 1800))
+    _st.conn.execute("INSERT INTO activities(activity_id,date,type,distance_m,duration_s)"
+                     " VALUES(?,?,?,?,?)", ("a2", "2026-11-17", "cycling", 30000, 3600))
+    _st.save_detail("a1", {"laps": [{"dist_m": 1000, "dur_s": 300, "cad": 178,
+                                     "hr_avg": 150, "ele_gain": 10}] * 6})
+    _e = GG.trial_evidence(_st, {"metric": "even_pace", "distance_km": 6},
+                           "2026-11-16", "2026-11-22")
+    assert len(_e.get("activities") or []) == 1, f"证据条数不对：{_e.keys()}"
+    assert _e["activities"][0]["laps"][0]["dur_s"] == 300, "分圈用时没抽出来"
+    assert "verdict" not in json.dumps(_e) and "level" not in json.dumps(_e), \
+        "证据里混进了判定结论"
+    # 骑车的里程不能算成跑的
+    assert all(x["distance_km"] < 10 for x in _e["activities"]), "骑行被当成跑步交了"
+    assert GG.trial_evidence(_st, {"distance_km": 6}, "2026-12-01", "2026-12-07") == {}, \
+        "没有活动的周不该编出证据"
+    _st.conn.close()
+    shutil.rmtree(_evd, ignore_errors=True)
+
+    # 空态：三种「打不开」要分开说。混成一句「远征还没开始」的话，
+    # 玩家不知道该去点哪儿——三种情况要办的事完全不同。
+    _e_login = RU.empty_page("login")
+    _e_group = RU.empty_page("nogroup")
+    _e_off = RU.empty_page("offline", "HTTP 500")
+    assert "先知道你是谁" in _e_login and "/account" in _e_login, "未登录空态没有去账号页"
+    assert "你还没有队" in _e_group and "/groups" in _e_group, "没组空态没有建组入口"
+    assert "路还没开出来" in _e_off and "重试" in _e_off, "连不上空态没有重试"
+    assert len({_e_login, _e_group, _e_off}) == 3, "三种空态渲染成了一样的"
+
+    _fork = {"id": "x_fork", "type": "story", "kind": "fork", "act": 1,
+             "title": "雪桥", "text": "溪面结了一层薄冰。", "chosen": "",
+             "options": [{"id": "cross", "label": "直接从冰上过",
+                          "brief": "快，冰要是薄就麻烦了", "time": 0},
+                         {"id": "detour", "label": "绕到上游窄处",
+                          "brief": "稳，多走一段", "time": 1}]}
+    _fh = RU.event_card(_fork, -1)
+    assert "这一刻要定" in _fh and "直接从冰上过" in _fh, "岔路卡缺标题或选项"
+    assert "慢 1 天" in _fh, "带时间成本的选项没标出代价"
+
+    # 数值绝不进页面：服务端不下发 effect，界面也不能自己写死哪个更划算。
+    # 一旦页面上能看到「+3 格」这类数，选择就退化成算术题。
+    assert "effect" not in _fh and "advance" not in _fh, "选项把数值写进了页面"
+
+    # 结算页：四个结局共用一套版式，变的是文案与脚印的去向
+    _oc = {"ok": True, "ended": True, "ending": "arrive",
+           "ending_detail": {"key": "arrive", "title": "抵达",
+                             "line": "五天，一炉火", "text": "（正文第一句）。"},
+           "team": 52.0, "morale": 7, "members": 3, "relic_count": 1,
+           "acts": [{"act": 1, "theme": "信任", "got": 13.0, "target": 12.0, "hit": True},
+                    {"act": 2, "theme": "代价", "got": 11.0, "target": 12.0, "hit": False},
+                    {"act": 3, "theme": "取舍", "got": 15.8, "target": 12.0, "hit": True},
+                    {"act": 4, "theme": "选择", "got": 15.8, "target": 12.0, "hit": True}]}
+    _oh = RU.outcome_page("TOK", _oc)
+    assert "抵达" in _oh and "（正文第一句）" in _oh, "结算页缺结局标题或正文"
+    assert _oh.count("走够") == 3 and _oh.count("没够") == 1, \
+        "四段的「走够/没够」和 got/target 对不上"
+    assert "0/0" not in _oh, "没结算的段被显示成了 0/0"
+
+    # 没结算过的幕要显示「没走到」，不能显示成「0/0 没够」——
+    # 那是「没走到」，不是「这一周没走够」，两者对玩家是两件事
+    _oc2 = dict(_oc, acts=[{"act": 1, "theme": "信任", "got": 13.0,
+                            "target": 12.0, "hit": True},
+                           {"act": 2, "theme": "代价", "got": 0.0,
+                            "target": 0.0, "hit": False}])
+    _oh2 = RU.outcome_page("TOK", _oc2)
+    assert "没走到" in _oh2 and "0/0" not in _oh2, "未结算的幕没显示成「没走到」"
+
+    # 结算页的主角是「谁走了多少」：局内数值（士气/旧日志）只能出现在页脚
+    # 那一行小字里。这一条挡的是「以后又把它加回四个大数字」。
+    _oc3 = dict(_oc, km=372.0, hidden=1)
+    _oc3["people"] = [
+        {"alias": "队友甲", "me": False, "km": 168.0, "days": 24, "runs": 24,
+         "badge": "这一段他走得最远", "badge_id": "km", "status": "moving"},
+        {"alias": "小林", "me": True, "km": 140.0, "days": 28, "runs": 28,
+         "badge": "一天没断", "badge_id": "full", "status": "moving"},
+        {"alias": "阿灰", "me": False, "km": 0.0, "days": 0, "runs": 0,
+         "badge": "", "badge_id": "", "status": "stranded"},
+    ]
+    _ohp = RU.outcome_page("TOK", _oc3)
+    assert "谁走了多少" in _ohp and "队友甲" in _ohp and "168.0" in _ohp, \
+        "结算页没列每个人的里程"
+    assert "一天没断" in _ohp and "这一段他走得最远" in _ohp, "闪光点没显示"
+    assert _ohp.count("没有记录") == 1, "没跑的人被写成了 0.0 km"
+    assert "最后没走出来" in _ohp, "受困的人没在名单里标出来"
+    assert "另有 1 人" in _ohp, "关掉共享的人没交代"
+    assert _ohp.count("士气") == 1, "士气出现了不止一次，又变回主角了"
+    assert "总行程" not in _ohp, "旧的四个大数字还在"
+    # 没拿到旧日志时不提它：它是藏起来的东西，写「旧日志 0/3」等于
+    # 替玩家宣布他错过了什么
+    _oc4 = dict(_oc3, relic_count=0)
+    assert "旧日志" not in RU.outcome_page("TOK", _oc4), "没拿到旧日志却提了它"
+    assert "旧日志 1/3" in _ohp, "拿到了旧日志却没写"
+    
+
+    # 结局的脚印图形：四种结局必须真的不一样，否则「同一片雪地、不同的
+    # 到达方式」这个说法就是空的
+    _svgs = {k: RU._ending_svg(k) for k in
+             ("arrive", "detour", "missing", "lost", "discoverer")}
+    assert len(set(_svgs.values())) == 5, "五个结局的插画有重复"
+    assert "C98B4B" in _svgs["arrive"] and "C98B4B" not in _svgs["lost"], \
+        "「没走完」的窗户不该是亮的"
+    assert _svgs["discoverer"].count("<rect") > 4, "隐藏结局没画出三本日志"
+
+    # 底图模式：有 `ending_scene_lit/dark` 两版就走「底图 + 矢量脚印」，
+    # 缺任何一张退回纯 SVG（半套底图会在某个结局上亮错灯，比没有更糟）。
+    _pd = Path(tempfile.mkdtemp())
+    _old_pd = RU.PLATE_DIR
+    try:
+        RU.PLATE_DIR = _pd          # 空目录：什么图都没有
+        assert RU._plates() == ("", ""), "没有底图时不该报出底图"
+        assert '<div class="escene">' not in RU._ending_scene("arrive"), \
+            "没有底图却走了底图分支"
+        (_pd / "ending_scene_lit.png").write_bytes(b"x")
+        assert RU._plates() == ("", ""), "只有亮窗版就不该启用（会亮错灯）"
+        (_pd / "ending_scene_dark.png").write_bytes(b"x")
+        RU.PLATE_DIR = _pd
+        assert all(RU._plates()), "两版底图都在却没启用"
+        _hit = RU._ending_scene("arrive")
+        _drk = RU._ending_scene("lost")
+        assert '<div class="escene">' in _hit and "ending_scene_lit" in _hit, \
+            "亮窗的结局没用亮窗底图"
+        assert '<div class="escene">' in _drk and "ending_scene_dark" in _drk, \
+            "熄灯的结局没用暗窗底图"
+        # 底下那层只能有脚印和道具：底图已经有天、地、屋、灯了
+        assert "<rect x=\"262\"" not in _hit and "circle" not in _hit.split('class="prints"')[1], \
+            "叠加层把夜空/小屋又画了一遍（会和底图叠影）"
+        # 亮雪上白脚印等于没画：底图模式下脚印要压深
+        assert "#8CA0BC" in _hit, "底图上的脚印还是白的，会看不见"
+        assert "#DCE7F5" in RU._ending_svg("arrive"), "纯 SVG 模式的脚印依旧是白的"
+        # 门口校准：换一张底图，门的位置就会变；脚印终点必须跟着走，
+        # 否则会画到墙里面去
+        bytes_before = RU._scene_props("arrive", on_plate=True)
+        (_pd / RU.CAL_FILE).write_text('{"door_x": 0.5, "door_y": 0.8}',
+                                       encoding="utf-8")
+        assert abs(RU._cal()["door_x"] - 0.5) < 1e-9, "校准文件没读进来"
+        assert bytes_before != RU._scene_props("arrive", on_plate=True), \
+            "改了门口位置，脚印却没跟着动"
+        (_pd / RU.CAL_FILE).write_text('{"door_x": 9, "door_y": "x"}',
+                                       encoding="utf-8")
+        assert RU._cal() == RU.CAL_DEFAULT, "越界的校准值没被丢掉（会画到画外）"
+    finally:
+        RU.PLATE_DIR = _old_pd
+        shutil.rmtree(_pd, ignore_errors=True)
+
+    # 每张结局自己的图（现在用的）：脚印和道具都在图里，不能再叠矢量层
+    _pd2 = Path(tempfile.mkdtemp())
+    _old2 = RU.PLATE_DIR
+    try:
+        RU.PLATE_DIR = _pd2
+        assert RU._ending_plate("arrive") == "", "没有图却报出图"
+        (_pd2 / "ending_arrive.jpg").write_bytes(b"x")
+        assert RU._ending_plate("arrive") == "/content/ending_arrive.jpg", \
+            "没认出每结局的图"
+        _own = RU._ending_scene("arrive")
+        assert "ending_arrive.jpg" in _own and 'class="prints"' not in _own, \
+            "每结局图模式下还叠了矢量脚印（成了两个人走过）"
+        assert RU._ending_scene("detour").startswith("<svg"), \
+            "这张没有图，应该退回纯 SVG"
+        assert RU._ending_plate("nope") == "", "不认识的结局键不该去拼文件名"
+    finally:
+        RU.PLATE_DIR = _old2
+        shutil.rmtree(_pd2, ignore_errors=True)
+
+    # 部署脚本必须是 LF：Windows 上写文件默认 CRLF，`set -eu\r` 在 Linux 上
+    # 会报 "Illegal option -"，而且只有真到服务器上才炸。这类问题不能靠记性。
+    for _sh in sorted((Path(__file__).resolve().parent.parent / "deploy").glob("*.sh")):
+        assert b"\r" not in _sh.read_bytes(), f"{_sh.name} 是 CRLF 行尾，Linux 上跑不了"
+
+    # 换服务器之后，老用户 config.json 里存着上一代地址（platform_served_base），
+    # 它优先于出厂内置地址。同步失败若也缓存 6 小时，用户就会被钉在死地址上，
+    # 表现是「装上新包还是连不上」且没有任何提示。成功 6 小时 / 失败 60 秒
+    # 这条差别必须守住，否则内测第一批人就会撞上。
+    from garmin_cn import llm as _LSS
+    _tmpcfg = Path(tempfile.mkdtemp()) / "llm_config.json"
+    _old_cfg = _LSS.CONFIG_PATH
+    _old_urlopen = _LSS.urllib.request.urlopen
+    _calls = {"n": 0}
+
+    def _boom(*_a, **_k):
+        _calls["n"] += 1
+        raise OSError("模拟断网")
+
+    try:
+        _LSS.CONFIG_PATH = _tmpcfg
+        _LSS.save_config(platform_auto=True, platform_served_base="https://old.example",
+                         platform_sync_at=int(time.time()) - 120, platform_sync_ok=False)
+        _LSS.urllib.request.urlopen = _boom
+        _LSS.sync_platform_config()      # 失败态隔了 120 秒：应该重试一次
+        assert _calls["n"] == 1, "同步失败后没有按 60 秒间隔重试"
+        _LSS.sync_platform_config()      # 刚失败过：60 秒内不该再打
+        assert _calls["n"] == 1, "失败后 60 秒内又重复请求，白白多等一个超时"
+        _c = _LSS.load_config()
+        assert _c.get("platform_sync_ok") is False, "同步失败却记成了成功"
+        assert _c.get("platform_served_base") == "https://old.example", \
+            "失败不该清掉下发值（那是上一次的真实答案）"
+        # 成功态：600 秒前同步过，仍应命中 6 小时缓存，不再发请求
+        _LSS.save_config(platform_sync_at=int(time.time()) - 600, platform_sync_ok=True)
+        _LSS.sync_platform_config()
+        assert _calls["n"] == 1, "成功态 600 秒就重问了（应缓存 6 小时）"
+    finally:
+        _LSS.urllib.request.urlopen = _old_urlopen
+        _LSS.CONFIG_PATH = _old_cfg
+        shutil.rmtree(_tmpcfg.parent, ignore_errors=True)
+
+    # 平台额度关闭时：界面只留"自配 Key"，不给一个点了必然报错的入口。
+    # 这是和服务端 AI_PROXY=off 配套的一半，改一处忘一处就会出现
+    # "能点、点了 503"的尴尬。
+    from garmin_cn import llm as _L, _buildcfg as _BC
+    _pc = _L.public_config()
+    assert _pc.get("platform_quota") is _BC.PLATFORM_QUOTA, \
+        "界面拿到的额度开关和构建配置不一致"
+    assert _BC.PLATFORM_QUOTA is False, "资质没办下来之前平台额度必须关闭"
+    assert _pc.get("mode") == "own", "额度关着时不该停在平台额度模式"
+    from garmin_cn import aiui as _U
+    assert 'id="modeSeg" style="display:none"' in _U.BODY, \
+        "设置页没把「平台额度」收起来"
+    assert "platform_quota" in _U.JS, "界面没读额度开关"
+
+    # 诊断日志：能清空，而且重复清不报错。清空是对「老噪音淹掉真问题」的
+    # 唯一解法——日志是 append-only 的，代码里删掉的日志行不会自己消失。
+    from garmin_cn import diag as _DG
+    from garmin_cn import appapi as _AA
+    _old_dpath = _DG.log_path
+    _dhome = Path(tempfile.mkdtemp())
+    _dlog = _dhome / "diag.log"
+    try:
+        _DG.log_path = lambda: _dlog
+        _DG.log_exc("test", "第一条")
+        assert _dlog.is_file() and "第一条" in _dlog.read_text(encoding="utf-8")
+        _r = _DG.clear()
+        assert _r.get("ok") and not _dlog.exists(), f"没清掉：{_r}"
+        _r2 = _DG.clear()
+        assert _r2.get("ok") and _r2.get("bytes") == 0, f"重复清空报错：{_r2}"
+        assert "diag_clear" in _AA._API, "diag_clear 没进桥的白名单，Kotlin 调不到"
+    finally:
+        _DG.log_path = _old_dpath
+        shutil.rmtree(_dhome, ignore_errors=True)
+
+    # 应用内更新：安装包只能走 https，且只能是 .apk。
+    # 明文那条不是洁癖——targetSdk 34 下 networkSecurityConfig 会拦掉
+    # DownloadManager 的 http 请求（用户看到「下载失败 0.00 B」），而自签
+    # 证书下载管理器又不认，所以只能由 Python 走 TLS 下。这里守住入口。
+    _af = _AA.apk_fetch
+    _r5 = _af("http://39.106.174.153:8088/apk/x.apk")
+    assert _r5.get("ok") is False and "https" in str(_r5.get("error")), \
+        f"明文安装包地址没被拒：{_r5}"
+    _r6 = _af("https://127.0.0.1:1/x.exe")
+    assert _r6.get("ok") is False, f"非 apk 文件被接受了：{_r6}"
+
+    # 代码包（覆盖式更新）：没有包时必须是 no-op，有包时要把目录挂到
+    # garmin_cn.__path__ 最前面，而且用完能还原——这个 Package 对象整个进程
+    # 只有一份，测试改坏了后面所有页面都会从临时目录导入。
+    import garmin_cn as _pkg
+    from garmin_cn import codepack as _CPK2
+    _old_root, _old_ptr, _old_path = _CPK2.ROOT, _CPK2.POINTER, list(_pkg.__path__)
+    _cphome = Path(tempfile.mkdtemp())
+    _old_en = _CPK2.ENABLED
+    try:
+        # apply() 只看本地目录、不联网，所以这里可以开；refresh() 才是网络的。
+        # 关掉的是「整块停用」，测试里要验的正是挂载本身。
+        _CPK2.ENABLED = True
+        _CPK2.ROOT = _cphome / "code"
+        _CPK2.POINTER = _CPK2.ROOT / "current"
+        _r = _CPK2.apply()
+        assert _r.get("ok") and not _r.get("applied"), f"没有包时不该挂载：{_r}"
+
+        from garmin_cn import __version__ as _CURVER
+
+        def _mkpack(ver: str, base: str, modules=("appapi.py",)):
+            d = _CPK2.ROOT / ver / "garmin_cn"
+            d.mkdir(parents=True, exist_ok=True)
+            for m in modules:
+                (d / m).write_text("X = 1\n", encoding="utf-8")
+            (d.parent / "meta.json").write_text(
+                json.dumps({"version": ver, "base_version": base}), encoding="utf-8")
+            return d
+
+        # ① 基版本对得上 → 挂载，且在 __path__ 最前面
+        _ver = "9.9.9-1"
+        _d = _mkpack(_ver, _CURVER)
+        _CPK2.POINTER.write_text(_ver, encoding="utf-8")
+        _r = _CPK2.apply()
+        assert _r.get("applied") == _ver, f"没挂上：{_r}"
+        assert str(_pkg.__path__[0]) == str(_d), "挂载位置不在最前面（会被包内模块盖掉）"
+        assert _CPK2.status().get("applied") == _ver, "status 没反映当前版本"
+
+        # ② 基版本对不上（APK 升过版）→ 必须让位并清指针。
+        #    真机上踩过：1.5.1-1 盖住 1.5.2，apk_fetch 直接消失，
+        #    应用内更新报「未知操作」。
+        _pkg.__path__ = list(_old_path)
+        _bad = "0.0.0-old"
+        _mkpack(_bad, "0.0.0")
+        _CPK2.POINTER.write_text(_bad, encoding="utf-8")
+        _r = _CPK2.apply()
+        assert not _r.get("applied"), f"版本不符的包被挂上了：{_r}"
+        assert not _CPK2.POINTER.exists(), "版本不符时没清指针，下次启动还会去挂"
+
+        # ③ 没有 base_version 的老包 → 也拒绝（说不清适用版本就别装）
+        _mkpack(_ver, "")
+        _CPK2.POINTER.write_text(_ver, encoding="utf-8")
+        _r = _CPK2.apply()
+        assert not _r.get("applied"), f"没标适用版本的包被挂上了：{_r}"
+
+        # ④ 基版本对但目录里没有 appapi.py = 坏包，不能挂
+        #    （用独立版本号，否则会复用到 ① 建好的目录、appapi.py 还在）
+        _empty = "9.9.9-empty"
+        _mkpack(_empty, _CURVER, modules=())
+        _CPK2.POINTER.write_text(_empty, encoding="utf-8")
+        _pkg.__path__ = list(_old_path)          # 先还原再验「坏包不挂」
+        _r = _CPK2.apply()
+        assert not _r.get("applied"), f"坏包被挂上了：{_r}"
+    finally:
+        _pkg.__path__ = list(_old_path)
+        _CPK2.ROOT, _CPK2.POINTER = _old_root, _old_ptr
+        _CPK2.ENABLED = _old_en
+        shutil.rmtree(_cphome, ignore_errors=True)
+
+    # 代码包会让**所有模块**都从下载目录加载，`__file__` 全面偏移。
+    # 两类东西的解法不同，两条都必须守住：
+    #   包内资源（证书/条款/插画）→ 顺 __path__ 去真包里找
+    #   用户数据（缓存/手册/记录）→ 跟 GARMIN_HOME
+    # 1) 模拟「证书在自己旁边找不到」：这正是下载目录的处境。
+    from garmin_cn import tlstrust as _T3
+    _old_ca3 = _T3.CA_PATH
+    _caempty = Path(tempfile.mkdtemp())
+    try:
+        _T3.CA_PATH = _caempty / "content" / "server-ca.pem"
+        _T3.reset()
+        _r3 = _T3.install()
+        assert _r3.get("ok") is True, (
+            f"证书路径偏到下载目录后就装不上了（{_r3}）——"
+            "所有 HTTPS 会 CERTIFICATE_VERIFY_FAILED")
+        assert "server-ca.pem" in str(_r3.get("path") or ""), str(_r3)
+    finally:
+        _T3.CA_PATH = _old_ca3
+        _T3.reset()          # 真的还原 ssl，别让后面的 HTTPS 带着死路径
+        shutil.rmtree(_caempty, ignore_errors=True)
+
+    # 1b) 最阴的一种组合：**新代码 + 旧装载器**。代码包只换业务模块，
+    #     codepack.py 始终来自 APK；如果新模块调了旧装载器里没有的函数，
+    #     AttributeError 会被 try/except 吞掉，证书又回到「找不到」。
+    #     所以路径解析必须内联。这里把 pkg_file 摘掉来模拟。
+    from garmin_cn import codepack as _CPK4
+    _had_pf = getattr(_CPK4, "pkg_file", None)
+    try:
+        if _had_pf is not None:
+            del _CPK4.pkg_file
+        _T3.CA_PATH = _caempty / "content" / "server-ca.pem"
+        _T3.reset()
+        _r4 = _T3.install()
+        assert _r4.get("ok") is True, (
+            "装载器缺 pkg_file 时证书找不到——基础路径解析不能依赖 codepack")
+    finally:
+        if _had_pf is not None:
+            _CPK4.pkg_file = _had_pf          # type: ignore[attr-defined]
+        _T3.CA_PATH = _old_ca3
+        _T3.reset()
+
+    # 2) 数据目录必须跟着 GARMIN_HOME。用子进程跑，因为模块级常量在
+    #    import 时就定死了，本进程里改环境变量测不出来。
+    import subprocess as _sp
+    _dhome2 = Path(tempfile.mkdtemp())
+    try:
+        _probe = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "from garmin_cn import brief, manual, nutrition, motion, video\n"
+            "print(brief.ROOT)\n"                 # 地形缓存
+            "print(manual._LEGACY.parent.parent)\n"   # 手册迁移源
+            "print(nutrition._LEGACY_HOME)\n"     # 饮食迁移源
+            "print(motion.ROOT)\n"                # 视频缓存
+            "print(video.FRAMES.parent.parent)\n"  # 输出帧
+        ) % str(ROOT)
+        _env2 = dict(os.environ, GARMIN_HOME=str(_dhome2))
+        _out2 = _sp.run([sys.executable, "-c", _probe], env=_env2,
+                        capture_output=True, text=True, timeout=180)
+        assert _out2.returncode == 0, (_out2.stderr or "")[-500:]
+        for _line in _out2.stdout.strip().splitlines():
+            assert Path(_line).resolve() == _dhome2.resolve(), (
+                f"数据目录没跟 GARMIN_HOME：{_line}（应为 {_dhome2}）"
+                "——代码包挂载后它会偏到下载目录，用户数据会「消失」")
+    finally:
+        shutil.rmtree(_dhome2, ignore_errors=True)
+
+    # 底部导航：小组必须是一个 tab，且排在教练后面（第 3 位）。
+    # 用户明确否掉了「顶栏右上角一枚胶囊」——那个位置既不像入口也不像按钮。
+    _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert 'arrayOf("今日", "教练", "小组", "历史", "我的")' in _kt5, \
+        "底部导航没有把「小组」放进去"
+    assert '"/groups"' in _kt5 and "TAB_GROUP = 2" in _kt5, \
+        "小组 tab 的位置或路径不对（应在教练之后、历史之前）"
+    assert "groupBtn" not in _kt5, "顶栏那个「小组」胶囊又回来了"
+    assert 'path.startsWith("/run") -> TAB_GROUP' in _kt5, \
+        "远征页没归到小组 tab，从组详情点进去会掉出这个分区"
+
+    # 组列表页：只有一个组时直接进详情——点「小组」最想看的是排名
+    from garmin_cn import groupui as _GU
+    _gsrc = inspect.getsource(_GU.groups_page)
+    assert "if len(items) == 1:" in _gsrc and "return group_page(" in _gsrc, \
+        "只有一个组时没有直接进详情页"
+    assert '<details class="fold"><summary>再加入一个' in _gsrc, \
+        "建组/加入没有折起来，会跟「我的小组」抢版面"
+
+    # 账号昵称：建组/入组的默认名字，别再让用户每组填一次
+    _asrc2 = (ROOT / "garmin_cn" / "group.py").read_text(encoding="utf-8")
+    assert "def set_alias" in _asrc2, "组内昵称接口丢了"
+    _accsrc = (ROOT / "garmin_cn" / "account.py").read_text(encoding="utf-8")
+    assert "def set_nickname" in _accsrc, "账号昵称接口缺失"
+    assert "nickname" in _accsrc, "登录没有把昵称带上（注册时要用）"
+
+    # 组页的版式回归：数据块不许再套一圈卡、低频表单必须折叠、
+    # 成员不许和榜单排两遍。这些全是「改一次就会慢慢长回去」的东西，
+    # 所以在这里渲染一次真实页面来守（假数据换掉联网的三个函数）。
+    from garmin_cn import group as _GP
+    from garmin_cn import groupui as _GU
+
+    _gd, _gb, _gc = _GP.detail, _GP.board, _GP.challenge_list
+
+    def _fake_detail(_gid):
+        return {"ok": True, "group": {
+            "id": 1, "name": "测试队", "intro": "", "owner_id": 1,
+            "max_members": 20, "member_count": 2, "created_at": 0,
+            "role": "owner", "invite_code": "ABCD2345",
+            "me": {"alias": "我", "share": "summary"},
+            "members": [{"user_id": 1, "alias": "我", "role": "owner",
+                         "share": "summary", "is_me": True},
+                        {"user_id": 2, "alias": "队友", "role": "member",
+                         "share": "summary", "is_me": False}]}}
+
+    try:
+        _GP.detail = _fake_detail
+        _GP.board = lambda gid, rng="week", today=None: {
+            "ok": True, "range": rng, "rows": [
+                {"alias": "队友", "is_me": False, "distance_m": 12000,
+                 "days": 3, "acts": 3},
+                {"alias": "我", "is_me": True, "distance_m": 9000,
+                 "days": 2, "acts": 2}],
+            "hidden": 0,
+            "summary": {"members": 2, "shown": 2, "hidden": 0,
+                        "total_distance_m": 21000}}
+        _GP.challenge_list = lambda gid, today=None: {"ok": True, "challenges": []}
+        _gh = _GU.group_page("TOK", 1)
+    finally:
+        _GP.detail, _GP.board, _GP.challenge_list = _gd, _gb, _gc
+
+    # 榜单/赛事/设置三块直接铺在页面上，不再各发一个盒子
+    assert 'class="flat"' in _gh, "组页又给数据块套上卡片了"
+    assert _gh.count('class="flat"') >= 3, "数据块没有改用无框样式"
+    # 低频表单折叠：建赛事、管理
+    assert "建一个赛事" in _gh and "<details" in _gh, "建赛事表单又常驻展开了"
+    assert "邀请码与管理" in _gh, "管理区没折叠起来"
+    assert "<details class=\"fold\" open" not in _gh, "折叠块默认就展开了"
+    # 成员不许和榜单排两遍：榜单里有名字，就不该再有「成员」区块
+    assert "sec-head\"><h2>成员" not in _gh, "成员又单独占了一块（和榜单重复）"
+    # 月榜入口必须是真链接，不是 `if False` 的死开关
+    assert "?range=month" in _gh, "月榜入口又变成死开关了"
+    # 昵称能在页面上直接改
+    assert "/alias" in _gh and "我的昵称" not in _gh, "昵称入口不在设置行里"
+    assert ">昵称<" in _gh, "设置区没有昵称那一行"
+
+    # 无域名部署：自签证书靠「把那一张加进信任链」生效，不是关校验。
+    # 没有证书时必须是 no-op——用公共 CA 的部署不该被这段影响。
+    from garmin_cn import tlstrust as _TLS
+    # 部署之后仓库里**会**有 content/server-ca.pem，所以"没有证书"这一态
+    # 不能靠真实文件判断，得临时指到一个不存在的路径上去。
+    _old_ca = _TLS.CA_PATH
+    # 注意：现在 CA_PATH 找不到时还会顺 __path__ 去包里找（代码包会让
+    # __file__ 偏移，所以那条兜底是必须的）。要测「真的一张都没有」，
+    # 得把兜底也一起屏蔽，否则测的是「仓库里恰好有证书」。
+    _old_pf = _TLS._pkg_file
+    _TLS.CA_PATH = Path(tempfile.mkdtemp()) / "不存在的证书.pem"
+    _TLS._pkg_file = lambda rel: None
+    _TLS.reset()
+    _r = _TLS.install()
+    assert _r.get("ok") is False, "没有证书却报装好了"
+    assert _r.get("reason"), "没装成却没说明原因"
+    _TLS._pkg_file = _old_pf
+    _tmp_ca = Path(tempfile.mkdtemp()) / "server-ca.pem"
+    try:
+        _tmp_ca.write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+                           encoding="utf-8")
+        _TLS.CA_PATH = _tmp_ca
+        _TLS.reset()
+        import ssl as _ssl
+        _before = _ssl.create_default_context
+        _r2 = _TLS.install()
+        assert _r2.get("ok") is True, f"有证书却没装上：{_r2}"
+        assert _ssl.create_default_context is not _before, "没接管默认上下文"
+        # 坏证书不能让 App 起不来：装的时候要吞掉异常，只记录
+        assert _TLS.install() == _r2, "install 不是幂等"
+    finally:
+        _TLS.CA_PATH = _old_ca
+        _TLS.reset()            # 真的还原 ssl，别让后面的 HTTPS 带着死证书跑
+        import ssl as _ssl2
+        assert _ssl2.create_default_context is not None
+        shutil.rmtree(_tmp_ca.parent, ignore_errors=True)
+
+    # 分享图：1080×1920 的竖图，走和活动图同一套出图链路（探针 + 9:16）。
+    # 它**不能带**轨迹、昵称或别人的名字——发出去最多暴露「我参加了一个跑步
+    # 小组」。版式锁死高度，否则出图时上下会留一大块底色。
+    from garmin_cn import runcard as RC
+    assert RC.W == 1080 and RC.H == 1920 and RC.W * 16 == RC.H * 9, "分享图不是 9:16"
+    _sh = RC.build_html(_oc3)
+    assert "data-gc-canvas" in _sh and "__gcExportInfo" in _sh, "分享图缺出图探针"
+    assert "抵达" in _sh and "372" in _sh, "分享图缺结局名或总里程"
+    # 分享图也讲「人走了多远」：士气/旧日志这种局内数值不该占大数字的位置
+    assert "士气" not in _sh, "分享图又把士气当成了四大数字之一"
+    assert "走到的里程" in _sh and "走过的人" in _sh, "分享图缺里程或人数"
+    # 旧日志没拿到时不占格子：一张「旧日志 0/3」的分享图是在替玩家
+    # 宣布他错过了什么
+    assert "旧日志" in _sh
+    assert "旧日志" not in RC.build_html(dict(_oc3, relic_count=0)), \
+        "没拿到旧日志却在分享图上写了 0/3"
+    assert _sh.count('class="ar') == 4, "四段路没画全"
+    assert "height:1920px" in _sh, "分享图没锁高度，出图会上下留白"
+    for _bad in ("track", "latitude", "小赵", "老李"):
+        assert _bad not in _sh, f"分享图里出现了不该出现的东西：{_bad}"
+    # 没结算过的段：显示「没走到」，不能算成 0/0 没够
+    _sh2 = RC.build_html(dict(_oc, acts=[{"act": 1, "theme": "信任", "got": 0.0,
+                                          "target": 0.0, "hit": False}]))
+    assert "没走到" in _sh2 and "没够" not in _sh2, "分享图把没结算的段画成了没够"
+
+    # 增益：只写「名字 + 数值 + 单位」，绝不把 effect 这种内部字段写进页面
+    _bc = RU.buff_chips([{"id": "tw", "name": "顺风", "effect": "weekly_cap_add",
+                          "value": 2, "unit": "km", "desc": "本周每天行程上限提高"}])
+    assert "顺风" in _bc and "+2 km/天" in _bc, "增益没渲染出数值"
+    assert "weekly_cap_add" not in _bc, "增益把内部字段写进页面了"
+    assert RU.buff_chips([]) == "", "没有增益时不该占位置"
+    # 营地还没做：这类增益灰着显示，不装作有用
+    _bd = RU.buff_chips([{"id": "v", "name": "篝火", "effect": "act_vigor_add",
+                          "value": 1, "unit": "点"}])
+    assert "dim" in _bd and "休整点" in _bd, "未接入的增益没区分出来"
+    # 没有选项的补给事件是「抽到即生效」，得说明白，否则像张没画完的卡
+    _sup = {"id": "tw", "type": "supply", "act": 1, "title": "垭口顺风",
+            "text": "风从背后推着走。", "options": [], "chosen": "", "result": ""}
+    assert "已经算上" in RU.event_card(_sup, 0), "白给的补给事件没说明已生效"
+
+    # 遗迹事件：标签要是「旧物」，不能混在普通「遭遇」里被划过去
+    _relic = {"id": "x_relic", "type": "story", "act": 2, "title": "门框上的字",
+              "text": "有人在门框上刻了字。", "relic": True, "chosen": "",
+              "options": [{"id": "take", "label": "拿走", "brief": "", "time": 0}]}
+    _rh = RU.event_card(_relic, 0)
+    assert "旧物" in _rh and "relic" in _rh, "遗迹事件没有视觉标识"
+
+    # 衬线字体：正文靠它和「数据」区分开。Android 的 WebView 里 serif 对中文
+    # 没有可用字体，不内嵌就 fallback 成无衬线，故事感直接消失。
+    # 字体现在有两个可能的位置：随包（本地开发）和 server/assets（正式来源，
+    # 由 /v1/content 按需下发）。只要有一处存在就算合格。
+    _font = next((p for p in (
+        ROOT / "garmin_cn" / "content" / "expedition-serif.woff2",
+        ROOT / "server" / "assets" / "expedition-serif.woff2") if p.is_file()), None)
+    assert _font is not None, ("衬线字体没构建：python tools/build_font.py "
+                             "（缺了的话正文会静默退化成正文字体）")
+    assert _font.stat().st_size > 200_000, "字体文件太小，可能只子集到几个字"
+    assert 'font-family:"RC Serif"' in RU.CSS, "正文没用衬线字体族"
+
+    # 字体覆盖：加了新剧情之后没重建字体，正文里就会出现方框
+    _sys_path = sys.path[:]
+    sys.path.insert(0, str(ROOT / "tools"))
+    try:
+        import importlib
+
+        _bf = importlib.import_module("build_font")
+        _miss = _bf.check_coverage(_font, _bf.story_text())
+        assert not _miss, f"这些字不在字体里，正文会显示方框：{''.join(_miss)}"
+    finally:
+        sys.path[:] = _sys_path
 
     # ---------------- 计划生成器 ----------------
     # 分配本身是纯函数：长距离必须是这一周最长的一次，否则「长距离」名不副实。
@@ -2192,7 +2883,7 @@ def run() -> int:
     _pg_list2 = _H.history_page({"mode": ["list"]})
     assert _svg_only(_pg_list2).count('href="/history?mode=month&amp;type=run&amp;sel=') == 12, \
         "列表页柱状图的柱子不能点进对应月份"
-    assert "点柱子看当月" in _pg_list2, "柱状图没提示可以点"
+    assert "点击柱子查看对应月份" in _pg_list2, "柱状图没提示可以点"
     # 月视图是 28~31 根密排 → 柱子不做链接（9px 宽，手指点不准反而误触）
     _dense_doc = _svg_only(_H.history_page({"mode": ["month"],
                                            "sel": [_ms[0]]}))
@@ -3515,7 +4206,7 @@ def run() -> int:
     assert "private fun runBackfill()" in _main_src and \
         _main_src.count("runBackfill()") >= 2, "刷新后没有触发后台补全"
     assert 'apiCall("backfill_next")' in _main_src, "App 没调游标接口"
-    assert "subtitle.text = \"补齐历史 第 " in _main_src, "标题栏没有进度小字"
+    assert "subtitle.text = \"同步历史记录 · 新增" in _main_src, "标题栏没有进度小字"
     for _gone in ("showSyncRangeDialog", "buildSyncRangeDialog", "mark_backfill",
                   "runHistorySync", "pickDateRange"):
         assert _gone not in _main_src, f"旧的补拉入口还留着：{_gone}"
@@ -3525,7 +4216,7 @@ def run() -> int:
     assert _home.count('class="rc-cell"') == 4, "身体面板不是 2×2 四格"
     assert _home.count('class="spark"') >= 2, "身体面板没有趋势线"
     assert "7 日欠债" in _home or "评分" in _home, "睡眠格没带关键数值"
-    assert "42 天指数均线" in _home and "28 天基线" in _home, \
+    assert "42 天均值" in _home and "28 天基准" in _home, \
         "关键数字没带窗口标签"
     assert _home.count('class="rc-part"') == 3, \
         "恢复度分解不是 3 条（环本身就是总进度，卡底那条已删）"
@@ -3738,7 +4429,7 @@ def run() -> int:
     assert "aicoach.coach_note(d, wait=6)" in (ROOT / "garmin_cn/appapi.py").read_text(
         encoding="utf-8"), "一图流出图时没去补 AI 点评（等太久或压根没调）"
     # 本地兜底课表必须自报家门，不能静默降级成佳明课表
-    assert "本地推算" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
+    assert "本地训练安排" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
         "本地兜底课表没有标注，用户会以为那是手表里的计划"
 
     # ---- dist 清理：发版时自动清掉过期产物 ----
@@ -3977,7 +4668,9 @@ def run() -> int:
         "三张数值卡没固定高度"
     _ads = re.findall(r'<span class="ad">([^<]*)</span>', _me)
     # 运动设置、高驰训练导入、日历提醒分别有独立入口；副标题仍保持单行。
-    assert len(_ads) == 10 and all(len(a) <= 14 for a in _ads), \
+    # 10 → 12：多了「训练小组」「账号」两个入口。2 列网格保持偶数，
+    # 加单数会让最后一行只挂一张卡，看着像漏了一个。
+    assert len(_ads) == 12 and all(len(a) <= 14 for a in _ads), \
         f"网格卡数量或说明长度不对：{_ads}"
     assert any("系统日历" in a for a in _ads), "「我的」页没有日历提醒入口"
 
@@ -4082,8 +4775,8 @@ def run() -> int:
     assert 'class="bar"' not in _hsec, "卡底总进度条又回来了（和环重复）"
 
     # 窗口标签、体重不截断、触控 ≥44、柱 ≥32、柱间 7
-    for _w in ("28 天基线", "42 天指数均线", "近 7 天累计", "最近 7 天",
-               "7 日变化"):
+    for _w in ("28 天基准", "42 天均值", "7 天负荷", "最近 7 天",
+               "体重 · 近 7 天"):
         assert _w in _h, f"窗口标签丢了：{_w}"
     assert "text-overflow:ellipsis" not in _base_css.split(
         ".rc-cell .sub{")[1].split("}")[0], "体重那行又被截成「较…」"
@@ -4123,8 +4816,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.4.1 → 152）。
-    assert 'versionCode = 152' in (
+    # 每次发版要同步改这里（本次 1.5.4 → 157）。
+    assert 'versionCode = 157' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。
@@ -4698,13 +5391,18 @@ def run() -> int:
     assert '"update" -> checkUpdate(silent = false)' in _kt4, "手动入口没接上"
     assert "checkUpdate(silent = true)" in _kt4, "启动时没做静默检查"
     assert "update_skipped" in _kt4, "点「稍后」没有记住，会天天弹同一个版本"
-    _apk_downloader = (KT / "ApkDownload.kt").read_text(encoding="utf-8")
-    assert 'application/vnd.android.package-archive' in _apk_downloader and '.setMimeType(MIME)' in _apk_downloader, \
-        "APK 下载必须覆盖 Gitee 的 application/zip，防止文件名变成 .apk.zip"
-    assert 'Environment.DIRECTORY_DOWNLOADS, "RunnerCoach/$filename"' in _apk_downloader, \
-        "安装包没有固定下载目录，文件名又会由浏览器/响应头猜测"
-    assert 'ApkDownload.enqueue(applicationContext' in _kt4 and 'DownloadManager.ACTION_VIEW_DOWNLOADS' in _kt4, \
-        "系统 APK 下载器未接入更新入口或缺少下载记录入口"
+    # 更新包改由 Python 走 8443 下载（系统下载管理器不认自签证书，明文又会被
+    # networkSecurityConfig 拦掉）。这里钉住三件事：走 url_tls、用 ApkProvider
+    # 交给安装器、旧下载管理器那条路已经删干净。
+    assert "apk_fetch" in _AA._API, "apk_fetch 没进桥接白名单，Kotlin 调不到"
+    assert 'apiCall("apk_fetch"' in _kt4, "Kotlin 没走 Python 下载"
+    assert "url_tls" in _kt4, "没优先用加密下载地址"
+    assert 'content://$packageName.apk/' in _kt4, "安装没走 ApkProvider"
+    assert "ApkDownload" not in _kt4, "还在用系统下载管理器那条路"
+    _apk_provider = (KT / "ApkProvider.kt").read_text(encoding="utf-8")
+    assert 'endsWith(".apk", ignoreCase = true)' in _apk_provider, \
+        "ApkProvider 没限制扩展名，等于把私有目录当文件服务器"
+    assert ".." in _apk_provider, "ApkProvider 没拦路径穿越"
     # 1.0.3 真机没弹窗：节流只按时间、不看版本，升到新包也会被 24h 挡住；
     # 且时间戳在请求前写，一次失败就封锁一天。两处都要钉住。
     assert "update_checked_ver" in _kt4, "节流没按版本判断，升级后不会立即检查"
@@ -4760,12 +5458,11 @@ def run() -> int:
     _uisrc3 = (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8")
     _cardsrc3 = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
     assert 'f"静息心率 · {_dd}"' in _uisrc3, "卡片标签没写数据日期"
-    assert "数据停在 {_dd} · 下拉刷新" in _uisrc3, "旧数据没有可执行提示"
-    assert "心率区间的设定值口径可能不同" in _uisrc3, "没解释口径差异"
+    assert "数据截至 {_dd} · 下拉同步" in _uisrc3, "旧数据没有可执行提示"
     assert "（未同步今日）" in _cardsrc3, "一图流没标数据日期"
     _tp3 = _UI.home_page()
     assert "静息心率 · 昨夜" not in _tp3 and "静息心率 · " in _tp3
-    assert "心率区间的设定值口径可能不同" in _tp3
+    assert "可能和设备里设置心率区间时用的数值不同" in _tp3, "首页没解释口径差异"
 
     # ------------------------------------------------------------ 心率分区名称
     # 五段时长是佳明按账号里的区间算出来的（hrTimeInZone_1..5），中文副名

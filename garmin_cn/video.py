@@ -34,7 +34,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
-FRAMES = ROOT / "output" / "_frames"
+# 输出帧是用户产物，跟 GARMIN_HOME；ffmpeg 是随包工具，仍从 ROOT 找。
+_HOME = (Path(__import__("os").environ["GARMIN_HOME"]).expanduser()
+         if __import__("os").environ.get("GARMIN_HOME") else ROOT)
+FRAMES = _HOME / "output" / "_frames"
 
 
 def ffmpeg() -> str | None:

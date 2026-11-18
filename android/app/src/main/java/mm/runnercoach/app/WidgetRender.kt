@@ -205,7 +205,7 @@ object WidgetRender {
     private fun drawNutrition(c: Canvas, data: JSONObject, b: B, sp: Float) {
         val m = data.optJSONObject("macro")
         val goal = m?.optString("goal")?.takeIf { it.isNotBlank() } ?: ""
-        val body = panel(c, b, sp, "营养三元素", PROTEIN, goal)
+        val body = panel(c, b, sp, "三大营养素", PROTEIN, goal)
         if (m == null) {
             txt(c, "还没有体重数据", body.l, body.t + sp, tp(sp * 0.8f, MUTED))
             return
@@ -216,7 +216,7 @@ object WidgetRender {
         val kcalP = tp(fs, INK, true)
         val stateP = tp(fs * 0.82f, MUTED)
         pair(c, "$kcal / $kt kcal",
-            if (m.optBoolean("logged", false)) "已记餐" else "未记录",
+            if (m.optBoolean("logged", false)) "已记录饮食" else "未记录",
             body.l, body.r, body.t + fs, kcalP, stateP, fs * 0.35f)
 
         val top = body.t + fs * 1.45f
@@ -225,7 +225,7 @@ object WidgetRender {
         val lp = tp(lab, MUTED)
         val vp = tp(lab, INK, true)
         val rows = arrayOf(
-            Triple("蛋白", m.optJSONArray("protein"), PROTEIN),
+            Triple("蛋白质", m.optJSONArray("protein"), PROTEIN),
             Triple("碳水", m.optJSONArray("carb"), CARB),
             Triple("脂肪", m.optJSONArray("fat"), FAT),
         )
@@ -270,7 +270,7 @@ object WidgetRender {
         val wd = p?.optInt("week_done", 0) ?: 0
         val wp = p?.optInt("week_planned", 0) ?: 0
         val mins = p?.optInt("minutes", 0) ?: 0
-        val sub = "本周 $wd / $wp 课" + if (mins > 0) " · $mins 分钟" else ""
+        val sub = "本周完成 $wd/$wp 次" + if (mins > 0) " · $mins 分钟" else ""
         val sp0 = tp(sp * 0.62f, MUTED)
         // 课名是大字，行距按两个字号算；固定 0.78sp 时大字下缘会压住副标题
         val t2 = t1 + big.textSize * 0.42f + sp0.textSize * 1.10f
@@ -411,7 +411,7 @@ object WidgetRender {
         }
         val avg = if (vals.isEmpty()) 0f else vals.average().toFloat()
         val body = panel(c, b, sp, label, ACCENT,
-            if (avg > 0f) "均 ${f1(avg.toDouble())}" else "")
+            if (avg > 0f) "平均 ${f1(avg.toDouble())}" else "")
         if (vals.isEmpty() || vals.none { it > 0.05f }) {
             txt(c, "暂无数据", body.l, body.t + sp, tp(sp * 0.78f, MUTED))
             return
