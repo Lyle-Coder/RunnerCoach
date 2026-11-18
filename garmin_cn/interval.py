@@ -758,21 +758,33 @@ def detect_coros(detail: dict | None) -> dict | None:
     d = detail or {}
     groups = d.get("lap_groups") or []
 
-    cands: list[list[dict]] = []
+    cands: list[tuple[list[dict], float]] = []
     for g in groups:
         if isinstance(g, dict) and manual_laps(g.get("laps") or [], g.get("lap_m")):
-            cands.append(g["laps"])
+            cands.append((g["laps"], float(g.get("lap_m") or 0)))
     # 没带 lap_groups 的旧缓存 / 只有选中一组时，用展示用的分圈表兜底
     laps = d.get("laps") or []
     if manual_laps(laps, d.get("lap_distance_m")):
-        cands.append(laps)
+        cands.append((laps, float(d.get("lap_distance_m") or 0)))
 
+    # 一次活动常常同时有两三套分组：1 km 自动圈、运动场模式的 400 m 按圈、
+    # 以及用户按表打的组（比如 2 km 一个）。
+    #
+    # **圈距大的那套才是他心里的「一组」**。以前这里选「组数最多」的，
+    # 于是 400 m 那套把 2 km 组切碎之后组数更多、反而赢了：真机上一堂
+    # 5×2 km 的课被显示成「10 组 × 953 m」，恢复也从 4 次变成 8 次。
+    #
+    # 所以改成：在能切出快慢的那些候选里，优先圈距最大的；圈距相同才比组数。
     best: dict | None = None
     best_laps: list[dict] = []
-    for laps_ in cands:
+    best_m = -1.0
+    for laps_, lap_m in cands:
         got = from_laps(laps_)
-        if got and (best is None or got["sets"] > best["sets"]):
-            best, best_laps = got, laps_
+        if not got:
+            continue
+        if (best is None or lap_m > best_m
+                or (lap_m == best_m and got["sets"] > best["sets"])):
+            best, best_laps, best_m = got, laps_, lap_m
     if best:
         best["source"] = "coros:" + str(best.get("source") or "laps")
         best["mode"] = "coros-laps"
@@ -787,6 +799,26 @@ def check() -> None:
     _s2 = _seg(_pts2, True)
     assert _s2 and abs(_s2["dist_m"] - 29 * 5 * 3.24) < 1.0, \
         "有累计距离时仍按速度积分，操场间歇会少一截"
+    # 高驰：同一活动同时有 400 m 自动圈和用户按表打的 2 km 组。
+    # 前者被切碎后组数更多，旧逻辑「选组数最多」会挑它，把 5×2 km 显示成
+    # 10 组 × 953 m（真机就是这么错的）。必须优先用圈距大的那套。
+    _fast400 = {"dist_m": 400.0, "dur_s": 95.0, "hr_avg": 168}
+    _slow200 = {"dist_m": 200.0, "dur_s": 120.0, "hr_avg": 140}
+    _auto = [_fast400, _fast400, _slow200] * 5          # 15 圈，切出 10 段
+    _fast2k = {"dist_m": 2000.0, "dur_s": 470.0, "hr_avg": 170}
+    _slow4h = {"dist_m": 400.0, "dur_s": 240.0, "hr_avg": 132}
+    _manual = [_fast2k, _slow4h] * 4                    # 8 圈，切出 8 段
+    _got = detect_coros({"lap_groups": [
+        {"type": 1, "lap_m": 400, "laps": _auto},
+        {"type": 2, "lap_m": 2000, "laps": _manual},
+    ]})
+    assert _got is not None, "两套分圈都在却没有识别出间歇"
+    assert _got.get("source", "").endswith("laps")
+    _per = [b["dist_m"] / max(1, b["sets"]) for b in (_got.get("bands") or [])
+            if not b.get("rest")]
+    assert _per and max(_per) > 1500, (
+        f"选了 400 m 那套（每组 {_per}），应该用圈距更大的 2 km 组")
+
     # 6 组：快 400 m @ 4.2 m/s + 慢 200 m @ 2.6 m/s，采样间隔 5 s
     pts: list[dict] = []
     t, dist = 0.0, 0.0
