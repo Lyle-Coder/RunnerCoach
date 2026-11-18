@@ -212,7 +212,7 @@ def summary_html(results: list[dict]) -> str:
                   for c, it in r["checks"].items())
         + '</table></details>' for r in results)
     return ('<div class="pt-h">已评 ' + str(len(results)) + ' 项</div>'
-            '<table class="pt-tb"><tr><th>动作</th><th>判读</th></tr>' + rows + '</table>'
+            '<table class="pt-tb"><tr><th>动作</th><th>评估结果</th></tr>' + rows + '</table>'
             + _plan_html(results)
             + '<details class="fold2"><summary>展开每张的详细依据</summary>'
             + detail + '</details>')
@@ -266,13 +266,13 @@ def trend_html() -> str:
                     f'<div class="tr-name">{t["label"]}</div>'
                     + _spark(pts)
                     + f'<div class="tr-val {cls}">{last} / 2 · {tag}</div></div>')
-    return ('<details class="fold2"><summary>4 周复测 · 薄弱项趋势（'
+    return ('<details class="fold2"><summary>动作评估趋势（'
             + str(len(tr)) + ' 项）</summary>'
-            '<p class="pt-why">每点是当次的严重度：0 正常、1 轻度、2 明显，越上越好。'
+            '<p class="pt-why">每个点代表一次评估。0 表示正常，1 表示轻度，2 表示明显。'
             '同一天多次评估会各算一个点。</p>'
             + "".join(rows)
-            + '<p class="pt-why">建议每 4 周复测：方案 W4 那周拍同样几个动作，'
-            '看这条线有没有往下走。</p></details>')
+            + '<p class="pt-why">建议在第 4 周重拍同样的动作，'
+            '对照之前的评估结果。</p></details>')
 
 
 def _history_html() -> str:
@@ -292,12 +292,12 @@ def _history_html() -> str:
         f'{_brief(h.get("result") or {})[0]}</td></tr>' for h in hist)
     return ('<details class="fold2"><summary>历史记录（最近 '
             + str(len(hist)) + ' 次）</summary>'
-            '<table class="pt-tb"><tr><th>时间</th><th>动作</th><th>判读</th></tr>'
+            '<table class="pt-tb"><tr><th>时间</th><th>动作</th><th>评估结果</th></tr>'
             + rows + '</table>'
             '<div style="margin-top:12px"><button class="btn" type="button" id="ptClear">'
             '清空全部记录</button></div>'
-            '<p class="pt-why" style="margin-top:6px">清空只删本机的判读记录，'
-            '照片本来就没有存下来。</p></details>')
+            '<p class="pt-why" style="margin-top:6px">清空后将删除保存在本机的评估记录。'
+            '评估时拍摄的照片不会存到本机。</p></details>')
 
 
 def render() -> str:
@@ -320,10 +320,10 @@ def render() -> str:
             + f'<div class="pt-res" id="pt-res">{init_html}</div>'
             + js + trend_html() + _history_html())
     return ui.page("COACH · 力量", "姿态评估",
-                   "拍一张 → 找薄弱项 → 4 周方案",
+                   "按提示拍摄动作，查看评估和 4 周练习建议",
                    body,
                    # 这句必须改：默认文案是「数据只保存在本机，不上传任何第三方」，
                    # 但判读要把照片发给用户自己配的模型服务商。页面不能骗人。
                    foot="照片会发给你自己配置的模型服务商做判读（不经过 RunnerCoach "
-                        "的服务器），照片本机不落盘；判读结果保存在本机，方便回看。",
+                        "的服务器）。照片不会保存在本机，评估结果可在历史记录中查看。",
                    back=("AI 教练", "/ai"))

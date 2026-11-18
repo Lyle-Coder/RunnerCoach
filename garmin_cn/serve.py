@@ -68,14 +68,14 @@ def _title(name: str) -> tuple[str, str, str]:
     if stem == "demo":
         return "演示看板（仿真数据）", "今日", kind
     if stem == "card":
-        return "最新一图流", "今日", kind
+        return "最新每日看板", "今日", kind
     if stem == "act":
         return "最新活动图", "今日", kind
     if stem.startswith("dashboard-"):
         return f"看板 {stem[10:]}", "看板", kind
     if stem.startswith("card-"):
         tail = "" if ext == ".png" else " · 网页"
-        return f"一图流 {stem[5:]}{tail}", "图", kind
+        return f"每日看板 {stem[5:]}{tail}", "图", kind
     if stem.startswith("act-"):
         day = stem[4:].rsplit("-", 1)[0]
         label = "活动图" if ext == ".png" else "活动详情"
@@ -543,9 +543,9 @@ class _Handler(SimpleHTTPRequestHandler):
         # 并且给一条绿条确认。错误仍然回同一块，红条就出现在出错的地方。
         anchor = {"/__event/fuel": "fuel", "/__event/target": "adjust",
                   "/__event/course": "adjust"}.get(u.path, "")
-        okmsg = ("补给参数已保存，各段用量已重算" if u.path == "/__event/fuel"
-                 else "CP 表已保存，余量已重算" if u.path == "/__event/course"
-                 else "目标已保存，余量与补给已重算")
+        okmsg = ("已保存补给设置，并更新各段的建议用量" if u.path == "/__event/fuel"
+                 else "已保存检查点表，并更新预计到达时间和关门时间对比" if u.path == "/__event/course"
+                 else "已保存目标，并更新预计到达时间和补给安排")
         self._back(slug, err=err, ok=okmsg, anchor=anchor)
 
     def _event_file(self, path: str) -> None:
@@ -843,7 +843,7 @@ class _Handler(SimpleHTTPRequestHandler):
             elif act == "rules":
                 E.set_booking_rules(slug, {k: one(k) for k in
                                            ("flight", "train", "stay")})
-                okmsg = "预订提前量已更新，待办已重算"
+                okmsg = "已更新预订提醒时间"
             elif act in ("book", "unbook"):
                 kind = one("kind") or ""
                 if not kind and one("idx"):
@@ -1657,11 +1657,11 @@ class _Handler(SimpleHTTPRequestHandler):
                     back = "/plan/draft"
                 else:
                     msg = (r.get("error") or r.get("reason")
-                           or "没有可参考的跑量，先在今日页同步几次")
+                           or "还没有跑量可参考。可以填写每周跑量，或在今日页同步跑步记录后重试。")
             elif act == "confirm":
                 r = A.plan_confirm(values.get("override") == "1")
                 back = "/plan"
-                msg = (f'已写入 {r.get("saved")} 天，下周一起自动续'
+                msg = (f'已保存 {r.get("saved")} 天的训练安排，下周起会自动安排训练'
                        if r.get("ok") else (r.get("error") or "确认失败"))
             elif act == "discard":
                 A.plan_discard()
@@ -1678,7 +1678,7 @@ class _Handler(SimpleHTTPRequestHandler):
                 r = A.plan_push(False)
                 back = "/plan"
                 if r.get("ok"):
-                    msg = (f'已推送 {r.get("created")} 节课，覆盖 {r.get("days")} 天'
+                    msg = (f'已发送 {r.get("created")} 节训练到佳明日历，共 {r.get("days")} 天'
                            if r.get("created") else "没有需要推送的课")
                 elif r.get("need_login"):
                     msg = r.get("error") or "佳明未登录，先去「我的」登录"

@@ -464,7 +464,7 @@ class ClipTrimDialog(
         frame.addView(loading, FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER))
 
         playBtn = TextView(act).apply {
-            text = "▶ 播放选段"
+            text = "▶ 播放所选片段"
             textSize = 12.5f
             setTextColor(0xFFFFFFFF.toInt())
             setPadding(dp(10), dp(5), dp(10), dp(5))
@@ -593,9 +593,9 @@ class ClipTrimDialog(
                 bar.invalidate()
                 loading.visibility = View.GONE
                 hint.text = if (keys.isEmpty()) {
-                    "没扫到关键帧，将按整帧裁剪；预览可能与结果略有出入。"
+                    "未找到关键帧，将按普通画面帧裁剪。保存后的视频可能与预览略有不同。"
                 } else {
-                    "共 ${keys.size} 个关键帧 · 拖两端手柄选片段（自动吸附关键帧）· 点画面播放选段"
+                    "拖动两端选择保留的片段，边界会对齐到最近的关键帧。点击画面可以预览。"
                 }
                 updateInfo()
                 seekPreview(startMs)
@@ -667,11 +667,11 @@ class ClipTrimDialog(
                         // 播放不了（HEVC 之类）：退化成静帧预览，裁剪本身照样能做
                         prepared = false
                         main.post {
-                            playBtn.text = "▶ 播放选段"
+                            playBtn.text = "▶ 播放所选片段"
                             playing = false
                             showStill(startMs)
-                            hint.text = "这个视频没法在手机上预览（编码不支持），" +
-                                "已改为显示关键帧静帧；裁剪结果不受影响。"
+                            hint.text = "手机无法播放此视频格式，" +
+                                "可以看缩略图来选择裁剪范围。"
                         }
                         true
                     }
@@ -728,7 +728,7 @@ class ClipTrimDialog(
         if (playing) {
             mp.pause()
             playing = false
-            playBtn.text = "▶ 播放选段"
+            playBtn.text = "▶ 播放所选片段"
             return
         }
         try {

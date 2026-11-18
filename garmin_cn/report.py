@@ -493,7 +493,7 @@ def body_block(bd: dict) -> str:
   </div>
 
   <div class="card">
-    <h3>体重 × 负荷</h3>
+    <h3>体重与训练负荷</h3>
     <div class="sess-why" style="color:{vcolor};font-weight:500">{esc(bd.get('verdict') or '数据不足')}</div>
     {score_html}
     <div class="bnote">同一台秤、晨起空腹、排空后称最可比；训练后立刻称会因脱水低 0.5~1.5 kg。</div>
@@ -622,7 +622,7 @@ def plan_card(plan: dict) -> str:
         '<p class="sess-why" style="margin-top:14px;font-size:12.5px">'
         f'<b style="font-weight:500">今日</b> · {today_txt}</p>'
         '<p style="font-size:11.5px;color:#6E7F97;margin:8px 0 0">'
-        "上方「今日处方」由本地规则按恢复度算出；这一栏是佳明教练的课表，两者冲突时取更保守的一边。</p>"
+        "上方的「今日训练建议」参考了你的恢复度。若和佳明教练的课表有冲突，建议选强度或训练量更低的安排。</p>"
         "</div>"
     )
 
@@ -995,7 +995,7 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
   </div>
 
   <div class="card">
-    <h3>今日处方</h3>
+    <h3>今日训练建议</h3>
     <div class="sess-type">{esc(sess['type'])}</div>
     <div class="sess-meta">
       <span class="chip">{esc(sess['duration'])}</span>
@@ -1030,13 +1030,13 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
     {load_chart(dates, loads, ctl, atl)}
     <div class="legend">
       <span><i style="background:#34D399"></i>每日负荷</span>
-      <span><i style="background:#4DA3FF"></i>CTL 长期体能</span>
-      <span><i style="background:#F5C26B"></i>ATL 短期疲劳</span>
+      <span><i style="background:#4DA3FF"></i>长期负荷（CTL）</span>
+      <span><i style="background:#F5C26B"></i>短期负荷（ATL）</span>
     </div>
     <div class="kv">
       <div><b style="color:{acwr_color}">{L['acwr'] if L['acwr'] else '—'}</b><span>ACWR · {esc(L['acwr_state'])}</span></div>
-      <div><b>{L['ctl']}</b><span>CTL 体能</span></div>
-      <div><b>{L['tsb']}</b><span>TSB 状态</span></div>
+      <div><b>{L['ctl']}</b><span>长期负荷</span></div>
+      <div><b>{L['tsb']}</b><span>训练状态</span></div>
     </div>
   </div>
 
@@ -1053,8 +1053,8 @@ def render(res: dict, store, out_path: Path, sync_at: str | None = None) -> Path
 <div class="rc-foot">{BR.badge_html(18)}RunnerCoach</div>
 恢复度 = 睡眠 35% + HRV 30% + 静息心率 20% + 身体电量 15%。睡眠与身体电量直接用 Garmin 原始 0–100 分；
 HRV 与静息心率以 28 天中位数为基线，持平或更好记满分，HRV 每低 30% 扣满、静息心率每高 6 bpm 扣满。<br>
-ACWR = 近 7 天负荷 ÷（近 28 天负荷 ÷ 4）；CTL/ATL 为 42 天与 7 天指数移动平均，TSB = CTL − ATL。<br>
-综合负荷统一使用心率 TRIMP；无心率的活动未计入。设备负荷与骑行 TSS 保持独立，不与 TRIMP 相加。<br>
+训练负荷比（ACWR）用最近 7 天的负荷除以最近 28 天的平均每周负荷。长期负荷（CTL）和短期负荷（ATL）分别取 42 天和 7 天的指数移动平均，两者的差值是训练状态（TSB）。<br>
+综合训练负荷采用心率负荷（TRIMP），只统计有心率数据的活动。设备负荷和骑行训练压力分数（TSS）各自单独展示。<br>
 数据来源：{esc(source_foot(store))}。本页为本地生成，不上传任何数据。
 </div>
 </div></body></html>"""
