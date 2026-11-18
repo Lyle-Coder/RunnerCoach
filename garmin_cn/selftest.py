@@ -1240,6 +1240,52 @@ def run() -> int:
         _CPK2.ENABLED = _old_en
         shutil.rmtree(_cphome, ignore_errors=True)
 
+    # 代码包会让**所有模块**都从下载目录加载，`__file__` 全面偏移。
+    # 两类东西的解法不同，两条都必须守住：
+    #   包内资源（证书/条款/插画）→ 顺 __path__ 去真包里找
+    #   用户数据（缓存/手册/记录）→ 跟 GARMIN_HOME
+    # 1) 模拟「证书在自己旁边找不到」：这正是下载目录的处境。
+    from garmin_cn import tlstrust as _T3
+    _old_ca3 = _T3.CA_PATH
+    _caempty = Path(tempfile.mkdtemp())
+    try:
+        _T3.CA_PATH = _caempty / "content" / "server-ca.pem"
+        _T3.reset()
+        _r3 = _T3.install()
+        assert _r3.get("ok") is True, (
+            f"证书路径偏到下载目录后就装不上了（{_r3}）——"
+            "所有 HTTPS 会 CERTIFICATE_VERIFY_FAILED")
+        assert "server-ca.pem" in str(_r3.get("path") or ""), str(_r3)
+    finally:
+        _T3.CA_PATH = _old_ca3
+        _T3.reset()          # 真的还原 ssl，别让后面的 HTTPS 带着死路径
+        shutil.rmtree(_caempty, ignore_errors=True)
+
+    # 2) 数据目录必须跟着 GARMIN_HOME。用子进程跑，因为模块级常量在
+    #    import 时就定死了，本进程里改环境变量测不出来。
+    import subprocess as _sp
+    _dhome2 = Path(tempfile.mkdtemp())
+    try:
+        _probe = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "from garmin_cn import brief, manual, nutrition, motion, video\n"
+            "print(brief.ROOT)\n"                 # 地形缓存
+            "print(manual._LEGACY.parent.parent)\n"   # 手册迁移源
+            "print(nutrition._LEGACY_HOME)\n"     # 饮食迁移源
+            "print(motion.ROOT)\n"                # 视频缓存
+            "print(video.FRAMES.parent.parent)\n"  # 输出帧
+        ) % str(ROOT)
+        _env2 = dict(os.environ, GARMIN_HOME=str(_dhome2))
+        _out2 = _sp.run([sys.executable, "-c", _probe], env=_env2,
+                        capture_output=True, text=True, timeout=180)
+        assert _out2.returncode == 0, (_out2.stderr or "")[-500:]
+        for _line in _out2.stdout.strip().splitlines():
+            assert Path(_line).resolve() == _dhome2.resolve(), (
+                f"数据目录没跟 GARMIN_HOME：{_line}（应为 {_dhome2}）"
+                "——代码包挂载后它会偏到下载目录，用户数据会「消失」")
+    finally:
+        shutil.rmtree(_dhome2, ignore_errors=True)
+
     # 组页的版式回归：数据块不许再套一圈卡、低频表单必须折叠、
     # 成员不许和榜单排两遍。这些全是「改一次就会慢慢长回去」的东西，
     # 所以在这里渲染一次真实页面来守（假数据换掉联网的三个函数）。
@@ -1296,11 +1342,18 @@ def run() -> int:
     # 部署之后仓库里**会**有 content/server-ca.pem，所以"没有证书"这一态
     # 不能靠真实文件判断，得临时指到一个不存在的路径上去。
     _old_ca = _TLS.CA_PATH
+    # 注意：现在 CA_PATH 找不到时还会顺 __path__ 去包里找（代码包会让
+    # __file__ 偏移，所以那条兜底是必须的）。要测「真的一张都没有」，
+    # 得把兜底也一起屏蔽，否则测的是「仓库里恰好有证书」。
+    from garmin_cn import codepack as _CPK3
+    _old_pkgfile = _CPK3.pkg_file
     _TLS.CA_PATH = Path(tempfile.mkdtemp()) / "不存在的证书.pem"
+    _CPK3.pkg_file = lambda rel: None
     _TLS.reset()
     _r = _TLS.install()
     assert _r.get("ok") is False, "没有证书却报装好了"
     assert _r.get("reason"), "没装成却没说明原因"
+    _CPK3.pkg_file = _old_pkgfile
     _tmp_ca = Path(tempfile.mkdtemp()) / "server-ca.pem"
     try:
         _tmp_ca.write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",

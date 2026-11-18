@@ -94,11 +94,23 @@ def index(force: bool = False) -> dict:
 
 
 def local(name: str) -> Path | None:
-    """本地已有的那份（下载目录优先，其次随包）。没有就 None。"""
+    """本地已有的那份（下载目录优先，其次包内）。没有就 None。
+
+    `BUNDLED` 是模块级的 `__file__` 推算值；这个模块自己也可能来自代码包，
+    那时它指向下载目录、里面没有素材。所以最后一步用 codepack.pkg_file
+    顺 `__path__` 去真包里找——找得到就说明它其实一直随 APK 在。
+    """
     for d in (DIR, BUNDLED):
         p = d / name
         if p.is_file() and p.stat().st_size > 0:
             return p
+    try:
+        from . import codepack
+        q = codepack.pkg_file(f"content/{name}")
+        if q is not None and q.stat().st_size > 0:
+            return q
+    except Exception:      # noqa: BLE001
+        pass
     return None
 
 

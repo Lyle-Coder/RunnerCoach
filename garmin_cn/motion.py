@@ -61,7 +61,9 @@ def _web_url(path: str) -> str:
 BASE_W, BASE_H = 540, 960
 PAD = 44                 # 取景内边距（BASE 坐标系）
 MOTION_REV = 2           # rev2：缓存键纳入取景指纹，杜绝串档（见 ensure_basemap）
-ROOT = Path(__file__).resolve().parent.parent
+# 同 brief：数据目录跟 GARMIN_HOME，不用 __file__（代码包会让它偏到下载目录）
+ROOT = (Path(os.environ["GARMIN_HOME"]).expanduser()
+        if os.environ.get("GARMIN_HOME") else Path(__file__).resolve().parent.parent)
 ACCENT = "#34D399"       # 与一图流同一支绿
 INK = "#0B0F14"
 
