@@ -1061,6 +1061,17 @@ def run() -> int:
         # 亮雪上白脚印等于没画：底图模式下脚印要压深
         assert "#8CA0BC" in _hit, "底图上的脚印还是白的，会看不见"
         assert "#DCE7F5" in RU._ending_svg("arrive"), "纯 SVG 模式的脚印依旧是白的"
+        # 门口校准：换一张底图，门的位置就会变；脚印终点必须跟着走，
+        # 否则会画到墙里面去
+        bytes_before = RU._scene_props("arrive", on_plate=True)
+        (_pd / RU.CAL_FILE).write_text('{"door_x": 0.5, "door_y": 0.8}',
+                                       encoding="utf-8")
+        assert abs(RU._cal()["door_x"] - 0.5) < 1e-9, "校准文件没读进来"
+        assert bytes_before != RU._scene_props("arrive", on_plate=True), \
+            "改了门口位置，脚印却没跟着动"
+        (_pd / RU.CAL_FILE).write_text('{"door_x": 9, "door_y": "x"}',
+                                       encoding="utf-8")
+        assert RU._cal() == RU.CAL_DEFAULT, "越界的校准值没被丢掉（会画到画外）"
     finally:
         RU.PLATE_DIR = _old_pd
         shutil.rmtree(_pd, ignore_errors=True)
