@@ -625,6 +625,13 @@ def main() -> int:
     st, r = req("GET", "/health")
     check("health 报 ai_proxy=false / pay=false",
           r.get("ai_proxy") is False and r.get("pay") is False, str(r))
+    # 短信走 dev 时手机号通道必须关掉：留着就等于公开"读任意手机号的验证码"
+    st, r = req("POST", "/v1/sms/send", {"account": "13900000001"})
+    check("短信 dev 时手机号通道关闭（400）",
+          st == 400 and "邮箱" in str(r.get("error") or ""), f"{st} {r}")
+    st, r = req("POST", "/v1/sms/send", {"account": "someone@test.local"})
+    check("邮箱通道仍可用（测试环境无 SMTP，故带 dev_code）",
+          st == 200 and r.get("channel") == "email", f"{st} {r}")
 
     print(f"\n通过 {ok} 项，失败 {fail} 项")
     srv.shutdown()

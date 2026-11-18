@@ -155,7 +155,11 @@ SMTP_HOST = os.environ.get("SMTP_HOST", "")                 # 如 smtp.qq.com
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))         # 465=SSL / 587=STARTTLS
 SMTP_USER = os.environ.get("SMTP_USER", "")                 # 发件邮箱
 SMTP_PASS = os.environ.get("SMTP_PASS", "")                 # SMTP 授权码（不是登录密码）
-SMTP_FROM = os.environ.get("SMTP_FROM", "") or SMTP_USER    # 显示的发件人，默认同 SMTP_USER
+# 显示的发件人，留空就用 SMTP_USER。顺手把模板里的中文占位值当空处理——
+# "你的发件邮箱@qq.com" 这种如果被当成真地址，报错会是一句看不懂的 501。
+_smtp_from_raw = os.environ.get("SMTP_FROM", "").strip()
+SMTP_FROM = (SMTP_USER if (not _smtp_from_raw or "@" not in _smtp_from_raw)
+             else _smtp_from_raw)
 
 # 单价表：元 / 百万 token，只列平台实际会跑的模型
 # deepseek-flash 取高峰价（闲时减半），按贵的扣不会亏
@@ -467,6 +471,11 @@ def api_sms_send(body: dict, ip: str) -> dict:
     if kind == "phone":
         if not _PHONE_RE.match(account):
             raise Gate(400, "手机号格式不对（大陆 11 位）")
+        # 短信走 dev 时验证码会回显在响应里：那等于谁都能登录任意手机号的账号。
+        # 邮箱通道配好之后手机号本来也用不上，索性直接关掉这条路，
+        # 而不是留一个"只有内测知道怎么用"的暗门。
+        if SMS_PROVIDER == "dev" and not ALLOW_DEV_ECHO:
+            raise Gate(400, "手机号登录未开通，请用邮箱接收验证码。")
     elif kind == "email":
         pass                                   # account_kind 已校验
     else:
@@ -1300,8 +1309,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _dev_echo() -> bool:
-    """验证码是否会明文回显。短信走 dev、或邮箱没配 SMTP，都会回显。"""
-    return SMS_PROVIDER == "dev" or not smtp_ready()
+    """邮箱验证码是否会明文回显（没配 SMTP 就会）。
+
+    短信 dev 模式不在这里算——那条路已经在 send 里直接关掉了（400），
+    不存在回显。把两者混在一起会让"只配了邮箱"的正常部署被护栏挡在门外，
+    而真正危险的那条路反而没关。
+    """
+    return not smtp_ready()
 
 
 def _loopback_bind() -> bool:
@@ -1322,11 +1336,9 @@ def main() -> int:
     # 先拦最危险的一种启动方式：绑在公网、验证码却明文回显。那样等于
     # 把「登录任意账号」公布在互联网上，一条 curl 就能复现。
     if _dev_echo() and not _loopback_bind() and not ALLOW_DEV_ECHO:
-        print(f"× 拒绝启动：验证码会明文回显，而服务绑在 {HOST}:{PORT}。")
+        print(f"× 拒绝启动：邮箱验证码会明文回显，而服务绑在 {HOST}:{PORT}。")
         print("  任何拿到地址的人都能登录任意账号，读到他们小组的数据。")
-        print("  修法（二选一）：")
-        print("    · 配 SMTP_HOST / SMTP_USER / SMTP_PASS（QQ 邮箱授权码，零成本）")
-        print("    · 或 SMS_PROVIDER=aliyun + 阿里云短信四件套")
+        print("  修法：配 SMTP_HOST / SMTP_USER / SMTP_PASS（QQ 邮箱授权码，免费）")
         print("  只在内网联调、且明确接受风险时：RC_ALLOW_DEV_ECHO=1")
         return 2
     init_db()
@@ -1349,7 +1361,12 @@ def main() -> int:
         print(f"  邮箱验证码 {SMTP_USER} → {SMTP_HOST}:{SMTP_PORT}")
     else:
         print("  邮箱验证码 未配置 SMTP（开发模式：验证码回显）")
-    print(f"  短信通道 {SMS_PROVIDER}{'（开发模式：验证码回显，上线前务必切换）' if SMS_PROVIDER == 'dev' else ''}")
+    # 短信走 dev 时手机号通道是关的（见 /v1/sms/send），别再打印"验证码回显"
+    # ——那句话现在不成立，会让人以为可以拿手机号登录。
+    if SMS_PROVIDER == "dev":
+        print("  手机号登录 关闭（SMS_PROVIDER=dev，用邮箱登录）")
+    else:
+        print(f"  短信通道 {SMS_PROVIDER}")
     print(f"  管理 {'已启用（ADMIN_TOKEN 已配置）' if ADMIN_TOKEN else '未配置 ADMIN_TOKEN，管理接口关闭'}")
     print(f"  数据库 {DB_PATH}")
     try:
