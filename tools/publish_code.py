@@ -86,7 +86,12 @@ def main(argv=None) -> int:
     meta = {"version": ver, "file": fname, "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
             "notes": a.notes, "published": time.strftime("%Y-%m-%d"),
-            "modules": len(files), "partial": bool(only)}
+            "modules": len(files), "partial": bool(only),
+            # 这个包是给哪个 APK 版本打的。客户端**必须**拿它和当前
+            # __version__ 比对：代码包是覆盖式的，装在旧 APK 上等于把
+            # 新 APK 的修复盖回去（实测过——1.5.1-1 盖住 1.5.2，
+            # apk_fetch 直接消失，应用内更新报「未知操作」）。
+            "base_version": _gradle_version()}
     print(f"包    {fname}  {len(files)} 个模块  {len(data) / 1024:.0f} KB")
     print(f"版本  {ver}" + ("（部分模块）" if only else ""))
     print(f"SHA256 {meta['sha256'][:32]}…")

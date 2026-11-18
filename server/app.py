@@ -1500,6 +1500,8 @@ def api_code_latest() -> dict:
             # 部分包（只含几个模块）也允许发布，但客户端要按不同标准校验：
             # 整包必须有 appapi.py，部分包只要求「至少一个模块」。
             "partial": bool(meta.get("partial")),
+            # 客户端据此判断「这个包能不能装在我这个 APK 上」
+            "base_version": str(meta.get("base_version") or ""),
             # 走加密端口：下载是 Python 干的，它信任内置那张证书。
             # 不像 APK 那样受系统下载管理器限制。
             "url": f"/v1/code/{fname}"}
