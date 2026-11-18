@@ -395,15 +395,6 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .sbit i{width:9px;height:9px;border-radius:50%;flex:0 0 9px;
   box-shadow:0 0 0 1px rgba(255,255,255,.2) inset}
 .sline2{display:flex;flex-wrap:wrap;gap:4px 10px;padding:2px 0 8px}
-/* 「本周」那三行（目标 / 结对 / 预言）。每项自带前缀，所以间距可以给大一点，
-   让眼睛能分块读；不加边框——它不是卡片，是这一周的三个事实。 */
-.weekline{padding:2px 0 6px;gap:5px 14px}
-.weekline .sbit{color:var(--ink2)}
-/* 第一项（目标进度）独占一行：它是最常看的一行，和「结对」挤在一起时
-   「…达成   结对 阿狗…」读起来像一句话。 */
-.weekline .sbit:first-child{flex:1 0 100%}
-.weekline b{color:var(--ink);font-weight:600}
-.weekline .hit{color:var(--cyan)}
 /* Bingo 5×5。grid item 默认 min-height:auto，会被文字撑高，一行里有长任务
    时整行就会变高、格子不再方正；所以显式 min-height:0 + overflow:hidden。 */
 .bgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:2px 0 10px}
@@ -449,11 +440,33 @@ i.pd{background:#F7F9FC;
 .shr .h{grid-column:2/4;font-size:11px;color:var(--faint);line-height:1.5}
 .shr .r3{margin-left:8px}
 .shr .r3 .rest{margin-right:8px}
-.shirtlink{display:contents}
-/* 「六件衫 ›」推到成绩行最右。margin-left:auto 而不是 flex 撑开，
-   这样没穿衫的时候也不会跑到中间去。 */
-.sline-jump{margin-left:auto;font-size:11px;font-weight:600;color:var(--brand-ink);
-  white-space:nowrap;padding:3px 0 3px 8px}
+/* 「本周」三行：标签固定列宽 + 内容，左对齐。
+   原来的 flex 换行里三项语序各不相同（目标…已跑…达成 / 结对…我/他…逆袭），
+   读起来像三句不相干的话。对齐成两列，扫一眼就知道哪行是什么。 */
+.wk{display:grid;grid-template-columns:24px minmax(0,1fr);gap:4px 8px;
+  padding:2px 0 8px;font-size:11px;color:var(--ink2);line-height:1.5}
+.wk .k{color:var(--faint)}
+.wk .v{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wk .v.wrap{white-space:normal;overflow:visible;display:flex;flex-wrap:wrap;
+  gap:2px 9px}
+.wk .v s{text-decoration:none;color:var(--muted);margin-left:7px}
+.wk .v b{font-weight:600;color:var(--ink)}
+.wk .v b.hit{color:var(--cyan)}
+/* 功能入口：4 列并列小图标。数据用行、功能用图标，两类东西形态不同才好扫。
+   不加卡片边框——加了就是四张大卡片，占掉一行多的高度；这里要的是「一排
+   应用图标」，主体应该是图标本身。 */
+.qgrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;
+  padding:4px 0 10px}
+.qg{display:flex;flex-direction:column;align-items:center;gap:5px;
+  padding:7px 2px 5px;border-radius:12px;text-decoration:none;min-width:0}
+.qg:active{background:rgba(59,130,246,.10)}
+.qg i{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;
+  justify-content:center;font-size:16px;font-style:normal;
+  background:linear-gradient(160deg,rgba(34,211,238,.24),rgba(59,130,246,.13));
+  color:#9BEDF9;border:1px solid rgba(34,211,238,.26);
+  box-shadow:inset 0 0 14px rgba(34,211,238,.2)}
+.qg .qn{font-size:11px;font-weight:600;color:var(--ink2);white-space:nowrap;
+  max-width:100%;overflow:hidden;text-overflow:ellipsis}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，

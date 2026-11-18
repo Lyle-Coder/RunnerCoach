@@ -1492,19 +1492,24 @@ def run() -> int:
     assert "/alias" in _gh and "我的昵称" not in _gh, "昵称入口不在设置行里"
     assert ">昵称<" in _gh, "设置区没有昵称那一行"
 
-    # ---- P2：本周玩法（目标 / 结对 / 预言）
-    # 三条口径：结论一行、表单折叠、预言只能选已报目标的人。
-    assert "本周" in _gh and "/goal" in _gh, "组页没有报目标的入口"
-    assert "目标 <b>30</b> km" in _gh, "本周目标没在页面上显示"
-    assert "结对" in _gh and "我 30" in _gh, "结对让分没显示出来"
-    assert "预言" in _gh and "完不成" in _gh, "我投的预言没回显"
+    # ---- P2：本周玩法（衫 / 目标 / 结对 / 预言）
+    # 四行必须是「标签 + 内容」两列对齐：以前是四段各写各的流式文字，
+    # 语序都不一样，看着乱。
+    assert 'class="wk"' in _gh, "本周四行没有用对齐表格"
+    for _k in ("衫", "目标", "结对", "预言"):
+        assert f'<span class="k">{_k}</span>' in _gh, f"「{_k}」那行没有标签列"
+    assert ">30</b> km" in _gh, "本周目标没在页面上显示"
+    assert "我 30" in _gh, "结对让分没显示出来"
+    assert "完不成" in _gh, "我投的预言没回显"
     assert 'name="predict"' in _gh, "没有预言选择框"
     assert "定本周目标" in _gh, "报目标表单没折叠"
     # 探索徽章不占衫：board 里够 5 格才在榜上标一句，不够就不标
     assert 'class="sub">新 12 格' in _gh, "够格的探索徽章没显示在榜上"
     assert 'class="sub">新 3 格' not in _gh, "不到 5 格也标了探索徽章"
-    # Bingo 只放一行进度 + 入口，不把 25 个格子搬进组页
-    assert "/bingo" in _gh and "Bingo 12/25" in _gh, "组页没有 Bingo 入口"
+    # 功能入口：一排并列的图标，不再散在各处
+    assert 'class="qgrid"' in _gh, "功能入口没有做成并列图标"
+    for _ic in ("六件衫", "Bingo", "足迹", "远征"):
+        assert f'class="qn">{_ic}</span>' in _gh, f"图标网格缺 {_ic}"
     assert '<div class="bgrid"' not in _gh, "Bingo 的 25 个格子被搬进组页了"
 
     # 信息顺序：点进小组第一眼要看到「我在组里第几」，然后才是玩法，
@@ -1514,9 +1519,9 @@ def run() -> int:
     assert _gh.find("我 · 第") < _i_rank, "我的名次被排到榜单后面了"
     assert _gh.find("目标 <b>30</b>") < _i_rank, "本周目标挤到榜单后面了"
     assert _i_rank < _gh.find("<h2>赛事</h2>"), "赛事排到榜单前面了"
-    assert _i_rank < _gh.find("<h2>探索</h2>"), "探索排到榜单前面了"
-    # 组内足迹入口
-    assert "/map" in _gh and "组内足迹" in _gh, "组页没有组内足迹入口"
+    # 功能图标也在榜单之前（它们是入口，不该排到榜单后面去）
+    assert _gh.find('class="qgrid"') < _i_rank, "功能图标被排到榜单后面了"
+    assert "/map" in _gh and "足迹" in _gh, "组页没有组内足迹入口"
 
     # 颜色点不能只有颜色：每一件都要写出「衫名·榜名」，否则新来的人只看到
     # 一排小圆点，不知道黄衫是里程榜。组页那行还得能点进六件衫。

@@ -633,6 +633,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     except Exception:      # noqa: BLE001 - 老服务端没有 /season，降级即可
         _se = {}
     score_line = ""
+    shirt_row = ""
     if _se.get("ok") and (_se.get("people") or []):
         _me = _se.get("me") or {}
 
@@ -651,9 +652,6 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                 f'<b>{float(_me.get("score") or 0):g}<i>分</i></b>'
                 + (f'<span class="tt">{esc(_tt)}</span>' if _tt else "")
                 + _bits(_me.get("shirts"))
-                # 入口推在这一行最右：放到衫行末尾会自己换行，变成一个孤零零
-                # 的蓝色小标题，看着像还有个区块没加载出来
-                + f'<a class="sline-jump" href="/groups/{gid}/shirts">六件衫 ›</a>'
                 + "</div>")
         win = []
         for sh in _se.get("shirts") or []:
@@ -664,9 +662,9 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                            f'{esc(sh.get("color"))}"></i>{esc(sh.get("name"))}·'
                            f'{esc(sh.get("title"))} {esc("/".join(names))}</span>')
         if win:
-            # 整行可点进「六件衫」。箭头在上面那行最右，这里不再重复一个
-            score_line += ('<div class="sline2"><a class="shirtlink" href="'
-                           f'/groups/{gid}/shirts">' + "".join(win) + "</a></div>")
+            # 衫得主不单独占一行，跟着下面「目标/结对/预言」一起进左对齐的表，
+            # 标签写「衫」。六件全有得主时这行会折两行，但左边永远对齐。
+            shirt_row = "".join(win)
     if not score_line:
         score_line = ""
 
@@ -679,8 +677,14 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
             _wk = G.week(gid, today)
         except Exception:      # noqa: BLE001 - 老服务端没有 /week，整块不显示即可
             _wk = {}
-    week_line = ""
+    # 三行「标签 + 内容」对齐。原来是把三项塞进一个 flex 换行里，每项的
+    # 语序还不一样（「目标 30 km · 已跑 38.1 · 达成」/「结对 阿狗 · 我 30 /
+    # 他 75 · 逆袭」），读起来像三句不相干的话。对齐成两列之后，扫一眼就知道
+    # 哪一行是什么。衫得主也从上面挪进来当第一行，形状统一。
     week_form = ""
+    rows: list[tuple[str, str]] = []
+    if shirt_row:
+        rows.append(("衫", shirt_row))
     if _wk.get("ok"):
         _g = _wk.get("goal") or {}
         # 自己的 uid 从成员表里认（detail 里就有），不依赖 season 成功——
@@ -694,17 +698,16 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
         _goal_km = _g.get("km")
         _suggest = float(_g.get("suggest") or 0)
 
-        bits = []
+        # 标签列固定 30px，内容占满剩下的宽度
         if _goal_km:
             _hit = _done_km >= float(_goal_km)
-            # 每项自带前缀（目标 / 结对 / 预言）：只靠 10px 的间距，三项挤在
-            # 一行时读起来像一句话（「…达成 与 阿狗 结对…」），手机上看不清。
-            bits.append(f'目标 <b>{float(_goal_km):g}</b> km · 已跑 {_done_km:.1f}'
-                        + (' · <b class="hit">达成</b>' if _hit else ""))
+            rows.append(("目标", f'<b>{float(_goal_km):g}</b> km'
+                                 f'<s>已跑 {_done_km:.1f}</s>'
+                                 + ('<b class="hit">达成</b>' if _hit else "")))
         elif _suggest:
-            bits.append(f'还没定目标 · 建议 <b>{_suggest:g}</b> km')
+            rows.append(("目标", f'还没定 · 建议 <b>{_suggest:g}</b> km'))
         else:
-            bits.append("还没定目标")
+            rows.append(("目标", "还没定"))
 
         _pair = next((p for p in (_wk.get("pairs") or [])
                       if _me_uid in (p["small"]["user_id"], p["big"]["user_id"])), None)
@@ -715,29 +718,17 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
             _res = {"double": "双人徽章", "upset": "逆袭", "big_only": "让分达成",
                     "split": "一人达成", "none": "都还差一点"}.get(
                         _pair.get("result") or "", "")
-            bits.append(f'结对 {esc(_other["alias"])} · 我 {float(_me_side["target"]):g}'
-                        f' / 他 {float(_other["target"]):g}'
-                        + (f' · {_res}' if _res else ""))
+            rows.append(("结对", f'{esc(_other["alias"])}'
+                                 f'<s>我 {float(_me_side["target"]):g}'
+                                 f' / 他 {float(_other["target"]):g}</s>'
+                                 + (f'<b>{_res}</b>' if _res else "")))
 
         _pred = (_wk.get("predict") or {}).get("mine")
         if _pred:
             _pa = next((r.get("target_alias") for r in (_wk.get("predict") or {}).get("rows") or []
                         if r.get("user_id") == _me_uid), "")
             if _pa:
-                bits.append(f'预言 {esc(_pa)} 完不成')
-
-        # Bingo 只报一行进度，点进去看整张卡。25 个格子塞进组页会把榜单挤走，
-        # 而榜单才是这个页面存在的理由。
-        _bg = _wk.get("bingo") or {}
-        if _bg.get("total"):
-            _ln = int(_bg.get("lines") or 0)
-            bits.append(f'<a class="blink" href="/groups/{gid}/bingo">Bingo '
-                        f'{int(_bg.get("done") or 0)}/{int(_bg["total"])}'
-                        + (f' · {_ln} 线' if _ln else "") + '</a>')
-
-        week_line = ('<div class="sline2 weekline">'
-                     + "".join(f'<span class="sbit">{x}</span>' for x in bits)
-                     + "</div>")
+                rows.append(("预言", f'{esc(_pa)}<s>完不成</s>'))
 
         # 表单：目标 +（可选）预言。选项只列已报目标的人——猜一个没目标的人
         # 没法判「完不成」，服务端也会拒。
@@ -762,17 +753,31 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                      '<p class="note">目标用于结对让分和预言结算；填低一点也没关系，'
                      '达成比好看重要。</p></details>')
 
-    # 「组内足迹」和「雪线之前」是同一类东西：都是「这段时间我们走过哪儿」，
-    # 一行一个入口，共用一张卡。分开两个 section 会多两行标题，占掉榜单的位置。
-    trail = ('<div class="card">'
-             f'<a class="grow" href="/groups/{gid}/map">'
-             '<span class="gname">组内足迹</span>'
-             '<span class="gmeta">本周谁跑过哪片</span>'
-             '<span class="chev">›</span></a>'
-             '<a class="grow" href="/run?gid=' + str(gid) + '">'
-             '<span class="gname">雪线之前</span>'
-             '<span class="gmeta">这一季的路</span>'
-             '<span class="chev">›</span></a></div>')
+    # 「衫」那行内容是流式的（六件全有得主会折两行），要允许换行；
+    # 其它行是单行结论，用省略号截断。
+    week_line = ('<div class="wk">'
+                 + "".join(
+                     f'<span class="k">{k}</span>'
+                     f'<span class="v{" wrap" if k == "衫" else ""}">{v}</span>'
+                     for k, v in rows)
+                 + "</div>") if rows else ""
+
+    # ---- 功能入口：一排并列的小图标
+    # 之前这些入口散在三处：六件衫是行尾一个蓝色文字、Bingo 塞在状况行里、
+    # 足迹和远征是「探索」区的两行卡片。形态各不相同，页面就没有规矩。
+    # 现在数据用左对齐的行、功能用图标，两类东西长得不一样，才好扫。
+    _qg: list[tuple[str, str, str, str]] = [
+        ("▤", "六件衫", f"/groups/{gid}/shirts", ""),
+        ("⊞", "Bingo", f"/groups/{gid}/bingo", ""),
+        ("⌖", "足迹", f"/groups/{gid}/map", ""),
+        ("◭", "远征", f"/run?gid={gid}", ""),
+    ]
+    # 只留图标 + 名字，不挂进度数字：挂上去以后「Bingo 12/25·1线」比别的项长出
+    # 一截，四格宽度一样但视觉上不齐，反而更乱。进度点进去看。
+    quick = ('<div class="qgrid">' + "".join(
+        f'<a class="qg" href="{href}"><i aria-hidden="true">{icon}</i>'
+        f'<span class="qn">{esc(name)}</span></a>'
+        for icon, name, href, _ in _qg) + "</div>")
 
     # 月榜/周榜互切。服务端一直支持 range=month，只是页面以前不读这个参数，
     # 入口就被写死成关闭（`if False`）——那是死开关，不是功能。
@@ -783,7 +788,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     # 顺序是刻意的——点「小组」第一眼要看到「我在组里第几」，然后才是这一周的
     # 玩法。P2 加了两块之后榜单被挤到第三屏，这条就破了，所以玩法块必须并进
     # 头部，而不是自己占一个 section。
-    head = score_line + week_line + week_form
+    head = score_line + week_line + quick + week_form
 
     body = (msg
             + head
@@ -791,7 +796,6 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                   '<div class="flat">' + rank_rows + '</div>',
                   more=more)
             + sec("赛事", '<div class="flat">' + ch_rows + '</div>' + chal_fold)
-            + sec("探索", trail)
             # 设置和管理都是低频：合成一块，管理再折一层
             + sec("设置", '<div class="flat">' + mine + '</div>' + admin_fold))
     return page("GROUP", g.get("name") or "小组",
