@@ -50,6 +50,7 @@ App 不直接持有上游 API Key；它用手机号或邮箱验证码登录拿�
 from __future__ import annotations
 
 import base64
+import threading
 import hashlib
 import hmac
 import json
@@ -112,6 +113,16 @@ TLS_KEY = os.environ.get("RC_TLS_KEY", "").strip()
 # 开发模式（验证码回显）会让人**登录任意账号**。绑在公网地址上时默认拒绝
 # 启动；内网联调确实需要的话显式设 RC_ALLOW_DEV_ECHO=1。
 ALLOW_DEV_ECHO = os.environ.get("RC_ALLOW_DEV_ECHO", "") == "1"
+
+# ── APK 分发（只读 http，单独端口）────────────────────────────────────
+# 为什么单独一个明文端口：手机端用系统 DownloadManager 下载安装包，它只信
+# 系统根证书，我们这张自签证书它不认（握手直接失败）。而 APK 本身是公开物，
+# 安装时 Android 会校验签名，明文传输的风险只是"下载到什么"，不是"泄露什么"。
+# 元数据（版本号、SHA256）仍走 8443，加密通道上取，取到再用。
+# 0 = 关闭这个端口。
+APK_PORT = int(os.environ.get("RC_APK_PORT", "0") or 0)
+APK_DIR = Path(os.environ.get("RC_APK_DIR",
+                              str(Path(__file__).resolve().parent / "apk")))
 
 # 每日看板静态目录（site/index.html、site/card.png，由 daily.bat 生成）
 SITE_DIR = Path(os.environ.get("RC_SITE_DIR",
@@ -1157,6 +1168,8 @@ class Handler(BaseHTTPRequestHandler):
                                    # 只显示"自配 Key"
                                    "ai_proxy": AI_PROXY,
                                    "pay": PAY_PROVIDER != ""})
+            if self.path.split("?")[0] == "/v1/app/latest":
+                return self._json(api_app_latest())
             if self.path == "/v1/client/config":
                 # 公开接口：只回「App 该连哪」，不含任何密钥。App 校验为 https 后才采用。
                 return self._json({"ok": True,
@@ -1308,6 +1321,104 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("  %s %s\n" % (self.address_string(), self.path.split("?")[0]))
 
 
+# ---------------------------------------------------------------- APK 分发
+def _apk_host() -> str:
+    """从已配置的公开地址里取主机名（APK 走明文端口，主机与业务同一个）。"""
+    base = (CLIENT_PLATFORM_BASE or "").strip().rstrip("/")
+    if "://" in base:
+        base = base.split("://", 1)[1]
+    return base.split("/")[0].split(":")[0]
+
+
+def api_app_latest() -> dict:
+    """最新安装包的元数据。没发布过就 ok=False，客户端按「不提示」处理。
+
+    `url` 指向明文端口：手机端用系统下载管理器，不认自签证书。
+    `sha256` 是给下载后核对用的（脚本发布时算好写进 latest.json）。
+    """
+    meta_path = APK_DIR / "latest.json"
+    if not meta_path.is_file():
+        return {"ok": False, "error": "还没有发布过安装包"}
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"latest.json 读不出来：{type(e).__name__}"}
+    fname = str(meta.get("file") or "")
+    if not fname or not (APK_DIR / fname).is_file():
+        return {"ok": False, "error": "安装包文件不存在"}
+    url = (f"http://{_apk_host()}:{APK_PORT}/apk/{fname}" if APK_PORT else "")
+    return {"ok": True,
+            "version": str(meta.get("version") or ""),
+            "version_code": int(meta.get("version_code") or 0),
+            "file": fname,
+            "url": url,
+            "size": int(meta.get("size") or 0),
+            "sha256": str(meta.get("sha256") or ""),
+            "notes": str(meta.get("notes") or "")[:900],
+            "published": str(meta.get("published") or "")}
+
+
+class ApkHandler(BaseHTTPRequestHandler):
+    """只读、只认 /apk/<名字>.apk。没有目录列表、没有别的路径。"""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):        # 别把每个字节都写进日志
+        pass
+
+    def _send(self, code: int, body: bytes, ctype: str = "text/plain; charset=utf-8"):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+        self.close_connection = True
+
+    def do_HEAD(self):
+        self.do_GET()
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if not path.startswith("/apk/"):
+            return self._send(404, b"not found")
+        name = path[len("/apk/"):]
+        if (not name or "/" in name or "\\" in name or ".." in name
+                or not name.lower().endswith(".apk")):
+            return self._send(404, b"not found")
+        f = APK_DIR / name
+        if not f.is_file():
+            return self._send(404, b"not found")
+        size = f.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.android.package-archive")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if self.command == "HEAD":
+            self.close_connection = True
+            return
+        try:
+            with f.open("rb") as fh:
+                while True:
+                    chunk = fh.read(256 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        self.close_connection = True
+
+
+def _start_apk_server() -> ThreadingHTTPServer:
+    srv = ThreadingHTTPServer(("0.0.0.0", APK_PORT), ApkHandler)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
 def _dev_echo() -> bool:
     """邮箱验证码是否会明文回显（没配 SMTP 就会）。
 
@@ -1356,6 +1467,12 @@ def main() -> int:
             return 2
     scheme = "https" if TLS_CERT else "http"
     print(f"√ RunnerCoach 网关 {scheme}://{HOST}:{PORT}")
+    if APK_PORT:
+        try:
+            _start_apk_server()
+            print(f"  安装包下载 http://{HOST}:{APK_PORT}/apk/  （明文，只读）")
+        except OSError as e:
+            print(f"  ！安装包端口 {APK_PORT} 起不来：{e}")
     print(f"  上游 {UPSTREAM_BASE} · 模型 {UPSTREAM_MODEL} · 加价 {MARGIN}×")
     if smtp_ready():
         print(f"  邮箱验证码 {SMTP_USER} → {SMTP_HOST}:{SMTP_PORT}")

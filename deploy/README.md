@@ -108,7 +108,28 @@ sudo sh deploy/harden.sh
 
 撤销：删掉那个文件 → `systemctl reload ssh`。
 
-## 七、日常
+## 七、发版：安装包走自己的服务器
+
+源码转私有之后，Gitee Release 就不能匿名下载了，App 的更新入口会断。
+所以安装包改由这台服务器分发：
+
+```bash
+# 打好的包在 android/app/build/outputs/apk/release/app-release.apk
+python tools/publish_apk.py --host <IP> --notes "这一版改了什么"
+```
+
+它读出 `build.gradle.kts` 里的版本号 → 传 APK 到 `/opt/runnercoach/apk/`
+→ 写 `latest.json`（版本、大小、SHA256、说明）。App 启动时读
+`https://<IP>:8443/v1/app/latest`，再去 `http://<IP>:8088/apk/<文件>` 下载。
+
+**为什么下载是明文的**：手机端用系统 DownloadManager，它只信系统根证书，
+自签证书握手直接失败。APK 本身是公开物，安装时 Android 还会校验签名——
+明文影响的是"下载到什么"，不是"泄露什么"。元数据（版本、SHA256）仍走
+8443 加密通道。
+
+**防火墙要放行 8088**，否则手机下载超时（`smoke.sh` 会直接报出来）。
+
+## 八、日常
 
 | 事 | 做法 |
 |---|---|
@@ -118,7 +139,7 @@ sudo sh deploy/harden.sh
 | 发额度 | `/admin/codes` 生成兑换码，App 内输入 |
 | 换 IP | 重新 `gen-cert.sh` → `set_server.py` → 重发 APK（IP 烧在包里，绕不开） |
 
-## 八、什么时候该换成域名
+## 九、什么时候该换成域名
 
 出现下面任一条就该买域名 + 备案，而不是继续用 IP：
 
@@ -129,7 +150,7 @@ sudo sh deploy/harden.sh
 换的时候**不用改代码**：域名 + 正规证书后，`tools/set_server.py https://域名`
 即可，`tlstrust` 发现包里没有 `server-ca.pem` 就自动走系统根证书。
 
-## 九、已知边界（写给自己看）
+## 十、已知边界（写给自己看）
 
 - **自签证书不是"更安全"**，只是"没有域名时唯一能用的 HTTPS"。它的信任来自
   你把证书烧进了 App，而不是来自任何 CA。
@@ -137,7 +158,7 @@ sudo sh deploy/harden.sh
 - 现在没有速率限制之外的防护（`_rate_limit` 只覆盖上报和验证码）。公网暴露
   一个 API，被扫是常态；`ADMIN_TOKEN` 要够长，别用默认值。
 
-## 十、Windows 开发机注意
+## 十一、Windows 开发机注意
 
 `set_server.py` 里对证书做的 SAN 校验用的是 `openssl`（Git for Windows 自带）。
 没有的话它会跳过这项检查并提示——不会静默放过，但也就少了一道保险，
