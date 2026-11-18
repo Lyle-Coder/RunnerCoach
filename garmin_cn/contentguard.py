@@ -119,6 +119,7 @@ def story_fingerprints(root: Path | None = None) -> list[str]:
     except Exception:  # noqa: BLE001
         return []
     out: list[str] = []
+    # 结局：line 与正文
     for _key, e in (data.get("endings") or {}).items():
         if not isinstance(e, dict):
             continue
@@ -126,6 +127,16 @@ def story_fingerprints(root: Path | None = None) -> list[str]:
             t = str(e.get(field) or "").strip()
             if len(t) >= 12:          # 太短的（"抵达"）会误报，不要
                 out.append(t[:16])
+    # 事件正文与选项 brief 一起算：40 条事件才是内容的主体，
+    # 只盯结局等于只锁了后门。
+    for e in (data.get("events") or []):
+        t = str(e.get("text") or "").strip()
+        if len(t) >= 14:
+            out.append(t[:14])
+        for o in (e.get("options") or []):
+            b = str(o.get("brief") or "").strip()
+            if len(b) >= 10:
+                out.append(b)
     return out
 
 
