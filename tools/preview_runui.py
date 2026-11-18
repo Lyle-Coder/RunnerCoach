@@ -95,20 +95,23 @@ def main() -> int:
         G.join(code, alias)
     llm.save_config(account_token=toks["a"])
 
-    def report(token, km):
+    def report(token, km, weekdays=(0, 1, 2, 4, 5)):
         # 灌满 28 天（四季）。只灌两周的话第 3、4 幕没有里程，结算出来是 0，
         # 结算页会显示成「没走到」——那是数据不全，不是设计。
+        # `weekdays` 用来造出三种不同的人：跑得勤的、单次远的、一天不断的，
+        # 结算页的「每个人的闪光点」只有差分得开才看得出写对没写对。
         days = []
         for d in range(28):
             date = SEASON_START + dt.timedelta(days=d)
-            if d % 7 in (0, 1, 2, 4, 5):
+            if d % 7 in weekdays:
                 days.append({"date": date.isoformat(), "distance_m": int(km * 1000),
                              "duration_s": int(km * 330), "acts": 1, "plan_done": True})
         post(f"/v1/group/{gid}/report", {"days": days}, token)
 
-    report(toks["a"], 8)
-    report(toks["b"], 7)
-    report(toks["c"], 6)
+    # 老李：一周五天，总量最高；小赵：只跑两天但每次都远；阿狗：天天出门
+    report(toks["a"], 7)
+    report(toks["b"], 13, (0, 3))
+    report(toks["c"], 4, (0, 1, 2, 3, 4, 5, 6))
 
     pool = json.loads((ROOT / "server/content/expedition_events.json").read_text("utf-8"))
 
@@ -272,7 +275,7 @@ def main() -> int:
 
 
     wrap = (f"<style>html{{background:#05080d}}"
-            f"body{{width:{WIDTH}px;margin:0 auto}}</style>")
+            f"body{{width:{WIDTH}px;margin:0}}</style>")
     share_pages: list[str] = []
     for name, data in pages.items():
         h = runsui.run_page("PREVIEW", "", data)
@@ -293,6 +296,7 @@ def main() -> int:
     # 不是把文案写死在预览里。
     def outcome_for(key: str) -> dict:
         import groups as GG
+        from expedition import ACTS as EXP_ACTS
 
         with GG.db() as c:
             row = c.execute("SELECT flags FROM group_run_season WHERE group_id=?",
@@ -320,6 +324,14 @@ def main() -> int:
             # 「少一个人」：队达标了，但有一个人赛季结束时还困在雪里。
             # 其余四种都是 0——这个数每季只由第 4 幕结算写一次。
             flags["left"] = 1 if key == "missing" else 0
+            # 「少一个人」得真的有一个人没走出来，否则结算页的名单上
+            # 没有那个状态标记，等于这个结局只有标题。其余四种必须清回
+            # moving——不然前面造过的受困会串到别的结局里（队达标了却
+            # 有人困着，那就该是 missing 了）。
+            c.execute("UPDATE group_run_member SET status=CASE WHEN ? AND user_id=?"
+                      " AND act=? THEN 'stranded' ELSE 'moving' END"
+                      " WHERE group_id=?",
+                      (1 if key == "missing" else 0, 2, EXP_ACTS, gid))
             flags["stages"] = stages
             c.execute("UPDATE group_run_season SET flags=?, morale=? WHERE group_id=?",
                       (json.dumps(flags, ensure_ascii=False),
@@ -364,7 +376,7 @@ def main() -> int:
                         "--no-default-browser-check", "--allow-file-access-from-files",
                         f"--user-data-dir={Path(tempfile.gettempdir()) / ('wb-prev-' + name)}",
                         "--hide-scrollbars", "--virtual-time-budget=4000",
-                        f"--window-size={WIDTH + 40},1800",
+                        f"--window-size={WIDTH},1800",
                         f"--screenshot={out}", (OUT / f"{name}.html").as_uri()],
                        capture_output=True)
         print(f"{name}.png  {'ok' if out.is_file() else 'FAILED'}")

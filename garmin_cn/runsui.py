@@ -865,7 +865,13 @@ def _ending_scene(key: str) -> str:
 
 
 def outcome_page(token: str, data: dict | None = None) -> str:
-    """结算页。四个结局共用一套版式——变的是文案和脚印的去向。"""
+    """结算页。五个结局共用一套版式——变的是文案和画面。
+
+    这一页的主角是**人**：谁走了多少、他这一段最亮的是哪一点。士气、旧日志
+    这些局内数值留着，但压到页脚一行小字——它们是过程，不是这一季留下来的
+    东西。排成排行榜也不对：一条队五个人的差别往往在「强在哪」，不在
+    「谁多」，按总量排名会把后面四个人全抹平。
+    """
     d = data or {}
     detail = d.get("ending_detail") or {}
     key = str(d.get("ending") or "lost")
@@ -873,10 +879,11 @@ def outcome_page(token: str, data: dict | None = None) -> str:
     line = str(detail.get("line") or "")
     text = str(detail.get("text") or "")
 
-    team = float(d.get("team") or 0)
+    km = float(d.get("km") or 0)
     morale = int(d.get("morale") or 0)
     members = int(d.get("members") or 0)
     relics = int(d.get("relic_count") or 0)
+    hidden = int(d.get("hidden") or 0)
     season = str(d.get("season") or "雪线之前")
 
     # 逐幕：显示「走够了没有」，不打分。远征不是考试，这里只是回放
@@ -904,14 +911,11 @@ def outcome_page(token: str, data: dict | None = None) -> str:
             f'<h1 class="endh">{esc(title)}</h1>'
             f'<div class="endl">{esc(line)}</div>'
             f'<div class="lit endt">{esc(text)}</div>'
-            '<div class="enddata">'
-            f'<div><b>{team:g}</b><span>总行程</span></div>'
-            f'<div><b>{morale}</b><span>士气</span></div>'
-            f'<div><b>{members}</b><span>走过的人</span></div>'
-            f'<div><b>{relics}<i>/3</i></b><span>旧日志</span></div>'
-            "</div>"
-            f'<div class="endacts">{acts}</div>'
-            '<p class="note" style="margin-top:14px">明天开新的一季。'
+            + _people_block(d.get("people") or [], km, hidden)
+            + '<div class="endacts"><div class="ash"><span>四段路</span>'
+              '<span>格 / 目标</span></div>' + acts + "</div>"
+            + _meta_line(morale, relics, members)
+            + '<p class="note" style="margin-top:14px">明天开新的一季。'
             "队还在，路会换一段。</p>"
             # 「保存这张图」走原生桥（data-act）：App 里由离屏 WebView 把同一份
             # 数据渲染成 1080×1920 的图。只是网页里点它没有反应——那是刻意的，
@@ -929,6 +933,65 @@ def outcome_page(token: str, data: dict | None = None) -> str:
                    back=("返回", "/groups"))
 
 
+def _people_block(people: list, km: float, hidden: int) -> str:
+    """「这一季，谁走了多少」——整页最重的一块。
+
+    每人两行：名字 + 里程（大），下面一行是他这一段最亮的一点 + 出勤。
+    没有可夸的那一点就不写，不硬凑（「参与奖」式的空话比不夸更伤）。
+    """
+    if not people:
+        return ('<div class="psect"><div class="psh"><span>这一季，谁走了多少</span></div>'
+                '<p class="note">这一段没有任何里程记录——'
+                '要么队里只有你一个人，要么大家都关掉了共享。</p></div>')
+
+    rows = ""
+    for p in people:
+        alias = esc(str(p.get("alias") or "") or "一位队友")
+        me = bool(p.get("me"))
+        pkm = float(p.get("km") or 0)
+        days = int(p.get("days") or 0)
+        runs = int(p.get("runs") or 0)
+        badge = str(p.get("badge") or "")
+        status = str(p.get("status") or "")
+        st = ""
+        # 受困/缺席要写在名字旁边：把人列出来却不说他最后怎么了，
+        # 等于让看的人自己去猜。
+        if status == "stranded":
+            st = '<span class="pst bad">最后没走出来</span>'
+        elif p.get("excluded"):
+            st = '<span class="pst">中途有段没出现</span>'
+        tag = '<span class="pme">我</span>' if me else ""
+        # 里程为 0 的人不显示「0.0 km」——那个数字比不写更刺眼，
+        # 改成一句「没有记录」，事实一样，读起来不是判决。
+        num = (f'{pkm:.1f}<i>km</i>' if pkm > 0 else '<em>没有记录</em>')
+        sub = (f'{days} 天 · {runs} 次' if days or runs else "")
+        chip = f'<span class="pbg">{esc(badge)}</span>' if badge else ""
+        rows += (f'<div class="ppl{" me" if me else ""}">'
+                 f'<div class="pr"><span class="pn">{alias}{tag}{st}</span>'
+                 f'<span class="pk">{num}</span></div>'
+                 f'<div class="ps">{chip}<span class="pd">{esc(sub)}</span></div>'
+                 "</div>")
+
+    more = (f'<p class="note">另有 {hidden} 人关掉了共享，不在名单里。</p>'
+            if hidden else "")
+    return (f'<div class="psect"><div class="psh"><span>这一季，谁走了多少</span>'
+            f'<b><em>合计</em>{km:.1f}<i>km</i></b></div>{rows}{more}</div>')
+
+
+def _meta_line(morale: int, relics: int, members: int) -> str:
+    """局内数值：一行、小字、不抢眼。
+
+    旧日志只在拿到过的时候才提——它是藏起来的东西，没找到的人不该在
+    结算页被告知「本来有三本」，那是把探索变成补作业清单。
+    """
+    bits = [f"士气 {morale}"]
+    if relics:
+        bits.append(f"旧日志 {relics}/3")
+    bits.append(f"走过 {members} 人")
+    return ('<div class="pmeta">' + " · ".join(bits) + "</div>")
+
+
+
 END_CSS = """
 .endwrap{padding:6px 0 4px;text-align:center}
 .endsvg{width:100%;height:auto;display:block;margin:0 auto}
@@ -938,14 +1001,52 @@ END_CSS = """
 /* 结局正文：整页最重的一段字，所以给它最宽的行距和最慢的颜色 */
 .endt{margin:17px auto 0;max-width:330px;text-align:left;
   font-size:14.5px;line-height:1.95;color:#C6D4E6}
-.enddata{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-top:22px;
-  padding-top:18px;border-top:1px solid var(--line2)}
-.enddata div{display:flex;flex-direction:column;gap:3px}
-.enddata b{font-size:17px;font-weight:600;color:var(--ink);
+/* ---------- 这一季，谁走了多少：整页最重的一块 ---------- */
+.psect{margin-top:24px;padding-top:18px;border-top:1px solid var(--line2);
+  text-align:left}
+.psh{display:flex;align-items:baseline;justify-content:space-between;gap:10px;
+  margin-bottom:4px}
+.psh span{font-size:12px;font-weight:700;letter-spacing:1px;color:var(--ink2)}
+.psh b{font-size:15px;font-weight:600;color:var(--ink);
+  font-variant-numeric:tabular-nums;letter-spacing:-.2px}
+.psh b i{font-style:normal;font-size:10px;color:var(--faint);margin-left:2px}
+.psh b em{font-style:normal;font-size:10px;font-weight:400;color:var(--faint);
+  margin-right:5px;letter-spacing:.5px}
+/* 每人的一行：名字 + 里程在上，最亮的一点 + 出勤在下。行距留得开一点，
+   五行叠在一起才不会糊成一张表。 */
+.ppl{padding:10px 0;border-bottom:1px solid var(--line2)}
+.ppl:last-of-type{border-bottom:0}
+.ppl .pr{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.ppl .pn{font-size:13.5px;font-weight:600;color:var(--ink2);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ppl .pk{font-size:16px;font-weight:600;color:var(--ink);white-space:nowrap;
+  font-variant-numeric:tabular-nums;letter-spacing:-.2px}
+.ppl .pk i{font-style:normal;font-size:10px;font-weight:400;
+  color:var(--faint);margin-left:2px}
+.ppl .pk em{font-style:normal;font-size:12px;font-weight:400;color:var(--faint)}
+/* 我：名字换色 + 一个小标签。整行反白太重，结算页不需要一个「当前选中」 */
+.ppl.me .pn{color:var(--cyan)}
+.pme{margin-left:6px;font-size:9.5px;font-weight:700;color:#062028;
+  background:var(--cyan);border-radius:4px;padding:1px 4px;vertical-align:1px}
+/* 最后没走出来：琥珀，不是红色。他不是失败，是还留在上面 */
+.pst{margin-left:6px;font-size:9.5px;font-weight:400;color:var(--faint)}
+.pst.bad{color:#F5C26B}
+/* 标签长的时候（「后两段多走 41%」）让出勤那行掉到下一行，
+   而不是把整行撑出屏幕 */
+.ppl .ps{display:flex;align-items:center;flex-wrap:wrap;gap:4px 7px;
+  margin-top:3px;min-height:15px}
+.ppl .pbg{font-size:10.5px;color:#F5C26B;background:rgba(245,165,36,.09);
+  border:1px solid rgba(245,165,36,.2);border-radius:99px;padding:1px 7px;
+  white-space:nowrap}
+.ppl .pd{font-size:10.5px;color:var(--faint);
   font-variant-numeric:tabular-nums}
-.enddata b i{font-style:normal;font-size:11px;color:var(--faint);margin-left:1px}
-.enddata span{font-size:10.5px;color:var(--faint);line-height:1.35}
-.endacts{margin-top:20px;text-align:left}
+.endacts{margin-top:22px;text-align:left}
+.ash{display:flex;align-items:baseline;justify-content:space-between;
+  padding-bottom:6px;font-size:10.5px;letter-spacing:1px;color:var(--faint)}
+.ash span:first-child{color:var(--muted);font-weight:700}
+/* 局内数值压到页脚一行：能看见，但不是重点 */
+.pmeta{margin-top:16px;font-size:11px;color:var(--faint);
+  letter-spacing:.3px;font-variant-numeric:tabular-nums}
 /* 结算页的两个入口并排：出图是主事，回小组是退出，主次要分明 */
 .endbar{justify-content:center;margin-top:20px;padding-top:18px;
   border-top:1px solid var(--line2)}

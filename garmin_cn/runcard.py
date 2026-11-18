@@ -78,7 +78,7 @@ body{font-family:-apple-system,"PingFang SC","Noto Sans CJK SC",sans-serif;
 .stats div{display:flex;flex-direction:column;gap:8px;align-items:center}
 .stats b{font-size:62px;font-weight:650;letter-spacing:-1px;
   font-variant-numeric:tabular-nums}
-.stats b i{font-style:normal;font-size:22px;color:#6B7A8D;margin-left:3px}
+.stats b i{font-style:normal;font-size:22px;color:#6B7A8D;margin-left:7px}
 .stats span{font-size:22px;color:#6B7A8D}
 
 /* ---------- 四段路 ---------- */
@@ -128,17 +128,26 @@ def build_html(d: dict) -> str:
     text = esc(str(detail.get("text") or ""))
     season = esc(str(d.get("season") or "雪线之前"))
 
-    team = _num(d.get("team"))
-    morale = int(_num(d.get("morale")))
+    km = _num(d.get("km"))
     members = int(_num(d.get("members")))
     relics = int(_num(d.get("relic_count")))
+    acts = d.get("acts") or []
+    # 走够了三段还是两段，比「士气 7」更像这一季的结论。没有结算过的幕
+    # 不计入分母——它不是没走够，是没走到。
+    judged = [a for a in acts if _num(a.get("target")) > 0]
+    hits = sum(1 for a in judged if a.get("hit"))
+    # 旧日志只在真的拿到过时才占一格：它是藏起来的东西，一张没找到的
+    # 分享图上写「旧日志 0/3」等于替玩家宣布他错过了什么。
+    relic_stat = (f'<div><b>{relics}<i>/3</i></b><span>旧日志</span></div>'
+                  if relics else "")
+    stats_n = 4 if relics else 3
 
     # 日期只到「月.日」：分享图上写年份没意义，反而像报表
     start = str(d.get("start") or "")[5:].replace("-", ".")
     end = str(d.get("end") or "")[5:].replace("-", ".")
 
     rows = ""
-    for a in d.get("acts") or []:
+    for a in acts:
         got, need = _num(a.get("got")), _num(a.get("target"))
         theme = esc(str(a.get("theme") or ""))
         idx = int(_num(a.get("act")) or 1)
@@ -179,11 +188,11 @@ def build_html(d: dict) -> str:
     <div class="lit">{text}</div>
   </div>
 
-  <div class="stats">
-    <div><b>{team:g}</b><span>总行程 · 格</span></div>
-    <div><b>{morale}</b><span>士气</span></div>
+  <div class="stats" style="grid-template-columns:repeat({stats_n},1fr)">
+    <div><b>{km:g}<i>km</i></b><span>走到的里程</span></div>
     <div><b>{members}</b><span>走过的人</span></div>
-    <div><b>{relics}<i>/3</i></b><span>旧日志</span></div>
+    <div><b>{hits}<i>/{len(judged)}</i></b><span>四段路走够</span></div>
+    {relic_stat}
   </div>
 
   <div class="acts">
