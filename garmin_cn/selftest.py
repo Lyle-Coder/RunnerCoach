@@ -1230,18 +1230,48 @@ def run() -> int:
         _r = _CPK2.apply()
         assert _r.get("ok") and not _r.get("applied"), f"没有包时不该挂载：{_r}"
 
+        from garmin_cn import __version__ as _CURVER
+
+        def _mkpack(ver: str, base: str, modules=("appapi.py",)):
+            d = _CPK2.ROOT / ver / "garmin_cn"
+            d.mkdir(parents=True, exist_ok=True)
+            for m in modules:
+                (d / m).write_text("X = 1\n", encoding="utf-8")
+            (d.parent / "meta.json").write_text(
+                json.dumps({"version": ver, "base_version": base}), encoding="utf-8")
+            return d
+
+        # ① 基版本对得上 → 挂载，且在 __path__ 最前面
         _ver = "9.9.9-1"
-        _d = _CPK2.ROOT / _ver / "garmin_cn"
-        _d.mkdir(parents=True)
-        (_d / "appapi.py").write_text("X = 1\n", encoding="utf-8")
+        _d = _mkpack(_ver, _CURVER)
         _CPK2.POINTER.write_text(_ver, encoding="utf-8")
         _r = _CPK2.apply()
         assert _r.get("applied") == _ver, f"没挂上：{_r}"
         assert str(_pkg.__path__[0]) == str(_d), "挂载位置不在最前面（会被包内模块盖掉）"
         assert _CPK2.status().get("applied") == _ver, "status 没反映当前版本"
 
-        # 目录里没有 appapi.py = 坏包，不能挂
-        (_d / "appapi.py").unlink()
+        # ② 基版本对不上（APK 升过版）→ 必须让位并清指针。
+        #    真机上踩过：1.5.1-1 盖住 1.5.2，apk_fetch 直接消失，
+        #    应用内更新报「未知操作」。
+        _pkg.__path__ = list(_old_path)
+        _bad = "0.0.0-old"
+        _mkpack(_bad, "0.0.0")
+        _CPK2.POINTER.write_text(_bad, encoding="utf-8")
+        _r = _CPK2.apply()
+        assert not _r.get("applied"), f"版本不符的包被挂上了：{_r}"
+        assert not _CPK2.POINTER.exists(), "版本不符时没清指针，下次启动还会去挂"
+
+        # ③ 没有 base_version 的老包 → 也拒绝（说不清适用版本就别装）
+        _mkpack(_ver, "")
+        _CPK2.POINTER.write_text(_ver, encoding="utf-8")
+        _r = _CPK2.apply()
+        assert not _r.get("applied"), f"没标适用版本的包被挂上了：{_r}"
+
+        # ④ 基版本对但目录里没有 appapi.py = 坏包，不能挂
+        #    （用独立版本号，否则会复用到 ① 建好的目录、appapi.py 还在）
+        _empty = "9.9.9-empty"
+        _mkpack(_empty, _CURVER, modules=())
+        _CPK2.POINTER.write_text(_empty, encoding="utf-8")
         _pkg.__path__ = list(_old_path)          # 先还原再验「坏包不挂」
         _r = _CPK2.apply()
         assert not _r.get("applied"), f"坏包被挂上了：{_r}"
