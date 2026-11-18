@@ -111,7 +111,7 @@ def session(score, fatigue=0, ftp=None, workout="endurance") -> dict:
     intensity = f"{ftp * lo:.0f}–{ftp * hi:.0f} W" if ftp else ("低强度，能轻松交谈" if low else "有氧强度，保持能交谈")
     result = {"type": "恢复骑行" if low else "有氧骑行", "sport_key": "cycling", "sport": "骑行",
             "duration": f"{minutes} 分钟", "minutes": minutes, "intensity": intensity,
-            "why": "按恢复状态安排骑行；路况和风阻会影响均速，用功率或体感控制强度。",
+            "why": "骑的时候看功率或体感就好。遇到逆风或路况变化，均速慢一点很正常。",
             "steps": [{"name": "热身", "seconds": 300, "ftp_low": .4, "ftp_high": .55},
                       {"name": "主体", "seconds": (minutes - 10) * 60, "ftp_low": lo, "ftp_high": hi},
                       {"name": "放松", "seconds": 300, "ftp_low": .35, "ftp_high": .5}]}
@@ -124,7 +124,7 @@ def session(score, fatigue=0, ftp=None, workout="endurance") -> dict:
         result.update(type="骑行功率间歇", minutes=40, duration="40 分钟", steps=steps,
                       intensity=f"4 × 3 分钟 {ftp * .9:.0f}–{ftp:.0f} W，组间恢复 3 分钟")
     elif workout == "intervals":
-        result["why"] += "所选间歇模板暂未启用：需要设置 FTP，且恢复度与疲劳状态满足条件。"
+        result["why"] += "今天先按这节课骑。功率间歇需要先设置 FTP，也要等恢复和疲劳情况合适。"
     return result
 
 

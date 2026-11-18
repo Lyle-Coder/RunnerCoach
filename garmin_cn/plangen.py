@@ -47,9 +47,9 @@ SLOT_ORDER = [3, 6, 1, 5, 4, 2, 7]
 
 NAME = {"easy": "轻松跑", "tempo": "节奏跑", "long": "长距离"}
 DETAIL = {
-    "easy": "全程能说话，心率 135–150",
-    "tempo": "热身 10 分钟，中段稳住 20 分钟，冷身 5 分钟",
-    "long": "慢，全程能说话；每 20 分钟补水一次",
+    "easy": "保持能正常说话的速度，心率维持在 135–150 bpm。",
+    "tempo": "先热身 10 分钟，中段稳住节奏跑 20 分钟，最后放松跑 5 分钟。",
+    "long": "放慢一点，保持能正常说话的速度。每 20 分钟喝一次水。",
 }
 PACE_FACTOR = {"easy": 1.08, "tempo": 0.97, "long": 1.10}
 
@@ -272,23 +272,23 @@ def build_draft(store=None, today: str | None = None, monday: str | None = None,
 
     reasons = []
     if week_km is not None or run_days is not None:
-        reasons.append(f"按你指定的框架：每周 {days} 天、{base_km:g} km")
+        reasons.append(f"按你填的目标排课，每周跑 {days} 天，跑量以 {base_km:g} km 为起点。")
     elif prof["samples"]:
-        reasons.append(f"近 {prof['weeks']} 周周均 {prof['week_km']:g} km，"
-                       f"平均每周跑 {prof['run_days']} 天")
+        reasons.append(f"参考最近 {prof['weeks']} 周的跑步记录。你平均每周跑 {prof['week_km']:g} km，"
+                       f"一周跑 {prof['run_days']} 天。")
     else:
-        reasons.append("本地还没有跑步记录，先按 3 天框架给个起步量")
+        reasons.append("还没有跑步记录，先以每周 3 天为参考。")
     if race:
         if race_deload:
-            reasons.append(f"下一场是 {race['date']} 的 {race['name']}，"
-                           f"还有 {race['days']} 天，周量按 {f_race:g} 倍算")
+            reasons.append(f"离 {race['date']} 的 {race['name']} 还有 {race['days']} 天。"
+                           f"按赛事计算的跑量是原目标的 {f_race:g} 倍。")
         else:
-            reasons.append(f"下一场是 {race['date']} 的 {race['name']}，"
-                           f"还有 {race['days']} 天，已按设置不压量")
+            reasons.append(f"离 {race['date']} 的 {race['name']} 还有 {race['days']} 天。"
+                           "你已关闭按赛事减量，本周跑量按平时的规则安排。")
     if f_deload < 1:
-        reasons.append(f"第 {idx} 周按计划减量，周量按 {f_deload:g} 倍算")
+        reasons.append(f"第 {idx} 周是减量周，跑量按原目标的 {f_deload:g} 倍安排。")
     if not target:
-        reasons.append("没有可参考的跑量，先不排里程；跑两周后会按实际调整")
+        reasons.append("跑量还没有参考值。可以先填每周目标，或同步几次跑步后再生成。")
 
     pace = int(prof.get("pace_s_km") or DEFAULT_PACE)
     spread = _spread(target, days) if target > 0 else {}
@@ -390,8 +390,7 @@ def confirm(path: Path | None = None, rules_path: Path | None = None,
 
     if not days:
         return {"ok": False, "skipped_manual": skipped,
-                "error": "这一周每天都已被你手动安排过。想用这份草稿，"
-                         "勾上「覆盖我改过的天」再确认。"}
+                "error": "本周能安排的日期都已经手动排过。想换成这份计划，请勾选「替换手动安排的课程和休息日」再确认。"}
 
     r = PE.save_week(days, path=(Path(path).parent if path else None))
 

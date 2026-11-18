@@ -131,7 +131,7 @@ def run() -> int:
     import inspect as _inspect
     from garmin_cn import ui as _U
     _me_src = _inspect.getsource(_U.me_page)
-    assert 'm_ok = "已存凭据"' in _me_src and 'h_ok = "已存凭据"' in _me_src, \
+    assert 'm_ok = "已保存登录信息"' in _me_src and 'h_ok = "已保存登录信息"' in _me_src, \
         "体重行还写着「已登录」"
 
     # 浏览器托管登录：Cookie 过滤 / 会话判定是纯函数，改坏了登录会静默失败。
@@ -467,7 +467,7 @@ def run() -> int:
     from garmin_cn import ui as U
 
     idx = HW.index_section(U.coverage())
-    assert "/view?date=" in idx and "日汇总覆盖" in idx
+    assert "/view?date=" in idx and "每日数据" in idx
     hp = HW.history_page({"type": ["run"]})
     assert "page-head" in hp and 'name="start"' in hp
     assert "data-aid=" in hp and "GC.activity" in hp
@@ -785,7 +785,7 @@ def run() -> int:
     assert _html.count('name="d') >= 7, "编辑页没渲染出七天的字段"
     assert 'action="/__plan/save"' in _html, "编辑页没有保存表单"
     assert 'name="race_deload"' in _html, "编辑页没有「按赛事减量」开关"
-    assert "已经过去" in _html, "过去的日子没有说明，改动会被静默丢掉"
+    assert "日期已过" in _html, "过去的日子没有说明，改动会被静默丢掉"
 
     _draft = {"ok": True, "monday": "2026-11-16", "week_km": 30, "days": 3,
               "factor": 0.7, "reason": ["按历史跑量", "赛前减量"],
@@ -2192,7 +2192,7 @@ def run() -> int:
     _pg_list2 = _H.history_page({"mode": ["list"]})
     assert _svg_only(_pg_list2).count('href="/history?mode=month&amp;type=run&amp;sel=') == 12, \
         "列表页柱状图的柱子不能点进对应月份"
-    assert "点柱子看当月" in _pg_list2, "柱状图没提示可以点"
+    assert "点击柱子查看对应月份" in _pg_list2, "柱状图没提示可以点"
     # 月视图是 28~31 根密排 → 柱子不做链接（9px 宽，手指点不准反而误触）
     _dense_doc = _svg_only(_H.history_page({"mode": ["month"],
                                            "sel": [_ms[0]]}))
@@ -3515,7 +3515,7 @@ def run() -> int:
     assert "private fun runBackfill()" in _main_src and \
         _main_src.count("runBackfill()") >= 2, "刷新后没有触发后台补全"
     assert 'apiCall("backfill_next")' in _main_src, "App 没调游标接口"
-    assert "subtitle.text = \"补齐历史 第 " in _main_src, "标题栏没有进度小字"
+    assert "subtitle.text = \"同步历史记录 · 新增" in _main_src, "标题栏没有进度小字"
     for _gone in ("showSyncRangeDialog", "buildSyncRangeDialog", "mark_backfill",
                   "runHistorySync", "pickDateRange"):
         assert _gone not in _main_src, f"旧的补拉入口还留着：{_gone}"
@@ -3525,7 +3525,7 @@ def run() -> int:
     assert _home.count('class="rc-cell"') == 4, "身体面板不是 2×2 四格"
     assert _home.count('class="spark"') >= 2, "身体面板没有趋势线"
     assert "7 日欠债" in _home or "评分" in _home, "睡眠格没带关键数值"
-    assert "42 天指数均线" in _home and "28 天基线" in _home, \
+    assert "42 天均值" in _home and "28 天基准" in _home, \
         "关键数字没带窗口标签"
     assert _home.count('class="rc-part"') == 3, \
         "恢复度分解不是 3 条（环本身就是总进度，卡底那条已删）"
@@ -3738,7 +3738,7 @@ def run() -> int:
     assert "aicoach.coach_note(d, wait=6)" in (ROOT / "garmin_cn/appapi.py").read_text(
         encoding="utf-8"), "一图流出图时没去补 AI 点评（等太久或压根没调）"
     # 本地兜底课表必须自报家门，不能静默降级成佳明课表
-    assert "本地推算" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
+    assert "本地训练安排" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
         "本地兜底课表没有标注，用户会以为那是手表里的计划"
 
     # ---- dist 清理：发版时自动清掉过期产物 ----
@@ -4082,8 +4082,8 @@ def run() -> int:
     assert 'class="bar"' not in _hsec, "卡底总进度条又回来了（和环重复）"
 
     # 窗口标签、体重不截断、触控 ≥44、柱 ≥32、柱间 7
-    for _w in ("28 天基线", "42 天指数均线", "近 7 天累计", "最近 7 天",
-               "7 日变化"):
+    for _w in ("28 天基准", "42 天均值", "7 天负荷", "最近 7 天",
+               "体重 · 近 7 天"):
         assert _w in _h, f"窗口标签丢了：{_w}"
     assert "text-overflow:ellipsis" not in _base_css.split(
         ".rc-cell .sub{")[1].split("}")[0], "体重那行又被截成「较…」"
@@ -4760,12 +4760,11 @@ def run() -> int:
     _uisrc3 = (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8")
     _cardsrc3 = (ROOT / "garmin_cn/card.py").read_text(encoding="utf-8")
     assert 'f"静息心率 · {_dd}"' in _uisrc3, "卡片标签没写数据日期"
-    assert "数据停在 {_dd} · 下拉刷新" in _uisrc3, "旧数据没有可执行提示"
-    assert "心率区间的设定值口径可能不同" in _uisrc3, "没解释口径差异"
+    assert "数据截至 {_dd} · 下拉同步" in _uisrc3, "旧数据没有可执行提示"
     assert "（未同步今日）" in _cardsrc3, "一图流没标数据日期"
     _tp3 = _UI.home_page()
     assert "静息心率 · 昨夜" not in _tp3 and "静息心率 · " in _tp3
-    assert "心率区间的设定值口径可能不同" in _tp3
+    assert "可能和设备里设置心率区间时用的数值不同" in _tp3, "首页没解释口径差异"
 
     # ------------------------------------------------------------ 心率分区名称
     # 五段时长是佳明按账号里的区间算出来的（hrTimeInZone_1..5），中文副名
