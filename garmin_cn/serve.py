@@ -1592,6 +1592,19 @@ class _Handler(SimpleHTTPRequestHandler):
                         r = self._group_report(gid)
                         msg = (f'已上报 {r.get("saved", 0)} 天'
                                if r.get("ok") else (r.get("error") or "上报失败，已排队"))
+                    elif act == "goal":
+                        # 目标为空就当没填，不要拿 0 去撞服务端的范围校验
+                        raw = (values.get("km") or "").strip()
+                        if not raw:
+                            raise ValueError("先填个目标里程（km）")
+                        try:
+                            km = float(raw)
+                        except ValueError:
+                            raise ValueError("目标要是数字，单位 km") from None
+                        pred = (values.get("predict") or "").strip()
+                        r = G.set_goal(gid, km, int(pred) if pred.isdigit() else None)
+                        msg = (f"本周目标 {r.get('km'):g} km" if r.get("ok")
+                               else (r.get("error") or "报目标失败"))
                     elif act == "rotate":
                         r = G.rotate(gid)
                         msg = (f'新邀请码 {r["invite_code"]}' if r.get("ok")

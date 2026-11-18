@@ -29,7 +29,8 @@ ACT_COLS = [
 #   2: 引入 user_version（补齐既有的 nap/体重/电量/source 列）
 #   3: 加 recovery（高驰「恢复程度」百分比；佳明没有这个字段，保持 NULL）
 #   4: 修 3 的疏漏——3 只抬了版本号没真加列，这里补上并重新记账
-SCHEMA_VERSION = 4
+#   5: 加 explore_grid / explore_seen（探索徽章的 500 m 网格账本）
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS daily (
@@ -88,6 +89,16 @@ CREATE TABLE IF NOT EXISTS group_outbox (
     payload  TEXT NOT NULL,
     tries    INTEGER NOT NULL DEFAULT 0,
     next_at  INTEGER NOT NULL DEFAULT 0
+);
+-- 探索徽章的 500 m 网格账本。只在本机算，只把「本周新增几格」这个数字
+-- 上报给小组——格子 ID 不出手机（见 docs/用户组设计.md 11.5）。
+CREATE TABLE IF NOT EXISTS explore_grid (
+    cell       TEXT PRIMARY KEY,      -- "纬度格:经度格"
+    first_seen TEXT NOT NULL,         -- 第一次跑进这一格的日期
+    first_act  TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS explore_seen (
+    activity_id TEXT PRIMARY KEY      -- 已经扫过轨迹的活动，避免重复计算
 );
 """
 

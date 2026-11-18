@@ -393,6 +393,15 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .sbit i{width:8px;height:8px;border-radius:50%;flex:0 0 8px;
   box-shadow:0 0 0 1px rgba(255,255,255,.16) inset}
 .sline2{display:flex;flex-wrap:wrap;gap:4px 10px;padding:2px 0 8px}
+/* 「本周」那三行（目标 / 结对 / 预言）。每项自带前缀，所以间距可以给大一点，
+   让眼睛能分块读；不加边框——它不是卡片，是这一周的三个事实。 */
+.weekline{padding:2px 0 6px;gap:5px 14px}
+.weekline .sbit{color:var(--ink2)}
+/* 第一项（目标进度）独占一行：它是最常看的一行，和「结对」挤在一起时
+   「…达成   结对 阿狗…」读起来像一句话。 */
+.weekline .sbit:first-child{flex:1 0 100%}
+.weekline b{color:var(--ink);font-weight:600}
+.weekline .hit{color:var(--cyan)}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，
