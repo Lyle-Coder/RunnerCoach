@@ -552,6 +552,92 @@ def main() -> int:
     st, r = req("GET", f"/v1/group/{gid}/bingo?today=2026-11-18", None, c3)
     check("非成员看不了 Bingo（403）", st == 403, f"{st} {r}")
 
+    # ---------------- 动态瀑布流 + 评论
+    print("\n11c2. 动态瀑布流与评论")
+    st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, a)
+    check("默认没有动态", st == 200 and not (r.get("rows") or []), f"{st} {r}")
+    check("表情白名单一起下发", len(r.get("emojis") or []) >= 4, str(r.get("emojis")))
+
+    _acts = [
+        {"sid": "a1b2c3d4e5f60718", "date": "2026-11-18", "kind": "run",
+         "distance_m": 12800, "duration_s": 4020, "elevation_m": 120},
+        {"sid": "ffffffffffffffff", "date": "2026-11-17", "kind": "ride",
+         "distance_m": 46000, "duration_s": 6300, "elevation_m": 380},
+        # 脏数据：sid 不合法 / 未来日期 / 未知类型
+        {"sid": "坏", "date": "2026-11-16", "kind": "run", "distance_m": 5000},
+        {"sid": "0123456789abcdef", "date": "2026-12-31", "kind": "run",
+         "distance_m": 5000},
+        {"sid": "1111222233334444", "date": "2026-11-16", "kind": "fly",
+         "distance_m": 5000},
+    ]
+    st, r = req("POST", f"/v1/group/{gid}/acts",
+                {"acts": _acts, "today": "2026-11-18"}, a)
+    check("上传概要：脏 sid 和未来日期被丢掉", st == 200 and r.get("saved") == 3,
+          f"{st} {r}")
+
+    st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, b)
+    _rows = r.get("rows") or []
+    check("同组能看到动态", st == 200 and len(_rows) == 3, f"{st} {r}")
+    check("按日期倒序", [x["date"] for x in _rows] ==
+          ["2026-11-18", "2026-11-17", "2026-11-16"], str([x["date"] for x in _rows]))
+    check("未知类型降级成 other",
+          any(x["kind"] == "other" for x in _rows), str([x["kind"] for x in _rows]))
+    check("只有概要字段，没有轨迹/配速",
+          all(set(x) >= {"distance_m", "duration_s"} and
+              "track" not in x and "pace" not in x for x in _rows), str(_rows[:1]))
+    _aid = int(_rows[0]["id"])
+
+    st, r = req("POST", f"/v1/group/{gid}/acts", {"acts": [
+        {"sid": "a1b2c3d4e5f60718", "date": "2026-11-18", "kind": "run",
+         "distance_m": 13000, "duration_s": 4020}], "today": "2026-11-18"}, a)
+    st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, a)
+    _one = [x for x in r["rows"] if x["id"] == _aid][0]
+    check("同一个 sid 重复上传是覆盖，不是新增",
+          len(r["rows"]) == 3 and _one["distance_m"] == 13000, str(_one))
+
+    # 评论
+    st, r = req("POST", f"/v1/group/{gid}/comment", {"act": _aid, "text": "", "emoji": ""}, b)
+    check("空评论被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/comment",
+                {"act": _aid, "text": "", "emoji": "🍔"}, b)
+    check("不在白名单的表情被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/comment",
+                {"act": 999999, "text": "在吗"}, b)
+    check("评论不存在的动态（404）", st == 404, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/comment",
+                {"act": _aid, "text": "这个配速可以"}, b)
+    check("发一条留言", st == 200 and r.get("text") == "这个配速可以", f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/comment",
+                {"act": _aid, "text": "", "emoji": "🔥"}, a)
+    check("只发表情也可以", st == 200 and r.get("emoji") == "🔥", f"{st} {r}")
+
+    st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, a)
+    _one = [x for x in r["rows"] if x["id"] == _aid][0]
+    check("列表里带评论数和最近两条",
+          int(_one["comments"]) == 2 and len(_one["recent"]) == 2, str(_one))
+    st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18&act={_aid}", None, a)
+    check("详情接口能单独取一条",
+          st == 200 and len(r.get("rows") or []) == 1, f"{st} {r}")
+
+    # 隐私：关共享的人既不显示、也不能被评论
+    st, r = req("POST", f"/v1/group/{gid}/share", {"share": "off"}, b)
+    st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, a)
+    check("关了共享的人从动态里消失",
+          all(x["alias"] != "小赵" and x["user_id"] != _uid_b for x in r.get("rows") or []),
+          str([x["alias"] for x in r.get("rows") or []]))
+    # 关共享只代表「别用我的运动数据」，不是禁言：自己还能在别人动态下说话
+    st, r = req("POST", f"/v1/group/{gid}/comment", {"act": _aid, "text": "试试"}, b)
+    check("自己关了共享仍然能评论别人（关共享 != 禁言）", st == 200, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/acts", {"acts": _acts[:1],
+                                                  "today": "2026-11-18"}, b)
+    check("关了共享不上传动态（409）", st == 409, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/share", {"share": "summary"}, b)
+    check("恢复共享", st == 200, f"{st} {r}")
+
+    st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, c3)
+    check("非成员看不了动态（403）", st == 403, f"{st} {r}")
+
     # ---------------- 组内路线图
     print("\n11c. 组内路线图（只传格子，不传轨迹）")
     st, r = req("GET", f"/v1/group/{gid}/map?today=2026-11-18", None, a)

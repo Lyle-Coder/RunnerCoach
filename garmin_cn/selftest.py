@@ -1359,6 +1359,18 @@ def run() -> int:
     assert 'path.startsWith("/run") -> TAB_GROUP' in _kt5, \
         "远征页没归到小组 tab，从组详情点进去会掉出这个分区"
 
+    # 简洁模式要连「小组」tab 一起藏。GONE 而不是删 view：tabRoots / tabIcons
+    # 是按 TAB_* 索引取的，删了会全线错位。
+    assert "private fun applySimpleTabs()" in _kt5 and "View.GONE" in _kt5, \
+        "简洁模式没有隐藏小组 tab 的逻辑"
+    assert 'apiCall("simple_state")' in _kt5, \
+        "原生没读简洁模式状态，重启后 tab 会又冒出来"
+    assert "applySimpleTabs()\n        updateTabs()" in _kt5, \
+        "建完 tab 没有立刻按简洁模式设置可见性"
+    from garmin_cn import appapi as _APA
+
+    assert hasattr(_APA, "simple_state"), "Python 侧没有 simple_state"
+
     # 组列表页：只有一个组时直接进详情——点「小组」最想看的是排名
     from garmin_cn import groupui as _GU
     _gsrc = inspect.getsource(_GU.groups_page)
@@ -1384,6 +1396,7 @@ def run() -> int:
     _gw = getattr(_GP, "week", None)
     _gs = getattr(_GP, "season", None)
     _gm = getattr(_GP, "map_data", None)
+    _gf = getattr(_GP, "feed", None)
 
     def _fake_detail(_gid):
         return {"ok": True, "group": {
@@ -1451,6 +1464,14 @@ def run() -> int:
         _GP.map_data = lambda gid, today=None: {
             "ok": True, "from": "2026-11-16", "to": "2026-11-22",
             "people": [], "hidden": 2, "cells": 0}
+        _GP.feed = lambda gid, today=None, act=None: {
+            "ok": True, "hidden": 0, "emojis": ["👍", "🔥"],
+            "rows": [{"id": 9, "user_id": 2, "alias": "队友", "color": "#3FA76A",
+                      "is_me": False, "date": dt.date.today().isoformat(),
+                      "kind": "run", "kind_name": "跑步", "distance_m": 12000,
+                      "duration_s": 3600, "elevation_m": 60, "comments": 1,
+                      "recent": [{"user_id": 1, "alias": "我", "text": "可以",
+                                  "emoji": ""}]}]}
         # P2 的「本周」块：目标 + 结对 + 预言。不 mock 会去连真服务器，
         # 虽然失败很快，但每次自检都白等一次连接。
         _GP.week = lambda gid, today=None: {
@@ -1469,13 +1490,17 @@ def run() -> int:
             "bingo": {"done": 12, "total": 25, "lines": 1},
             "targets": [{"user_id": 2, "alias": "队友"}]}
         _gh = _GU.group_page("TOK", 1)
-        # 六件衫页要在 mock 还有效时渲染——放到 finally 之后就只能连真服务器了
+        # 六件衫页和动态页都要在 mock 还有效时渲染——放到 finally 之后就只能
+        # 连真服务器、走错误分支，断言永远失败。
         _shp = _GU.shirts_page("TOK", 1)
+        _fdp = _GU.feed_page("TOK", 1)
+        _fdo = _GU.feed_page("TOK", 1, "", 9)
     finally:
         _GP.detail, _GP.board, _GP.challenge_list = _gd, _gb, _gc
         _GP.week = _gw
         _GP.season = _gs
         _GP.map_data = _gm
+        _GP.feed = _gf
 
     # 榜单/赛事/设置三块直接铺在页面上，不再各发一个盒子
     assert 'class="flat"' in _gh, "组页又给数据块套上卡片了"
@@ -1536,6 +1561,14 @@ def run() -> int:
     assert "本周跑步里程" in _shp_html, "衫页没写口径"
     assert "2 我 9.0 km" in _shp_html, "衫页没列第 2 名"
     assert "本周没有数据" in _shp_html, "没数据的衫（圆点衫）没给出说明"
+
+    # 动态：组页只给最近几条 + 入口；详情页有表情按钮和留言框
+    assert "大家的动态" in _gh and f"/groups/1/feed" in _gh, "组页没有动态区"
+    assert 'class="frow"' in _gh, "组页动态没有按行渲染"
+    assert "大家最近" in _fdp and "跑步" in _fdp, "动态列表页没渲染出来"
+    assert "/feed?act=9" in _fdp, "动态列表没有进详情页的链接"
+    assert 'name="emoji"' in _fdo and 'name="text"' in _fdo, "详情页没有表情/留言入口"
+    assert "没有轨迹、没有配速、没有活动图" in _fdp, "动态页没写明只给概要"
 
     # ---- P2 口径守卫：数字必须两端同一套，否则用户看到的格数和服务端记的
     # 对不上，而且这种偏差没人会主动报 bug，只会觉得「徽章不准」。
