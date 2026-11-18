@@ -150,14 +150,21 @@ def send_code(account: str) -> dict:
     return d
 
 
-def verify(account: str, code: str) -> dict:
+def verify(account: str, code: str, nickname: str = "") -> dict:
+    """验证码登录。`nickname` 只在服务端判定为**新账号**时写入。
+
+    老账号传了也不会覆盖——登录接口分不清「他想改名」和「他随手填了一下」，
+    真改名走 `set_nickname()`。
+    """
     account = str(account or "").strip().lower() if "@" in str(account) else str(account).strip()
     code = str(code or "").strip()
     if not code:
         return {"ok": False, "error": "请输入验证码"}
-    ok, d = request("POST", "/v1/auth",
-                    {"account": account, "code": code, "device_name": "app"},
-                    need_auth=False)
+    body = {"account": account, "code": code, "device_name": "app"}
+    nick = str(nickname or "").strip()[:16]
+    if nick:
+        body["nickname"] = nick
+    ok, d = request("POST", "/v1/auth", body, need_auth=False)
     if ok and d.get("ok") and d.get("token"):
         _save(account_token=d["token"], account_label=account)
         # 迁移完成后把老字段清掉，避免两处令牌互相打脸
@@ -169,4 +176,13 @@ def verify(account: str, code: str) -> dict:
 
 def me() -> dict:
     ok, d = request("GET", "/v1/me")
+    return d if ok else d
+
+
+def set_nickname(nickname: str) -> dict:
+    """改账号昵称。组内昵称是另一件事（组页设置里改），互不影响。"""
+    nick = str(nickname or "").strip()[:16]
+    if not nick:
+        return {"ok": False, "error": "昵称不能为空"}
+    ok, d = request("POST", "/v1/me/nickname", {"nickname": nick})
     return d if ok else d

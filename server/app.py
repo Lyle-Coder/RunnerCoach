@@ -336,6 +336,9 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY,
             phone TEXT UNIQUE NOT NULL,              -- 账号：手机号或邮箱；匿名兼容账号为 ''
             balance INTEGER NOT NULL DEFAULT 0,      -- 微元（流水推导的缓存）
+            -- 账号昵称：建组 / 入组时的默认名字。没有它的话每建一个组都要
+            -- 重新想一次「我在这个组叫什么」，而同一个人本来就叫那个名字。
+            nickname TEXT NOT NULL DEFAULT '',
             created_at INTEGER NOT NULL,
             revoked INTEGER NOT NULL DEFAULT 0
         );
@@ -396,6 +399,7 @@ def init_db() -> None:
             phone TEXT NOT NULL, ip TEXT DEFAULT '', ts INTEGER NOT NULL
         );
         """)
+    _migrate_users()
 
 
 class Gate(Exception):
@@ -428,6 +432,14 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _migrate_users() -> None:
+    """老库补 nickname 列。CREATE TABLE IF NOT EXISTS 不会改已有表。"""
+    with db() as c:
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(users)")}
+        if "nickname" not in cols:
+            c.execute("ALTER TABLE users ADD COLUMN nickname TEXT NOT NULL DEFAULT ''")
+
+
 def _auth(headers) -> sqlite3.Row:
     """验证设备令牌，返回 device 行（JOIN users）。"""
     raw = headers.get("Authorization") or ""
@@ -443,7 +455,7 @@ def _auth(headers) -> sqlite3.Row:
     with db() as c:
         row = c.execute("""
             SELECT d.id AS dev_id, d.user_id, d.name AS dev_name, d.revoked AS dev_revoked,
-                   d.last_seen, u.phone, u.balance, u.revoked
+                   d.last_seen, u.phone, u.balance, u.revoked, u.nickname
             FROM devices d JOIN users u ON u.id=d.user_id WHERE d.token_hash=?
         """, (_hash(token),)).fetchone()
     if not row or row["dev_revoked"] or row["revoked"]:
@@ -570,6 +582,9 @@ def api_auth(body: dict, ip: str) -> dict:
     account = raw.lower() if "@" in raw else raw
     code = str(body.get("code") or "").strip()
     dev_name = str(body.get("device_name") or "")[:40]
+    # 昵称只在**新号**时写入，老号不覆盖：登录接口不知道用户是不是有意改名，
+    # 每次登录都刷一遍会把他在别处改过的名字打回去。
+    nick = str(body.get("nickname") or "").strip()[:16]
     if account_kind(account) is None:
         raise Gate(400, "请输入正确的手机号或邮箱")
     if not code:
@@ -587,8 +602,8 @@ def api_auth(body: dict, ip: str) -> dict:
         c.execute("DELETE FROM sms_pending WHERE phone=?", (account,))
         u = c.execute("SELECT * FROM users WHERE phone=?", (account,)).fetchone()
         if u is None:
-            cur = c.execute("INSERT INTO users(phone,balance,created_at) VALUES(?,?,?)",
-                            (account, 0, now))
+            cur = c.execute("INSERT INTO users(phone,balance,nickname,created_at)"
+                            " VALUES(?,?,?,?)", (account, 0, nick, now))
             user_id = cur.lastrowid
             after = _ledger(c, user_id, "grant", FREE_GRANT, "新用户赠送")
             created = True
@@ -640,11 +655,22 @@ def api_me(row: sqlite3.Row) -> dict:
         devices = c.execute("SELECT id,name,last_seen,revoked FROM devices"
                             " WHERE user_id=? ORDER BY id DESC", (row["user_id"],)).fetchall()
     return {"ok": True, "phone_masked": _mask(row["phone"]),
+            "nickname": str(row["nickname"] or ""),
             "balance": row["balance"] / 1e6, "currency": "CNY",
             "used_month": used / 1e6,
             "devices": [{"id": d["id"], "name": d["name"],
                          "last_seen": d["last_seen"], "revoked": bool(d["revoked"])}
                         for d in devices]}
+
+
+def api_set_nickname(row: sqlite3.Row, body: dict) -> dict:
+    """改账号昵称。组内昵称是另一件事（group_members.alias），互不影响。"""
+    nick = str(body.get("nickname") or "").strip()[:16]
+    if not nick:
+        raise Gate(400, "昵称不能为空")
+    with db() as c:
+        c.execute("UPDATE users SET nickname=? WHERE id=?", (nick, row["user_id"]))
+    return {"ok": True, "nickname": nick}
 
 
 def api_redeem(row: sqlite3.Row, body: dict) -> dict:
@@ -1356,6 +1382,8 @@ class Handler(BaseHTTPRequestHandler):
                 except Gate:
                     row = None
                 return self._json(api_device(row, body))
+            if self.path == "/v1/me/nickname":
+                return self._json(api_set_nickname(_auth(self.headers), body))
             if self.path == "/v1/redeem":
                 return self._json(api_redeem(_auth(self.headers), body))
             if self.path == "/v1/orders":

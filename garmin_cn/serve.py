@@ -1537,11 +1537,19 @@ class _Handler(SimpleHTTPRequestHandler):
                         return self._see_other("/account?" + urlencode(q))
                     msg, back = r.get("error") or "发送失败", "/account"
                 elif act == "login":
-                    r = AC.verify(acct, values.get("code"))
+                    # 昵称只在服务端判定为新账号时生效，老账号传了也不会被覆盖
+                    r = AC.verify(acct, values.get("code"),
+                                  values.get("nickname") or "")
                     if r.get("ok"):
                         return self._see_other("/groups")
                     msg = r.get("error") or "登录失败"
                     back = "/account?" + urlencode({"account": acct})
+                elif act == "nickname":
+                    r = AC.set_nickname(values.get("nickname") or "")
+                    if r.get("ok"):
+                        return self._see_other(
+                            "/account?" + urlencode({"msg": f"昵称已改成「{r['nickname']}」"}))
+                    msg, back = r.get("error") or "改名失败", "/account"
                 elif act == "logout":
                     AC.logout()
                     return self._see_other("/account")
