@@ -422,6 +422,23 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .lgi b{font-weight:600;color:var(--muted)}
 /* setrow 的左侧标签默认会被 flex 压缩换行（「路线共／享」），有需要时钉住 */
 .nowrap{white-space:nowrap;flex:0 0 auto}
+/* 六件衫：一行一件。左色点 / 中榜名 / 右得主与成绩 / 下面一行小字写口径和前 2、3 名。
+   不用卡片：这是张榜单，不是六个功能入口。 */
+.shirtlist .shr{display:grid;grid-template-columns:10px 1fr auto;gap:2px 9px;
+  padding:9px 0;border-bottom:1px solid var(--line2)}
+.shirtlist .shr:last-child{border-bottom:0}
+.shr .dot{width:10px;height:10px;border-radius:50%;margin-top:3px;
+  box-shadow:0 0 0 1px rgba(255,255,255,.34), inset 0 0 0 1px rgba(0,0,0,.18)}
+.shr .t{font-size:13px;font-weight:600;color:var(--ink)}
+.shr .v{font-size:12px;color:var(--ink2);text-align:right;white-space:nowrap}
+.shr .v b{font-weight:600;color:var(--ink)}
+.shr .v i{font-style:normal;color:var(--muted);margin-left:5px}
+.shr .v .none{color:var(--faint);font-weight:400}
+.shr .h{grid-column:2/4;font-size:11px;color:var(--faint);line-height:1.5}
+.shr .r3{margin-left:8px}
+.shr .r3 .rest{margin-right:8px}
+.shirtlink{display:contents}
+.sbit.jump{color:var(--brand-ink);font-weight:600}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，

@@ -1382,6 +1382,8 @@ def run() -> int:
 
     _gd, _gb, _gc = _GP.detail, _GP.board, _GP.challenge_list
     _gw = getattr(_GP, "week", None)
+    _gs = getattr(_GP, "season", None)
+    _gm = getattr(_GP, "map_data", None)
 
     def _fake_detail(_gid):
         return {"ok": True, "group": {
@@ -1406,6 +1408,49 @@ def run() -> int:
             "summary": {"members": 2, "shown": 2, "hidden": 0,
                         "total_distance_m": 21000}}
         _GP.challenge_list = lambda gid, today=None: {"ok": True, "challenges": []}
+        # 六件衫：带榜名、口径、前 3 名。不 mock 的话组页那一行整块不显示，
+        # 下面关于「点点是什么」的断言就测了个空。
+        _shirt = lambda i, n, t, c, f, h, top: {
+            "id": i, "name": n, "title": t, "color": c, "field": f,
+            "unit": "", "hint": h,
+            "winners": [{"user_id": 2, "alias": "队友"}] if top else [],
+            "top": ([{"user_id": 2, "alias": "队友", "text": top[0]},
+                     {"user_id": 1, "alias": "我", "text": top[1]}] if top else [])}
+        _GP.season = lambda gid, today=None: {
+            "ok": True, "base_max": 90.0, "bonus_max": 10.0, "hidden": 0,
+            "people": [
+                {"user_id": 2, "alias": "队友", "rank": 1, "score": 81.2,
+                 "km": 12.0, "days": 3, "elev": 0, "streak": 3, "plan_rate": 1.0,
+                 "progress": 0.12, "title": "远征队长",
+                 "shirts": [{"id": "yellow", "name": "黄衫", "title": "里程王",
+                             "color": "#E8C43A"}]},
+                {"user_id": 1, "alias": "我", "rank": 2, "score": 63.8,
+                 "km": 9.0, "days": 2, "elev": 0, "streak": 2, "plan_rate": 0.5,
+                 "progress": 0.05, "title": "", "shirts": []}],
+            "me": {"user_id": 1, "alias": "我", "rank": 2, "score": 63.8,
+                   "km": 9.0, "days": 2, "elev": 0, "streak": 2, "plan_rate": 0.5,
+                   "progress": 0.05, "title": "", "shirts": []},
+            "shirts": [
+                _shirt("yellow", "黄衫", "里程王", "#E8C43A", "km",
+                       "本周跑步里程", ("12.0 km", "9.0 km")),
+                _shirt("green", "绿衫", "出勤王", "#3FA76A", "days",
+                       "本周有运动的天数", ("3 天", "2 天")),
+                _shirt("polka", "圆点衫", "爬升王", "#D8DEE9", "elev",
+                       "本周累计爬升", ()),
+                _shirt("white", "白衫", "进步王", "#F2F5FA", "progress",
+                       "比上周多跑了多少", ("+12%", "+5%")),
+                _shirt("red", "红衫", "计划完成王", "#D9534F", "plan_rate",
+                       "有课的日子里完成了多少", ("100%", "50%")),
+                _shirt("blue", "蓝衫", "连续王", "#4C8DF6", "streak",
+                       "本周最长连续出勤", ("3 天", "2 天"))],
+            "explore": {"min_cells": 5, "badges": []},
+            "max": {"km": 12.0, "days": 3, "elev": 0, "streak": 3,
+                    "progress": 0.12, "explorer": 0},
+            "goal": {"km": None, "max": 1000.0, "reported": False},
+            "predict": {"mine": None, "bonus": {}}}
+        _GP.map_data = lambda gid, today=None: {
+            "ok": True, "from": "2026-11-16", "to": "2026-11-22",
+            "people": [], "hidden": 2, "cells": 0}
         # P2 的「本周」块：目标 + 结对 + 预言。不 mock 会去连真服务器，
         # 虽然失败很快，但每次自检都白等一次连接。
         _GP.week = lambda gid, today=None: {
@@ -1424,9 +1469,13 @@ def run() -> int:
             "bingo": {"done": 12, "total": 25, "lines": 1},
             "targets": [{"user_id": 2, "alias": "队友"}]}
         _gh = _GU.group_page("TOK", 1)
+        # 六件衫页要在 mock 还有效时渲染——放到 finally 之后就只能连真服务器了
+        _shp = _GU.shirts_page("TOK", 1)
     finally:
         _GP.detail, _GP.board, _GP.challenge_list = _gd, _gb, _gc
         _GP.week = _gw
+        _GP.season = _gs
+        _GP.map_data = _gm
 
     # 榜单/赛事/设置三块直接铺在页面上，不再各发一个盒子
     assert 'class="flat"' in _gh, "组页又给数据块套上卡片了"
@@ -1468,6 +1517,20 @@ def run() -> int:
     assert _i_rank < _gh.find("<h2>探索</h2>"), "探索排到榜单前面了"
     # 组内足迹入口
     assert "/map" in _gh and "组内足迹" in _gh, "组页没有组内足迹入口"
+
+    # 颜色点不能只有颜色：每一件都要写出「衫名·榜名」，否则新来的人只看到
+    # 一排小圆点，不知道黄衫是里程榜。组页那行还得能点进六件衫。
+    assert "黄衫·里程王" in _gh, "衫行只写了「黄衫 阿狗」，没说是哪个榜"
+    assert "红衫·计划完成王" in _gh, "长榜名（计划完成王）没显示出来"
+    assert "/shirts" in _gh and "六件衫" in _gh, "组页没有进六件衫的入口"
+
+    _shp_html = _shp
+    assert "本周六件衫" in _shp_html, "六件衫页没渲染出来"
+    for _nm in ("黄衫", "绿衫", "圆点衫", "白衫", "红衫", "蓝衫"):
+        assert _nm in _shp_html, f"六件衫页缺 {_nm}"
+    assert "本周跑步里程" in _shp_html, "衫页没写口径"
+    assert "2 我 9.0 km" in _shp_html, "衫页没列第 2 名"
+    assert "本周没有数据" in _shp_html, "没数据的衫（圆点衫）没给出说明"
 
     # ---- P2 口径守卫：数字必须两端同一套，否则用户看到的格数和服务端记的
     # 对不上，而且这种偏差没人会主动报 bug，只会觉得「徽章不准」。

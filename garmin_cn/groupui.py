@@ -393,6 +393,59 @@ def _map_svg(pts, people, bm, EX, BM) -> str:
             f'<g clip-path="url(#gmclip)">{bg}{veil}{paths}{credit}</g></svg>')
 
 
+# ---------------------------------------------------------------- 六件衫
+def shirts_page(token: str, gid: int, message: str = "") -> str:
+    """六件衫：每件在比什么、现在谁领跑、前 3 名是谁。
+
+    单独一页，是因为组页那一行只说得出「黄衫 阿狗」。颜色和名字本身不表意，
+    不给口径和前几名，新来的人只会看到一排小圆点。
+    """
+    from . import group as G
+
+    today = dt.date.today().isoformat()
+    se = G.season(gid, today)
+    if not se.get("ok"):
+        body = (_msg(message)
+                + f'<div class="card"><p class="note">{esc(se.get("error") or "打不开六件衫")}</p>'
+                f'<div class="pager"><a class="btn" href="/groups/{gid}">返回小组</a></div></div>')
+        return page("GROUP", "六件衫", "", body, back=("返回小组", f"/groups/{gid}"))
+
+    rows = ""
+    for sh in se.get("shirts") or []:
+        top = sh.get("top") or []
+        names = [str(w.get("alias") or "") for w in (sh.get("winners") or [])]
+        if names and top:
+            head = (f'<b>{esc("/".join(names))}</b>'
+                    f'<i>{esc(top[0].get("text") or "")}</i>')
+        elif top:
+            # 有数据但不算得主（白衫要求本周确实涨了）：说清楚为什么没发
+            head = '<span class="none">本周没人达标</span>'
+        else:
+            head = '<span class="none">本周没有数据</span>'
+        rest = ""
+        for i, t in enumerate(top[1:], 2):
+            rest += f'<span class="rest">{i} {esc(t.get("alias"))} {esc(t.get("text"))}</span>'
+        rows += ('<div class="shr">'
+                 f'<i class="dot" style="background:{esc(sh.get("color"))}"></i>'
+                 f'<div class="t">{esc(sh.get("name"))} · {esc(sh.get("title"))}</div>'
+                 f'<div class="v">{head}</div>'
+                 f'<div class="h">{esc(sh.get("hint"))}'
+                 + (f'<span class="r3">{rest}</span>' if rest else "")
+                 + '</div></div>')
+
+    body = (_msg(message)
+            + sec("本周六件衫", '<div class="shirtlist">' + rows + '</div>')
+            + '<p class="note">每人每周最多穿几件都可以。每件都只算本周、只算跑步类；'
+              '关掉共享的人不参与评衫。探索徽章（新踩 5 格）不占衫，单独发。</p>')
+
+    mine = (se.get("me") or {})
+    got = [s["name"] for s in (mine.get("shirts") or [])]
+    sub = ("我穿着 " + "、".join(got)) if got else "本周还没穿上衫"
+    return page("GROUP", "六件衫", sub, body,
+                foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+                back=("返回小组", f"/groups/{gid}"))
+
+
 # ---------------------------------------------------------------- 组详情
 def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> str:
     from . import group as G
@@ -588,11 +641,16 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
         for sh in _se.get("shirts") or []:
             names = [str(w.get("alias") or "") for w in (sh.get("winners") or [])]
             if names:
+                # 带上榜名：只写「黄衫 阿狗」的话，没看过规则的人不知道那是里程榜
                 win.append(f'<span class="sbit"><i style="background:'
-                           f'{esc(sh.get("color"))}"></i>{esc(sh.get("name"))} '
-                           f'{esc("/".join(names))}</span>')
+                           f'{esc(sh.get("color"))}"></i>{esc(sh.get("name"))}·'
+                           f'{esc(sh.get("title"))} {esc("/".join(names))}</span>')
         if win:
-            score_line += '<div class="sline2">' + "".join(win) + "</div>"
+            # 整行可点进「六件衫」，末尾再给一个显式箭头——不然没人知道这排
+            # 彩色小点是个入口
+            score_line += ('<div class="sline2"><a class="shirtlink" href="'
+                           f'/groups/{gid}/shirts">' + "".join(win)
+                           + '<span class="sbit jump">六件衫 ›</span></a></div>')
     if not score_line:
         score_line = ""
 

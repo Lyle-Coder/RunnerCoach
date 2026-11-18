@@ -92,17 +92,35 @@ SEASON = {
     ],
     "shirts": [
         {"id": "yellow", "name": "黄衫", "title": "里程王", "color": "#E8C43A",
-         "winners": [{"user_id": 2, "alias": "阿狗"}]},
+         "field": "km", "unit": "km", "hint": "本周跑步里程",
+         "winners": [{"user_id": 2, "alias": "阿狗"}],
+         "top": [{"user_id": 2, "alias": "阿狗", "text": "42.3 km"},
+                 {"user_id": 1, "alias": "老李", "text": "38.1 km"},
+                 {"user_id": 3, "alias": "小赵", "text": "12.8 km"}]},
         {"id": "green", "name": "绿衫", "title": "出勤王", "color": "#3FA76A",
-         "winners": [{"user_id": 2, "alias": "阿狗"}]},
+         "field": "days", "unit": "天", "hint": "本周有运动的天数",
+         "winners": [{"user_id": 2, "alias": "阿狗"}],
+         "top": [{"user_id": 2, "alias": "阿狗", "text": "5 天"},
+                 {"user_id": 1, "alias": "老李", "text": "4 天"},
+                 {"user_id": 3, "alias": "小赵", "text": "2 天"}]},
         {"id": "polka", "name": "圆点衫", "title": "爬升王", "color": "#D8DEE9",
-         "winners": []},
+         "field": "elev", "unit": "m", "hint": "本周累计爬升",
+         "winners": [], "top": []},
         {"id": "white", "name": "白衫", "title": "进步王", "color": "#F2F5FA",
-         "winners": [{"user_id": 2, "alias": "阿狗"}]},
+         "field": "progress", "unit": "%", "hint": "比上周多跑了多少",
+         "winners": [{"user_id": 2, "alias": "阿狗"}],
+         "top": [{"user_id": 2, "alias": "阿狗", "text": "+12%"},
+                 {"user_id": 1, "alias": "老李", "text": "+5%"}]},
         {"id": "red", "name": "红衫", "title": "计划完成王", "color": "#D9534F",
-         "winners": [{"user_id": 2, "alias": "阿狗"}]},
+         "field": "plan_rate", "unit": "%", "hint": "有课的日子里完成了多少",
+         "winners": [{"user_id": 2, "alias": "阿狗"}],
+         "top": [{"user_id": 2, "alias": "阿狗", "text": "100%"},
+                 {"user_id": 1, "alias": "老李", "text": "75%"}]},
         {"id": "blue", "name": "蓝衫", "title": "连续王", "color": "#4C8DF6",
-         "winners": [{"user_id": 1, "alias": "老李"}]},
+         "field": "streak", "unit": "天", "hint": "本周最长连续出勤",
+         "winners": [{"user_id": 1, "alias": "老李"}],
+         "top": [{"user_id": 1, "alias": "老李", "text": "3 天"},
+                 {"user_id": 2, "alias": "阿狗", "text": "3 天"}]},
     ],
 }
 SEASON["me"] = SEASON["people"][1]
@@ -180,6 +198,18 @@ def main() -> int:
     _p2 = OUT / "bingo.html"
     _p2.write_text(_bh, encoding="utf-8")
     print(f"{_p2}  {len(_bh)} 字节")
+
+    # 六件衫页：让选中的几个衫标记成"我的"
+    for _s in SEASON["shirts"]:
+        _s["winners"] = [w for w in _s.get("winners") or []]
+    _sh = GU.shirts_page("TOK", GID)
+    for prefix, sub in (("/content/", "garmin_cn/content"),):
+        _sh = _sh.replace(f'"{prefix}', f'"{ (ROOT / sub).as_uri()}/')
+    _sh = _sh.replace("</body>", '<style>html{background:#05080d}'
+                                 'body{width:420px;margin:0;padding:0 14px}</style></body>')
+    _p3 = OUT / "shirts.html"
+    _p3.write_text(_sh, encoding="utf-8")
+    print(f"{_p3}  {len(_sh)} 字节")
     return 0
 
 
