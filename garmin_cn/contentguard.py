@@ -94,6 +94,66 @@ def _text_hit(p: Path) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------- 文案指纹
+# 上面那套规则认的是"结构"（字段名、文件名、选项组合），拦得住整份数据文件，
+# 拦不住"顺手抄一段文案进代码"。真实发生过：预览工具里硬编码了五个结局的
+# 完整正文，工具在公开仓库里，等于把最值钱的部分印在 README 旁边。
+#
+# 所以再加一道：从服务端内容里取结局的 line / text 当指纹，扫全仓。
+# 只认原样搬运，改写了认不出来——这是防"手滑"，不是防"翻译改写"。
+STORY_FILE = ("server", "content", "expedition_events.json")
+SKIP_DIRS = (".git", "preview", "dist", "node_modules", "__pycache__",
+             "android/app/build", "android/app/src/main/python",
+             "server/content", "server/data")
+SCAN_SUFFIX = (".py", ".json", ".md", ".html", ".htm", ".js", ".sh", ".txt")
+
+
+def story_fingerprints(root: Path | None = None) -> list[str]:
+    """从服务端内容里取几段正文。取不到就返回空（别人 clone 下来必然取不到）。"""
+    root = Path(root) if root else Path(__file__).resolve().parent.parent
+    p = root.joinpath(*STORY_FILE)
+    if not p.is_file():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[str] = []
+    for _key, e in (data.get("endings") or {}).items():
+        if not isinstance(e, dict):
+            continue
+        for field in ("line", "text"):
+            t = str(e.get(field) or "").strip()
+            if len(t) >= 12:          # 太短的（"抵达"）会误报，不要
+                out.append(t[:16])
+    return out
+
+
+def scan_story_copy(root: Path | None = None) -> list[dict]:
+    """仓库里有没有原样抄走的正文。空列表 = 干净。"""
+    root = Path(root) if root else Path(__file__).resolve().parent.parent
+    fps = story_fingerprints(root)
+    if not fps:
+        return []
+    issues = []
+    for p in root.rglob("*"):
+        if not p.is_file() or p.suffix.lower() not in SCAN_SUFFIX:
+            continue
+        rel = str(p.relative_to(root)).replace("\\", "/")
+        if any(rel.startswith(d) or f"/{d}/" in f"/{rel}" for d in SKIP_DIRS):
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for fp in fps:
+            if fp in text:
+                issues.append({"file": rel,
+                               "why": f"抄了服务端正文（「{fp[:8]}…」）"})
+                break
+    return issues
+
+
 def scan(root: Path | None = None, dirs=DEFAULT_DIRS) -> list[dict]:
     """返回问题清单；空列表 = 干净。"""
     root = Path(root) if root else Path(__file__).resolve().parent.parent
