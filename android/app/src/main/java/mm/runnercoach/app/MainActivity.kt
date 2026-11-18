@@ -3506,7 +3506,7 @@ class MainActivity : Activity() {
                 if (silent && prefs.getString("update_skipped", "") == tag) return@ui
                 val notes = r.optString("notes", "")
                 val tv = TextView(this).apply {
-                    text = notes.ifBlank { "本次更新未提供说明，下载后可从系统下载记录打开安装。" }
+                    text = notes.ifBlank { "本次更新未提供说明。下载完会自动打开发安装器。" }
                     textSize = 13f
                     setPadding(dp(20), dp(8), dp(20), dp(8))
                 }
@@ -3517,7 +3517,14 @@ class MainActivity : Activity() {
                     .setPositiveButton(if (r.optString("apk").isBlank()) "查看发布页" else "下载 APK") { _, _ ->
                         downloadUpdate(r)
                     }
-                    .setNeutralButton("下载记录") { _, _ -> openUpdateDownloads() }
+                    .setNeutralButton("手动下载") { _, _ ->
+                        try {
+                            startActivity(Intent(Intent.ACTION_VIEW,
+                                Uri.parse(r.optString("url"))))
+                        } catch (_: Exception) {
+                            toast("打不开浏览器")
+                        }
+                    }
                     .setNegativeButton("稍后") { _, _ ->
                         prefs.edit().putString("update_skipped", tag).apply()
                     }
@@ -3533,41 +3540,82 @@ class MainActivity : Activity() {
             openUpdatePage(release.optString("page", release.optString("url")))
             return
         }
+        // 走 Python 下载（8443 加密），不用系统下载管理器。原因写在
+        // appapi.apk_fetch 的注释里：下载管理器只信系统根证书，认不了自签
+        // 证书；退回明文 http 又会被 networkSecurityConfig 拦掉（targetSdk 34
+        // 默认禁明文，DownloadManager 同样受约束），表现就是「下载失败 0.00 B」。
+        val tls = release.optString("url_tls")
+        if (tls.isBlank()) {
+            // 老服务端没有 url_tls：给浏览器兜底，别再往下载管理器里塞明文地址
+            tipsDownloadFailed(release, "这个版本的更新信息缺少加密下载地址")
+            return
+        }
+        val sizeMb = release.optInt("size", 0) / 1048576.0
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("正在下载 " + release.optString("latest"))
+            .setMessage(if (sizeMb > 0.5)
+                String.format("安装包 %.0f MB，请保持网络畅通。下载完会自动打开发安装器。", sizeMb)
+            else "正在下载，下载完会自动打开发安装器。")
+            .setCancelable(false)
+            .create()
+        dlg.show()
         thread {
-            try {
-                val state = ApkDownload.enqueue(applicationContext, release.optString("url"), name)
-                ui {
-                    when (state) {
-                        ApkDownload.State.QUEUED -> toast("已开始下载 APK，完成后点系统下载通知安装；文件在「下载/RunnerCoach」")
-                        ApkDownload.State.RUNNING -> {
-                            toast("该版本正在下载，可在系统下载记录查看进度")
-                            openUpdateDownloads()
-                        }
-                        ApkDownload.State.DOWNLOADED -> {
-                            toast("该版本已下载，请在下载记录中打开 APK 安装")
-                            openUpdateDownloads()
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "无法启动 APK 下载", e)
-                ui {
-                    AlertDialog.Builder(this)
-                        .setTitle("无法开始下载")
-                        .setMessage("请确认系统下载管理器已启用，并检查下载目录是否可用。也可以到发布页手动下载。")
-                        .setPositiveButton("查看发布页") { _, _ -> openUpdatePage(release.optString("page")) }
-                        .setNegativeButton("关闭", null)
-                        .show()
+            val r = apiCall("apk_fetch", tls, release.optString("sha256"), name)
+            ui {
+                dlg.dismiss()
+                val path = r.optString("path")
+                if (r.optBoolean("ok") && path.isNotBlank()) {
+                    installApk(path)
+                } else {
+                    tipsDownloadFailed(release, r.optString("error", "未知原因"))
                 }
             }
         }
     }
 
-    private fun openUpdateDownloads() {
+    /** 下载失败：说清原因，并给一条「用浏览器打开」的路（浏览器不拦明文）。 */
+    private fun tipsDownloadFailed(release: JSONObject, why: String) {
+        val http = release.optString("url")
+        AlertDialog.Builder(this)
+            .setTitle("下载失败")
+            .setMessage(why + "\n\n可以改用浏览器下载：打开链接后点安装即可。")
+            .setPositiveButton("用浏览器打开") { _, _ ->
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(http)))
+                } catch (_: Exception) {
+                    toast("打不开浏览器，请手动复制链接")
+                }
+            }
+            .setNeutralButton("复制链接") { _, _ ->
+                copyText(http, "链接已复制")
+            }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    /**
+     * 拉起系统安装器。
+     *
+     * 必须用 content://（ApkProvider），file:// 在 Android 7+ 会直接抛
+     * FileUriExposedException。第一次装会弹「允许安装未知应用」，
+     * 引导用户去设置授权是系统行为，这里不用自己处理。
+     */
+    private fun installApk(path: String) {
+        val f = java.io.File(path)
+        if (!f.isFile) {
+            toast("安装包不在了，请重新下载")
+            return
+        }
+        val uri = Uri.parse("content://$packageName.apk/" + f.name)
+        val it = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
         try {
-            startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS))
-        } catch (_: Exception) {
-            toast("请在文件管理器的「下载/RunnerCoach」中查看 APK")
+            startActivity(it)
+        } catch (e: Exception) {
+            Log.w(TAG, "拉起安装器失败", e)
+            toast("打不开安装器：" + (e.message ?: e.javaClass.simpleName))
         }
     }
 

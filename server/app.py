@@ -1119,6 +1119,38 @@ class Handler(BaseHTTPRequestHandler):
                     "error": SERVICE_CLOSED_MESSAGE}, 400)
         return True
 
+    def _send_apk(self, name: str) -> None:
+        """加密端口上的安装包下载。
+
+        8088 那条明文端口是给「浏览器手动下」和旧版客户端兜底的；App 内部的
+        更新走这里——系统下载管理器认不了自签证书，但 Python 认（内置 CA）。
+        走加密端口还能顺手解决 networkSecurityConfig 禁明文那条限制。
+        """
+        base = os.path.basename(name)
+        if (not base or base != name or ".." in base
+                or not base.lower().endswith(".apk")):
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        f = APK_DIR / base
+        if not f.is_file():
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        size = f.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.android.package-archive")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            with f.open("rb") as fh:
+                while True:
+                    chunk = fh.read(256 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        self.close_connection = True
+
     def _send_code(self, name: str) -> None:
         """代码包下载。只认目录里真实存在的 .zip，不做路径拼接。"""
         base = os.path.basename(name)
@@ -1256,6 +1288,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(api_code_latest())
             if self.path.split("?")[0].startswith("/v1/code/"):
                 return self._send_code(self.path.split("?")[0][len("/v1/code/"):])
+            if self.path.split("?")[0].startswith("/v1/apk/"):
+                return self._send_apk(self.path.split("?")[0][len("/v1/apk/"):])
             if self.path.split("?")[0] == "/v1/content/index":
                 return self._json(api_content_index())
             if self.path.split("?")[0].startswith("/v1/content/"):
@@ -1489,6 +1523,9 @@ def api_app_latest() -> dict:
         return {"ok": False, "error": "安装包文件不存在"}
     url = (f"http://{_apk_host()}:{APK_PORT}/apk/{fname}" if APK_PORT else "")
     return {"ok": True,
+            # 加密地址：App 内部更新走这条（系统下载管理器不认自签证书，
+            # 明文又会被 networkSecurityConfig 拦，所以只能 Python + TLS）
+            "url_tls": f"/v1/apk/{fname}",
             "version": str(meta.get("version") or ""),
             "version_code": int(meta.get("version_code") or 0),
             "file": fname,

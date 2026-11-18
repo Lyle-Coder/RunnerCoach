@@ -131,6 +131,12 @@ def from_server(cur: str, timeout: float = TIMEOUT) -> dict | None:
         "sha256": str(d.get("sha256") or ""),
         "size": int(d.get("size") or 0),
         "source": "server",
+        # 加密地址：App 内部下载用它。系统下载管理器只信系统根证书，
+        # 认不了自签证书；改走明文又会被 networkSecurityConfig 拦掉
+        # （targetSdk 34 默认禁明文，DownloadManager 也受这条约束）——
+        # 用户看到的就是「下载失败 0.00 B」。所以走 Python + TLS。
+        "url_tls": (f"{base}{d['url_tls']}"
+                    if str(d.get("url_tls") or "").startswith("/") else ""),
     }
 
 

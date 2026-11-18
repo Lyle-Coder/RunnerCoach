@@ -183,12 +183,24 @@ python tools/publish_apk.py --host <IP> --notes "这一版改了什么"
 → 写 `latest.json`（版本、大小、SHA256、说明）。App 启动时读
 `https://<IP>:8443/v1/app/latest`，再去 `http://<IP>:8088/apk/<文件>` 下载。
 
-**为什么下载是明文的**：手机端用系统 DownloadManager，它只信系统根证书，
-自签证书握手直接失败。APK 本身是公开物，安装时 Android 还会校验签名——
-明文影响的是"下载到什么"，不是"泄露什么"。元数据（版本、SHA256）仍走
-8443 加密通道。
+**App 内部更新走 8443，不走 8088**（1.5.2 起）：
 
-**防火墙要放行 8088**，否则手机下载超时（`smoke.sh` 会直接报出来）。
+| 路径 | 谁在用 | 为什么 |
+|---|---|---|
+| `https://<IP>:8443/v1/apk/<名>` | App 内的「下载更新」 | Python + 内置证书；能过 networkSecurityConfig |
+| `http://<IP>:8088/apk/<名>` | 浏览器手动下载（兜底） | 浏览器不拦明文，用户复制链接就能装 |
+
+这条路是为了修一个实测到的问题：**用系统 DownloadManager 下 apk 会立刻失败
+（0.00 B）**。两个原因叠在一起——
+
+1. DownloadManager 只认系统根证书，自签证书握手直接失败；
+2. 退回明文 http 又被 `networkSecurityConfig` 拦住（targetSdk 34 默认禁明文，
+   这条策略同样覆盖 DownloadManager，且 `domain` 里的 IP 不做通配）。
+
+所以改由 Python 下载（代码包本来就这么干），下完用自写的 `ApkProvider`
+把 `content://` 交给系统安装器。8088 留着是为了「浏览器兜底」和旧客户端。
+
+**防火墙仍要放行 8088**（浏览器兜底用）；8443 本来就得开。
 
 ## 八、日常
 
