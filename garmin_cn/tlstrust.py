@@ -26,6 +26,28 @@ from pathlib import Path
 
 CA_PATH = Path(__file__).resolve().parent / "content" / "server-ca.pem"
 
+
+def _resolve() -> Path:
+    """取实际的证书路径。
+
+    代码包走的是覆盖式更新：`tlstrust.py` 自己也可能来自下载目录，那时
+    `__file__` 指向 `HOME/code/<ver>/garmin_cn/`，那里**没有** content/。
+    找不到就是「没有内置证书」，所有 HTTPS 直接 CERTIFICATE_VERIFY_FAILED
+    ——看起来像「服务器挂了」，实际只是路径算错。
+
+    所以先看 CA_PATH（兼容测试里 monkeypatch 成临时文件），不存在再去包里找。
+    """
+    if CA_PATH.is_file():
+        return CA_PATH
+    try:
+        from . import codepack
+        p = codepack.pkg_file("content/server-ca.pem")
+        if p is not None:
+            return p
+    except Exception:      # noqa: BLE001 - 老包没有 codepack，按原逻辑走
+        pass
+    return CA_PATH
+
 _done: dict | None = None
 _orig = None      # 被替换之前的 ssl.create_default_context，reset() 用
 
@@ -35,7 +57,8 @@ def install() -> dict:
     global _done
     if _done is not None:
         return _done
-    if not CA_PATH.is_file():
+    ca = _resolve()
+    if not ca.is_file():
         _done = {"ok": False, "reason": "没有内置 server-ca.pem（用公共 CA 时正常）"}
         return _done
 
@@ -48,7 +71,7 @@ def install() -> dict:
     def _ctx(*args, **kwargs):
         ctx = orig(*args, **kwargs)
         try:
-            ctx.load_verify_locations(cafile=str(CA_PATH))
+            ctx.load_verify_locations(cafile=str(ca))
         except Exception:  # noqa: BLE001 - 证书坏了也不能让整个 App 起不来
             pass
         return ctx
@@ -58,7 +81,7 @@ def install() -> dict:
     ssl.create_default_context = _ctx          # type: ignore[assignment]
     ssl._create_default_https_context = _ctx   # type: ignore[attr-defined]
 
-    _done = {"ok": True, "path": str(CA_PATH)}
+    _done = {"ok": True, "path": str(ca)}
     return _done
 
 

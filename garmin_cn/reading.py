@@ -42,8 +42,20 @@ RACES = "races.json"
 
 
 def _read(name: str) -> dict:
-    """读一个内容文件：data/content 优先，其次包内。坏文件直接跳过。"""
-    for d in (OVERRIDE, BUNDLED):
+    """读一个内容文件：data/content 优先，其次包内。坏文件直接跳过。
+
+    包内那份要按 `__path__` 找而不是 `__file__`：本模块可能来自代码包，
+    那时 `PKG` 指向下载目录，而 terms.json / quotes.json 只随 APK 走。
+    """
+    cands = [OVERRIDE, BUNDLED]
+    try:
+        from . import codepack
+        q = codepack.pkg_file(f"content/{name}")
+        if q is not None:
+            cands.append(q.parent)
+    except Exception:      # noqa: BLE001
+        pass
+    for d in cands:
         p = d / name
         if not p.is_file():
             continue
