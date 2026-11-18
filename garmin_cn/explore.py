@@ -162,6 +162,59 @@ def week_new(store, today: str | None = None) -> dict[str, int]:
     return daily_new(store, start.isoformat(), day.isoformat())
 
 
+def cell_center(cell: str) -> tuple[float, float]:
+    """格子 ID → 中心经纬度（WGS-84，和轨迹数据同一套坐标）。
+
+    反算给地图用：格子里没有存经纬度，只存了格号，这里按同一个 d 反推回来。
+    """
+    a, b = str(cell).split(":")
+    d = CELL_M / M_PER_DEG
+    return (int(a) + 0.5) * d, (int(b) + 0.5) * d
+
+
+def cell_corners(cell: str) -> list[tuple[float, float]]:
+    """格子四角（左下、右下、右上、左上）。画方块时用，比一个点更像「一片区域」。"""
+    a, b = str(cell).split(":")
+    d = CELL_M / M_PER_DEG
+    y0, x0 = int(a) * d, int(b) * d
+    return [(y0, x0), (y0, x0 + d), (y0 + d, x0 + d), (y0 + d, x0)]
+
+
+def week_cells(store, today: str | None = None, min_m: float = 1000.0) -> list[str]:
+    """本周**跑过**的格子（不是「新增」）。
+
+    和探索徽章的区别：徽章只数第一次踩到的格，地图要的是「这周我的脚印覆盖了
+    哪一片」，所以老路也算。门槛降到 1 km——地图上 1 km 的绕圈也是一条线，
+    而徽章那边要 3 km 才值得记一笔。
+    """
+    day = dt.date.fromisoformat(today or dt.date.today().isoformat())
+    start = (day - dt.timedelta(days=day.weekday())).isoformat()
+    with store.conn:
+        rows = store.conn.execute("""
+            SELECT a.type, a.distance_m, d.payload
+              FROM activities a
+              JOIN activity_detail d ON d.activity_id = a.activity_id
+             WHERE a.date BETWEEN ? AND ? AND a.distance_m >= ?
+             ORDER BY a.date
+        """, (start, day.isoformat(), min_m)).fetchall()
+    seen: set[str] = set()
+    out: list[str] = []
+    for r in rows:
+        # 骑行也算「跑过哪片」吗？不算——这里和里程榜同口径，只认跑步类，
+        # 否则一条 60 km 的骑行会在地图上铺满半座城，把队友的脚印盖掉。
+        if not is_run(r["type"]):
+            continue
+        try:
+            payload = json.loads(r["payload"] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        for k in cells_of_track(payload.get("track") or []):
+            if k not in seen:
+                seen.add(k)
+                out.append(k)
+    return out
+
+
 def total_cells(store) -> int:
     """账本里一共有多少格。只用于诊断，不上报。"""
     with store.conn:
