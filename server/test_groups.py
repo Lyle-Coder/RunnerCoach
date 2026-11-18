@@ -532,8 +532,25 @@ def main() -> int:
     st, r = req("POST", f"/v1/group/{gid}/share", {"share": "off"}, b)
     st, r = req("POST", f"/v1/group/{gid}/goal", {"km": 20, "today": "2026-11-18"}, b)
     check("关了共享报目标被拒（409）", st == 409, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/bingo?today=2026-11-18", None, b)
+    check("关了共享也看不了 Bingo（409）", st == 409, f"{st} {r}")
     st, r = req("POST", f"/v1/group/{gid}/share", {"share": "summary"}, b)
     check("恢复共享", st == 200, f"{st} {r}")
+
+    # Bingo 卡
+    st, r = req("GET", f"/v1/group/{gid}/bingo?today=2026-11-18", None, a)
+    check("Bingo 卡可读", st == 200 and len(r.get("cells") or []) == 25, f"{st} {r}")
+    _cells = r.get("cells") or []
+    check("中心是免费格", _cells and _cells[12]["task"] == "free", str(_cells[12:13]))
+    check("已经跑出来的格子被点亮", int(r.get("done") or 0) >= 1, str(r.get("done")))
+    _c2 = req("GET", f"/v1/group/{gid}/bingo?today=2026-11-18", None, a)[1]
+    check("同一周再拉一次，卡不变",
+          [c["task"] for c in _c2.get("cells") or []] == [c["task"] for c in _cells])
+    st, r = req("GET", f"/v1/group/{gid}/week?today=2026-11-18", None, a)
+    check("Bingo 进度并进了 week",
+          (r.get("bingo") or {}).get("total") == 25, str(r.get("bingo")))
+    st, r = req("GET", f"/v1/group/{gid}/bingo?today=2026-11-18", None, c3)
+    check("非成员看不了 Bingo（403）", st == 403, f"{st} {r}")
 
     # ---------------- 账号昵称
     print("\n12. 账号昵称")

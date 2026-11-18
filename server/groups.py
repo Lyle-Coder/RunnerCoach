@@ -848,6 +848,12 @@ def api_week(me, gid: int, query: dict) -> dict:
             SELECT user_id, SUM(distance_m) m FROM group_daily
              WHERE group_id=? AND date BETWEEN ? AND ? GROUP BY user_id
         """, (gid, wf.isoformat(), min(wt, today).isoformat())).fetchall()
+        # Bingo 要的是「我这一周的日明细」，不是合计——一半任务问的是「有一天」
+        my_rows = c.execute(
+            "SELECT date, distance_m, duration_s, acts, plan_done, explorer"
+            " FROM group_daily WHERE group_id=? AND user_id=? AND date BETWEEN ? AND ?"
+            " ORDER BY date",
+            (gid, uid, wf.isoformat(), min(wt, today).isoformat())).fetchall()
         suggest = _suggest_goal(c, gid, uid, wf)
     alias = {int(m["user_id"]): m["alias"] for m in mem}
     actual = {int(r["user_id"]): round(float(r["m"] or 0) / 1000.0, 1) for r in agg}
@@ -884,7 +890,17 @@ def api_week(me, gid: int, query: dict) -> dict:
     pres = ranking.prediction_result(pred_map, actual, goals)
     my_pred = pred_map.get(uid)
 
+    # Bingo 只报个进度（几点亮 / 几条线），整张卡另外用 /bingo 拉。
+    # 组页要的就是一行字，没必要每次进组都传 25 个格子。
+    import bingo as B
+
+    _my_rows = [dict(r) for r in my_rows]
+    _bm = ranking.metrics(_my_rows, [])
+    _bcard = B.card_for(_my_rows, _bm, gid, uid, wf.isoformat())
+
     return {"ok": True, "from": wf.isoformat(), "to": wt.isoformat(),
+            "bingo": {"done": _bcard["done"], "total": _bcard["total"],
+                      "lines": _bcard["line_count"]},
             "goal": {"km": goals.get(uid), "suggest": suggest,
                      "reported": uid in goals},
             "pairs": built,
@@ -900,6 +916,41 @@ def api_week(me, gid: int, query: dict) -> dict:
                         if int(m["user_id"]) != uid
                         and (m["share_level"] or "summary") == "summary"
                         and int(m["user_id"]) in goals]}
+
+
+def api_bingo(me, gid: int, query: dict) -> dict:
+    """我的本周 Bingo 卡（25 格 + 连线）。
+
+    不落库：卡由 (组, 人, 周一) 的种子确定性生成，同一周每次请求算出来一样。
+    25 行/人/周 的表不值得为这一点随机性去维护。
+    """
+    uid = int(me["user_id"])
+    today = _today((query.get("today") or [None])[0])
+    wf, wt = _week(today)
+    pf, pt = wf - dt.timedelta(days=7), wf - dt.timedelta(days=1)
+    with db() as c:
+        _group(c, gid)
+        m = _require_member(c, gid, uid)
+        if m["share_level"] == "off":
+            raise GroupError(409, "你关闭了共享，Bingo 也不参与了")
+        rows = c.execute(
+            "SELECT user_id, date, distance_m, duration_s, acts, plan_done, explorer"
+            " FROM group_daily WHERE group_id=? AND user_id=? AND date BETWEEN ? AND ?"
+            " ORDER BY date", (gid, uid, wf.isoformat(), wt.isoformat())).fetchall()
+        prev = c.execute(
+            "SELECT user_id, date, distance_m, duration_s, acts, plan_done, explorer"
+            " FROM group_daily WHERE group_id=? AND user_id=? AND date BETWEEN ? AND ?"
+            " ORDER BY date", (gid, uid, pf.isoformat(), pt.isoformat())).fetchall()
+
+    import bingo as B
+
+    this_rows = [dict(r) for r in rows]
+    met = ranking.metrics(this_rows, [dict(r) for r in prev])
+    out = B.card_for(this_rows, met, gid, uid, wf.isoformat())
+    out["ok"] = True
+    out["from"] = wf.isoformat()
+    out["to"] = wt.isoformat()
+    return out
 
 
 def api_season(me, gid: int, query: dict) -> dict:
@@ -1367,6 +1418,8 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_season(me, gid, query), 200
         if action == "week" and method == "GET":
             return api_week(me, gid, query), 200
+        if action == "bingo" and method == "GET":
+            return api_bingo(me, gid, query), 200
         if action == "goal" and method == "POST":
             return api_goal(me, gid, body), 200
         if action == "home" and method == "GET":

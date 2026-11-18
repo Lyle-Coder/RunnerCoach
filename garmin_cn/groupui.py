@@ -199,6 +199,47 @@ def groups_page(token: str, message: str = "") -> str:
                 back=("返回我的", "/me"))
 
 
+# ---------------------------------------------------------------- Bingo
+def bingo_page(token: str, gid: int, message: str = "") -> str:
+    """本周 Bingo 卡：5×5 格，连成一行/列/对角线算一条线。
+
+    格子里只有「任务 + 是否点亮」，没有按钮——任务是根据每天上报的数据自动
+    判的，用户不需要也不该手动勾选。手勾的 Bingo 就只是待办清单了。
+    """
+    from . import group as G
+
+    today = dt.date.today().isoformat()
+    r = G.bingo(gid, today)
+    if not r.get("ok"):
+        body = (_msg(message)
+                + f'<div class="card"><p class="note">{esc(r.get("error") or "打不开这张卡")}</p>'
+                f'<div class="pager"><a class="btn" href="/groups/{gid}">返回小组</a></div></div>')
+        return page("GROUP", "Bingo", "", body, back=("返回小组", f"/groups/{gid}"))
+
+    cells = r.get("cells") or []
+    done = int(r.get("done") or 0)
+    total = int(r.get("total") or 25)
+    lines = int(r.get("line_count") or 0)
+
+    grid = ""
+    for c in cells:
+        cls = "bcell"
+        if c.get("task") == "free":
+            cls += " on free"
+        elif c.get("done"):
+            cls += " on"
+        grid += f'<div class="{cls}">{esc(c.get("text"))}</div>'
+
+    body = (_msg(message)
+            + sec("本周卡", f'<div class="bgrid">{grid}</div>'
+                  '<p class="note">任务只看每天上报的跑步数据，跑完自动点亮。'
+                  '连成一行、一列或一条对角线就算一条线；只做荣誉，不加赛季分。</p>'))
+    # 不传 chips：副标题已经写了「10/25 格 · 1 条线」，再加两个 chip 是同一句话
+    return page("GROUP", "Bingo", f"{done}/{total} 格 · {lines} 条线", body,
+                foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+                back=("返回小组", f"/groups/{gid}"))
+
+
 # ---------------------------------------------------------------- 组详情
 def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> str:
     from . import group as G
@@ -443,6 +484,15 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                         if r.get("user_id") == _me_uid), "")
             if _pa:
                 bits.append(f'预言 {esc(_pa)} 完不成')
+
+        # Bingo 只报一行进度，点进去看整张卡。25 个格子塞进组页会把榜单挤走，
+        # 而榜单才是这个页面存在的理由。
+        _bg = _wk.get("bingo") or {}
+        if _bg.get("total"):
+            _ln = int(_bg.get("lines") or 0)
+            bits.append(f'<a class="blink" href="/groups/{gid}/bingo">Bingo '
+                        f'{int(_bg.get("done") or 0)}/{int(_bg["total"])}'
+                        + (f' · {_ln} 线' if _ln else "") + '</a>')
 
         week_line = ('<div class="sline2 weekline">'
                      + "".join(f'<span class="sbit">{x}</span>' for x in bits)
