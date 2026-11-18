@@ -388,10 +388,12 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .sline .tt{font-size:11px;color:#F5C26B;background:rgba(245,165,36,.09);
   border:1px solid rgba(245,165,36,.22);border-radius:99px;padding:1px 7px}
 /* 衫：一个小色块 + 名字。六件同时出现也不会挤，因为字号压到 10.5 */
-.sbit{display:inline-flex;align-items:center;gap:4px;font-size:11px;
+.sbit{display:inline-flex;align-items:center;gap:5px;font-size:11px;
   color:var(--muted);white-space:nowrap}
-.sbit i{width:8px;height:8px;border-radius:50%;flex:0 0 8px;
-  box-shadow:0 0 0 1px rgba(255,255,255,.16) inset}
+/* 9px 而不是 8px：圆点衫要在这一颗小点上画波点，8px 只能塞下 2×2 个红点，
+   远看和白衫没有区别；多给 1px 就能看出「白底红点」这件事。 */
+.sbit i{width:9px;height:9px;border-radius:50%;flex:0 0 9px;
+  box-shadow:0 0 0 1px rgba(255,255,255,.2) inset}
 .sline2{display:flex;flex-wrap:wrap;gap:4px 10px;padding:2px 0 8px}
 /* 「本周」那三行（目标 / 结对 / 预言）。每项自带前缀，所以间距可以给大一点，
    让眼睛能分块读；不加边框——它不是卡片，是这一周的三个事实。 */
@@ -429,6 +431,16 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .shirtlist .shr:last-child{border-bottom:0}
 .shr .dot{width:10px;height:10px;border-radius:50%;margin-top:3px;
   box-shadow:0 0 0 1px rgba(255,255,255,.34), inset 0 0 0 1px rgba(0,0,0,.18)}
+/* 圆点衫：白底红点。它和白衫的色号都是白，纯色画出来是两个一模一样的小点，
+   所以按公路车赛的规矩画波点——这是唯一能在一颗 8–10px 的点上区分开的办法。 */
+/* 圆点衫：白底红点 + 一圈红边。
+   只画波点不够——9px 的点上 1px 的红点被抗锯齿冲淡成粉色，远看仍是一个白点。
+   加红边不是为了好看，是为了在 9px 这个尺寸上还能一眼和白衫分开：
+   白衫是「纯白 + 白边」，圆点衫是「白心 + 红边」。 */
+i.pd{background:#F7F9FC;
+  background-image:radial-gradient(#C6342E 1.15px, rgba(198,52,46,0) 1.3px);
+  background-size:2.9px 2.9px;background-position:.55px .55px;
+  box-shadow:0 0 0 1.4px #D9534F}
 .shr .t{font-size:13px;font-weight:600;color:var(--ink)}
 .shr .v{font-size:12px;color:var(--ink2);text-align:right;white-space:nowrap}
 .shr .v b{font-weight:600;color:var(--ink)}
@@ -438,7 +450,10 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .shr .r3{margin-left:8px}
 .shr .r3 .rest{margin-right:8px}
 .shirtlink{display:contents}
-.sbit.jump{color:var(--brand-ink);font-weight:600}
+/* 「六件衫 ›」推到成绩行最右。margin-left:auto 而不是 flex 撑开，
+   这样没穿衫的时候也不会跑到中间去。 */
+.sline-jump{margin-left:auto;font-size:11px;font-weight:600;color:var(--brand-ink);
+  white-space:nowrap;padding:3px 0 3px 8px}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，

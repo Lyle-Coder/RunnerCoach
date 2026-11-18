@@ -1552,6 +1552,13 @@ def run() -> int:
         "赛季分权重或加分上限被改动，页面满分要跟着改"
     assert "PREDICT_HIT = 2.0" in _rk and "PREDICT_UNDERESTIMATED = 3.0" in _rk, \
         "预言的 +2 / +3 口径变了"
+    # 圆点衫和白衫的色号都是白（#D8DEE9 / #F2F5FA），纯色画出来是两个一模一样
+    # 的小点。圆点衫必须带 pattern，客户端才会画成波点。
+    assert '"pattern": "dots"' in _rk, "圆点衫没标波点图案，会和白衫撞成两个白点"
+    assert 'if pattern == "dots"' in (ROOT / "garmin_cn/groupui.py").read_text(
+        encoding="utf-8"), "客户端没给圆点衫画波点的分支"
+    assert "i.pd{" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
+        "没有 i.pd 的样式，圆点衫画不出波点"
 
     # Bingo：25 格、中心免费、易中难各 8。这三条一变，页面上那 5×5 就歪了。
     import sys as _sys
