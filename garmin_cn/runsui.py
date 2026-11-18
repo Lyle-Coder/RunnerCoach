@@ -659,6 +659,33 @@ def run_page(token: str, message: str = "", data: dict | None = None) -> str:
 #   脚印带 = 96..130 都在雪里。最左（远）在底部，靠近门口（近）抬高一点。
 HORIZON_Y = 92
 
+# 校准：底图上的**门**在哪。脚印的终点必须落在门口，而每张生成图里房子的
+# 横向位置都可能差几个百分点——差 5% 就够让脚印走进墙里。
+# 放在 `content/ending_scene.json`：{"door_x": 0.74, "door_y": 0.72}
+# （都是相对宽高的 0-1 比例；默认值就是下面这套矢量场景的门）。
+CAL_FILE = "ending_scene.json"
+CAL_DEFAULT = {"door_x": 252 / 372, "door_y": 101 / 132}
+
+
+def _cal() -> dict:
+    """读校准值。读不到/坏掉就用默认——宁可脚印停在门外一点，也不能让
+    结算页因为一个 JSON 打不开。"""
+    import json as _json
+
+    try:
+        d = _json.loads((PLATE_DIR / CAL_FILE).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return dict(CAL_DEFAULT)
+    out = dict(CAL_DEFAULT)
+    for k in ("door_x", "door_y"):
+        try:
+            v = float(d.get(k))
+        except (TypeError, ValueError):
+            continue
+        if 0.05 <= v <= 0.98:
+            out[k] = v
+    return out
+
 
 def _scene_props(key: str, on_plate: bool = False) -> str:
     """脚印与道具。底图模式下这一层单独叠上去，纯 SVG 模式下跟底一起画。
@@ -686,15 +713,19 @@ def _scene_props(key: str, on_plate: bool = False) -> str:
             out.append(foot(x0 + (x1 - x0) * k, y0 + (y1 - y0) * k, op - fade * i))
         return out
 
+    # 脚印的终点是「门口」，它由底图决定，所以走校准值而不是写死坐标
+    cal = _cal()
+    door_x, door_y = cal["door_x"] * 372, cal["door_y"] * 132
+
     prints: list[str] = []
     if key == "arrive":
-        # 走到门廊前（x≈252）。脚印在雪里：远端压底，近端抬到门口。
-        prints += trail(26, 127, 252, 101, 13, 0.6, fade=-0.025)
+        # 走到门廊前。脚印在雪里：远端压底，近端抬到门口。
+        prints += trail(26, 127, door_x, door_y, 13, 0.6, fade=-0.025)
     elif key == "detour":
         # 三条散开：只最上面那条走到门口，另两条在雪里各自淡出
-        prints += trail(26, 127, 252, 101, 10, 0.62)
-        prints += trail(26, 120, 150, 106, 7, 0.5, fade=0.03)
-        prints += trail(26, 130, 132, 127, 6, 0.44, fade=0.03)
+        prints += trail(26, 127, door_x, door_y + 1, 10, 0.62)
+        prints += trail(26, 120, door_x * 0.6, 106, 7, 0.5, fade=0.03)
+        prints += trail(26, 130, door_x * 0.53, 127, 6, 0.44, fade=0.03)
     elif key == "lost":
         # 走到一半就断了，后面什么都没有。
         # 断的地方放一块石头——文案里写的是「退回背风的那块石头下面」，
@@ -707,14 +738,14 @@ def _scene_props(key: str, on_plate: bool = False) -> str:
         # 一串脚印到了门口，另一串在半路偏出去、越走越淡，断在雪里。
         # 断口不能画成地面下的黑影（最早那版画成了雪堆压在基线下面，
         # 看着像一块脏土），应该是往雪里越走越淡，最后一团浅雪堆。
-        prints += trail(26, 127, 252, 101, 12, 0.66)
+        prints += trail(26, 127, door_x, door_y, 12, 0.66)
         prints += trail(40, 122, 118, 104, 6, 0.5, fade=0.075)
         # 雪堆：亮雪上是更亮的一小片（不是阴影），暗底上只是淡淡的
         prints.append(f'<ellipse cx="124" cy="102" rx="14" ry="3.6"'
                       f' fill="{"#FFFFFF" if on_plate else "#DCE7F5"}"'
                       f' opacity="{".5" if on_plate else ".13"}"/>')
     else:  # discoverer
-        prints += trail(24, 127, 252, 102, 12, 0.5, fade=-0.03)
+        prints += trail(24, 127, door_x, door_y + 1, 12, 0.5, fade=-0.03)
         # 三本叠着的日志，压在路边、坐在雪上（底边贴雪线以下）
         prints += [
             '<rect x="44" y="120" width="26" height="6" rx="1" fill="#1B2739"'
