@@ -1123,6 +1123,20 @@ def run() -> int:
         RU.PLATE_DIR = _old2
         shutil.rmtree(_pd2, ignore_errors=True)
 
+    # 平台额度关闭时：界面只留"自配 Key"，不给一个点了必然报错的入口。
+    # 这是和服务端 AI_PROXY=off 配套的一半，改一处忘一处就会出现
+    # "能点、点了 503"的尴尬。
+    from garmin_cn import llm as _L, _buildcfg as _BC
+    _pc = _L.public_config()
+    assert _pc.get("platform_quota") is _BC.PLATFORM_QUOTA, \
+        "界面拿到的额度开关和构建配置不一致"
+    assert _BC.PLATFORM_QUOTA is False, "资质没办下来之前平台额度必须关闭"
+    assert _pc.get("mode") == "own", "额度关着时不该停在平台额度模式"
+    from garmin_cn import aiui as _U
+    assert 'id="modeSeg" style="display:none"' in _U.BODY, \
+        "设置页没把「平台额度」收起来"
+    assert "platform_quota" in _U.JS, "界面没读额度开关"
+
     # 无域名部署：自签证书靠「把那一张加进信任链」生效，不是关校验。
     # 没有证书时必须是 no-op——用公共 CA 的部署不该被这段影响。
     from garmin_cn import tlstrust as _TLS
@@ -4502,8 +4516,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.4.1 → 152）。
-    assert 'versionCode = 152' in (
+    # 每次发版要同步改这里（本次 1.5.0 → 153）。
+    assert 'versionCode = 153' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。

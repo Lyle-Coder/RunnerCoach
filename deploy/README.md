@@ -76,7 +76,22 @@ cd android && build.bat assembleRelease
 `set_server.py` 会先替你看证书 SAN 和地址对不对得上——对不上就报错，
 不然要等装到手机上才现形（`CERTIFICATE_VERIFY_FAILED`）。
 
-## 六、日常
+## 六、合规开关（1.5.0 起默认关）
+
+资质没办下来之前，**平台额度与支付是关的**，两端各有一半：
+
+| 位置 | 开关 | 关掉后的表现 |
+|---|---|---|
+| 服务端 env | `AI_PROXY=off` | `/v1/chat/completions` 直接 503，提示「填自己的 Key」 |
+| 服务端 env | `PAY_PROVIDER=`（空） | 下单 503 |
+| 服务端 env | `FREE_GRANT=0` | 新号不送额度 |
+| 客户端构建 | `_buildcfg.PLATFORM_QUOTA=False` | 设置页不显示「平台额度」，老用户存的 platform 模式按 own 走 |
+
+这里没有"半开"：不卖额度却还替人转发请求，等于无资质提供生成式 AI 服务；
+收费同理（经营性）。将来资质齐了，**两处一起打开**——只改一处会变成
+"界面能点、点了 503"。`deploy/smoke.sh` 会对开着的代理/支付打一行提醒。
+
+## 七、日常
 
 | 事 | 做法 |
 |---|---|
@@ -86,7 +101,7 @@ cd android && build.bat assembleRelease
 | 发额度 | `/admin/codes` 生成兑换码，App 内输入 |
 | 换 IP | 重新 `gen-cert.sh` → `set_server.py` → 重发 APK（IP 烧在包里，绕不开） |
 
-## 七、什么时候该换成域名
+## 八、什么时候该换成域名
 
 出现下面任一条就该买域名 + 备案，而不是继续用 IP：
 
@@ -97,7 +112,7 @@ cd android && build.bat assembleRelease
 换的时候**不用改代码**：域名 + 正规证书后，`tools/set_server.py https://域名`
 即可，`tlstrust` 发现包里没有 `server-ca.pem` 就自动走系统根证书。
 
-## 八、已知边界（写给自己看）
+## 九、已知边界（写给自己看）
 
 - **自签证书不是"更安全"**，只是"没有域名时唯一能用的 HTTPS"。它的信任来自
   你把证书烧进了 App，而不是来自任何 CA。
@@ -105,7 +120,7 @@ cd android && build.bat assembleRelease
 - 现在没有速率限制之外的防护（`_rate_limit` 只覆盖上报和验证码）。公网暴露
   一个 API，被扫是常态；`ADMIN_TOKEN` 要够长，别用默认值。
 
-## 九、Windows 开发机注意
+## 十、Windows 开发机注意
 
 `set_server.py` 里对证书做的 SAN 校验用的是 `openssl`（Git for Windows 自带）。
 没有的话它会跳过这项检查并提示——不会静默放过，但也就少了一道保险，

@@ -16,3 +16,8 @@
 
 PLATFORM_BASE = 'https://garmin-daily-dashboard.app.workbuddy.host'
 PLATFORM_SHARE_CODE = 'ORT7NXCECR'
+
+# 平台额度（充值/赠送）是否对外开放。资质办好之前是 False：
+# 界面只留"自配 API Key"，不留一个点了就报错的入口。
+# 服务端那边对应 AI_PROXY 开关，两处要一起开。
+PLATFORM_QUOTA = False
