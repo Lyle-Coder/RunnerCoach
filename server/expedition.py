@@ -429,28 +429,44 @@ def _is_over(s: dict, today: dt.date) -> bool:
     return today > end
 
 
+def _ending_key(flags: dict, total: float, morale: int) -> str:
+    """五种结局的判定。**只有这一处**，`api_outcome` 和翻篇时的摘要都调它——
+    两处各写一套的话，翻篇后「上一季」的结论会和当时看到的结算页不一致。
+
+    优先级是有理由的：
+    1. 三本日志（隐藏）最高，集齐就是集齐了；
+    2. **人没到齐**排在士气和「抵达」前面——人不在比没精神更重；
+    3. 达标且士气够 → 抵达；达标但士气低 → 绕行；没达标 → 没走完。
+    """
+    targets = flags.get("targets") or {}
+    need = float(targets.get(str(ACTS), 0) or 0)
+    reach = total >= need > 0
+    if len(flags.get("relics") or []) >= 3:
+        return "discoverer"
+    if reach and int(flags.get("left") or 0) > 0:
+        return "missing"
+    if reach and morale >= 3:
+        return "arrive"
+    if reach:
+        return "detour"
+    return "lost"
+
+
 def _summary_of(season) -> dict:
     """把一季算成一句结论。只用 `flags` 里记下的数，不读成员行——
     翻篇之后成员行已经清空了，靠行算会把上一季算成 0。"""
     flags = json.loads(season["flags"] or "{}")
     stages = flags.get("stages") or {}
-    targets = flags.get("targets") or {}
     total = sum(float(stages.get(str(i), 0)) for i in range(1, ACTS + 1))
-    need = float(targets.get(str(ACTS), 0) or 0)
-    relics = flags.get("relics") or []
     morale = int(season["morale"])
-    if len(relics) >= 3:
-        key = "discoverer"
-    elif total >= need > 0 and morale >= 3:
-        key = "arrive"
-    elif total >= need > 0:
-        key = "detour"
-    else:
-        key = "lost"
+    key = _ending_key(flags, total, morale)
+    targets = flags.get("targets") or {}
     return {"start": season["season_start"], "end": season["season_end"],
             "ending": key, "title": _ending_view(key)["title"],
-            "team": round(total, 1), "target": round(need, 1),
-            "morale": morale, "relics": len(relics)}
+            "team": round(total, 1),
+            "target": round(float(targets.get(str(ACTS), 0) or 0), 1),
+            "morale": morale, "relics": len(flags.get("relics") or []),
+            "left": int(flags.get("left") or 0)}
 
 
 def ensure(gid: int, today: dt.date) -> tuple[dict, int, bool]:
@@ -664,6 +680,14 @@ def _settle(c, gid: int, act_no: int, season) -> None:
     flags.setdefault("stages", {})[str(act_no)] = round(total, 1)
     flags["targets"] = flags.get("targets") or {}
     flags["targets"][str(act_no)] = round(_target_km(c, gid, act_no), 1)
+    # 「人没到齐」只认最后一幕结束时**还被困在雪里**的人（没人接，赛季也没
+    # 下一幕让他自己归队）。两幕没动而被剔出分母的不算——那多半是出差，
+    # 不是掉队，把它算进结局会让「出差两周」变成一种失败。
+    # 存进 flags 是因为翻篇后成员行会被清空，看历史只能靠这一份记录。
+    if act_no >= ACTS:
+        flags["left"] = sum(
+            1 for uid in uids
+            if (_row(c, gid, uid, act_no) or {"status": ""})["status"] == "stranded")
     c.execute("UPDATE group_run_season SET flags=? WHERE group_id=?",
               (json.dumps(flags, ensure_ascii=False), gid))
 
@@ -1233,17 +1257,13 @@ def api_outcome(me, gid: int, query: dict) -> dict:
                 # 上一季的成绩。翻篇之后没有人再能看到它，所以随这里带一份
                 # ——「上周太忙没打开」不该等于「没有过这一季」。
                 "last": _last_of(season)}
-    if len(relics) >= 3:
-        ending = "discoverer"
-    elif reach and morale >= 3:
-        ending = "arrive"
-    elif reach:
-        ending = "detour"
-    else:
-        ending = "lost"
+    # 判定只有一处（`_ending_key`）：翻篇后「上一季」的结论也走它，
+    # 两处各写一套迟早对不上。
+    ending = _ending_key(flags, total, morale)
     return {"ok": True, "ended": True, "ending": ending,
             "ending_detail": _ending_view(ending),
             "team": round(total, 1), "morale": morale, "relics": relics,
+            "left": int(flags.get("left") or 0),
             "acts": acts, "members": members, "relic_count": len(relics),
             "start": season["season_start"], "end": season["season_end"],
             "season": pool().get("season") or "雪线之前"}

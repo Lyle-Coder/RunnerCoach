@@ -1030,8 +1030,8 @@ def run() -> int:
     # 结局的脚印图形：四种结局必须真的不一样，否则「同一片雪地、不同的
     # 到达方式」这个说法就是空的
     _svgs = {k: RU._ending_svg(k) for k in
-             ("arrive", "detour", "lost", "discoverer")}
-    assert len(set(_svgs.values())) == 4, "四个结局的插画有重复"
+             ("arrive", "detour", "missing", "lost", "discoverer")}
+    assert len(set(_svgs.values())) == 5, "五个结局的插画有重复"
     assert "C98B4B" in _svgs["arrive"] and "C98B4B" not in _svgs["lost"], \
         "「没走完」的窗户不该是亮的"
     assert _svgs["discoverer"].count("<rect") > 4, "隐藏结局没画出三本日志"

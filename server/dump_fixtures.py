@@ -425,6 +425,22 @@ def _season(gid: int, t: dict) -> None:
           "隐藏结局：三处遗迹集齐 → `ending: discoverer`，`relics` 是 tag 数组",
           token=t["owner"])
 
+    # 第五种：到了、但有人没到。真实流程里 `left` 是第 4 幕结算时数出来的
+    # （`_settle` 里数 status=stranded 的人），这里直接写进 flags 造状态。
+    with G2.db() as c:
+        row = c.execute("SELECT flags FROM group_run_season WHERE group_id=?", (gid,)).fetchone()
+        flags = json.loads(row["flags"] or "{}")
+        flags["relics"] = []
+        flags["left"] = 1
+        c.execute("UPDATE group_run_season SET flags=? WHERE group_id=?",
+                  (json.dumps(flags, ensure_ascii=False), gid))
+    _call("46_outcome_missing", "GET",
+          f"/v1/group/{gid}/run/outcome?today=2026-12-14",
+          "**到了，但有人没到**：团队达标、`left > 0` → `ending: missing`。"
+          "`left` 是赛季结束时还困在雪里的人数（不到齐比士气低更重，所以它排在"
+          "抵达/绕行前面；遗迹齐了仍然是发现者优先）",
+          token=t["owner"])
+
 
 def _seed_weeks(gid: int, t: dict) -> None:
     """给三个人各灌满四周（每周四天），让结算有真实感。"""
@@ -481,8 +497,8 @@ def _errors(gid: int, t: dict) -> None:
     _call("45_state_next_season", "GET",
           f"/v1/group/{gid}/run/state?today=2026-12-15",
           "**翻篇之后的第一幕**：`season.start` 变成新的一周、`ended` 回 false、"
-          "`season.last` 是上一季的结论（这里显示「发现者」是因为上一步刚好把 "
-          "flags 改成了三个遗迹）。补给与行程都从干净状态重来",
+          "`season.last` 是上一季的结论（这里显示「少一个人」是因为上一步刚好把 "
+          "`left` 改成了 1）。补给与行程都从干净状态重来",
           token=t["owner"])
 
 
@@ -521,8 +537,9 @@ def _write_index(gid: int) -> None:
         "|---|---|---|",
         "| `outcome.ending` | `arrive` | 抵达望雪站，士气还够 |",
         "| | `detour` | 走到了，但队伍散了（士气 < 3） |",
+        "| | `missing` | 到了，但有人赛季结束时还困在雪里（`left > 0`） |",
         "| | `lost` | 没走完 |",
-        "| | `discoverer` | 隐藏结局：三处遗迹集齐 |",
+        "| | `discoverer` | 隐藏结局：三处遗迹集齐（优先级最高） |",
         "| `me.status` | `moving` | 正常 |",
         "| | `stranded` | 受困，本幕不产格，等队友来救 |",
         "| | `rescued` | 被救过，恢复正常 |",

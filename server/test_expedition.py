@@ -242,7 +242,7 @@ def main() -> int:
     st, r = req("GET", f"/v1/group/{gid}/run/outcome?today=2026-12-14", None, a)
     check("结局 200", st == 200 and r.get("ended") is True, f"{st} {r}")
     check("结局是四种之一",
-          r.get("ending") in ("arrive", "detour", "lost", "discoverer"), str(r.get("ending")))
+          r.get("ending") in ("arrive", "detour", "missing", "lost", "discoverer"), str(r.get("ending")))
     check("结局带团队总量", "team" in r, str(r))
 
     # ---------------- 翻篇
@@ -259,13 +259,49 @@ def main() -> int:
           dg["season"]["start"] == "2026-12-14", str(dg["season"].get("start")))
     last = dg["season"].get("last") or {}
     check("上一季的结论带过来了", last.get("ending") in
-          ("arrive", "detour", "lost", "discoverer"), str(last))
+          ("arrive", "detour", "missing", "lost", "discoverer"), str(last))
     check("翻篇后补给回 3、行程回 0",
           dg["me"]["supply"] == 3 and dg["me"]["pos"] == 0,
           f'supply={dg["me"]["supply"]} pos={dg["me"]["pos"]}')
     st, r = req("GET", f"/v1/group/{gid_auto}/run/outcome?today=2026-12-15", None, c3)
     check("新季里 outcome 是进度 + 上一季",
           r.get("ended") is False and bool(r.get("last")), f"{st} {r}")
+
+    # ---------------- 第五种结局：到了，但有人没到
+    print("\n9c. 结局判定（缺员与优先级）")
+    # 判定只有一处（`_ending_key`），所以先把它当纯函数穷举一遍
+    _f = {"targets": {"4": 10.0}}
+    check("达标 + 缺员 → missing", EXP._ending_key({**_f, "left": 1}, 12.0, 7) == "missing")
+    check("缺员时士气低也还是 missing",
+          EXP._ending_key({**_f, "left": 1}, 12.0, 1) == "missing")
+    check("缺员但没达标 → lost", EXP._ending_key({**_f, "left": 1}, 5.0, 7) == "lost")
+    check("遗迹齐了压过缺员",
+          EXP._ending_key({**_f, "left": 1, "relics": ["a", "b", "c"]},
+                          12.0, 7) == "discoverer")
+    check("没有缺员才是抵达", EXP._ending_key(_f, 12.0, 7) == "arrive")
+    check("达标但士气低 → detour", EXP._ending_key(_f, 12.0, 2) == "detour")
+
+    # 再走一遍真接口：`_settle` 必须把缺员数记进 flags，结局才读得到
+    with EXP.G.db() as c:
+        _row = c.execute("SELECT flags FROM group_run_season WHERE group_id=?",
+                         (gid,)).fetchone()
+        _fl = json.loads(_row["flags"] or "{}")
+    check("结算记下了缺员人数", "left" in _fl, str(sorted(_fl)))
+    _fl.update({"stages": {"1": 5.0, "2": 5.0, "3": 5.0, "4": 5.0},
+                "targets": {"1": 3.0, "2": 6.0, "3": 9.0, "4": 12.0},
+                "relics": [], "left": 1})
+    with EXP.G.db() as c:
+        c.execute("UPDATE group_run_season SET flags=? WHERE group_id=?",
+                  (json.dumps(_fl, ensure_ascii=False), gid))
+    st, r = req("GET", f"/v1/group/{gid}/run/outcome?today=2026-12-14", None, a)
+    check("接口按缺员判成 missing", r.get("ending") == "missing", str(r.get("ending")))
+    check("缺员数一起下发", r.get("left") == 1, str(r.get("left")))
+    _fl["left"] = 0
+    with EXP.G.db() as c:
+        c.execute("UPDATE group_run_season SET flags=? WHERE group_id=?",
+                  (json.dumps(_fl, ensure_ascii=False), gid))
+    st, r = req("GET", f"/v1/group/{gid}/run/outcome?today=2026-12-14", None, a)
+    check("把缺员去掉就回到抵达", r.get("ending") == "arrive", str(r.get("ending")))
 
     # ---------------- cron 预热
     print("\n10. cron 预热")
