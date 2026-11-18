@@ -93,6 +93,21 @@ cd android && build.bat assembleRelease
 收费同理（经营性）。将来资质齐了，**两处一起打开**——只改一处会变成
 "界面能点、点了 503"。`deploy/smoke.sh` 会对开着的代理/支付打一行提醒。
 
+### 装完之后：关掉 SSH 密码登录
+
+```bash
+sudo sh deploy/harden.sh
+```
+
+它写一个 `/etc/ssh/sshd_config.d/99-runnercoach.conf`（不动主配置，升级不冲突）：
+`PasswordAuthentication no` + `PermitRootLogin prohibit-password`，校验通过才 reload。
+
+**会失去什么**：以后只能拿密钥登。云控制台的 Workbench 如果走的是密码认证，
+也会连不上——那时用控制台的 **VNC** 通道进去（VNC 不经过 sshd）。
+所以脚本开头会先确认 `authorized_keys` 里至少有一把公钥，没有就拒绝执行。
+
+撤销：删掉那个文件 → `systemctl reload ssh`。
+
 ## 七、日常
 
 | 事 | 做法 |
