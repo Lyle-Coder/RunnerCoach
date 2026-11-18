@@ -467,6 +467,30 @@ i.pd{background:#F7F9FC;
   box-shadow:inset 0 0 14px rgba(34,211,238,.2)}
 .qg .qn{font-size:11px;font-weight:600;color:var(--ink2);white-space:nowrap;
   max-width:100%;overflow:hidden;text-overflow:ellipsis}
+/* 动态：一行一条。左色点认人，中间类型+距离，右边日期和评论数。
+   没有缩略图——这一栏按设计就是概要，给不出活动图。 */
+.frow{display:grid;grid-template-columns:8px minmax(0,auto) minmax(0,1fr) auto auto;
+  align-items:center;gap:0 8px;padding:10px 0;border-bottom:1px solid var(--line2);
+  color:inherit;text-decoration:none}
+.frow:last-child{border-bottom:0}
+.fd{width:8px;height:8px;border-radius:50%;box-shadow:0 0 0 1px rgba(255,255,255,.2) inset}
+.fn{font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap}
+.fn .fk{font-style:normal;font-weight:400;font-size:11px;color:var(--muted);margin-left:6px}
+.fv{font-size:11px;color:var(--ink2);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.ft{font-size:11px;color:var(--faint);white-space:nowrap}
+.fc{font-size:11px;color:var(--brand-ink);white-space:nowrap}
+/* 评论：表情一排按钮 + 一句话输入 */
+.erow{display:flex;gap:6px;flex-wrap:wrap;padding:2px 0 8px}
+.eform{margin:0}
+.ebtn{font-size:19px;line-height:1;padding:7px 10px;border-radius:10px;
+  border:1px solid var(--line2);background:rgba(255,255,255,.02);cursor:pointer}
+.ebtn:active{background:rgba(59,130,246,.14);border-color:rgba(96,165,250,.34)}
+.cm{display:flex;align-items:baseline;gap:7px;padding:7px 0;
+  border-bottom:1px solid var(--line2);font-size:12px;color:var(--ink2)}
+.cm:last-child{border-bottom:0}
+.cm b{font-size:12px;font-weight:600;color:var(--ink);white-space:nowrap}
+.cm .ce{font-size:17px;line-height:1}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，

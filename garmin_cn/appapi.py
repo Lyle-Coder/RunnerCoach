@@ -94,6 +94,16 @@ def simple_toggle() -> dict:
     return set_simple_mode(not simple_mode())
 
 
+def simple_state() -> dict:
+    """只读状态，给原生底部导航用。
+
+    简洁模式下「小组」tab 要一起藏起来：这个模式下留的就是「今日 / 教练 /
+    历史 / 我的」四个，再多一个主打功能反而让"简洁"名不副实。原生那边
+    启动时读一次、切换时再读一次。
+    """
+    return {"ok": True, "simple_mode": simple_mode()}
+
+
 def _remember_email(email: str) -> None:
     """只记邮箱，不记密码。"""
     cfg = _cfg()
@@ -175,6 +185,7 @@ _API = {
     "clips_list", "clips_add", "clips_remove", "clips_reprobe",
     "clips_remove_many", "clips_update",
     "set_llm_config", "get_llm_config", "ai", "ai_toggle", "simple_toggle",
+    "simple_state",
     "mi_status", "mi_login", "mi_captcha", "mi_send_code", "mi_verify_code",
     "mi_logout", "mi_sync",
     "hw_status", "hw_import", "hw_login", "hw_probe", "hw_sync", "hw_logout",

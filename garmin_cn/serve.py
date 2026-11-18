@@ -196,6 +196,12 @@ class _Handler(SimpleHTTPRequestHandler):
                 return self._html(groupui.map_page(tok, int(seg[0]), msg))
             if len(seg) == 2 and seg[0].isdigit() and seg[1] == "shirts":
                 return self._html(groupui.shirts_page(tok, int(seg[0]), msg))
+            if len(seg) == 2 and seg[0].isdigit() and seg[1] == "feed":
+                try:
+                    _act = int((q.get("act") or ["0"])[0] or 0)
+                except ValueError:
+                    _act = 0
+                return self._html(groupui.feed_page(tok, int(seg[0]), msg, _act))
             if len(seg) == 1 and seg[0].isdigit():
                 rng = "month" if (q.get("range") or [""])[0] == "month" else "week"
                 return self._html(groupui.group_page(tok, int(seg[0]), msg, rng))
@@ -1631,6 +1637,16 @@ class _Handler(SimpleHTTPRequestHandler):
                             _st.close()
                         msg = ("路线共享已打开" if on else "已关闭，格子已删除") \
                             if r.get("ok") else (r.get("error") or "设置失败")
+                    elif act == "comment":
+                        # 表情和留言走同一个接口：只点了表情也要发一次空文本
+                        _aid = as_int(values.get("act"))
+                        if not _aid:
+                            raise ValueError("找不到这条动态")
+                        r = G.comment(gid, _aid,
+                                      values.get("text") or "", values.get("emoji") or "")
+                        if r.get("ok"):
+                            return self._see_other(f"/groups/{gid}/feed?act={_aid}")
+                        msg = r.get("error") or "发不出去"
                     elif act == "rotate":
                         r = G.rotate(gid)
                         msg = (f'新邀请码 {r["invite_code"]}' if r.get("ok")
