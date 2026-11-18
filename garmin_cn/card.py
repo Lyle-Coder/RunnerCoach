@@ -1012,7 +1012,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 
 <div class="card sess">
   <div class="sl">
-    <h3>今日处方</h3>
+    <h3>今日训练建议</h3>
     <div class="st">{esc(s["type"])}</div>
     <div class="chips"><span class="chip main">{esc(s["duration"])}</span><span class="chip">{esc(s["intensity"])}</span></div>
     {nutri_chips}
@@ -1025,8 +1025,8 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
 </div>
 
 <div class="row4">
-  <div class="kpi"><b>{_f(L.get("acwr"), "", 2)}</b><span>ACWR</span></div>
-  <div class="kpi"><b>{_f(L.get("ctl"), "", 1)}</b><span>CTL 体能</span></div>
+  <div class="kpi"><b>{_f(L.get("acwr"), "", 2)}</b><span>训练负荷比</span></div>
+  <div class="kpi"><b>{_f(L.get("ctl"), "", 1)}</b><span>长期负荷</span></div>
   <div class="kpi"><b>{_f(L.get("atl"), "", 1)}</b><span>ATL 疲劳</span></div>
   <div class="kpi"><b>{_f(L.get("tsb"), "", 1)}</b><span>TSB 余量</span></div>
 </div>
@@ -1066,7 +1066,7 @@ body{{width:{W}px;height:{H}px;overflow:hidden;background:#12161B;
     <ul>{flags}</ul>
   </div>
   <div class="card tcard">
-    <h3>本周 vs 上周</h3>
+    <h3>本周与上周对比</h3>
     {_trend_rows(res.get("history") or [])}
   </div>
 </div>

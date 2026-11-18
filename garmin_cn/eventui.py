@@ -537,7 +537,7 @@ def _course_map(slug: str, stats: dict) -> str:
         return ""
     cap = ("含高德底图 · 只作地形参考；<b>点标注可看位置，导航用下面的按钮</b>" if bm
            else "矢量轨迹 · <b>点标注可看位置，导航用下面的按钮</b>；"
-                "在「我的 → 地图底图」配 Key 后可叠底图")
+                "在「我的 → 地图底图」填写高德密钥后，即可查看地图底图")
     legend = ('<div class="maplg"><span class="s"><i></i>起点</span>'
               '<span class="e"><i></i>终点</span>'
               + ('<span class="h"><i></i>住宿</span>'
@@ -668,7 +668,7 @@ def _trips_html(slug: str, hid: str = "") -> str:
             '<form class="dinline" method="post" action="/__event/trip">' + hid
             + '<input type="hidden" name="act" value="del">'
             f'<input type="hidden" name="idx" value="{x.get("idx", 0)}">'
-            '<button class="tdel" type="submit">删</button></form>'
+            '<button class="tdel" type="submit">删除</button></form>'
             if x.get("manual") else "")
         rows.append(
             '<div class="trip">'
@@ -701,13 +701,13 @@ def _trips_html(slug: str, hid: str = "") -> str:
         + '<input type="hidden" name="act" value="add">'
         '<div class="frow"><label>类型<select class="fi" name="kind">'
         + kinds + '</select></label>'
-        '<label>日期时间<input class="fi" name="at" type="datetime-local"></label></div>'
+        '<label>日期和时间<input class="fi" name="at" type="datetime-local"></label></div>'
         '<div class="frow"><label class="fwide">说明<input class="fi" name="label" '
         'placeholder="例：入住 都江堰锦江之星 / CA1883 起飞" required></label></div>'
         '<div class="frow"><label class="fwide">地点（可留空，住宿建议填）'
         '<input class="fi" name="place" placeholder="酒店全名 / 车站 / 地址，用来定位">'
         '</label></div>'
-        '<div class="fbtns"><button class="btn primary" type="submit">加进行程</button>'
+        '<div class="fbtns"><button class="btn primary" type="submit">添加行程</button>'
         '<span class="fhint">没配 Key 也能存，只是地图上不标点</span></div>'
         "</form></details>")
 
@@ -738,7 +738,7 @@ def _trips_html(slug: str, hid: str = "") -> str:
             f'name="{k}" value="{rules[k]}"></label>'
             for k in ("flight", "train", "stay"))
         + '</div><div class="fbtns"><button class="btn" type="submit">'
-          '保存提前量</button><span class="fhint">改完待办立刻重算</span>'
+          '保存提醒设置</button><span class="fhint">保存后会更新预订提醒</span>'
           '</div></form></details>')
     return (_booking_html(slug, hid) + '<div class="card">' + head
             + "".join(rows) + "</div>" + form + rule_html)
@@ -901,19 +901,19 @@ def _first_run() -> str:
         'step="0.1" min="1" max="400" placeholder="70"></label></div>'
         '<div class="frow"><label>爬升 m<input class="fi" name="ascent_m" type="number" '
         'step="10" min="0" placeholder="3200"></label>'
-        '<label>起跑<input class="fi" name="start_time" value="08:00"></label></div>'
+        '<label>起跑时间<input class="fi" name="start_time" value="08:00"></label></div>'
         '<div class="frow"><label>类型<select class="fi" name="kind">'
         '<option value="trail" selected>越野</option>'
         '<option value="road">路跑</option></select></label>'
-        '<label>级别<select class="fi" name="priority">'
-        '<option value="A">A · 主赛</option><option value="B">B · 有成绩要求</option>'
+        '<label>赛事优先级<select class="fi" name="priority">'
+        '<option value="A">A · 重点赛事</option><option value="B">B · 有成绩目标</option>'
         '<option value="C" selected>C · 训练赛</option></select></label></div>'
-        '<div class="fbtns"><button class="btn primary" type="submit">建好这一场</button>'
+        '<div class="fbtns"><button class="btn primary" type="submit">创建赛事</button>'
         '<span class="fhint">目标时间按距离与类型先给个初值，之后能改</span></div>'
         '</form></div>'
-        + '<p class="sub2">建好之后，把规程里的 CP 表贴进「新建 / 导入」，余量表就活了。'
+        + '<p class="sub2">添加赛事后，可以在「新建 / 导入」粘贴规程中的检查点表，查看各站预计用时和关门时间。'
           '路线有官方 GPX 的话，在赛事页点「导入轨迹」即可。</p>')
-    return ui.page("EVENT · 赛事", "建第一场赛事",
+    return ui.page("EVENT · 赛事", "添加第一场赛事",
                    "只要名字、日期、距离，其它能推就推", body,
                    back=("AI 教练", "/ai"))
 
@@ -969,7 +969,7 @@ def render_page(qs: dict | None = None) -> str:
         # 之后，这条提示应该自动消失
         + ("" if cd["tightest"] else
            '<div class="sub2 warnbox">这场还没有关门时间：只按整段算总用时与补给，'
-           "余量留空——不编中途关门。拿到官方关门后可在下方「调整 → CP 表」补上。</div>")
+           "获取官方关门时间后，可在「赛事设置 → 检查点表」补填，再查看预计能提前多久到达。</div>")
         + "</div>")
 
     # ---- 轨迹
@@ -1055,7 +1055,7 @@ def render_page(qs: dict | None = None) -> str:
     st = race["state"]
     if st == "pre":
         bar = ('<div class="rbar pre"><div class="rbtxt">还没开始。起跑时点「开始」，'
-               '之后每到一个 CP，<b>把那一行向左滑</b>，时间自动记下、后面全部重算。</div>'
+               '到达检查点后，<b>向左滑动对应的一行</b>，即可记录到达时间并更新后续的预计用时。</div>'
                '<form method="post" action="/__event/race" class="rinline">'
                + HID +
                '<input type="hidden" name="act" value="start">'
@@ -1203,7 +1203,7 @@ def render_page(qs: dict | None = None) -> str:
         f'min="0" max="30" value="{cfg["stop_min"]}"></label>'
         '<label>换装停留<input class="fi" name="dropbag_stop_min" type="number" '
         f'step="1" min="0" max="60" value="{cfg["dropbag_stop_min"]}"></label></div>'
-        '<div class="fbtns"><button class="btn primary" type="submit">保存并重算</button>'
+        '<div class="fbtns"><button class="btn primary" type="submit">保存补给设置</button>'
         '<span class="fhint">碳水含胶与能量棒；总时长按目标配速推</span></div>'
         "</form>"
         '<p class="hint">这几个数只影响下面每段的「该吃多少、该背多少水」，'
@@ -1306,13 +1306,13 @@ def render_page(qs: dict | None = None) -> str:
                 + HID + '<input type="hidden" name="act" value="del">'
                 f'<input type="hidden" name="name" value="{ui.esc(f["name"])}">'
                 '<button class="dfb danger" type="submit" '
-                f'aria-label="删除附件 {ui.esc(f["name"])}">删</button></form>')
+                f'aria-label="删除附件 {ui.esc(f["name"])}">删除</button></form>')
             rows_f.append(
                 f'<div class="df"><div class="dfl">'
                 f'<a class="dfn" href="{prev}">{ui.esc(f["name"])}</a>'
                 f'<span class="dfs">{size}</span></div>'
                 f'<div class="dfa"><a class="dfb" href="{prev}">预览</a>'
-                f'<button class="dfb" data-act="openUrl:{url}" type="button">系统打开</button>'
+                f'<button class="dfb" data-act="openUrl:{url}" type="button">用其他应用打开</button>'
                 + del_form + "</div>" + rename_form + "</div>")
         files_html = ('<div class="dg">附件 · 点名字在软件内预览；PDF / Office 走系统应用</div>'
                       + "".join(rows_f))
@@ -1331,7 +1331,7 @@ def render_page(qs: dict | None = None) -> str:
         '</label></div>'
         '<div class="frow"><label>链接（可留空）<input class="fi" name="url" '
         'placeholder="https://"></label></div>'
-        '<div class="fbtns"><button class="btn primary" type="submit">加进资料</button>'
+        '<div class="fbtns"><button class="btn primary" type="submit">添加赛事资料</button>'
         '<span class="fhint">正文与链接至少填一个；链接只认 http/https</span></div>'
         "</form></details>")
 
@@ -1387,7 +1387,7 @@ def render_page(qs: dict | None = None) -> str:
         + HID +
         # 目标完赛：时/分/秒三个框。以前是一个小数（12.5），跑者脑子里是
         # 「12 小时 30 分」，换算成小数既不好填也不好核对。
-        f'<div class="frow"><label class="fwide">目标完赛（时:分:秒）<span class="hms">'
+        f'<div class="frow"><label class="fwide">目标完赛用时（时:分:秒）<span class="hms">'
         f'<input class="fi" name="goal_hh" type="number" min="0" max="48" '
         f'value="{_hms(ev["goal_s"]).split(":")[0]}">:'
         f'<input class="fi" name="goal_mm" type="number" min="0" max="59" '
@@ -1396,34 +1396,34 @@ def render_page(qs: dict | None = None) -> str:
         f'value="{_hms(ev["goal_s"]).split(":")[2]}">'
         '</span></label>'
         f'<label>状态<select class="fi" name="status">{status_opts}</select></label>'
-        '<label>起跑<input class="fi" name="start_time" value="'
+        '<label>起跑时间<input class="fi" name="start_time" value="'
         f'{ui.esc(ev["start_time"])}"></label></div>'
         '<div class="fbtns"><button class="btn primary" type="submit">保存</button>'
-        '<span class="fhint">改目标会立刻重算余量与补给</span></div></form></details>'
-        '<details class="fold"><summary>CP 表 · 里程必须递增，否则整表不保存</summary>'
+        '<span class="fhint">保存后会更新预计到达时间和补给安排</span></div></form></details>'
+        '<details class="fold"><summary>检查点表（CP）</summary>'
         # 建完赛事之后也得能补 CP 表：原来只有「新建」视图里有粘贴入口，
         # 建完就再也找不到地方贴了（用户反馈）。这里给两条路——
         # 截图识别（大模型）和粘贴文字（规则解析），写盘走同一条链路。
         '<div class="pager" style="margin:0 0 10px">'
         f'<button class="btn primary" data-act="cpocr:{slug}" type="button">'
-        "识别 CP 表截图</button>"
+        "从截图识别检查点</button>"
         '<span class="fhint" style="margin-left:8px">'
-        "拍 / 选规程里的表格，自动填进下面；识别结果会先过校验</span></div>"
+        "拍摄规程中的表格或选择截图，App 会识别并填写检查点信息。</span></div>"
         '<form class="frm" method="post" action="/__event/course">'
         + HID +
         '<div class="cpe head"><span>CP</span><span>地点</span><span>km</span><span>关门</span></div>'
         + "".join(cp_rows) +
-        '<div class="fbtns"><button class="btn primary" type="submit">保存 CP 表</button>'
-        '<span class="fhint">里程必须递增，否则整表不保存</span></div></form>'
+        '<div class="fbtns"><button class="btn primary" type="submit">保存检查点表</button>'
+        '<span class="fhint">请按赛道顺序填写，后一站的里程应大于前一站。</span></div></form>'
         '<details class="fold"><summary>或者粘贴规程里的表格文字</summary>'
-        '<p class="hint">每行一个「CPn 地名 里程 关门」，制表符 / 全角 / 时长制都能认。</p>'
+        '<p class="hint">每行填写一个检查点，包括编号、地名、累计里程和关门时间。关门时间也可以填写为出发后的时长。</p>'
         '<form class="frm" method="post" action="/__event/import">'
         + HID +
         '<textarea class="ta" name="text" rows="5" placeholder='
         '"CP1 仙山雅宿 10.9km 关门 08:05&#10;CP2 冰川瀑布景区 22.3km 关门 10:10">'
         "</textarea>"
-        '<div class="fbtns"><button class="btn" type="submit">解析并写入</button>'
-        '<span class="fhint">有错不会覆盖现有数据</span></div></form></details>'
+        '<div class="fbtns"><button class="btn" type="submit">导入检查点表</button>'
+        '<span class="fhint">格式正确后才会更新现有的检查点。</span></div></form></details>'
         "</details>"
         "</div>")
 
@@ -1501,13 +1501,13 @@ def render_page(qs: dict | None = None) -> str:
         + HID +
         (f'<div class="frow"><label>沿用哪一场<select class="fi" name="from">'
          f'{prev_opts}</select></label></div>'
-         '<div class="fbtns"><button class="btn" type="submit">沿用它的 CP 表</button>'
+         '<div class="fbtns"><button class="btn" type="submit">复制该赛事的检查点表</button>'
          '<span class="fhint">会覆盖当前赛道的 CP 与关门</span></div></form>'
          if others else '<div class="sub2">还没有别的赛事可以沿用。</div>'))
 
     import_card = (
-        '<p class="hint">三件事按顺序：先建一场 → 再把规程里的 CP 表贴进来 → '
-        "核对一遍。全在手机上完成，不用回电脑。</p>"
+        '<p class="hint">先添加赛事，再粘贴规程中的检查点表，'
+        "最后核对里程和关门时间。</p>"
         '<details class="fold"><summary>① 新建一场赛事（只要名字、日期、距离）</summary>'
         '<form class="frm" method="post" action="/__event/new">'
         '<div class="frow"><label>赛事名<input class="fi" name="name" '
@@ -1518,28 +1518,28 @@ def render_page(qs: dict | None = None) -> str:
         'step="0.1" min="1" max="400" placeholder="70"></label>'
         '<label>爬升 m<input class="fi" name="ascent_m" type="number" step="10" '
         'min="0" placeholder="3200"></label></div>'
-        '<div class="frow"><label>起跑<input class="fi" name="start_time" '
-        'value="08:00"></label><label>级别<select class="fi" name="priority">'
-        '<option value="A">A · 主赛</option><option value="B">B · 有成绩要求</option>'
+        '<div class="frow"><label>起跑时间<input class="fi" name="start_time" '
+        'value="08:00"></label><label>赛事优先级<select class="fi" name="priority">'
+        '<option value="A">A · 重点赛事</option><option value="B">B · 有成绩目标</option>'
         '<option value="C" selected>C · 训练赛</option></select></label></div>'
         # 类型决定默认装备清单和目标配速：路跑给「号码布+鞋+胶+壶」，
         # 越野给「头灯+保温毯+水袋+换装包」，塞错了等于让人背一堆没用的东西
         '<div class="frow"><label>类型<select class="fi" name="kind">'
-        '<option value="trail" selected>越野（爬升大、有 CP 与换装）</option>'
-        '<option value="road">路跑（公路 / 城市马）</option></select></label></div>'
-        '<div class="fbtns"><button class="btn primary" type="submit">建好这一场</button>'
-        '<span class="fhint">目标时间按距离先给个初值，之后能改</span></div></form></details>'
+        '<option value="trail" selected>越野跑</option>'
+        '<option value="road">路跑</option></select></label></div>'
+        '<div class="fbtns"><button class="btn primary" type="submit">创建赛事</button>'
+        '<span class="fhint">App 会根据距离给出目标用时，之后可以修改。</span></div></form></details>'
 
-        '<details class="fold"><summary>② 粘贴规程里的 CP 表（一次认 11 个 CP）</summary>'
-        '<p class="hint">整段粘贴最稳：每行一个「CPn 地名 里程 关门」，'
-        "制表符、全角、时长制都能认；认不出会直接说没认出来，不会瞎猜。</p>"
+        '<details class="fold"><summary>② 粘贴规程里的检查点表</summary>'
+        '<p class="hint">请粘贴完整表格，每行包含编号、地名、累计里程和关门时间。'
+        "关门时间可以填写具体时刻或从起跑开始计算的时长。</p>"
         '<form class="frm" method="post" action="/__event/import">'
         + HID +
         '<textarea class="ta" name="text" rows="7" placeholder='
         '"CP1 仙山雅宿 10.9km 关门 08:05&#10;CP2 冰川瀑布景区 22.3km 关门 10:10">'
         "</textarea>"
-        '<div class="fbtns"><button class="btn primary" type="submit">解析并写入</button>'
-        '<span class="fhint">写入前会过一遍校验，有错不会覆盖现有数据</span></div></form>'
+        '<div class="fbtns"><button class="btn primary" type="submit">导入检查点表</button>'
+        '<span class="fhint">格式正确后才会更新现有的检查点。</span></div></form>'
         "</details>"
 
         '<details class="fold"><summary>③ 或者直接沿用上一届的赛道</summary>'
@@ -1569,26 +1569,26 @@ def render_page(qs: dict | None = None) -> str:
     # 建新赛事不该垫在已有赛事的一堆区块下面（2026-11-12 用户反馈）。
     if _q("new"):
         return ui.page("EVENT · 新建", "新建赛事 / 导入赛道",
-                       "从零建一场，或者把规程里的 CP 表贴进来。",
+                       "添加赛事后，可从规程导入检查点。",
                        import_card,
                        back=("返回赛事", "/event?slug=" + slug))
 
     body = (CSS + _event_bar(slug) + top_bar + ui.sec("赛事", overview)
             + ui.sec("赛道轨迹", _bar("track") + track, anchor="track")
-            + ui.sec("赛况与余量" if cd["has_course"] else "赛况",
+            + ui.sec("赛况与关门时间" if cd["has_course"] else "赛况",
                      _bar("race") + cps, anchor="race")
             + review_sec
             + ui.sec("补给与换装", _bar("fuel") + fuel_card, anchor="fuel")
             + ui.sec("强制装备", _bar("gear") + gears, anchor="gear")
             + ui.sec("行程与预订", _bar("trip") + _trips_html(slug, HID),
                      anchor="trip")
-            + ui.sec("资料", _bar("docs") + docs_card, anchor="docs")
-            + ui.sec("调整", _bar("adjust") + edit_card + danger_card, anchor="adjust"))
+            + ui.sec("赛事资料", _bar("docs") + docs_card, anchor="docs")
+            + ui.sec("赛事设置", _bar("adjust") + edit_card + danger_card, anchor="adjust"))
 
     subtitle = ev.get("short") or ev.get("name") or "赛事"
     sub3 = ("看余量 · 赛中打点 · 勾装备 · 每一块都能改"
             if cd["has_course"] else
-            "本场没有 CP 表：只看总用时、补给与装备（可粘贴规程补上）")
+            "还没有检查点表。可以先查看总用时、补给和装备，也可以从赛事规程导入检查点。")
     return ui.page("EVENT · 赛事", subtitle,
                    sub3,
                    body + SWIPE_JS, chips=chips, back=("AI 教练", "/ai"))
