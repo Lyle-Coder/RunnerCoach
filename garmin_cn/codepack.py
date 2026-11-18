@@ -38,7 +38,7 @@ POINTER = ROOT / "current"               # 文本：当前生效的版本号
 META = ROOT / "latest.json"              # 上次问到的清单（离线也能显示状态）
 
 ENABLED = True            # 自检会关掉：不许联网、不许在仓库里造文件
-_last = {"checked": 0.0, "applied": "", "note": ""}
+_last = {"checked": 0.0, "applied": "", "note": "", "pending": "", "error": ""}
 _busy = False
 _lock = threading.Lock()      # 模块级：每次 new 一个锁等于没有锁
 
@@ -110,8 +110,15 @@ def apply() -> dict:
 
 
 def status() -> dict:
-    """给诊断日志用：当前版本、挂载结果、上次检查时间。"""
+    """给诊断日志用：当前跑的是哪份、下载到了哪份、上次检查时间。
+
+    `pending` 单独列出来，是因为「下载好了但还没重启」和「根本没下成」
+    在界面上必须分得清——否则用户只会看到一句「没有代码包」，不知道该
+    再开一次还是该查网络。
+    """
     return {"applied": _last.get("applied") or "",
+            "pending": _last.get("pending") or "",
+            "error": _last.get("error") or "",
             "note": _last.get("note") or "",
             "checked_at": int(_last.get("checked") or 0)}
 
@@ -161,9 +168,11 @@ def refresh(force: bool = False) -> dict:
         return {"ok": True, "changed": False, "note": "已禁用"}
     man = _manifest(force)
     if not man:
-        return {"ok": True, "changed": False, "note": "没有更新"}
+        _last["note"] = "服务器上没有代码包"
+        return {"ok": True, "changed": False, "note": _last["note"]}
     ver = str(man.get("version") or "")
     if not ver or ver == current_version():
+        _last["note"] = f"已是最新 {ver}" if ver else "已是最新"
         return {"ok": True, "changed": False, "version": ver}
     base = _base()
     tmpdir = ROOT / f"{ver}.tmp"
@@ -211,10 +220,14 @@ def refresh(force: bool = False) -> dict:
             shutil.rmtree(target, ignore_errors=True)
         tmpdir.replace(target)
         POINTER.write_text(ver + "\n", encoding="utf-8")
+        _last["pending"] = ver
+        _last["note"] = f"已下载 {ver}，重启后生效"
         return {"ok": True, "changed": True, "version": ver}
     except Exception as e:      # noqa: BLE001
         shutil.rmtree(tmpdir, ignore_errors=True)
-        return {"ok": False, "changed": False, "error": f"{type(e).__name__}: {e}"}
+        _last["error"] = f"{type(e).__name__}: {e}"
+        _last["note"] = f"下载失败：{type(e).__name__}"
+        return {"ok": False, "changed": False, "error": _last["error"]}
 
 
 def refresh_async() -> None:

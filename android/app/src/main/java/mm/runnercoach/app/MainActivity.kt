@@ -3581,6 +3581,46 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun copyText(text: String, tip: String) {
+        val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+            as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("diag", text))
+        toast(tip)
+    }
+
+    /**
+     * 清空诊断日志。先问一句——这个弹窗唯一的用途是「把这段发给你」，
+     * 误触清空等于把证据删了。
+     *
+     * 中间那个键是「复制后清空」：一按就关掉原弹窗，文字看不着了，
+     * 所以把「怕丢」的那条路直接做在按钮上，比写一句提示管用。
+     */
+    private fun clearDiag(shown: String) {
+        fun doClear() {
+            thread {
+                val r = apiCall("diag_clear")
+                ui {
+                    if (r.optBoolean("ok")) {
+                        toast(String.format("已清空 %.0f KB",
+                            r.optInt("bytes", 0) / 1024.0))
+                    } else {
+                        toast("清不掉：" + r.optString("error", "未知原因"))
+                    }
+                }
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("清空诊断日志？")
+            .setMessage("只删本机的日志文件，不影响任何数据。")
+            .setPositiveButton("清空") { _, _ -> doClear() }
+            .setNeutralButton("复制后清空") { _, _ ->
+                copyText(shown, "已复制，然后清空")
+                doClear()
+            }
+            .setNegativeButton("算了", null)
+            .show()
+    }
+
     /**
      * 最近几条异常。用可选中复制的 TextView 而不是 WebView 页面：
      * 用户要的是「把这段发给你」，多一次跳转就多一次放弃。
@@ -3605,11 +3645,12 @@ class MainActivity : Activity() {
                     .setView(sv)
                     .setPositiveButton("关闭", null)
                     .setNeutralButton("复制") { _, _ ->
-                        val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                            as android.content.ClipboardManager
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("diag", txt))
-                        toast("已复制，直接发给开发者即可")
+                        copyText(txt, "已复制，直接发给开发者即可")
                     }
+                    // 清空放第三个键：日志是 append-only 的，老条目会一直留着，
+                    // 有些噪音（比如几周前那批 motion clips）早在代码里删掉了，
+                    // 却还挂在文件里，导致真正要看的那条被淹。
+                    .setNegativeButton("清空") { _, _ -> clearDiag(txt) }
                     .show()
             }
         }

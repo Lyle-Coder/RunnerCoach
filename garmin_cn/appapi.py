@@ -170,7 +170,7 @@ _API = {
     "plan_discard", "plan_rules", "plan_rules_set",
     "plan_renew", "plan_push", "plan_push_clear", "plan_push_info", "plan_target",
     "set_amap_key", "start_server", "recent", "read_html",
-    "db_export", "db_import", "diag_text",
+    "db_export", "db_import", "diag_text", "diag_clear",
     "motion_html", "motion_status", "motion_cleanup", "motion_audio",
     "clips_list", "clips_add", "clips_remove", "clips_reprobe",
     "clips_remove_many", "clips_update",
@@ -3895,7 +3895,12 @@ def diag_text(lines: int = 200) -> dict:
     try:
         from . import codepack
         st = codepack.status()
-        head.append(f"代码包 {st.get('applied') or '未使用'}（{st.get('note') or '-'}）")
+        if st.get("applied"):
+            head.append(f"代码包 {st['applied']}（已挂载）")
+        elif st.get("pending"):
+            head.append(f"代码包 未挂载（已下载 {st['pending']}，重启后生效）")
+        else:
+            head.append(f"代码包 未使用（{st.get('note') or '没有代码包'}）")
     except Exception as e:      # noqa: BLE001 - 老包没有这个模块
         head.append(f"代码包 不可用（{type(e).__name__}）")
     try:
@@ -3908,6 +3913,15 @@ def diag_text(lines: int = 200) -> dict:
     return {"ok": True,
             "text": "\n".join(head) + "\n\n" + (txt or "（还没有异常记录）"),
             "path": str(diag.log_path())}
+
+
+def diag_clear() -> dict:
+    """清空诊断日志（「我的 → 诊断日志」里的那个按钮）。"""
+    from . import diag
+
+    r = diag.clear()
+    r["path"] = str(diag.log_path())
+    return r
 
 
 def read_html(path: str) -> dict:
