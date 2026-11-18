@@ -194,6 +194,8 @@ class _Handler(SimpleHTTPRequestHandler):
                 return self._html(groupui.bingo_page(tok, int(seg[0]), msg))
             if len(seg) == 2 and seg[0].isdigit() and seg[1] == "map":
                 return self._html(groupui.map_page(tok, int(seg[0]), msg))
+            if len(seg) == 2 and seg[0].isdigit() and seg[1] == "shirts":
+                return self._html(groupui.shirts_page(tok, int(seg[0]), msg))
             if len(seg) == 1 and seg[0].isdigit():
                 rng = "month" if (q.get("range") or [""])[0] == "month" else "week"
                 return self._html(groupui.group_page(tok, int(seg[0]), msg, rng))
