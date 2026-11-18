@@ -93,24 +93,44 @@ def index(force: bool = False) -> dict:
     return files
 
 
+def _pkg_file(rel: str) -> Path | None:
+    """在**包**里找一个文件（不是下载目录）。
+
+    为什么要自己写一遍、不调 codepack.pkg_file：代码包走覆盖式更新，
+    本模块可能是**新代码**，而装载器 `codepack.py` 永远来自 APK，可能是
+    **旧版本**——旧版里没有 pkg_file，一调就 AttributeError，被 except
+    吞掉之后证书又找不到，HTTPS 全挂。
+
+    这是覆盖式更新的硬约束：**基础路径解析不能依赖任何可能缺失的 API**。
+    几行代码重复换来「新旧任意组合都能跑」，值。
+    """
+    import sys as _s
+
+    mod = _s.modules.get("garmin_cn")
+    for base in list(getattr(mod, "__path__", None) or []):
+        try:
+            p = Path(base) / rel
+            if p.is_file():
+                return p
+        except OSError:
+            continue
+    return None
+
+
 def local(name: str) -> Path | None:
     """本地已有的那份（下载目录优先，其次包内）。没有就 None。
 
     `BUNDLED` 是模块级的 `__file__` 推算值；这个模块自己也可能来自代码包，
-    那时它指向下载目录、里面没有素材。所以最后一步用 codepack.pkg_file
-    顺 `__path__` 去真包里找——找得到就说明它其实一直随 APK 在。
+    那时它指向下载目录、里面没有素材。所以最后一步用 _pkg_file 顺
+    `__path__` 去真包里找——找得到就说明它其实一直随 APK 在。
     """
     for d in (DIR, BUNDLED):
         p = d / name
         if p.is_file() and p.stat().st_size > 0:
             return p
-    try:
-        from . import codepack
-        q = codepack.pkg_file(f"content/{name}")
-        if q is not None and q.stat().st_size > 0:
-            return q
-    except Exception:      # noqa: BLE001
-        pass
+    q = _pkg_file(f"content/{name}")
+    if q is not None and q.stat().st_size > 0:
+        return q
     return None
 
 
