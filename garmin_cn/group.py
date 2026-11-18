@@ -52,7 +52,7 @@ def build_days(store, today: str | None = None, days: int = 14) -> list[dict]:
     s, e = start.isoformat(), day.isoformat()
     with store.conn:
         rows = store.conn.execute(
-            "SELECT date, type, distance_m, duration_s FROM activities"
+            "SELECT date, type, distance_m, duration_s, ascent FROM activities"
             " WHERE date BETWEEN ? AND ?", (s, e)).fetchall()
 
     agg: dict[str, dict] = {}
@@ -60,11 +60,15 @@ def build_days(store, today: str | None = None, days: int = 14) -> list[dict]:
         d = str(r["date"] or "")[:10]
         if not d:
             continue
-        a = agg.setdefault(d, {"distance_m": 0.0, "duration_s": 0.0, "acts": 0, "ran": False})
+        a = agg.setdefault(d, {"distance_m": 0.0, "duration_s": 0.0, "elevation_m": 0.0,
+                               "acts": 0, "ran": False})
         a["acts"] += 1
         a["duration_s"] += float(r["duration_s"] or 0)
         if _is_run(r["type"]):
             a["distance_m"] += float(r["distance_m"] or 0)
+            # 爬升只算跑步类：骑车一趟 1000 m 爬升会把这件衫变成自行车榜，
+            # 而里程只算跑步，两者口径必须一致。
+            a["elevation_m"] += float(r["ascent"] or 0)
             a["ran"] = True
 
     plan = _plan_flags(s, e, agg)
@@ -77,6 +81,7 @@ def build_days(store, today: str | None = None, days: int = 14) -> list[dict]:
             "distance_m": int(round(a.get("distance_m") or 0)),
             "duration_s": int(round(a.get("duration_s") or 0)),
             "acts": int(a.get("acts") or 0),
+            "elevation_m": int(round(a.get("elevation_m") or 0)),
             "plan_done": plan.get(d),
         })
     return out
@@ -262,6 +267,12 @@ def set_share(gid: int, share: str) -> dict:
 def set_alias(gid: int, alias: str) -> dict:
     """改我在这个组里的昵称（只影响这个组）。"""
     return _call("POST", f"/v1/group/{int(gid)}/me", {"alias": alias})
+
+
+def season(gid: int, today: str | None = None) -> dict:
+    """本周的衫、分、名次、称号。"""
+    q = f"?today={today}" if today else ""
+    return _call("GET", f"/v1/group/{int(gid)}/season{q}")
 
 
 def board(gid: int, rng: str = "week", today: str | None = None) -> dict:

@@ -351,6 +351,49 @@ def main() -> int:
             break
     check("建组超限触发 429", got429)
 
+    # ---------------- 周成绩：衫 / 分 / 名次
+    print("\n11. 周成绩（六件衫 + 赛季分）")
+    # b 追加几天带爬升的记录：圆点衫要有原料才测得出
+    st, r = req("POST", f"/v1/group/{gid}/report", {"days": [
+        {"date": "2026-11-16", "distance_m": 8000, "duration_s": 2400,
+         "acts": 1, "elevation_m": 400, "plan_done": True},
+        {"date": "2026-11-17", "distance_m": 8000, "duration_s": 2400,
+         "acts": 1, "elevation_m": 400, "plan_done": True},
+        {"date": "2026-11-18", "distance_m": 8000, "duration_s": 2400,
+         "acts": 1, "elevation_m": 400, "plan_done": True},
+    ]}, b)
+    check("上报带爬升被接受", st == 200 and r.get("saved") == 3, f"{st} {r}")
+
+    st, r = req("GET", f"/v1/group/{gid}/season?today=2026-11-18", None, a)
+    check("season 可读", st == 200 and r.get("ok") is True, f"{st} {r}")
+    check("六件衫都在", len(r.get("shirts") or []) == 6,
+          str([x.get("id") for x in r.get("shirts") or []]))
+    check("红衫是计划完成王",
+          next((x["title"] for x in r["shirts"] if x["id"] == "red"), "") == "计划完成王")
+    check("每个人有名次与分数",
+          all(isinstance(p.get("rank"), int) and p.get("score") is not None
+              for p in r.get("people") or []), str(r.get("people")))
+    check("me 指向自己", (r.get("me") or {}).get("user_id") is not None, str(r.get("me")))
+    check("base_max = 90（让分/预言那 10 分还没做）",
+          r.get("base_max") == 90.0, str(r.get("base_max")))
+
+    _polka = next(x for x in r["shirts"] if x["id"] == "polka")
+    check("圆点衫给了爬升最多的人",
+          len(_polka["winners"]) >= 1, str(_polka))
+
+    # 爬升密度截断：5 km 报 5000 m 爬升，应该被截到 5*200=1000
+    st, r = req("POST", f"/v1/group/{gid}/report", {"days": [
+        {"date": "2026-11-18", "distance_m": 5000, "duration_s": 1500,
+         "acts": 1, "elevation_m": 5000}]}, b)
+    check("离谱爬升被截断并告知", st == 200 and r.get("clamped_elev") == 1, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/season?today=2026-11-18", None, b)
+    _me_b = r.get("me") or {}
+    check("截断后爬升 ≤ 里程×200 m/km", int(_me_b.get("elev") or 0) <= 8000 * 0 + 1000 * 3,
+          str(_me_b.get("elev")))
+
+    st, r = req("GET", f"/v1/group/{gid}/season?today=2026-11-18", None, c3)
+    check("非成员不能看 season（403）", st == 403, f"{st} {r}")
+
     # ---------------- 汇总
     print(f"\n通过 {ok} 项，失败 {fail} 项")
     srv.shutdown()

@@ -370,6 +370,22 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 /* 一行小字：把「还有谁没共享 / 谁是组长」这种备注压在榜单底下，
    不再单开一个「成员」区块——成员就是榜上那些人。 */
 .tinyline{font-size:11px;color:var(--faint);margin-top:8px;line-height:1.5}
+/* 本周成绩条：我第几、多少分、穿着哪件衫。一行说完，不做榜单页。 */
+.sline{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 9px;
+  padding:9px 0 2px}
+.sline .rk{font-size:12.5px;color:var(--ink2);font-weight:600}
+.sline b{font-size:19px;font-weight:600;color:var(--ink);
+  font-variant-numeric:tabular-nums;letter-spacing:-.4px;line-height:1}
+.sline b i{font-style:normal;font-size:11px;font-weight:400;
+  color:var(--faint);margin-left:2px}
+.sline .tt{font-size:11px;color:#F5C26B;background:rgba(245,165,36,.09);
+  border:1px solid rgba(245,165,36,.22);border-radius:99px;padding:1px 7px}
+/* 衫：一个小色块 + 名字。六件同时出现也不会挤，因为字号压到 10.5 */
+.sbit{display:inline-flex;align-items:center;gap:4px;font-size:11px;
+  color:var(--muted);white-space:nowrap}
+.sbit i{width:8px;height:8px;border-radius:50%;flex:0 0 8px;
+  box-shadow:0 0 0 1px rgba(255,255,255,.16) inset}
+.sline2{display:flex;flex-wrap:wrap;gap:4px 10px;padding:2px 0 8px}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，
