@@ -185,7 +185,10 @@ CSS = """
 # 结局画面：底图 + 矢量脚印。高度用 padding-top 顶（132/372 = 35.48%），
 # 不用 aspect-ratio——WebView 版本差异大，padding 顶高是老办法但一定对。
 SCENE_CSS = """
-.escene{position:relative;width:100%;padding-top:35.48%;overflow:hidden}
+/* 圆角 + 细边：这张图会被当成"图"，不是一条通栏色带。分享卡外面还有一层
+   `.scene` 的更宽圆角，套着也不冲突。 */
+.escene{position:relative;width:100%;padding-top:35.48%;overflow:hidden;
+  border-radius:12px;border:1px solid rgba(120,150,190,.14)}
 .escene .plate{position:absolute;left:0;top:0;width:100%;height:100%;
   object-fit:cover;display:block}
 .escene .prints{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
@@ -812,17 +815,40 @@ def _plates() -> tuple[str, str]:
     return (out[0], out[1]) if all(out) else ("", "")
 
 
-def _ending_scene(key: str) -> str:
-    """结局画面。有底图就「底图 + 矢量脚印」，没有就整张退回纯 SVG。
+ENDING_EXTS = (".webp", ".png", ".jpg")
+ENDING_KEYS = LIT_KEYS + ("detour", "lost")
 
-    为什么脚印留在代码里
-    --------------------
-    1. **一致性**：同一张底图，五种去向由代码精确控制，永远不会画出五个
-       不同的房子；
-    2. **缩到 420 宽还清楚**：结算页里这张图只有 148 高，位图脚印会糊成一排
-       噪点，矢量不会；
-    3. **改剧情不用重出图**。
+
+def _ending_plate(key: str) -> str:
+    """这张结局**自己的**图（`content/ending_<key>.*`）。
+
+    这是现在用的形态：五张图各自画好了脚印和道具，接进来就完事。
+    代价是以后改脚印走向、或者加第六种结局，都得重出图——所以另一条
+    「两版底图 + 矢量脚印」的路留着（见 `_ending_scene`），需要时能切回去。
     """
+    if key not in ENDING_KEYS:
+        return ""
+    for e in ENDING_EXTS:
+        if (PLATE_DIR / f"ending_{key}{e}").is_file():
+            return f"/content/ending_{key}{e}"
+    return ""
+
+
+def _ending_scene(key: str) -> str:
+    """结局画面。三种来源，优先级从高到低：
+
+    1. `content/ending_<key>.*` —— 这张结局自己的图（**现在用的是这个**）。
+       脚印、石头、书本都在图里，代码只负责摆位置；
+    2. `content/ending_scene_lit/dark.*` —— 一张底图配矢量脚印；
+    3. 都没有：纯 SVG 画出来（开发时可以没有图片就跑）。
+
+    1 和 2 不能混：一张带脚印的底图再叠一层矢量脚印，就成两个人走过了。
+    """
+    own = _ending_plate(key)
+    if own:
+        return ('<div class="escene">'
+                f'<img class="plate" src="{esc(own)}" alt="" aria-hidden="true">'
+                "</div>")
     lit, dark = _plates()
     if not lit:
         return _ending_svg(key)

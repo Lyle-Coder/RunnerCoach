@@ -1041,6 +1041,7 @@ def run() -> int:
     _pd = Path(tempfile.mkdtemp())
     _old_pd = RU.PLATE_DIR
     try:
+        RU.PLATE_DIR = _pd          # 空目录：什么图都没有
         assert RU._plates() == ("", ""), "没有底图时不该报出底图"
         assert '<div class="escene">' not in RU._ending_scene("arrive"), \
             "没有底图却走了底图分支"
@@ -1075,6 +1076,25 @@ def run() -> int:
     finally:
         RU.PLATE_DIR = _old_pd
         shutil.rmtree(_pd, ignore_errors=True)
+
+    # 每张结局自己的图（现在用的）：脚印和道具都在图里，不能再叠矢量层
+    _pd2 = Path(tempfile.mkdtemp())
+    _old2 = RU.PLATE_DIR
+    try:
+        RU.PLATE_DIR = _pd2
+        assert RU._ending_plate("arrive") == "", "没有图却报出图"
+        (_pd2 / "ending_arrive.jpg").write_bytes(b"x")
+        assert RU._ending_plate("arrive") == "/content/ending_arrive.jpg", \
+            "没认出每结局的图"
+        _own = RU._ending_scene("arrive")
+        assert "ending_arrive.jpg" in _own and 'class="prints"' not in _own, \
+            "每结局图模式下还叠了矢量脚印（成了两个人走过）"
+        assert RU._ending_scene("detour").startswith("<svg"), \
+            "这张没有图，应该退回纯 SVG"
+        assert RU._ending_plate("nope") == "", "不认识的结局键不该去拼文件名"
+    finally:
+        RU.PLATE_DIR = _old2
+        shutil.rmtree(_pd2, ignore_errors=True)
 
     # 分享图：1080×1920 的竖图，走和活动图同一套出图链路（探针 + 9:16）。
     # 它**不能带**轨迹、昵称或别人的名字——发出去最多暴露「我参加了一个跑步
