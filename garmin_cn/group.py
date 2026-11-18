@@ -259,6 +259,11 @@ def set_share(gid: int, share: str) -> dict:
     return _call("POST", f"/v1/group/{int(gid)}/share", {"share": share})
 
 
+def set_alias(gid: int, alias: str) -> dict:
+    """改我在这个组里的昵称（只影响这个组）。"""
+    return _call("POST", f"/v1/group/{int(gid)}/me", {"alias": alias})
+
+
 def board(gid: int, rng: str = "week", today: str | None = None) -> dict:
     q = f"?range={rng}"
     if today:
