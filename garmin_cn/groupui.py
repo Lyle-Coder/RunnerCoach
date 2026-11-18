@@ -394,6 +394,19 @@ def _map_svg(pts, people, bm, EX, BM) -> str:
 
 
 # ---------------------------------------------------------------- 六件衫
+def _shirt_dot(color: str, pattern: str = "", cls: str = "") -> str:
+    """衫的色点。`cls` 是附加类名（.sbit 里不用传，那里靠 `.sbit i` 给尺寸）。
+
+    圆点衫要画波点而不是纯色：它和白衫的色号（#D8DEE9 / #F2F5FA）在暗底上
+    都是「一个白点」，调浅调深都分不出来。公路车赛里圆点衫本来就是白底红点，
+    照这个画既分得开，也不用解释。
+    """
+    c = ("pd " + cls).strip()
+    if pattern == "dots":
+        return f'<i class="{c}" aria-hidden="true"></i>'
+    return f'<i class="{c}" style="background:{esc(color)}" aria-hidden="true"></i>'
+
+
 def shirts_page(token: str, gid: int, message: str = "") -> str:
     """六件衫：每件在比什么、现在谁领跑、前 3 名是谁。
 
@@ -426,8 +439,8 @@ def shirts_page(token: str, gid: int, message: str = "") -> str:
         for i, t in enumerate(top[1:], 2):
             rest += f'<span class="rest">{i} {esc(t.get("alias"))} {esc(t.get("text"))}</span>'
         rows += ('<div class="shr">'
-                 f'<i class="dot" style="background:{esc(sh.get("color"))}"></i>'
-                 f'<div class="t">{esc(sh.get("name"))} · {esc(sh.get("title"))}</div>'
+                 + _shirt_dot(str(sh.get("color") or ""), str(sh.get("pattern") or ""), "dot")
+                 + f'<div class="t">{esc(sh.get("name"))} · {esc(sh.get("title"))}</div>'
                  f'<div class="v">{head}</div>'
                  f'<div class="h">{esc(sh.get("hint"))}'
                  + (f'<span class="r3">{rest}</span>' if rest else "")
@@ -625,8 +638,9 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
 
         def _bits(shirts):
             return "".join(
-                f'<span class="sbit"><i style="background:{esc(x.get("color"))}"></i>'
-                f'{esc(x.get("name"))}</span>'
+                f'<span class="sbit">'
+                + _shirt_dot(str(x.get("color") or ""), str(x.get("pattern") or ""))
+                + f'{esc(x.get("name"))}</span>'
                 for x in (shirts or []))
 
         if _me:
@@ -636,7 +650,11 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                 f'<span class="rk">我 · 第 {int(_me.get("rank") or 0)} 名</span>'
                 f'<b>{float(_me.get("score") or 0):g}<i>分</i></b>'
                 + (f'<span class="tt">{esc(_tt)}</span>' if _tt else "")
-                + _bits(_me.get("shirts")) + "</div>")
+                + _bits(_me.get("shirts"))
+                # 入口推在这一行最右：放到衫行末尾会自己换行，变成一个孤零零
+                # 的蓝色小标题，看着像还有个区块没加载出来
+                + f'<a class="sline-jump" href="/groups/{gid}/shirts">六件衫 ›</a>'
+                + "</div>")
         win = []
         for sh in _se.get("shirts") or []:
             names = [str(w.get("alias") or "") for w in (sh.get("winners") or [])]
@@ -646,11 +664,9 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                            f'{esc(sh.get("color"))}"></i>{esc(sh.get("name"))}·'
                            f'{esc(sh.get("title"))} {esc("/".join(names))}</span>')
         if win:
-            # 整行可点进「六件衫」，末尾再给一个显式箭头——不然没人知道这排
-            # 彩色小点是个入口
+            # 整行可点进「六件衫」。箭头在上面那行最右，这里不再重复一个
             score_line += ('<div class="sline2"><a class="shirtlink" href="'
-                           f'/groups/{gid}/shirts">' + "".join(win)
-                           + '<span class="sbit jump">六件衫 ›</span></a></div>')
+                           f'/groups/{gid}/shirts">' + "".join(win) + "</a></div>")
     if not score_line:
         score_line = ""
 
