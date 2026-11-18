@@ -15,7 +15,12 @@ object ApkDownload {
     @Synchronized
     fun enqueue(context: Context, url: String, assetName: String): State {
         val uri = Uri.parse(url)
-        require(uri.scheme == "https" && !uri.host.isNullOrBlank()) {
+        // https 为主。允许 http 是因为自建分发走的是明文端口：系统下载管理器
+        // 只信系统根证书，认不了我们的自签证书（握手直接失败）。安装包本身
+        // 是公开物，装的时候 Android 还会校验签名，明文只影响"下载到什么"。
+        // 地址来自服务端下发的元数据，不是用户输入，仍要求有主机名。
+        require((uri.scheme == "https" || uri.scheme == "http") &&
+            !uri.host.isNullOrBlank()) {
             "安装包下载地址无效"
         }
         require(Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,150}\\.apk", RegexOption.IGNORE_CASE)

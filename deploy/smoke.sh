@@ -70,6 +70,24 @@ echo "5. 客户端配置下发"
 CC="$(curl -sS -m 8 $CURL_TLS "$BASE/v1/client/config" 2>/dev/null)"
 echo "$CC" | grep -q '"ok": *true' && pass "config 可读" || fail "config 读不到" "$CC"
 
+echo "6. 安装包分发"
+AL="$(curl -sS -m 8 $CURL_TLS "$BASE/v1/app/latest" 2>/dev/null)"
+if echo "$AL" | grep -q '"ok": *true'; then
+  V="$(echo "$AL" | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p')"
+  U="$(echo "$AL" | sed -n 's/.*"url": *"\([^"]*\)".*/\1/p')"
+  pass "已发布 $V"
+  AHOST="$(echo "$U" | sed -e 's|^http://||' -e 's|/.*||')"
+  if [ -n "$AHOST" ]; then
+    AC="$(curl -s -o /dev/null -m 8 -w '%{http_code}' -I "$U" 2>/dev/null)"
+    [ "$AC" = "200" ] && pass "安装包可下载（$AHOST）" || \
+      fail "安装包下载返回 $AC" "检查防火墙是否放行 8088"
+  fi
+elif echo "$AL" | grep -q '还没有发布过'; then
+  echo "       还没发布过安装包（tools/publish_apk.py 传一次就有）"
+else
+  fail "版本接口异常" "$AL"
+fi
+
 echo
 echo "通过 $OK 项，失败 $BAD 项"
 [ "$BAD" = "0" ] || exit 1

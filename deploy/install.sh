@@ -28,7 +28,7 @@ command -v openssl >/dev/null || { echo "× 没找到 openssl。先 apt install 
 
 echo "→ 用户与目录"
 id "$SVC" >/dev/null 2>&1 || useradd --system --home "$APP" --shell /usr/sbin/nologin "$SVC"
-mkdir -p "$APP" "$APP/data" "$APP/certs" "$APP/site" "$ETC"
+mkdir -p "$APP" "$APP/data" "$APP/certs" "$APP/site" "$APP/apk" "$ETC"
 
 echo "→ 拷贝程序"
 for f in app.py groups.py expedition.py tick.py; do
@@ -69,6 +69,10 @@ else
   chmod 600 "$ETC/env"
   echo "  已生成 $ETC/env（ADMIN_TOKEN 已随机填好）"
 fi
+
+# APK 分发端口：系统下载管理器不认自签证书，所以安装包单独走一个明文只读端口。
+grep -q '^RC_APK_PORT=' "$ETC/env" || echo "RC_APK_PORT=8088" >> "$ETC/env"
+grep -q '^RC_APK_DIR=' "$ETC/env" || echo "RC_APK_DIR=$APP/apk" >> "$ETC/env"
 
 # 本机 server/.env 里已经配过 SMTP / 上游 Key 了，直接搬过去——
 # 让人在服务器上再抄一遍 16 位授权码，抄错一位的表现是"验证码发不出去"，
@@ -131,9 +135,9 @@ fi
 
 echo
 echo "防火墙（三选一，按你机器上装的那个）："
-echo "  ufw:       ufw allow $PORT/tcp && ufw reload"
-echo "  firewalld: firewall-cmd --add-port=$PORT/tcp --permanent && firewall-cmd --reload"
-echo "  云控制台:   安全组放行 TCP $PORT"
+echo "  ufw:       ufw allow $PORT/tcp && ufw allow 8088/tcp && ufw reload"
+echo "  firewalld: firewall-cmd --add-port=$PORT/tcp --add-port=8088/tcp --permanent && firewall-cmd --reload"
+echo "  云控制台:   放行 TCP $PORT 和 TCP 8088（安装包下载）"
 echo
 echo "装好之后在开发机上跑："
 echo "  sh deploy/smoke.sh $IP $PORT"
