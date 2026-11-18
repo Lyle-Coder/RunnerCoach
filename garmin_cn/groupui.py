@@ -240,6 +240,159 @@ def bingo_page(token: str, gid: int, message: str = "") -> str:
                 back=("返回小组", f"/groups/{gid}"))
 
 
+# ---------------------------------------------------------------- 组内路线
+MAP_W, MAP_H = 392, 300
+
+
+def map_page(token: str, gid: int, message: str = "") -> str:
+    """组内路线图：每人一种颜色，把本周跑过的 500 m 格子画在底图上。
+
+    这里画的是**格子**不是轨迹。格号是 500 m 见方的一片区域，还原不出你走的
+    是哪条人行道；轨迹点是精确到米的行踪，两者不是一个量级。组页的承诺因此
+    只在「格子」这一层成立，页面底部要把这句话写清楚。
+    """
+    import hashlib
+
+    from . import basemap as BM
+    from . import explore as EX
+    from . import group as G
+
+    today = dt.date.today().isoformat()
+    r = G.map_data(gid, today)
+    if not r.get("ok"):
+        body = (_msg(message)
+                + f'<div class="card"><p class="note">{esc(r.get("error") or "打不开地图")}</p>'
+                f'<div class="pager"><a class="btn" href="/groups/{gid}">返回小组</a></div></div>')
+        return page("GROUP", "组内路线", "", body, back=("返回小组", f"/groups/{gid}"))
+
+    people = r.get("people") or []
+    mine = next((p for p in people if p.get("is_me")), None)
+    others = [p for p in people if not p.get("is_me")]
+
+    all_cells: list[str] = []
+    for p in people:
+        all_cells.extend(p["cells"])
+
+    svg = ""
+    if all_cells:
+        # 取景点用格子四角，不用中心：只用中心的活，最外圈只露出一半
+        pts: list[list[float]] = []
+        for c in all_cells:
+            pts.extend([[lat, lon] for lat, lon in EX.cell_corners(c)])
+        ident = "gmap%d-%s-%s" % (
+            gid, str(r.get("from") or "")[:10],
+            hashlib.md5(",".join(sorted(all_cells)).encode()).hexdigest()[:10])
+        bm = BM.ensure(pts, MAP_W, MAP_H, ident=ident)
+        svg = _map_svg(pts, people, bm, EX, BM)
+
+    # 图例：颜色 + 名字 + 格数。人多了会换行，不挤成一条。
+    legend = ""
+    for p in people:
+        legend += (f'<span class="lgi"><i style="background:{esc(p["color"])}"></i>'
+                   f'{esc(p["alias"])}<b>{len(p["cells"])}</b></span>')
+
+    # 我自己的开关。默认关，打开前把「上传什么」讲明白。
+    if mine:
+        _sw = (f'<form action="/__group/{gid}/mapshare" method="post">{_tok(token)}'
+               '<input type="hidden" name="on" value="0">'
+               '<div class="setrow"><span class="nowrap">路线共享</span>'
+               '<span class="note" style="flex:1 1 auto;margin:0">'
+               f'已开启 · 本周 {len(mine["cells"])} 格</span>'
+               '<button class="btn sm" type="submit">关掉</button></div></form>')
+    else:
+        _sw = (f'<form action="/__group/{gid}/mapshare" method="post">{_tok(token)}'
+               '<input type="hidden" name="on" value="1">'
+               '<div class="setrow"><span class="nowrap">路线共享</span>'
+               '<span class="note" style="flex:1 1 auto;margin:0">'
+               '开启后同组能看到你本周跑过哪些 500 米格子</span>'
+               '<button class="btn sm primary" type="submit">开启</button></div></form>')
+
+    body = (_msg(message)
+            + (_map_card(svg, legend) if svg else
+               '<div class="card"><p class="note">这周还没有人共享路线。'
+               '打开下面的开关，你的足迹会以 500 米格子的形式出现在这里。</p></div>')
+            + sec("我的设置", '<div class="flat">' + _sw + '</div>')
+            + '<p class="note">地图上只有 500 米见方的格子，没有轨迹线、'
+              '没有配速、没有心率。关掉共享的那一刻，服务端会把这些格子删掉。</p>')
+
+    title = f"{len(people)} 人 · {int(r.get('cells') or 0)} 格" if people else "这周还没有路线"
+    return page("GROUP", "组内路线", title, body,
+                foot="只上传 500 米网格，不上传轨迹、配速和位置点。",
+                back=("返回小组", f"/groups/{gid}"))
+
+
+def _map_card(svg: str, legend: str) -> str:
+    lg = f'<div class="lgs">{legend}</div>' if legend else ""
+    return ('<div class="card gmapcard">' + svg + lg + '</div>')
+
+
+def _map_svg(pts, people, bm, EX, BM) -> str:
+    """底图 + 每人一条彩色格子带。
+
+    变换和活动图用同一套 `p' = p*s + t`（见 actcard._track_on_map 的注释）：
+    底图和格子共用一个变换，才不会出现「路网在左、脚印在右」。
+    """
+    meta = (bm or {}).get("meta") or {}
+    iw, ih = int(meta.get("w") or MAP_W), int(meta.get("h") or MAP_H)
+    s = float(meta.get("s") or min(MAP_W / iw, MAP_H / ih))
+
+    if bm:
+        pxs = [BM.to_px(lat, lon, meta) for lat, lon in pts]
+        cx = (min(x for x, _ in pxs) + max(x for x, _ in pxs)) / 2
+        cy = (min(y for _, y in pxs) + max(y for _, y in pxs)) / 2
+        tx = min(0.0, max(MAP_W - iw * s, MAP_W / 2 - cx * s))
+        ty = min(0.0, max(MAP_H - ih * s, MAP_H / 2 - cy * s))
+
+        def xy(lat, lon):
+            x, y = BM.to_px(lat, lon, meta)
+            return x * s + tx, y * s + ty
+    else:
+        # 没有底图（没配 Key / 网络失败）：仍然画格子，按经纬度线性铺满画幅。
+        # 形状还在，只是没有路网——比整块空白强。
+        lats = [p[0] for p in pts]
+        lons = [p[1] for p in pts]
+        la0, la1 = min(lats), max(lats)
+        lo0, lo1 = min(lons), max(lons)
+        dlat = (la1 - la0) or 0.01
+        dlon = (lo1 - lo0) or 0.01
+
+        def xy(lat, lon):
+            return ((lon - lo0) / dlon * (MAP_W - 24) + 12,
+                    (1 - (lat - la0) / dlat) * (MAP_H - 24) + 12)
+
+    # 自己最后画：压在别人上面，才看得清「我这条」
+    order = sorted(people, key=lambda p: bool(p.get("is_me")))
+    paths = ""
+    for p in order:
+        d = ""
+        for c in p["cells"]:
+            quad = [xy(lat, lon) for lat, lon in EX.cell_corners(c)]
+            d += ("M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in quad) + " Z ")
+        # 描边比填充更深更实：500 m 的方块之间会有亚像素缝，靠描边补掉；
+        # 而且取景拉远时每格只有几个像素，全靠描边才看得出「这是一条带」。
+        paths += (f'<path d="{d}" fill="{esc(p["color"])}" fill-opacity="0.62"'
+                  f' stroke="{esc(p["color"])}" stroke-opacity="0.95"'
+                  f' stroke-width="0.45" stroke-linejoin="round"/>')
+
+    # 底图必须压暗：高德给的是浅色图，直接铺在暗色卡片上像一张纸糊在屏幕上，
+    # 而且格子的颜色会被底图抢掉。
+    bg = (f'<image href="/basemap/{esc(bm["png"].name)}" x="0" y="0" '
+          f'width="{iw}" height="{ih}" preserveAspectRatio="none" '
+          f'style="filter:brightness(.58) saturate(.66) contrast(1.05)" '
+          f'transform="translate({tx:.2f},{ty:.2f}) scale({s:.4f})"/>' if bm else
+          '<rect x="0" y="0" width="100%" height="100%" fill="#0E1621"/>')
+    # 再罩一层深蓝，把底图的色温拉回到 App 的冷色调
+    veil = ('<rect x="0" y="0" width="100%" height="100%" fill="#0A1424" '
+            'fill-opacity="0.30"/>')
+    credit = ('<text x="' + str(MAP_W - 8) + '" y="' + str(MAP_H - 7) +
+              '" text-anchor="end" class="mapsrc">高德地图</text>')
+    return (f'<svg class="gmap" viewBox="0 0 {MAP_W} {MAP_H}" '
+            f'xmlns="http://www.w3.org/2000/svg" role="img" aria-label="组内本周路线">'
+            f'<defs><clipPath id="gmclip"><rect x="0" y="0" width="{MAP_W}" '
+            f'height="{MAP_H}" rx="12"/></clipPath></defs>'
+            f'<g clip-path="url(#gmclip)">{bg}{veil}{paths}{credit}</g></svg>')
+
+
 # ---------------------------------------------------------------- 组详情
 def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> str:
     from . import group as G
@@ -267,6 +420,20 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     role = g.get("role") or "member"
     is_admin = role in ("owner", "admin")
     my_share = (g.get("me") or {}).get("share") or "summary"
+
+    # 把「路线共享开着吗」记到本地：上报时靠这个决定要不要多发一次格子，
+    # 不记的话每次上报都得先拉一遍 detail。
+    try:
+        from . import appapi as _A
+        from .store import Store as _Store
+
+        _st = _Store(_A.DB)
+        try:
+            G.note_map(_st, gid, bool((g.get("me") or {}).get("map_share")))
+        finally:
+            _st.close()
+    except Exception:      # noqa: BLE001 - 缓存写不进去不影响页面
+        pass
 
     b = _h.get("board") or G.board(gid, rng, today)
     cl = _h.get("challenges") or G.challenge_list(gid, today)
@@ -521,32 +688,38 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                      '<p class="note">目标用于结对让分和预言结算；填低一点也没关系，'
                      '达成比好看重要。</p></details>')
 
-    # 远征入口。放在榜单之前：榜单是每天看的，远征是这一季的进度，
-    # 两者都不该埋在页面底部。只做入口不拉 state——组详情页要秒开。
-    trail = ('<div class="card"><a class="grow" href="/run?gid=' + str(gid) + '">'
-             '<div class="gname">雪线之前</div>'
-             '<div class="gmeta">这一季的路</div>'
-             '<div class="chev">›</div></a></div>')
+    # 「组内足迹」和「雪线之前」是同一类东西：都是「这段时间我们走过哪儿」，
+    # 一行一个入口，共用一张卡。分开两个 section 会多两行标题，占掉榜单的位置。
+    trail = ('<div class="card">'
+             f'<a class="grow" href="/groups/{gid}/map">'
+             '<span class="gname">组内足迹</span>'
+             '<span class="gmeta">本周谁跑过哪片</span>'
+             '<span class="chev">›</span></a>'
+             '<a class="grow" href="/run?gid=' + str(gid) + '">'
+             '<span class="gname">雪线之前</span>'
+             '<span class="gmeta">这一季的路</span>'
+             '<span class="chev">›</span></a></div>')
 
     # 月榜/周榜互切。服务端一直支持 range=month，只是页面以前不读这个参数，
     # 入口就被写死成关闭（`if False`）——那是死开关，不是功能。
     other = "month" if rng == "week" else "week"
     more = ("月榜" if other == "month" else "周榜", f"/groups/{gid}?range={other}")
 
-    # 「本周」只在真有内容时出现：目标/对子/预言任何一个都没有，就别多一个空标题
-    week_sec = (sec("本周", '<div class="flat">' + week_line + week_form + '</div>')
-                if (week_line or week_form) else "")
+    # 顶部一块：我的名次 + 本周状态（目标/结对/预言/Bingo），不带标题也不带卡片。
+    # 顺序是刻意的——点「小组」第一眼要看到「我在组里第几」，然后才是这一周的
+    # 玩法。P2 加了两块之后榜单被挤到第三屏，这条就破了，所以玩法块必须并进
+    # 头部，而不是自己占一个 section。
+    head = score_line + week_line + week_form
 
     body = (msg
-            + score_line
-            + week_sec
-            + sec("远征", trail)
+            + head
             + sec("月榜" if rng == "month" else "本周榜",
                   '<div class="flat">' + rank_rows + '</div>',
                   more=more)
             + sec("赛事", '<div class="flat">' + ch_rows + '</div>' + chal_fold)
-            + sec("设置", '<div class="flat">' + mine + '</div>')
-            + sec("管理", admin_fold))
+            + sec("探索", trail)
+            # 设置和管理都是低频：合成一块，管理再折一层
+            + sec("设置", '<div class="flat">' + mine + '</div>' + admin_fold))
     return page("GROUP", g.get("name") or "小组",
                 f'{int(g.get("member_count") or 0)} 人 · '
                 + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),

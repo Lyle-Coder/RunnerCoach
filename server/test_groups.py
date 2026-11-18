@@ -552,6 +552,57 @@ def main() -> int:
     st, r = req("GET", f"/v1/group/{gid}/bingo?today=2026-11-18", None, c3)
     check("非成员看不了 Bingo（403）", st == 403, f"{st} {r}")
 
+    # ---------------- 组内路线图
+    print("\n11c. 组内路线图（只传格子，不传轨迹）")
+    st, r = req("GET", f"/v1/group/{gid}/map?today=2026-11-18", None, a)
+    check("默认没人开路线共享，地图是空的",
+          st == 200 and r.get("ok") and not (r.get("people") or []), f"{st} {r}")
+    check("地图会告诉你有几个人没开", int(r.get("hidden") or 0) > 0, str(r.get("hidden")))
+
+    _cells = ["8883:25915", "8884:25915", "8884:25916"]
+    st, r = req("POST", f"/v1/group/{gid}/cells", {"cells": _cells}, a)
+    check("没开共享就传格子被拒（409）", st == 409, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/mapshare", {"on": True}, a)
+    check("打开路线共享", st == 200 and r.get("map_share") is True, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}", None, a)
+    _me = next(m for m in r["group"]["members"] if m.get("is_me"))
+    check("成员视图里能看到路线开关状态", _me.get("map_share") is True, str(_me))
+
+    st, r = req("POST", f"/v1/group/{gid}/cells",
+                {"cells": _cells + ["坏数据", "1:2:3", None], "today": "2026-11-18"}, a)
+    check("上传格子，脏值被丢掉", st == 200 and r.get("saved") == 3, f"{st} {r}")
+
+    st, r = req("GET", f"/v1/group/{gid}/map?today=2026-11-18", None, b)
+    _ppl = r.get("people") or []
+    check("同组成员能看到我的格子", st == 200 and len(_ppl) == 1, f"{st} {r}")
+    check("格子原样回来", set(_ppl[0]["cells"]) == set(_cells), str(_ppl[:1]))
+    check("每人有颜色", bool(_ppl[0].get("color")), str(_ppl[:1]))
+    check("别人看到的是 is_me=False", _ppl[0]["is_me"] is False, str(_ppl[:1]))
+
+    st, r = req("POST", f"/v1/group/{gid}/cells",
+                {"cells": ["%d:%d" % (i, i) for i in range(700)], "today": "2026-11-18"}, a)
+    check("一次超过 600 格被拒（400）", st == 400, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/cells", {"cells": [], "today": "2026-11-18"}, a)
+    check("空数组等于清空本周", st == 200 and r.get("saved") == 0, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/map?today=2026-11-18", None, a)
+    check("清空后地图上就没有我了", not (r.get("people") or []), str(r.get("people")))
+
+    st, r = req("POST", f"/v1/group/{gid}/cells", {"cells": _cells, "today": "2026-11-18"}, a)
+    st, r = req("GET", f"/v1/group/{gid}/map?today=2026-11-18", None, c3)
+    check("非成员看不了组内地图（403）", st == 403, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/mapshare", {"on": False}, a)
+    check("关掉路线共享", st == 200 and r.get("map_share") is False, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/map?today=2026-11-18", None, a)
+    check("关掉后格子被删干净（不留历史）",
+          not (r.get("people") or []), str(r.get("people")))
+    _db = app.group_api.db()
+    with _db as _c:
+        _n = _c.execute("SELECT COUNT(*) n FROM group_cell WHERE group_id=?", (gid,)).fetchone()["n"]
+    check("库里也确实没有残留", int(_n) == 0, str(_n))
+
     # ---------------- 账号昵称
     print("\n12. 账号昵称")
     _nick_mail = "nick_user@test.local"

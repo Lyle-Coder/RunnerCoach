@@ -224,6 +224,17 @@ def init_db() -> None:
           created_at INTEGER NOT NULL,
           PRIMARY KEY(group_id, week_start, user_id)
         );
+
+        -- 组内路线图：每人本周跑过的 500 m 格子。
+        -- **只存格子，不存轨迹**——格号粗一个数量级，还原不出你走的是哪条人行道。
+        -- 只在该成员主动打开 map_share 后才会有行；关掉就整周删干净。
+        CREATE TABLE IF NOT EXISTS group_cell(
+          group_id   INTEGER NOT NULL,
+          week_start TEXT NOT NULL,
+          user_id    INTEGER NOT NULL,
+          cell       TEXT NOT NULL,
+          PRIMARY KEY(group_id, week_start, user_id, cell)
+        );
         """)
         # 老库补列。SQLite 的 ADD COLUMN 支持带默认值，已有行会拿到 0；
         # 不做数据回填——0 就是「那几天还没有这个字段」，回填成别的值是编数据。
@@ -233,6 +244,11 @@ def init_db() -> None:
                       " NOT NULL DEFAULT 0")
         if "explorer" not in cols:
             c.execute("ALTER TABLE group_daily ADD COLUMN explorer INTEGER"
+                      " NOT NULL DEFAULT 0")
+        # 路线图开关默认 **关**：位置比里程敏感得多，不能靠「用户没注意」就开。
+        mcols = {r["name"] for r in c.execute("PRAGMA table_info(group_members)")}
+        if "map_share" not in mcols:
+            c.execute("ALTER TABLE group_members ADD COLUMN map_share INTEGER"
                       " NOT NULL DEFAULT 0")
 
 
@@ -377,6 +393,8 @@ def _member_view(m, me_id: int) -> dict:
         "alias": m["alias"],
         "role": m["role"],
         "share": m["share_level"],
+        # 路线图开关。默认 0；只有 1 的人才会出现在组内地图上。
+        "map_share": bool(m["map_share"]) if "map_share" in m.keys() else False,
         "is_me": m["user_id"] == me_id,
         "joined_at": m["joined_at"],
     }
@@ -953,6 +971,111 @@ def api_bingo(me, gid: int, query: dict) -> dict:
     return out
 
 
+# ---------------------------------------------------------------- 组内路线图
+# 每人一种颜色。序号按「入组顺序」，某个人关掉路线共享时不重排——否则
+# 他一关，别人的颜色全变，队里会以为换了人。
+MAP_COLORS = ["#5EA0FF", "#3FA76A", "#E8C43A", "#F2555A", "#B98CF6",
+              "#22D3EE", "#F5A524", "#FF7AB6", "#7DD3A0", "#C0C8D8"]
+# 一周 100 km 大概 200–300 格，600 是给「跑了两个马拉松 + 通勤」留的余量。
+MAX_CELLS = 600
+CELL_RE = re.compile(r"^-?\d{1,6}:-?\d{1,6}$")
+
+
+def api_mapshare(me, gid: int, body: dict) -> dict:
+    """打开/关闭「把本周跑过的 500 m 网格给同组看」。
+
+    **默认是关的**，而且关掉会把已经存下的格子删干净——「不想共享」和
+    「以后别共享」不能只差一个布尔值，那样历史数据还在库里躺着。
+    """
+    uid = int(me["user_id"])
+    on = bool(body.get("on"))
+    with db() as c:
+        m = _require_member(c, gid, uid)
+        if on and (m["share_level"] or "summary") != "summary":
+            raise GroupError(409, "先把数据共享打开，再把路线共享打开")
+        c.execute("UPDATE group_members SET map_share=? WHERE group_id=? AND user_id=?",
+                  (1 if on else 0, gid, uid))
+        if not on:
+            c.execute("DELETE FROM group_cell WHERE group_id=? AND user_id=?", (gid, uid))
+        _audit(c, gid, uid, "map_on" if on else "map_off", uid)
+    return {"ok": True, "map_share": on}
+
+
+def api_cells(me, gid: int, body: dict) -> dict:
+    """上传本周跑过的格子。全量覆盖，不是增量——同一批重复发不会翻倍。"""
+    uid = int(me["user_id"])
+    today = _today(body.get("today"))
+    wf, _wt = _week(today)
+    raw = body.get("cells")
+    if not isinstance(raw, list):
+        raise GroupError(400, "cells 要是数组")
+    if len(raw) > MAX_CELLS:
+        raise GroupError(400, f"一次最多 {MAX_CELLS} 格")
+    cells: list[str] = []
+    for x in raw:
+        s = str(x)
+        if CELL_RE.match(s) and s not in cells:
+            cells.append(s)
+
+    with db() as c:
+        m = _require_member(c, gid, uid)
+        if not m["map_share"]:
+            raise GroupError(409, "还没打开路线共享")
+        if (m["share_level"] or "summary") != "summary":
+            raise GroupError(409, "数据共享已关闭，不接收路线")
+        c.execute("DELETE FROM group_cell WHERE group_id=? AND week_start=? AND user_id=?",
+                  (gid, wf.isoformat(), uid))
+        c.executemany(
+            "INSERT OR IGNORE INTO group_cell(group_id,week_start,user_id,cell)"
+            " VALUES(?,?,?,?)",
+            [(gid, wf.isoformat(), uid, k) for k in cells])
+        # 只留最近 4 周：地图只看本周，旧格子留着没有用处，只是风险。
+        cutoff = (wf - dt.timedelta(days=28)).isoformat()
+        c.execute("DELETE FROM group_cell WHERE group_id=? AND week_start < ?",
+                  (gid, cutoff))
+    return {"ok": True, "saved": len(cells), "week_start": wf.isoformat()}
+
+
+def api_map(me, gid: int, query: dict) -> dict:
+    """本周组内路线：谁跑过哪些格子。只返回打开路线共享的人。"""
+    uid = int(me["user_id"])
+    today = _today((query.get("today") or [None])[0])
+    wf, wt = _week(today)
+    with db() as c:
+        _group(c, gid)
+        _require_member(c, gid, uid)
+        mem = c.execute(
+            "SELECT user_id, alias, share_level, map_share FROM group_members"
+            " WHERE group_id=? AND status='active' ORDER BY joined_at, user_id",
+            (gid,)).fetchall()
+        rows = c.execute(
+            "SELECT user_id, cell FROM group_cell WHERE group_id=? AND week_start=?"
+            " ORDER BY user_id", (gid, wf.isoformat())).fetchall()
+
+    by: dict[int, list[str]] = {}
+    for r in rows:
+        by.setdefault(int(r["user_id"]), []).append(str(r["cell"]))
+
+    people = []
+    for i, m in enumerate(mem):
+        u = int(m["user_id"])
+        if not m["map_share"]:
+            continue
+        # 关了数据共享的人即使 map_share 还留着 1 也不显示——两道门都过才出来
+        if (m["share_level"] or "summary") != "summary":
+            continue
+        cells = by.get(u) or []
+        if not cells:
+            continue
+        people.append({"user_id": u, "alias": m["alias"],
+                       "color": MAP_COLORS[i % len(MAP_COLORS)],
+                       "cells": cells, "is_me": u == uid})
+    return {"ok": True, "from": wf.isoformat(), "to": wt.isoformat(),
+            "people": people,
+            "hidden": sum(1 for m in mem if not m["map_share"]),
+            "cells": sum(len(p["cells"]) for p in people)}
+
+
 def api_season(me, gid: int, query: dict) -> dict:
     """本周的六件衫 + 探索徽章 + 赛季分 + 名次 + 称号 + 让分/预言的加分。
 
@@ -1420,6 +1543,12 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_week(me, gid, query), 200
         if action == "bingo" and method == "GET":
             return api_bingo(me, gid, query), 200
+        if action == "map" and method == "GET":
+            return api_map(me, gid, query), 200
+        if action == "mapshare" and method == "POST":
+            return api_mapshare(me, gid, body), 200
+        if action == "cells" and method == "POST":
+            return api_cells(me, gid, body), 200
         if action == "goal" and method == "POST":
             return api_goal(me, gid, body), 200
         if action == "home" and method == "GET":

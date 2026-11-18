@@ -1458,6 +1458,17 @@ def run() -> int:
     assert "/bingo" in _gh and "Bingo 12/25" in _gh, "组页没有 Bingo 入口"
     assert '<div class="bgrid"' not in _gh, "Bingo 的 25 个格子被搬进组页了"
 
+    # 信息顺序：点进小组第一眼要看到「我在组里第几」，然后才是玩法，
+    # 再往下才是赛事和探索。P2 加了两块之后榜单被挤到第三屏，这条就破过。
+    _i_rank = _gh.find("<h2>本周榜</h2>")
+    assert _i_rank > 0, "组页没有榜单"
+    assert _gh.find("我 · 第") < _i_rank, "我的名次被排到榜单后面了"
+    assert _gh.find("目标 <b>30</b>") < _i_rank, "本周目标挤到榜单后面了"
+    assert _i_rank < _gh.find("<h2>赛事</h2>"), "赛事排到榜单前面了"
+    assert _i_rank < _gh.find("<h2>探索</h2>"), "探索排到榜单前面了"
+    # 组内足迹入口
+    assert "/map" in _gh and "组内足迹" in _gh, "组页没有组内足迹入口"
+
     # ---- P2 口径守卫：数字必须两端同一套，否则用户看到的格数和服务端记的
     # 对不上，而且这种偏差没人会主动报 bug，只会觉得「徽章不准」。
     from garmin_cn import explore as _EX

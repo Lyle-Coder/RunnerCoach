@@ -163,6 +163,27 @@ class Outbox:
 
 
 # ---------------------------------------------------------------- 上报
+def _map_on(store, gid: int) -> bool:
+    """本机缓存的「路线共享开着吗」。
+
+    缓存的是**这个组**的开关（每个组可以不一样）。组页拉 detail 时会写一次，
+    上报时读它决定要不要多发一次格子——不缓存就得每次上报前先拉一遍 detail，
+    为了一件可有可无的事多一次往返。
+    """
+    try:
+        return store.get_meta(f"group_map_{int(gid)}") == "1"
+    except Exception:      # noqa: BLE001
+        return False
+
+
+def note_map(store, gid: int, on: bool) -> None:
+    """组页/设置页读到开关状态后，把它记到本地，供上报时用。"""
+    try:
+        store.set_meta(f"group_map_{int(gid)}", "1" if on else "0")
+    except Exception:      # noqa: BLE001
+        pass
+
+
 def report_group(store, gid: int, today: str | None = None,
                  first: bool = False) -> dict:
     """构造一批并尝试立刻发送。失败就留在队列里，等下次前台补。"""
@@ -170,7 +191,19 @@ def report_group(store, gid: int, today: str | None = None,
     payload = {"days": build_days(store, today, days)}
     box = Outbox(store)
     box.put(gid, payload)
-    return flush_one(store, gid, payload)
+    out = flush_one(store, gid, payload)
+    # 路线图是独立的可选项：失败了不影响里程上报，也不重试——
+    # 下次上报会全量重发格子，天然自愈。
+    if out.get("ok") and _map_on(store, gid):
+        try:
+            from . import explore as EX
+
+            cells = EX.week_cells(store, today)
+            if cells:
+                push_cells(gid, cells)
+        except Exception:      # noqa: BLE001
+            pass
+    return out
 
 
 def flush_one(store, gid: int, payload: dict) -> dict:
@@ -309,6 +342,28 @@ def bingo(gid: int, today: str | None = None) -> dict:
     """我的本周 Bingo 卡（25 格 + 连线）。"""
     q = f"?today={today}" if today else ""
     return _call("GET", f"/v1/group/{int(gid)}/bingo{q}")
+
+
+def set_mapshare(gid: int, on: bool, store=None, today: str | None = None) -> dict:
+    """开关「路线共享」。开着才会上传本周格子，关掉服务端会删干净。"""
+    r = _call("POST", f"/v1/group/{int(gid)}/mapshare", {"on": bool(on)})
+    if r.get("ok") and store is not None:
+        note_map(store, gid, bool(r.get("map_share")))
+    return r
+
+
+def push_cells(gid: int, cells: list[str], today: str | None = None) -> dict:
+    """把本周跑过的格子发上去（全量覆盖）。"""
+    body: dict = {"cells": list(cells)}
+    if today:
+        body["today"] = today
+    return _call("POST", f"/v1/group/{int(gid)}/cells", body)
+
+
+def map_data(gid: int, today: str | None = None) -> dict:
+    """组内路线：每人的颜色 + 本周格子。"""
+    q = f"?today={today}" if today else ""
+    return _call("GET", f"/v1/group/{int(gid)}/map{q}")
 
 
 def set_goal(gid: int, km: float, predict: int | None = None,

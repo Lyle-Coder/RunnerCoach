@@ -411,6 +411,17 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
   font-size:11px;line-height:1.3;color:var(--faint);letter-spacing:-.2px}
 .bcell.on{background:var(--brand-soft);border-color:rgba(59,130,246,.34);color:var(--ink)}
 .bcell.free{background:var(--cyan-soft);border-color:rgba(34,211,238,.3);color:var(--cyan)}
+/* 组内路线图。卡片贴边、图例压在下面一行——地图是主体，图例别抢高度。 */
+.gmapcard{padding:0;overflow:hidden}
+.gmap{display:block;width:100%;height:auto}
+.gmap .mapsrc{font:10px/1 -apple-system,system-ui,sans-serif;fill:rgba(232,240,251,.5)}
+.lgs{display:flex;flex-wrap:wrap;gap:6px 12px;padding:10px 12px 12px;
+  border-top:1px solid var(--line2)}
+.lgi{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--ink2)}
+.lgi i{width:9px;height:9px;border-radius:2px;flex:0 0 9px}
+.lgi b{font-weight:600;color:var(--muted)}
+/* setrow 的左侧标签默认会被 flex 压缩换行（「路线共／享」），有需要时钉住 */
+.nowrap{white-space:nowrap;flex:0 0 auto}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，
