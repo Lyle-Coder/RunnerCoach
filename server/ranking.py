@@ -10,9 +10,10 @@
    也不该有——组页页脚承诺的是「只上传每日里程合计」。`plan_done` 我们本来
    就在收，而且它是三态（完成 / 有课没跑 / 没计划），休息日不会被算成失败，
    比恢复分更能说明「这个队是不是在一起练」。
-2. **让分赛与预言那 10 分先空着**。它们的分数是往总分上加的（+2 / +3），
-   得等分的基数定死再加。所以现在的满分是 90，不是 100；页面显示时不要
-   写成「78/100」，会让人以为自己被扣了 22 分。
+2. **让分赛与预言是加分项，不是权重**。基础分满分 90，加分最多 +10，合计 100。
+   加分按事件给（预言命中 +2 / 被预测却完成 +3），不由权重归一——因为
+   「这周猜对了几个人」本来就跟里程不是一个量纲。页面显示「62 分」，
+   不要写成 `62/100`，否则看起来像被扣了 38 分。
 """
 from __future__ import annotations
 
@@ -25,6 +26,13 @@ W_ELEV = 15.0
 W_PROGRESS = 15.0
 W_STREAK = 10.0
 BASE_MAX = W_KM + W_DAYS + W_ELEV + W_PROGRESS + W_STREAK      # 90
+# 让分赛与预言的加分上限。超出就不再加——否则「猜得准」会盖过「跑得多」，
+# 而这是个跑步小组，不是竞猜群。
+BONUS_MAX = 10.0
+
+# 探索徽章的达标线：一周新踩 5 格算「真的换了地方跑」。
+# 不排名、不占衫——跑步的人不该因为住在路网密的老城就吃亏。
+EXPLORE_MIN_CELLS = 5
 
 # 白衫的参与门槛：上周不到 10 km 不参评。上周跑了 1 km、这周跑 5 km
 # 是 400% 的进步，但那是刚开始跑，不该把练了一整年的人挤掉。
@@ -91,6 +99,9 @@ def metrics(rows: list[dict], prev_rows: list[dict]) -> dict:
     km = sum(_f(r.get("distance_m")) for r in rows) / 1000.0
     elev = sum(_f(r.get("elevation_m")) for r in rows)
     days = sum(1 for r in rows if int(_f(r.get("acts"))) > 0)
+    # 探索：客户端算好的「每天新踩几格」，这里只求和。
+    # 服务端拿不到轨迹，也不需要——格子 ID 从来不上传。
+    explore = int(round(sum(_f(r.get("explorer")) for r in rows)))
     planned = [r for r in rows if r.get("plan_done") is not None]
     done = sum(1 for r in planned if r.get("plan_done"))
     prev_km = sum(_f(r.get("distance_m")) for r in prev_rows) / 1000.0
@@ -104,6 +115,7 @@ def metrics(rows: list[dict], prev_rows: list[dict]) -> dict:
         "elev": int(round(elev)),
         "days": days,
         "streak": streak_days(rows),
+        "explorer": explore,
         "plan_rate": (round(done / len(planned), 3) if planned else None),
         "plan_days": len(planned),
         "prev_km": round(prev_km, 1),
@@ -117,15 +129,19 @@ def _maxes(all_m: list[dict]) -> dict[str, float]:
         return max(vals) if vals else 0.0
 
     return {"km": top("km"), "days": top("days"), "elev": top("elev"),
-            "streak": top("streak"), "progress": top("progress")}
+            "streak": top("streak"), "progress": top("progress"),
+            "explorer": top("explorer")}
 
 
-def score(m: dict, maxes: dict) -> float:
-    """0–90 的百分制。每个维度按「组内最高」归一，再乘权重。
+def score(m: dict, maxes: dict, bonus: float = 0.0) -> float:
+    """0–100 的百分制：基础 90 + 让分/预言加分（最多 10）。
 
     为什么不按绝对量给分（比如 30 km 满分）：一个 5 人的小队和一个 30 人的
     大组，绝对阈值会让小队的分数永远难看；而赛季分本来只用来看组内排序。
     归一化的副作用是「全组都没跑步时没人得分」——这正是对的，不该有分。
+
+    加分项单独加在这里，不并进权重：命中预言和跑量不是一个量纲，
+    混进权重会让人算不明白自己为什么掉分。
     """
     def part(field: str, weight: float, val) -> float:
         top = _f(maxes.get(field))
@@ -138,7 +154,8 @@ def score(m: dict, maxes: dict) -> float:
          + part("elev", W_ELEV, m.get("elev"))
          + part("streak", W_STREAK, m.get("streak"))
          + part("progress", W_PROGRESS, m.get("progress")))
-    return round(s, 1)
+    b = max(0.0, min(BONUS_MAX, _f(bonus)))
+    return round(min(BASE_MAX + BONUS_MAX, s + b), 1)
 
 
 def shirts(all_m: dict[int, dict]) -> dict[str, list[int]]:
@@ -212,18 +229,138 @@ def title_of(rank: int, total: int, weeks_done: int, all_active: bool) -> str:
     return ""
 
 
+# ---------------------------------------------------------------- 让分赛
+# 目标低于 5 km 不参加让分：一周 3 km 的「目标」本来就不是训练计划，
+# 拿它当让分基准只会让配对变成抽奖。
+PAIR_MIN_KM = 5.0
+# 两人自报目标差不到 20% 就不让分。设计原文是「大神目标 = 自报 + 小白
+# 目标 × 50%」，但那只在强弱分明时成立：两个水平相当的人（100 km vs 95 km）
+# 配成一对会被算出 147.5 km 的目标，等于把强的那个人直接判死。所以差距小
+# 的一对标成 even——只结伴、不让分。
+PAIR_GAP_MIN = 0.20
+BIG_HANDICAP = 0.50      # 大神让分 = 小白自报目标 × 50%
+BIG_CAP = 1.60           # 让分后不超过自报 × 1.6（和文档里大组版的上限一致）
+
+
+def pairing(goals: dict[int, float]) -> list[dict]:
+    """按自报目标高低配对：第 1 名配最后 1 名，中间两两。
+
+    奇数人时**中间那位轮空**（solo），不硬拉一个人来凑对——把中游的人
+    塞进一对强弱悬殊的组合里，对谁都不公平。
+    """
+    cand = sorted(((u, _f(v)) for u, v in goals.items() if _f(v) >= PAIR_MIN_KM),
+                  key=lambda x: (-x[1], x[0]))
+    out: list[dict] = []
+    i, j = 0, len(cand) - 1
+    while i < j:
+        big_uid, big_km = cand[i]
+        small_uid, small_km = cand[j]
+        gap = (big_km - small_km) / small_km if small_km > 0 else 0.0
+        even = gap < PAIR_GAP_MIN
+        target_big = big_km if even else min(
+            big_km * BIG_CAP, big_km + small_km * BIG_HANDICAP)
+        out.append({
+            "slot": len(out) + 1,
+            "small_uid": small_uid, "small_km": round(small_km, 1),
+            "big_uid": big_uid, "big_km": round(big_km, 1),
+            "small_target": round(small_km, 1),
+            "big_target": round(target_big, 1),
+            "gap": round(gap, 3),
+            "even": even,
+        })
+        i += 1
+        j -= 1
+    if i == j:
+        uid, km = cand[i]
+        out.append({"slot": len(out) + 1, "solo_uid": uid, "solo_km": round(km, 1)})
+    return out
+
+
+def pair_results(pairs: list[dict], actual_km: dict[int, float]) -> list[dict]:
+    """每对本周打成什么样。
+
+    `double` 两人都完成（双人徽章）、`upset` 小白完成而大神没完成（逆袭）、
+    `big_only` 大神完成小白没完成（让分没让住，但也没翻车）、
+    `none` 都没完成。`even` 对（本来就没让分）只判 double / split / none。
+    """
+    out = []
+    for p in pairs:
+        if "solo_uid" in p:
+            out.append(dict(p, result="solo"))
+            continue
+        s = _f(actual_km.get(p["small_uid"]))
+        b = _f(actual_km.get(p["big_uid"]))
+        s_done = s >= _f(p.get("small_target"))
+        b_done = b >= _f(p.get("big_target"))
+        if s_done and b_done:
+            res = "double"
+        elif s_done and not b_done:
+            res = "upset"
+        elif b_done and not s_done:
+            res = "big_only"
+        else:
+            res = "none"
+        if p.get("even") and res in ("upset", "big_only"):
+            res = "split"
+        out.append(dict(p, result=res,
+                        small_actual=round(s, 1), big_actual=round(b, 1)))
+    return out
+
+
+# ---------------------------------------------------------------- 预言
+PREDICT_HIT = 2.0              # 猜对一个人没完成
+PREDICT_UNDERESTIMATED = 3.0   # 被猜会失败、结果完成了（给被猜的人）
+
+
+def prediction_result(predicts: dict[int, int],
+                      actual_km: dict[int, float],
+                      goals: dict[int, float]) -> dict:
+    """结算本周预言：谁猜中了、谁被打脸、加分多少。
+
+    只认「目标存在且 ≥ PAIR_MIN_KM」的被猜对象——没报目标的人没有
+    「完不成」这个说法，把他当靶子等于白送分。
+
+    `actual_km` 里没有这个人按 0 算：服务端只信上报，没上报就是没跑。
+    """
+    rows: list[dict] = []
+    bonus: dict[int, float] = {}
+    for voter, target in (predicts or {}).items():
+        voter, target = int(voter), int(target)
+        tgt = _f(goals.get(target))
+        if tgt < PAIR_MIN_KM:
+            rows.append({"user_id": voter, "target_uid": target,
+                         "result": "unknown"})
+            continue
+        act = _f(actual_km.get(target))
+        if act < tgt:
+            rows.append({"user_id": voter, "target_uid": target,
+                         "result": "hit", "bonus": PREDICT_HIT})
+            bonus[voter] = bonus.get(voter, 0.0) + PREDICT_HIT
+        else:
+            rows.append({"user_id": voter, "target_uid": target,
+                         "result": "wrong", "target_bonus": PREDICT_UNDERESTIMATED})
+            bonus[target] = bonus.get(target, 0.0) + PREDICT_UNDERESTIMATED
+    # 上限在 score() 里还会再夹一次，这里先夹是为了让返回的明细和实际得分一致
+    bonus = {u: round(min(BONUS_MAX, v), 1) for u, v in bonus.items()}
+    return {"rows": rows, "bonus": bonus}
+
+
 def build(rows_by_user: dict[int, list[dict]],
           prev_by_user: dict[int, list[dict]],
           weeks_by_user: dict[int, int] | None = None,
-          aliases: dict[int, str] | None = None) -> dict:
-    """把一周的原始日报表算成「每人一行 + 衫 + 名次」。
+          aliases: dict[int, str] | None = None,
+          bonus: dict[int, float] | None = None) -> dict:
+    """把一周的原始日报表算成「每人一行 + 衫 + 名次 + 探索徽章」。
 
     `rows_by_user` 的 key 是 user_id，值是这一周的日报表；`prev_by_user`
     是上一周（算进步用）。缺谁就是没数据，不补 0 行——0 km 和「没上报」
     在页面上必须区分开。
+
+    `bonus` 是让分赛与预言的加分（user_id → 分），不传就是没这回事。
     """
     aliases = aliases or {}
     weeks_by_user = weeks_by_user or {}
+    bonus = bonus or {}
     all_m: dict[int, dict] = {}
     for uid, rows in rows_by_user.items():
         all_m[uid] = metrics(rows, prev_by_user.get(uid) or [])
@@ -237,8 +374,12 @@ def build(rows_by_user: dict[int, list[dict]],
                  "color": s["color"]}
                 for s in SHIRTS if uid in shirt_win.get(s["id"], [])]
         d = dict(m)
+        b = max(0.0, min(BONUS_MAX, _f(bonus.get(uid))))
         d.update({"user_id": uid, "alias": aliases.get(uid, ""),
-                  "score": score(m, maxes), "shirts": mine})
+                  "score": score(m, maxes, b), "bonus": round(b, 1),
+                  "shirts": mine,
+                  # 探索徽章不占衫：达标就发，不算名次
+                  "explorer_badge": int(m.get("explorer") or 0) >= EXPLORE_MIN_CELLS})
         people.append(d)
 
     rank_with_ties(people)
@@ -261,5 +402,11 @@ def build(rows_by_user: dict[int, list[dict]],
     return {"people": people, "shirts": by_shirt,
             "max": {"km": round(maxes["km"], 1), "days": int(maxes["days"]),
                     "elev": int(maxes["elev"]), "streak": int(maxes["streak"]),
-                    "progress": maxes["progress"]},
-            "base_max": BASE_MAX}
+                    "progress": maxes["progress"],
+                    "explorer": int(maxes.get("explorer") or 0)},
+            "explore": {"min_cells": EXPLORE_MIN_CELLS,
+                        "badges": [{"user_id": int(p["user_id"]),
+                                    "alias": p.get("alias") or "",
+                                    "cells": int(p.get("explorer") or 0)}
+                                   for p in people if p.get("explorer_badge")]},
+            "base_max": BASE_MAX, "bonus_max": BONUS_MAX}

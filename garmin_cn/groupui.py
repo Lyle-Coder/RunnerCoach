@@ -199,6 +199,47 @@ def groups_page(token: str, message: str = "") -> str:
                 back=("返回我的", "/me"))
 
 
+# ---------------------------------------------------------------- Bingo
+def bingo_page(token: str, gid: int, message: str = "") -> str:
+    """本周 Bingo 卡：5×5 格，连成一行/列/对角线算一条线。
+
+    格子里只有「任务 + 是否点亮」，没有按钮——任务是根据每天上报的数据自动
+    判的，用户不需要也不该手动勾选。手勾的 Bingo 就只是待办清单了。
+    """
+    from . import group as G
+
+    today = dt.date.today().isoformat()
+    r = G.bingo(gid, today)
+    if not r.get("ok"):
+        body = (_msg(message)
+                + f'<div class="card"><p class="note">{esc(r.get("error") or "打不开这张卡")}</p>'
+                f'<div class="pager"><a class="btn" href="/groups/{gid}">返回小组</a></div></div>')
+        return page("GROUP", "Bingo", "", body, back=("返回小组", f"/groups/{gid}"))
+
+    cells = r.get("cells") or []
+    done = int(r.get("done") or 0)
+    total = int(r.get("total") or 25)
+    lines = int(r.get("line_count") or 0)
+
+    grid = ""
+    for c in cells:
+        cls = "bcell"
+        if c.get("task") == "free":
+            cls += " on free"
+        elif c.get("done"):
+            cls += " on"
+        grid += f'<div class="{cls}">{esc(c.get("text"))}</div>'
+
+    body = (_msg(message)
+            + sec("本周卡", f'<div class="bgrid">{grid}</div>'
+                  '<p class="note">任务只看每天上报的跑步数据，跑完自动点亮。'
+                  '连成一行、一列或一条对角线就算一条线；只做荣誉，不加赛季分。</p>'))
+    # 不传 chips：副标题已经写了「10/25 格 · 1 条线」，再加两个 chip 是同一句话
+    return page("GROUP", "Bingo", f"{done}/{total} 格 · {lines} 条线", body,
+                foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+                back=("返回小组", f"/groups/{gid}"))
+
+
 # ---------------------------------------------------------------- 组详情
 def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> str:
     from . import group as G
@@ -244,6 +285,11 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
         if owner_alias and x.get("alias") == owner_alias and not x.get("is_me"):
             name += '<span class="sub">组长</span>'
         days = int(x.get("days") or 0)
+        # 探索徽章不占衫，所以没有色块可挂；在名字后面留一句「新 N 格」，
+        # 让「这周换了地方跑」这件事在榜上是看得见的。
+        _new_cells = int(x.get("explorer") or 0)
+        if _new_cells >= 5:
+            name += f'<span class="sub">新 {_new_cells} 格</span>'
         rank_rows += (f'<div class="{cls}"><span class="no">{i}</span>'
                       f'<span class="nm">{name}<span class="sub">{days} 天</span></span>'
                       f'<span class="km">{_km(x.get("distance_m"))}</span></div>')
@@ -383,6 +429,98 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     if not score_line:
         score_line = ""
 
+    # ---- 本周玩法：目标 / 对子 / 预言
+    # 一行放结论，改目标这种每周一次的动作折起来。榜单是每天看的，
+    # 不能让它被表单顶下去——这是这个页面唯一的信息优先级。
+    _wk = _h.get("week") or {}
+    if not _wk.get("ok"):
+        try:
+            _wk = G.week(gid, today)
+        except Exception:      # noqa: BLE001 - 老服务端没有 /week，整块不显示即可
+            _wk = {}
+    week_line = ""
+    week_form = ""
+    if _wk.get("ok"):
+        _g = _wk.get("goal") or {}
+        # 自己的 uid 从成员表里认（detail 里就有），不依赖 season 成功——
+        # season 一挂，结对和预言就整块不显示了，那太脆。
+        _me_uid = next((int(m["user_id"]) for m in (g.get("members") or [])
+                        if m.get("is_me")), None)
+        if _me_uid is None and (_se.get("me") or {}).get("user_id"):
+            _me_uid = int(_se["me"]["user_id"])
+        _mine_row = next((x for x in (b.get("rows") or []) if x.get("is_me")), None)
+        _done_km = float((_mine_row or {}).get("distance_m") or 0) / 1000.0
+        _goal_km = _g.get("km")
+        _suggest = float(_g.get("suggest") or 0)
+
+        bits = []
+        if _goal_km:
+            _hit = _done_km >= float(_goal_km)
+            # 每项自带前缀（目标 / 结对 / 预言）：只靠 10px 的间距，三项挤在
+            # 一行时读起来像一句话（「…达成 与 阿狗 结对…」），手机上看不清。
+            bits.append(f'目标 <b>{float(_goal_km):g}</b> km · 已跑 {_done_km:.1f}'
+                        + (' · <b class="hit">达成</b>' if _hit else ""))
+        elif _suggest:
+            bits.append(f'还没定目标 · 建议 <b>{_suggest:g}</b> km')
+        else:
+            bits.append("还没定目标")
+
+        _pair = next((p for p in (_wk.get("pairs") or [])
+                      if _me_uid in (p["small"]["user_id"], p["big"]["user_id"])), None)
+        if _pair:
+            _other = (_pair["big"] if _pair["small"]["user_id"] == _me_uid
+                      else _pair["small"])
+            _me_side = _pair["small"] if _pair["small"]["user_id"] == _me_uid else _pair["big"]
+            _res = {"double": "双人徽章", "upset": "逆袭", "big_only": "让分达成",
+                    "split": "一人达成", "none": "都还差一点"}.get(
+                        _pair.get("result") or "", "")
+            bits.append(f'结对 {esc(_other["alias"])} · 我 {float(_me_side["target"]):g}'
+                        f' / 他 {float(_other["target"]):g}'
+                        + (f' · {_res}' if _res else ""))
+
+        _pred = (_wk.get("predict") or {}).get("mine")
+        if _pred:
+            _pa = next((r.get("target_alias") for r in (_wk.get("predict") or {}).get("rows") or []
+                        if r.get("user_id") == _me_uid), "")
+            if _pa:
+                bits.append(f'预言 {esc(_pa)} 完不成')
+
+        # Bingo 只报一行进度，点进去看整张卡。25 个格子塞进组页会把榜单挤走，
+        # 而榜单才是这个页面存在的理由。
+        _bg = _wk.get("bingo") or {}
+        if _bg.get("total"):
+            _ln = int(_bg.get("lines") or 0)
+            bits.append(f'<a class="blink" href="/groups/{gid}/bingo">Bingo '
+                        f'{int(_bg.get("done") or 0)}/{int(_bg["total"])}'
+                        + (f' · {_ln} 线' if _ln else "") + '</a>')
+
+        week_line = ('<div class="sline2 weekline">'
+                     + "".join(f'<span class="sbit">{x}</span>' for x in bits)
+                     + "</div>")
+
+        # 表单：目标 +（可选）预言。选项只列已报目标的人——猜一个没目标的人
+        # 没法判「完不成」，服务端也会拒。
+        _opts = '<option value="">先不猜</option>'
+        for t in (_wk.get("targets") or []):
+            _sel = " selected" if t["user_id"] == _pred else ""
+            _opts += (f'<option value="{int(t["user_id"])}"{_sel}>'
+                      f'{esc(t["alias"])}</option>')
+        _val = f'{float(_goal_km):g}' if _goal_km else (
+            f'{_suggest:g}' if _suggest else "")
+        week_form = ('<details class="fold"><summary>定本周目标'
+                     + ("（可改）" if _goal_km else "")
+                     + '<span class="fx">›</span></summary>'
+                     f'<form action="/__group/{gid}/goal" method="post">{_tok(token)}'
+                     '<div class="setrow"><span>目标 km</span>'
+                     f'<input type="number" name="km" min="1" max="1000" step="0.5" '
+                     f'value="{esc(_val)}" placeholder="这周打算跑多少" aria-label="本周目标"></div>'
+                     '<div class="setrow"><span>预言</span>'
+                     f'<select name="predict" aria-label="猜谁完不成">{_opts}</select></div>'
+                     '<div class="pager"><button class="btn sm primary" type="submit">保存'
+                     '</button></div></form>'
+                     '<p class="note">目标用于结对让分和预言结算；填低一点也没关系，'
+                     '达成比好看重要。</p></details>')
+
     # 远征入口。放在榜单之前：榜单是每天看的，远征是这一季的进度，
     # 两者都不该埋在页面底部。只做入口不拉 state——组详情页要秒开。
     trail = ('<div class="card"><a class="grow" href="/run?gid=' + str(gid) + '">'
@@ -395,8 +533,13 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     other = "month" if rng == "week" else "week"
     more = ("月榜" if other == "month" else "周榜", f"/groups/{gid}?range={other}")
 
+    # 「本周」只在真有内容时出现：目标/对子/预言任何一个都没有，就别多一个空标题
+    week_sec = (sec("本周", '<div class="flat">' + week_line + week_form + '</div>')
+                if (week_line or week_form) else "")
+
     body = (msg
             + score_line
+            + week_sec
             + sec("远征", trail)
             + sec("月榜" if rng == "month" else "本周榜",
                   '<div class="flat">' + rank_rows + '</div>',

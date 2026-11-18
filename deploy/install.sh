@@ -31,7 +31,9 @@ id "$SVC" >/dev/null 2>&1 || useradd --system --home "$APP" --shell /usr/sbin/no
 mkdir -p "$APP" "$APP/data" "$APP/certs" "$APP/site" "$APP/apk" "$ETC"
 
 echo "→ 拷贝程序"
-for f in app.py groups.py expedition.py tick.py ranking.py; do
+# 新增服务端模块务必加进这个列表：漏了不会报错，而是 ImportError 让整个
+# groups / expedition 模块挂掉，线上表现是「组接口 503」，很难查。
+for f in app.py groups.py expedition.py tick.py ranking.py bingo.py; do
   [ -f "server/$f" ] && cp -f "server/$f" "$APP/$f"
 done
 if [ -d server/content ]; then

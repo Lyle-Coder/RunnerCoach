@@ -136,6 +136,79 @@ def main() -> int:
     old = [{"date": "2026-11-16", "distance_m": 8000, "acts": 1, "plan_done": None}]
     m4 = R.metrics(old, [])
     check("缺 elevation_m 当 0，不报错", m4["elev"] == 0, str(m4))
+    check("缺 explorer 当 0，不报错", m4["explorer"] == 0, str(m4))
+
+    print("\n9. 探索徽章（不占衫）")
+    # 12 格够 5 格的线，3 格不够
+    ex = {1: [day("2026-11-16", 8000), {"date": "2026-11-17", "distance_m": 6000,
+                                        "acts": 1, "plan_done": None, "explorer": 12}],
+          2: [{"date": "2026-11-16", "distance_m": 8000, "acts": 1,
+               "plan_done": None, "explorer": 3}]}
+    eb = R.build(ex, {})
+    badges = {b["user_id"]: b["cells"] for b in eb["explore"]["badges"]}
+    check("新增 12 格拿到徽章", badges.get(1) == 12, str(badges))
+    check("新增 3 格不够线，不发", 2 not in badges, str(badges))
+    check("探索徽章不进 people.short（不是衫）",
+          all(s["id"] != "explorer" for p in eb["people"] for s in p["shirts"]))
+    check("单日多天求和", eb["max"]["explorer"] == 12, str(eb["max"]))
+    check("达标线写在返回里，前端不用猜", eb["explore"]["min_cells"] == R.EXPLORE_MIN_CELLS)
+
+    print("\n10. 让分赛配对")
+    pairs = R.pairing({1: 100, 2: 80, 3: 60, 4: 40, 5: 20})
+    check("5 人出 2 对 + 1 轮空", len(pairs) == 3 and "solo_uid" in pairs[-1],
+          str(pairs))
+    p1 = pairs[0]
+    check("第 1 名配最后 1 名", p1["big_uid"] == 1 and p1["small_uid"] == 5, str(p1))
+    check("大神让分 = 自报 + 小白目标 × 50%", p1["big_target"] == 110.0, str(p1))
+    check("小白按自报跑，不加码", p1["small_target"] == 20.0, str(p1))
+    check("轮空的是中间那位（60）", pairs[2]["solo_uid"] == 3, str(pairs[2]))
+    ev = R.pairing({1: 100, 2: 95})
+    check("水平相当不让分（差 < 20%）", ev[0]["even"] is True and ev[0]["big_target"] == 100.0,
+          str(ev))
+    cap = R.pairing({1: 100, 2: 60})
+    check("让分后不超过自报 × 1.6", cap[0]["big_target"] <= 160.0, str(cap))
+    check("目标不到 5 km 不参加让分", R.pairing({1: 3, 2: 2}) == [])
+    one = R.pairing({1: 50})
+    check("只有一个人时全是轮空", len(one) == 1 and one[0].get("solo_uid") == 1, str(one))
+
+    print("\n11. 让分赛结果")
+    pr = R.pairing({1: 100, 2: 20})
+    both = R.pair_results(pr, {1: 120, 2: 25})
+    check("两人都完成 = double（双人徽章）", both[0]["result"] == "double", str(both))
+    upset = R.pair_results(pr, {1: 105, 2: 25})
+    check("小白完成、大神没完成 = upset（逆袭）", upset[0]["result"] == "upset", str(upset))
+    big = R.pair_results(pr, {1: 115, 2: 10})
+    check("大神完成、小白没完成 = big_only", big[0]["result"] == "big_only", str(big))
+    none = R.pair_results(pr, {1: 10, 2: 5})
+    check("都没完成 = none", none[0]["result"] == "none", str(none))
+    even = R.pairing({1: 100, 2: 95})
+    sp = R.pair_results(even, {1: 110, 2: 80})
+    check("不让分的对子一人完成叫 split，不叫逆袭", sp[0]["result"] == "split", str(sp))
+
+    print("\n12. 预言结算")
+    goals = {1: 100, 2: 80, 3: 60}
+    act = {1: 105, 2: 70, 3: 60}
+    res = R.prediction_result({1: 2, 3: 1, 4: 2}, act, goals)
+    bonus = res["bonus"]
+    check("猜中别人没完成 +2", bonus.get(4) == 2.0, str(bonus))
+    check("被猜却没倒（1 号跑满了）= 被低估 +3，且自己猜中别人的 2 也照拿",
+          bonus.get(1) == 2.0 + 3.0, str(bonus))
+    check("被猜且真没完成的人不加分", 2 not in bonus, str(bonus))
+    check("猜错的人自己不加分", 3 not in bonus, str(bonus))
+    unk = R.prediction_result({1: 9}, act, goals)
+    check("猜一个没报目标的人 = unknown，不白送分",
+          unk["rows"][0]["result"] == "unknown" and not unk["bonus"], str(unk))
+    many = R.prediction_result({v: 2 for v in (1, 3, 4, 5, 6, 7, 8, 9)}, act, goals)
+    check("加成封顶 10 分", max(many["bonus"].values()) <= R.BONUS_MAX, str(many["bonus"]))
+
+    print("\n13. 加分并进赛季分")
+    base_rows = {1: [day("2026-11-16", 50000)]}
+    plain = R.build(base_rows, {})
+    boosted = R.build(base_rows, {}, bonus={1: 10})
+    check("不加分时满分仍是 90", plain["base_max"] == 90.0, str(plain["base_max"]))
+    check("最高 100 封顶", boosted["people"][0]["score"] <= 100.0,
+          str(boosted["people"][0]["score"]))
+    check("返回里带 bonus_max，前端不写死 90", boosted["bonus_max"] == 10.0)
 
     print(f"\n通过 {ok} 项，失败 {fail} 项")
     return 1 if fail else 0
