@@ -163,6 +163,19 @@ class MainActivity : Activity() {
             fatal("Python 启动失败", t)
         }
 
+        // 代码包：把已下载的覆盖包挂到 garmin_cn.__path__ 最前面，然后后台
+        // 检查有没有更新的。**顺序不能反**——必须在任何业务模块被 import
+        // 之前挂上，否则一部分模块来自旧代码，比不更新更糟。
+        // 这一步整体用 try 包住：没有代码包、模块挂了、或者老包没有这个文件，
+        // 都只该退回「用包里那份」，绝不能拦住启动。
+        try {
+            val pack = Python.getInstance().getModule("garmin_cn.codepack")
+            pack.callAttr("apply")
+            pack.callAttr("refresh_async")
+        } catch (t: Throwable) {
+            Log.w(TAG, "代码包挂载失败，继续用包内代码：" + t.message)
+        }
+
         // 内容根必须不透明：windowBackground 是带图标的开屏底，Activity 画出来
         // 之后若不盖住，1px 分割线和留白处会漏出那枚图标。
         val shell = LinearLayout(this).apply {
