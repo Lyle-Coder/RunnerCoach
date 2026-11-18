@@ -1261,6 +1261,26 @@ def run() -> int:
         _T3.reset()          # 真的还原 ssl，别让后面的 HTTPS 带着死路径
         shutil.rmtree(_caempty, ignore_errors=True)
 
+    # 1b) 最阴的一种组合：**新代码 + 旧装载器**。代码包只换业务模块，
+    #     codepack.py 始终来自 APK；如果新模块调了旧装载器里没有的函数，
+    #     AttributeError 会被 try/except 吞掉，证书又回到「找不到」。
+    #     所以路径解析必须内联。这里把 pkg_file 摘掉来模拟。
+    from garmin_cn import codepack as _CPK4
+    _had_pf = getattr(_CPK4, "pkg_file", None)
+    try:
+        if _had_pf is not None:
+            del _CPK4.pkg_file
+        _T3.CA_PATH = _caempty / "content" / "server-ca.pem"
+        _T3.reset()
+        _r4 = _T3.install()
+        assert _r4.get("ok") is True, (
+            "装载器缺 pkg_file 时证书找不到——基础路径解析不能依赖 codepack")
+    finally:
+        if _had_pf is not None:
+            _CPK4.pkg_file = _had_pf          # type: ignore[attr-defined]
+        _T3.CA_PATH = _old_ca3
+        _T3.reset()
+
     # 2) 数据目录必须跟着 GARMIN_HOME。用子进程跑，因为模块级常量在
     #    import 时就定死了，本进程里改环境变量测不出来。
     import subprocess as _sp
@@ -1345,15 +1365,14 @@ def run() -> int:
     # 注意：现在 CA_PATH 找不到时还会顺 __path__ 去包里找（代码包会让
     # __file__ 偏移，所以那条兜底是必须的）。要测「真的一张都没有」，
     # 得把兜底也一起屏蔽，否则测的是「仓库里恰好有证书」。
-    from garmin_cn import codepack as _CPK3
-    _old_pkgfile = _CPK3.pkg_file
+    _old_pf = _TLS._pkg_file
     _TLS.CA_PATH = Path(tempfile.mkdtemp()) / "不存在的证书.pem"
-    _CPK3.pkg_file = lambda rel: None
+    _TLS._pkg_file = lambda rel: None
     _TLS.reset()
     _r = _TLS.install()
     assert _r.get("ok") is False, "没有证书却报装好了"
     assert _r.get("reason"), "没装成却没说明原因"
-    _CPK3.pkg_file = _old_pkgfile
+    _TLS._pkg_file = _old_pf
     _tmp_ca = Path(tempfile.mkdtemp()) / "server-ca.pem"
     try:
         _tmp_ca.write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",

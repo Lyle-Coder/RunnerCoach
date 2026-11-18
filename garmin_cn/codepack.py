@@ -109,29 +109,6 @@ def apply() -> dict:
     return {"ok": True, "applied": _last["applied"], "note": "已挂载"}
 
 
-def pkg_file(rel: str) -> Path | None:
-    """在**包**里找一个文件（不是下载目录）。
-
-    代码包挂载后 `garmin_cn.__path__` 首位是下载目录，那里只有 .py。
-    证书、条款、插画这些数据文件永远只随 APK 走（体积和版本都跟代码无关），
-    所以要顺着 __path__ 往后找。找不到就 None，调用方自己兜底。
-
-    这个函数放在 codepack 里是有意的：codepack.py **永不进代码包**，
-    所以它自己永远来自 APK，不会因为挂载而算错位置。
-    """
-    import sys
-
-    mod = sys.modules.get("garmin_cn")
-    for base in list(getattr(mod, "__path__", None) or []):
-        try:
-            p = Path(base) / rel
-            if p.is_file():
-                return p
-        except OSError:
-            continue
-    return None
-
-
 def status() -> dict:
     """给诊断日志用：当前跑的是哪份、下载到了哪份、上次检查时间。
 

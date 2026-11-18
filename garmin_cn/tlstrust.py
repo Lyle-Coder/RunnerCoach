@@ -27,6 +27,30 @@ from pathlib import Path
 CA_PATH = Path(__file__).resolve().parent / "content" / "server-ca.pem"
 
 
+def _pkg_file(rel: str) -> Path | None:
+    """在**包**里找一个文件（不是下载目录）。
+
+    为什么要自己写一遍、不调 codepack.pkg_file：代码包走覆盖式更新，
+    本模块可能是**新代码**，而装载器 `codepack.py` 永远来自 APK，可能是
+    **旧版本**——旧版里没有 pkg_file，一调就 AttributeError，被 except
+    吞掉之后证书又找不到，HTTPS 全挂。
+
+    这是覆盖式更新的硬约束：**基础路径解析不能依赖任何可能缺失的 API**。
+    几行代码重复换来「新旧任意组合都能跑」，值。
+    """
+    import sys as _s
+
+    mod = _s.modules.get("garmin_cn")
+    for base in list(getattr(mod, "__path__", None) or []):
+        try:
+            p = Path(base) / rel
+            if p.is_file():
+                return p
+        except OSError:
+            continue
+    return None
+
+
 def _resolve() -> Path:
     """取实际的证书路径。
 
@@ -39,14 +63,8 @@ def _resolve() -> Path:
     """
     if CA_PATH.is_file():
         return CA_PATH
-    try:
-        from . import codepack
-        p = codepack.pkg_file("content/server-ca.pem")
-        if p is not None:
-            return p
-    except Exception:      # noqa: BLE001 - 老包没有 codepack，按原逻辑走
-        pass
-    return CA_PATH
+    p = _pkg_file("content/server-ca.pem")
+    return p if p is not None else CA_PATH
 
 _done: dict | None = None
 _orig = None      # 被替换之前的 ssl.create_default_context，reset() 用
