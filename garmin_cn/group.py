@@ -305,6 +305,12 @@ def week(gid: int, today: str | None = None) -> dict:
     return _call("GET", f"/v1/group/{int(gid)}/week{q}")
 
 
+def bingo(gid: int, today: str | None = None) -> dict:
+    """我的本周 Bingo 卡（25 格 + 连线）。"""
+    q = f"?today={today}" if today else ""
+    return _call("GET", f"/v1/group/{int(gid)}/bingo{q}")
+
+
 def set_goal(gid: int, km: float, predict: int | None = None,
              today: str | None = None) -> dict:
     """报本周目标；顺手可以把预言一起投了。

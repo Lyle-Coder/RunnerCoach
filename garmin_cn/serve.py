@@ -190,6 +190,8 @@ class _Handler(SimpleHTTPRequestHandler):
             if u.path.rstrip("/") in ("/groups", "/groups.html"):
                 return self._html(groupui.groups_page(tok, msg))
             seg = u.path.rstrip("/").split("/")[2:]
+            if len(seg) == 2 and seg[0].isdigit() and seg[1] == "bingo":
+                return self._html(groupui.bingo_page(tok, int(seg[0]), msg))
             if len(seg) == 1 and seg[0].isdigit():
                 rng = "month" if (q.get("range") or [""])[0] == "month" else "week"
                 return self._html(groupui.group_page(tok, int(seg[0]), msg, rng))

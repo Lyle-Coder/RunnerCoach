@@ -402,6 +402,15 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .weekline .sbit:first-child{flex:1 0 100%}
 .weekline b{color:var(--ink);font-weight:600}
 .weekline .hit{color:var(--cyan)}
+/* Bingo 5×5。grid item 默认 min-height:auto，会被文字撑高，一行里有长任务
+   时整行就会变高、格子不再方正；所以显式 min-height:0 + overflow:hidden。 */
+.bgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:2px 0 10px}
+.bcell{aspect-ratio:1/1;min-height:0;overflow:hidden;border-radius:10px;padding:3px;
+  border:1px solid var(--line2);background:rgba(255,255,255,.015);
+  display:flex;align-items:center;justify-content:center;text-align:center;
+  font-size:11px;line-height:1.3;color:var(--faint);letter-spacing:-.2px}
+.bcell.on{background:var(--brand-soft);border-color:rgba(59,130,246,.34);color:var(--ink)}
+.bcell.free{background:var(--cyan-soft);border-color:rgba(34,211,238,.3);color:var(--cyan)}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，

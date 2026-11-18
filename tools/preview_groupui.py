@@ -128,7 +128,23 @@ WEEK = {
     "goal_rows": [{"user_id": 2, "alias": "阿狗", "km": 60},
                   {"user_id": 1, "alias": "老李", "km": 30}],
     "targets": [{"user_id": 2, "alias": "阿狗"}],
+    "bingo": {"done": 12, "total": 25, "lines": 1},
 }
+
+# Bingo 卡：用真实任务池生成，再把第 2 行整行点亮，好检查「一条线」的观感
+sys.path.insert(0, str(ROOT / "server"))
+import bingo as _B  # noqa: E402
+
+_CARD = _B.make_card(1, 1, "2026-11-16")
+BINGO = {"ok": True, "from": "2026-11-16", "to": "2026-11-22",
+         "cells": [], "done": 0, "total": 25, "lines": [], "line_count": 0}
+for _i, _c in enumerate(_CARD):
+    _done = (_i // 5 == 1) or _c["task"] == "free" or _i in (0, 2, 14, 23)
+    BINGO["cells"].append({"i": _i, "task": _c["task"], "text": _c["text"],
+                           "level": _c["level"], "done": _done})
+BINGO["done"] = sum(1 for c in BINGO["cells"] if c["done"])
+BINGO["lines"] = ["r1"]
+BINGO["line_count"] = 1
 
 
 def main() -> int:
@@ -140,6 +156,7 @@ def main() -> int:
     G.challenge_list = lambda gid, today=None: CHALLENGES  # type: ignore[assignment]
     G.season = lambda gid, today=None: SEASON          # type: ignore[assignment]
     G.week = lambda gid, today=None: WEEK              # type: ignore[assignment]
+    G.bingo = lambda gid, today=None: BINGO            # type: ignore[assignment]
     G.home = lambda gid, rng="week", today=None: {    # type: ignore[assignment]
         "ok": True, "detail": DETAIL, "board": BOARD,
         "challenges": CHALLENGES, "season": SEASON, "week": WEEK}
@@ -153,6 +170,16 @@ def main() -> int:
     p = OUT / "group.html"
     p.write_text(html, encoding="utf-8")
     print(f"{p}  {len(html)} 字节")
+
+    # Bingo 页
+    _bh = GU.bingo_page("TOK", GID)
+    for prefix, sub in (("/content/", "garmin_cn/content"),):
+        _bh = _bh.replace(f'"{prefix}', f'"{ (ROOT / sub).as_uri()}/')
+    _bh = _bh.replace("</body>", '<style>html{background:#05080d}'
+                                 'body{width:420px;margin:0;padding:0 14px}</style></body>')
+    _p2 = OUT / "bingo.html"
+    _p2.write_text(_bh, encoding="utf-8")
+    print(f"{_p2}  {len(_bh)} 字节")
     return 0
 
 

@@ -1421,6 +1421,7 @@ def run() -> int:
                 {"user_id": 1, "target_uid": 2, "result": "wrong",
                  "alias": "我", "target_alias": "队友"}]},
             "bonus": {}, "goal_rows": [],
+            "bingo": {"done": 12, "total": 25, "lines": 1},
             "targets": [{"user_id": 2, "alias": "队友"}]}
         _gh = _GU.group_page("TOK", 1)
     finally:
@@ -1453,6 +1454,9 @@ def run() -> int:
     # 探索徽章不占衫：board 里够 5 格才在榜上标一句，不够就不标
     assert 'class="sub">新 12 格' in _gh, "够格的探索徽章没显示在榜上"
     assert 'class="sub">新 3 格' not in _gh, "不到 5 格也标了探索徽章"
+    # Bingo 只放一行进度 + 入口，不把 25 个格子搬进组页
+    assert "/bingo" in _gh and "Bingo 12/25" in _gh, "组页没有 Bingo 入口"
+    assert '<div class="bgrid"' not in _gh, "Bingo 的 25 个格子被搬进组页了"
 
     # ---- P2 口径守卫：数字必须两端同一套，否则用户看到的格数和服务端记的
     # 对不上，而且这种偏差没人会主动报 bug，只会觉得「徽章不准」。
@@ -1474,6 +1478,21 @@ def run() -> int:
         "赛季分权重或加分上限被改动，页面满分要跟着改"
     assert "PREDICT_HIT = 2.0" in _rk and "PREDICT_UNDERESTIMATED = 3.0" in _rk, \
         "预言的 +2 / +3 口径变了"
+
+    # Bingo：25 格、中心免费、易中难各 8。这三条一变，页面上那 5×5 就歪了。
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "server"))
+    import bingo as _BG
+
+    _bc = _BG.make_card(1, 1, "2026-11-16")
+    assert len(_bc) == 25 and _bc[_BG.CENTER]["task"] == "free", \
+        "Bingo 卡不是 25 格或中心不是免费格"
+    _lv = [c["level"] for c in _bc]
+    assert (_lv.count(1), _lv.count(2), _lv.count(3)) == (8, 8, 8), \
+        "Bingo 的易/中/难不是 8/8/8"
+    # 同一周同一人必须稳定：不落库靠的就是这个种子
+    assert [c["task"] for c in _BG.make_card(1, 1, "2026-11-16")] == \
+        [c["task"] for c in _bc], "Bingo 卡不稳定（同周同人算出两张）"
 
     # 无域名部署：自签证书靠「把那一张加进信任链」生效，不是关校验。
     # 没有证书时必须是 no-op——用公共 CA 的部署不该被这段影响。
