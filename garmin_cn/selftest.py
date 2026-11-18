@@ -1128,6 +1128,42 @@ def run() -> int:
     for _sh in sorted((Path(__file__).resolve().parent.parent / "deploy").glob("*.sh")):
         assert b"\r" not in _sh.read_bytes(), f"{_sh.name} 是 CRLF 行尾，Linux 上跑不了"
 
+    # 换服务器之后，老用户 config.json 里存着上一代地址（platform_served_base），
+    # 它优先于出厂内置地址。同步失败若也缓存 6 小时，用户就会被钉在死地址上，
+    # 表现是「装上新包还是连不上」且没有任何提示。成功 6 小时 / 失败 60 秒
+    # 这条差别必须守住，否则内测第一批人就会撞上。
+    from garmin_cn import llm as _LSS
+    _tmpcfg = Path(tempfile.mkdtemp()) / "llm_config.json"
+    _old_cfg = _LSS.CONFIG_PATH
+    _old_urlopen = _LSS.urllib.request.urlopen
+    _calls = {"n": 0}
+
+    def _boom(*_a, **_k):
+        _calls["n"] += 1
+        raise OSError("模拟断网")
+
+    try:
+        _LSS.CONFIG_PATH = _tmpcfg
+        _LSS.save_config(platform_auto=True, platform_served_base="https://old.example",
+                         platform_sync_at=int(time.time()) - 120, platform_sync_ok=False)
+        _LSS.urllib.request.urlopen = _boom
+        _LSS.sync_platform_config()      # 失败态隔了 120 秒：应该重试一次
+        assert _calls["n"] == 1, "同步失败后没有按 60 秒间隔重试"
+        _LSS.sync_platform_config()      # 刚失败过：60 秒内不该再打
+        assert _calls["n"] == 1, "失败后 60 秒内又重复请求，白白多等一个超时"
+        _c = _LSS.load_config()
+        assert _c.get("platform_sync_ok") is False, "同步失败却记成了成功"
+        assert _c.get("platform_served_base") == "https://old.example", \
+            "失败不该清掉下发值（那是上一次的真实答案）"
+        # 成功态：600 秒前同步过，仍应命中 6 小时缓存，不再发请求
+        _LSS.save_config(platform_sync_at=int(time.time()) - 600, platform_sync_ok=True)
+        _LSS.sync_platform_config()
+        assert _calls["n"] == 1, "成功态 600 秒就重问了（应缓存 6 小时）"
+    finally:
+        _LSS.urllib.request.urlopen = _old_urlopen
+        _LSS.CONFIG_PATH = _old_cfg
+        shutil.rmtree(_tmpcfg.parent, ignore_errors=True)
+
     # 平台额度关闭时：界面只留"自配 Key"，不给一个点了必然报错的入口。
     # 这是和服务端 AI_PROXY=off 配套的一半，改一处忘一处就会出现
     # "能点、点了 503"的尴尬。
