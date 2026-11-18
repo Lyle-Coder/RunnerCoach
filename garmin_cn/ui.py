@@ -367,6 +367,11 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .setrow input,.setrow select{flex:1 1 auto;min-width:0}
 .setrow>.btn,.setrow>button{flex:0 0 auto}
 .btn.sm{min-height:34px;padding:0 12px;font-size:12.5px;border-radius:10px}
+/* 「我的」页三个数字一行说完：它们是一句话的三个分句，不需要各发一张卡 */
+.minirow{display:flex;flex-wrap:wrap;gap:4px 16px;padding:2px 0;
+  font-size:12px;color:var(--muted)}
+.minirow b{font-size:13.5px;font-weight:600;color:var(--ink);
+  font-variant-numeric:tabular-nums;margin-right:2px}
 /* 一行小字：把「还有谁没共享 / 谁是组长」这种备注压在榜单底下，
    不再单开一个「成员」区块——成员就是榜上那些人。 */
 .tinyline{font-size:11px;color:var(--faint);margin-top:8px;line-height:1.5}
@@ -1857,7 +1862,10 @@ def me_page() -> str:
     bs = A.body_sources()
     pref = bs.get("preferred", "mi")
     pref_label = bs.get("labels", {}).get(pref, pref)
-    chips = (chip("本机数据", "ok") + chip(f"v{VER}") + chip("可离线查看"))
+    # 页头只留一个「本机数据」：版本号在「关于与诊断」里已经写着，
+    # 三个数字在「本地数据」那一行也说了。同一份信息写两遍，读者会以为
+    # 上面那个和下面那个不一样——这是把页面读长最省力的方式。
+    chips = chip("数据只在本机", "ok")
 
     # AI 模型服务：和数据源并列——这两类都在回答「这台机器现在连着什么服务」。
     # 副标题要能一眼看出「开没开 / 用哪个模型 / 打到哪个域名」，
@@ -1951,7 +1959,7 @@ def me_page() -> str:
     diag_row = row("!", "诊断日志", "遇到问题时，可以复制日志帮助排查",
                    act="diag", tone="a")
 
-    about = ('<div class="card rc-about"><div class="rc-about-h">' +
+    about_inner = ('<div class="rc-about"><div class="rc-about-h">' +
              BR.badge_html(30) +
              f'<div><div class="lab">RunnerCoach · v{esc(VER)}</div>' +
              '<div class="note" style="margin-top:2px">跑步与骑行训练助手</div>'
@@ -1962,21 +1970,28 @@ def me_page() -> str:
              '<a class="link-act" href="/privacy"> 隐私说明 →</a>'
              '</div></div>')
 
-    stat_line = (f'<div class="grid three">' +
-                 stat("每日数据", f"{cov['days']} 天",
-                      f"{str(cov['first'])[5:]} ~ {str(cov['last'])[5:]}") +
-                 stat("活动", f"{cov['activities']} 条", "保存在本机") +
-                 stat("上次同步", str(st.get("last_sync") or "—")[5:10],
-                     (str(st.get("last_sync") or "")[11:16] + " 同步 · 可下拉刷新").lstrip(" ·")) +
-                 '</div>'
-                 '<div class="note" style="margin-top:8px;line-height:1.6">'
-                 'App 会在后台自动补齐历史记录，进度显示在页面顶部。</div>')
+    # 三个数字没必要各发一张卡：它们是一句话的三个分句。
+    # 原来 3 张 stat 卡约 110px，换一行 30px，且一眼能连起来读。
+    _ls = str(st.get("last_sync") or "")
+    stat_line = (f'<div class="minirow">'
+                 f'<span><b>{cov["days"]}</b> 天数据</span>'
+                 f'<span><b>{cov["activities"]}</b> 条活动</span>'
+                 f'<span>上次同步 <b>{_ls[5:16] or "—"}</b></span></div>'
+                 f'<div class="tinyline">'
+                 f'{esc(str(cov["first"])[5:])} ~ {esc(str(cov["last"])[5:])}'
+                 ' · 后台自动补齐历史记录，进度在页面顶部</div>')
+
+    # 关于与诊断合成一块折叠：这两样都是「装完基本不再看」的东西，
+    # 却原来各占一整块（logo + 两段说明 + 一行诊断），加起来接近半屏。
+    # 默认收起时只留一行版本号——需要时点开，信息一条不少。
+    about = ('<details class="fold"><summary>关于与诊断 · v' + esc(VER) +
+             '<span class="fx">›</span></summary>' + about_inner +
+             '<div class="me-diag">' + diag_row + '</div></details>')
 
     body = ('<div class="me">' +
             sec("账号与数据", sources) +
             sec("常用", tool_tiles) +
             sec("数据与备份", data_tiles) +
-            '<div class="me-diag">' + diag_row + '</div>' +
             sec("本地数据", stat_line) +
             sec("关于", about) +
             '</div>')
