@@ -170,7 +170,7 @@ _API = {
     "plan_discard", "plan_rules", "plan_rules_set",
     "plan_renew", "plan_push", "plan_push_clear", "plan_push_info", "plan_target",
     "set_amap_key", "start_server", "recent", "read_html",
-    "db_export", "db_import", "diag_text", "diag_clear",
+    "db_export", "db_import", "diag_text", "diag_clear", "apk_fetch",
     "motion_html", "motion_status", "motion_cleanup", "motion_audio",
     "clips_list", "clips_add", "clips_remove", "clips_reprobe",
     "clips_remove_many", "clips_update",
@@ -3922,6 +3922,110 @@ def diag_clear() -> dict:
     r = diag.clear()
     r["path"] = str(diag.log_path())
     return r
+
+
+UPDATES = HOME / "updates"
+APK_MAX_BYTES = 200 * 1024 * 1024       # 200 MB 上限，防止被喂一个巨大的文件
+
+
+def apk_fetch(url: str = "", sha256: str = "", name: str = "") -> dict:
+    """把更新安装包下载到 HOME/updates/，返回本地路径给 Kotlin 去安装。
+
+    为什么不用系统下载管理器
+    ------------------------
+    它跑在系统进程里，**只认系统根证书**，我们这张自签证书握手直接失败；
+    而退回明文 http 又会被 networkSecurityConfig 拦住（targetSdk 34 默认禁
+    明文，这条策略同样覆盖 DownloadManager），表现就是任务创建后立刻失败、
+    0 字节——用户看到的就是「下载失败 0.00 B」。
+
+    Python 这条链路已经在用了（代码包就走它），所以安装包也走它：
+    HTTPS + 内置证书 + sha256 校验。额外好处是**不用再开着 8088 明文端口**。
+
+    参数给空就按「用已配置的服务器 + 最新版本」推出来，方便手动调用。
+    """
+    import hashlib
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    from . import __version__ as _VER
+    from . import llm, tlstrust
+
+    tlstrust.install()
+
+    if not url:
+        # 不给 url 就自己查一次最新版本（手动触发时用）
+        from . import update
+        r = update.check(current=_VER)
+        if not r.get("ok") or not r.get("newer"):
+            return {"ok": False, "error": "已经是最新版本"}
+        url = str(r.get("url_tls") or r.get("url") or "")
+        sha256 = str(r.get("sha256") or sha256)
+        name = str(r.get("apk") or name)
+
+    # 只走 https：明文既过不了策略，也没必要
+    if not url.startswith("https://") or "://" not in url:
+        return {"ok": False, "error": f"安装包地址必须是 https（收到 {url[:40]}）"}
+
+    base = os.path.basename(urllib.parse.urlsplit(url).path) or "RunnerCoach.apk"
+    fname = os.path.basename(name) if name else base
+    if not fname.lower().endswith(".apk") or "/" in fname or "\\" in fname:
+        return {"ok": False, "error": "安装包文件名不合法"}
+
+    UPDATES.mkdir(parents=True, exist_ok=True)
+    dest = UPDATES / fname
+    part = dest.with_suffix(dest.suffix + ".part")
+
+    # 已经下过并且校验通过：直接给路径，不重复下 21 MB
+    if dest.is_file() and dest.stat().st_size > 0:
+        if not sha256:
+            return {"ok": True, "path": str(dest), "size": dest.stat().st_size,
+                    "sha256": "", "reused": True}
+        h = hashlib.sha256(dest.read_bytes()).hexdigest()
+        if h == sha256:
+            return {"ok": True, "path": str(dest), "size": dest.stat().st_size,
+                    "sha256": h, "reused": True}
+
+    req = urllib.request.Request(url, headers={"User-Agent": f"RunnerCoach/{_VER}"})
+    h = hashlib.sha256()
+    got = 0
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r, open(part, "wb") as f:
+            while True:
+                chunk = r.read(256 * 1024)
+                if not chunk:
+                    break
+                got += len(chunk)
+                if got > APK_MAX_BYTES:
+                    raise ValueError(f"安装包超过 {APK_MAX_BYTES // 1048576} MB，已中止")
+                h.update(chunk)
+                f.write(chunk)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        try:
+            part.unlink()
+        except OSError:
+            pass
+        return {"ok": False, "error": f"下载失败：{type(e).__name__}: {e}"}
+
+    digest = h.hexdigest()
+    if sha256 and digest != sha256:
+        try:
+            part.unlink()
+        except OSError:
+            pass
+        return {"ok": False,
+                "error": f"校验不通过（拿到 {digest[:12]}…，应为 {sha256[:12]}…）"}
+    if got < 1024:
+        try:
+            part.unlink()
+        except OSError:
+            pass
+        return {"ok": False, "error": f"下载到的文件太小（{got} 字节）"}
+
+    # 先写 part 再改名：中途失败不会留下一个「看起来完整」的包
+    part.replace(dest)
+    return {"ok": True, "path": str(dest), "size": got,
+            "sha256": digest, "reused": False}
 
 
 def read_html(path: str) -> dict:

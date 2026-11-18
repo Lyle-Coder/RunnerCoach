@@ -1202,6 +1202,17 @@ def run() -> int:
         _DG.log_path = _old_dpath
         shutil.rmtree(_dhome, ignore_errors=True)
 
+    # 应用内更新：安装包只能走 https，且只能是 .apk。
+    # 明文那条不是洁癖——targetSdk 34 下 networkSecurityConfig 会拦掉
+    # DownloadManager 的 http 请求（用户看到「下载失败 0.00 B」），而自签
+    # 证书下载管理器又不认，所以只能由 Python 走 TLS 下。这里守住入口。
+    _af = _AA.apk_fetch
+    _r5 = _af("http://39.106.174.153:8088/apk/x.apk")
+    assert _r5.get("ok") is False and "https" in str(_r5.get("error")), \
+        f"明文安装包地址没被拒：{_r5}"
+    _r6 = _af("https://127.0.0.1:1/x.exe")
+    assert _r6.get("ok") is False, f"非 apk 文件被接受了：{_r6}"
+
     # 代码包（覆盖式更新）：没有包时必须是 no-op，有包时要把目录挂到
     # garmin_cn.__path__ 最前面，而且用完能还原——这个 Package 对象整个进程
     # 只有一份，测试改坏了后面所有页面都会从临时目录导入。
@@ -5323,13 +5334,18 @@ def run() -> int:
     assert '"update" -> checkUpdate(silent = false)' in _kt4, "手动入口没接上"
     assert "checkUpdate(silent = true)" in _kt4, "启动时没做静默检查"
     assert "update_skipped" in _kt4, "点「稍后」没有记住，会天天弹同一个版本"
-    _apk_downloader = (KT / "ApkDownload.kt").read_text(encoding="utf-8")
-    assert 'application/vnd.android.package-archive' in _apk_downloader and '.setMimeType(MIME)' in _apk_downloader, \
-        "APK 下载必须覆盖 Gitee 的 application/zip，防止文件名变成 .apk.zip"
-    assert 'Environment.DIRECTORY_DOWNLOADS, "RunnerCoach/$filename"' in _apk_downloader, \
-        "安装包没有固定下载目录，文件名又会由浏览器/响应头猜测"
-    assert 'ApkDownload.enqueue(applicationContext' in _kt4 and 'DownloadManager.ACTION_VIEW_DOWNLOADS' in _kt4, \
-        "系统 APK 下载器未接入更新入口或缺少下载记录入口"
+    # 更新包改由 Python 走 8443 下载（系统下载管理器不认自签证书，明文又会被
+    # networkSecurityConfig 拦掉）。这里钉住三件事：走 url_tls、用 ApkProvider
+    # 交给安装器、旧下载管理器那条路已经删干净。
+    assert "apk_fetch" in _AA._API, "apk_fetch 没进桥接白名单，Kotlin 调不到"
+    assert 'apiCall("apk_fetch"' in _kt4, "Kotlin 没走 Python 下载"
+    assert "url_tls" in _kt4, "没优先用加密下载地址"
+    assert 'content://$packageName.apk/' in _kt4, "安装没走 ApkProvider"
+    assert "ApkDownload" not in _kt4, "还在用系统下载管理器那条路"
+    _apk_provider = (KT / "ApkProvider.kt").read_text(encoding="utf-8")
+    assert 'endsWith(".apk", ignoreCase = true)' in _apk_provider, \
+        "ApkProvider 没限制扩展名，等于把私有目录当文件服务器"
+    assert ".." in _apk_provider, "ApkProvider 没拦路径穿越"
     # 1.0.3 真机没弹窗：节流只按时间、不看版本，升到新包也会被 24h 挡住；
     # 且时间戳在请求前写，一次失败就封锁一天。两处都要钉住。
     assert "update_checked_ver" in _kt4, "节流没按版本判断，升级后不会立即检查"
