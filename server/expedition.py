@@ -142,12 +142,106 @@ def init_db() -> None:
           ts            INTEGER NOT NULL,
           PRIMARY KEY(group_id, user_id, act, trial_id)
         );
+        -- 增益：本周有效的临时效果。按 (组, 人, 幕) 存，幕一翻就自然失效，
+        -- 不需要「下周清空」的定时任务——这也是懒触发的前提：没有常驻进程
+        -- 去清理，就得让失效由数据结构本身保证。
+        CREATE TABLE IF NOT EXISTS group_run_buff(
+          group_id  INTEGER NOT NULL,
+          user_id   INTEGER NOT NULL,
+          act       INTEGER NOT NULL,
+          buff_id   TEXT NOT NULL,
+          name      TEXT NOT NULL DEFAULT '',
+          icon      TEXT NOT NULL DEFAULT 'buff',
+          effect    TEXT NOT NULL,
+          value     REAL NOT NULL DEFAULT 0,
+          unit      TEXT NOT NULL DEFAULT '',
+          desc      TEXT NOT NULL DEFAULT '',
+          ts        INTEGER NOT NULL,
+          PRIMARY KEY(group_id, user_id, act, buff_id)
+        );
         """)
         # 老库补列。`level` 是「这次是怎么判的」：verified / failed /
         # unverified（见 api_trial）。解析不出还是 ''（历史数据）。
         cols = {r["name"] for r in c.execute("PRAGMA table_info(group_run_trial)")}
         if "level" not in cols:
             c.execute("ALTER TABLE group_run_trial ADD COLUMN level TEXT NOT NULL DEFAULT ''")
+
+
+# ---------------------------------------------------------------- 增益
+# 「增益」是本周有效的临时效果：顺风让车每天多走 2 km、节奏让结算多一格、
+# 通上话让士气多算一点。内容里早就有这些字段，但**从来没有人读过它们**——
+# 池子里写着 buff、代码里 `eff.pop("buff")` 直接丢掉，玩家实际什么都拿不到。
+#
+# 三条规则（设计文档 §增益规范）：
+#   1. 最多同时 3 个，幕一翻就失效（靠 (组,人,幕) 主键，不靠定时清理）；
+#   2. 同类效果不叠加，取最高值；
+#   3. 界面只显示「图标 + 数值 + 一句话」，不暴露 effect 这种内部字段。
+BUFF_MAX = 3
+
+
+def _buff_norm(buff) -> dict | None:
+    if not isinstance(buff, dict) or not buff.get("effect"):
+        return None
+    return {"id": str(buff.get("id") or buff["effect"])[:40],
+            "name": str(buff.get("name") or "")[:20],
+            "icon": str(buff.get("icon") or "buff")[:16],
+            "effect": str(buff["effect"])[:32],
+            "value": _num(buff.get("value")) or 0.0,
+            "unit": str(buff.get("unit") or "")[:8],
+            "desc": str(buff.get("desc") or "")[:60]}
+
+
+def add_buff(c, gid: int, uid: int, act_no: int, buff) -> dict | None:
+    """登记一个增益，返回真正生效的那条（没生效返回 None）。
+
+    返回 None 的两种情况要分清：不是增益（脏数据），或者同类已有更高的——
+    后者是**正常**的规则命中，不该报错，界面也不该提示「获得」。
+    """
+    b = _buff_norm(buff)
+    if not b:
+        return None
+    rows = c.execute("SELECT effect, value FROM group_run_buff"
+                     " WHERE group_id=? AND user_id=? AND act=?",
+                     (gid, uid, act_no)).fetchall()
+    same = [float(r["value"] or 0) for r in rows if r["effect"] == b["effect"]]
+    if same and max(same) >= b["value"]:
+        return None                      # 同类已有更高的，不叠加
+    if same:
+        c.execute("DELETE FROM group_run_buff WHERE group_id=? AND user_id=?"
+                  " AND act=? AND effect=?", (gid, uid, act_no, b["effect"]))
+    c.execute("INSERT OR REPLACE INTO group_run_buff(group_id,user_id,act,buff_id,name,"
+              "icon,effect,value,unit,desc,ts) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+              (gid, uid, act_no, b["id"], b["name"], b["icon"], b["effect"],
+               b["value"], b["unit"], b["desc"], G._now()))
+    # 超过 3 个：挤掉最旧的。按 (ts, buff_id) 排，同一秒内的顺序也是确定的，
+    # 否则两次调用会挤掉不同的那条。
+    rows = c.execute("SELECT buff_id FROM group_run_buff WHERE group_id=? AND user_id=?"
+                     " AND act=? ORDER BY ts DESC, buff_id DESC",
+                     (gid, uid, act_no)).fetchall()
+    for r in rows[BUFF_MAX:]:
+        c.execute("DELETE FROM group_run_buff WHERE group_id=? AND user_id=? AND act=?"
+                  " AND buff_id=?", (gid, uid, act_no, r["buff_id"]))
+    return b
+
+
+def buffs_of(c, gid: int, uid: int, act_no: int) -> list[dict]:
+    return [{"id": r["buff_id"], "name": r["name"], "icon": r["icon"],
+             "effect": r["effect"], "value": float(r["value"] or 0),
+             "unit": r["unit"], "desc": r["desc"]}
+            for r in c.execute("SELECT * FROM group_run_buff WHERE group_id=?"
+                               " AND user_id=? AND act=? ORDER BY ts",
+                               (gid, uid, act_no)).fetchall()]
+
+
+def buff_sums(c, gid: int, act_no: int) -> dict[int, dict[str, float]]:
+    """本幕每人每种效果的**最高值**（不是求和）。"""
+    out: dict[int, dict[str, float]] = {}
+    for r in c.execute("SELECT user_id, effect, value FROM group_run_buff"
+                       " WHERE group_id=? AND act=?", (gid, act_no)):
+        d = out.setdefault(int(r["user_id"]), {})
+        key = str(r["effect"])
+        d[key] = max(float(d.get(key) or 0.0), float(r["value"] or 0.0))
+    return out
 
 
 # ---------------------------------------------------------------- 试炼核验
@@ -303,6 +397,16 @@ def verify_trial(quality: dict, evidence: dict,
 # ---------------------------------------------------------------- 小工具
 def _rng(seed: str, *parts) -> random.Random:
     return random.Random(":".join([seed] + [str(p) for p in parts]))
+
+
+def _team_flag(flags: dict, tag: str, members: int) -> bool:
+    """团队意志：**过半的人选了**才算，不是谁选了就全组算。
+
+    1 个人带路、50 个人共享地图是不合理的（设计文档 §团队 flag 的判定）。
+    """
+    if members <= 0:
+        return False
+    return int((flags.get("picks") or {}).get(tag, 0)) * 2 > members
 
 
 def _fork_of(act: int, seed: str) -> dict | None:
@@ -500,10 +604,11 @@ def _settle_path(gid: int, today: dt.date) -> tuple[dict, int, bool]:
         if s is not None and _is_over(dict(s), today):
             # 翻篇。上一季的结论压进 flags.prev —— 不另开一张历史表：
             # 每组只留「上一季」，而玩家真正要的也就是上一季的成绩。
-            # 三张玩家表必须清掉：它们的主键是 (组, 人, 幕)，不清就会把上季的
+            # 四张玩家表必须清掉：它们的主键是 (组, 人, 幕)，不清就会把上季的
             # 补给、行程和试炼当成这一季的，试炼还会因为「已报过」直接判死。
             carried = json.dumps({"prev": _summary_of(s)}, ensure_ascii=False)
-            for t in ("group_run_member", "group_run_event", "group_run_trial"):
+            for t in ("group_run_member", "group_run_event", "group_run_trial",
+                      "group_run_buff"):
                 c.execute(f"DELETE FROM {t} WHERE group_id=?", (gid,))
             c.execute("DELETE FROM group_run_season WHERE group_id=?", (gid,))
             s = None
@@ -600,13 +705,19 @@ def _settle(c, gid: int, act_no: int, season) -> None:
     """结算一幕：把训练里程折算成格，加事件与试炼，判受困，算团队总量。"""
     s, e = _act_span(season, act_no)
     uids = _members(c, gid, act_no)
+    flags = json.loads(season["flags"] or "{}")
 
-    # 1) 本周每人跑步里程（只有跑步类算里程，和上报口径一致）
+    # 1) 本周每人跑步里程（只有跑步类算里程，和上报口径一致）。
+    #    `days` 也要数：增益里「每天多算 2 km」是按**实际跑的天数**加的，
+    #    按 7 天加等于白送一周，按 1 天加又对不起坚持了五天的人。
     dist: dict[int, float] = {}
-    for r in c.execute("SELECT user_id, SUM(distance_m) AS d FROM group_daily"
+    days: dict[int, int] = {}
+    for r in c.execute("SELECT user_id, SUM(distance_m) AS d,"
+                       " COUNT(DISTINCT date) AS n FROM group_daily"
                        " WHERE group_id=? AND date BETWEEN ? AND ? GROUP BY user_id",
                        (gid, s.isoformat(), e.isoformat())):
         dist[int(r["user_id"])] = float(r["d"] or 0)
+        days[int(r["user_id"])] = int(r["n"] or 0)
 
     # 2) 试炼：成功的直接加格；失败且补给见底 + 冒险分支 → 受困
     trial_ok: dict[int, int] = {}
@@ -634,27 +745,58 @@ def _settle(c, gid: int, act_no: int, season) -> None:
         if maybe_strand(c, gid, uid, act_no, season):
             stranded_now.append(uid)
 
-    # 3) 团队总量 = Σ(训练格 + 事件格 + 试炼格) × 士气加成
+    # 3) 团队总量 = Σ(训练格 + 事件格 + 试炼格 + 增益) × 士气加成
     morale = int(season["morale"])
     bonus = 1 + min(morale // 3, 3) * 0.05
+    sums = buff_sums(c, gid, act_no)
+    # 老周的地图还在用：过半请了向导，第三、四幕每人每幕多走 1 格。
+    # 这一条文档里写着「已接入」，实际从来没算过——picks 只写不读。
+    guided = _team_flag(flags, "guided", len(uids)) and act_no >= 3
     total = 0.0
     for uid in uids:
         row = _row(c, gid, uid, act_no)
         if not row or row["status"] == "stranded":
             continue            # 受困的人本幕不产格（救援成功另算）
+        b = sums.get(uid) or {}
         km = dist.get(uid, 0.0) / 1000.0
         target = float(row["week_target_km"] or 0) or DEFAULT_WEEK_KM
-        base = min(km, target) / KM_PER_GRID
-        total += (base + int(row["pos"]) + trial_ok.get(uid, 0) * 3)
+        # 顺风：本周**每天**多算 N km 上限。只按真跑过的天算，没出门的天不给。
+        cap = float(b.get("weekly_cap_add") or 0) * min(ACT_DAYS, days.get(uid, 0))
+        base = min(km, target + cap) / KM_PER_GRID
+        total += (base + int(row["pos"]) + trial_ok.get(uid, 0) * 3
+                  + int(b.get("weekly_advance_add") or 0)
+                  + (1 if guided else 0))
     total *= bonus
 
-    # 4) 士气：受困扣、群体失败扣
+    # 4) 士气：受困扣、群体失败扣、增益加、团队 flag 结算
     if stranded_now:
         morale = max(0, morale - min(3, len(stranded_now)))
     if tested and total_fail / tested > 0.40:
         morale = max(0, morale - 1)
+    # 通上话这类「本周士气多算 N 点」：同一组里取最高的一份，不按人数累加
+    # （否则 50 人的组各拿一个就是 +50）。
+    morale += int(max((b.get("weekly_morale_add") or 0)
+                      for b in sums.values()) if sums else 0)
+    if act_no >= ACTS:
+        # 终局清算：过半救人 / 过半抛下。这是唯一影响结局士气的地方，
+        # 所以必须落在最后一幕结算里，之后结局才读得到。
+        if _team_flag(flags, "rescue_hiker", len(uids)):
+            morale += 1
+        if _team_flag(flags, "leave_hiker", len(uids)):
+            morale -= 1
+    morale = max(0, min(MORALE_MAX, morale))
     c.execute("UPDATE group_run_season SET morale=?, act=? WHERE group_id=?",
               (morale, min(ACTS, act_no + 1), gid))
+
+    # 4b) 补给类增益：加在本幕的成员行上。下一幕 `draw` 会把 supply 抄过去，
+    #     所以这里改就是「本周结算补给多算 1 点」；最后一幕改了没有下一幕，
+    #     那是设计允许的损失（赛季已经结束）。
+    for uid, b in sums.items():
+        add = int(b.get("weekly_supply_add") or 0)
+        if add:
+            c.execute("UPDATE group_run_member SET supply=MIN(?, supply+?)"
+                      " WHERE group_id=? AND user_id=? AND act=?",
+                      (SUPPLY_MAX, add, gid, uid, act_no))
 
     # 5) 活跃度：本幕一点没动的人记一次，连续两幕就退出目标分母
     for uid in uids:
@@ -721,6 +863,11 @@ def draw(c, gid: int, season, act_no: int) -> None:
             c.execute("INSERT OR IGNORE INTO group_run_event(group_id,user_id,act,slot,"
                       "event_id,choice,tag,ts) VALUES(?,?,?,?,?,'','',?)",
                       (gid, uid, act_no, slot, eid, G._now()))
+            # 没有选项的事件 = 路上白给的（比如顺风），抽到即生效。
+            # 它没有按钮可点，不在这里兑现，就等于画了一张永远不会发生的卡。
+            ev = _by_id(eid)
+            if ev and not ev.get("options") and ev.get("buff"):
+                add_buff(c, gid, uid, act_no, ev["buff"])
 
 
 
@@ -869,6 +1016,8 @@ def api_state(me, gid: int, query: dict) -> dict:
         trs = {r["trial_id"]: dict(r) for r in c.execute(
             "SELECT * FROM group_run_trial WHERE group_id=? AND user_id=? AND act=?",
             (gid, uid, act_no)).fetchall()}
+        # 在本幕连接还没关的时候取：下发给界面的「本周增益」
+        my_buffs = buffs_of(c, gid, uid, act_no) if mine else []
 
     evs = []
     for r in rows:
@@ -914,7 +1063,10 @@ def api_state(me, gid: int, query: dict) -> dict:
                "week_target_effective": (float(mine["week_target_km"]) if mine
                                          and float(mine["week_target_km"] or 0) > 0
                                          else DEFAULT_WEEK_KM),
-               "branch": mine["branch"] if mine else ""},
+               "branch": mine["branch"] if mine else "",
+               # 本周的增益。界面只显示「图标 + 数值 + 一句话」，effect
+               # 这种内部字段也一起下发，但前端不该拿它做判断。
+               "buffs": my_buffs},
         "fork": _event_view(fork, fork_sel) if fork else None,
         "events": evs,
         "stranded": [{"user_id": int(r["user_id"]), "since": int(r["stranded_at"] or 0),
@@ -1031,6 +1183,10 @@ def api_event(me, gid: int, body: dict) -> dict:
         c.execute("UPDATE group_run_event SET choice=?, tag=?, ts=? WHERE group_id=?"
                   " AND user_id=? AND act=? AND slot=?",
                   (opt_id, tag, G._now(), gid, uid, act_no, slot))
+        # 选项自带的增益（篝火、猪油、铁锅…）。以前只读了 effect 里的
+        # supply / advance，`buff` 被无声丢掉——选项文案写着「本周多算 1 点」，
+        # 玩家却什么也没拿到。
+        got_buff = add_buff(c, gid, uid, act_no, opt.get("buff"))
 
         # 遗迹：选什么都算记录（拿 / 抄），保证不会因为一个选项错过隐藏结局
         if tag.startswith("relic_"):
@@ -1046,7 +1202,9 @@ def api_event(me, gid: int, body: dict) -> dict:
             picked[tag] = int(picked.get(tag, 0)) + 1
             c.execute("UPDATE group_run_season SET flags=? WHERE group_id=?",
                       (json.dumps(flags, ensure_ascii=False), gid))
-    return {"ok": True, "supply": supply, "pos": int((m["pos"] if m else 0)) + int(eff.get("advance") or 0),
+    return {"ok": True, "supply": supply,
+            "pos": int((m["pos"] if m else 0)) + int(eff.get("advance") or 0),
+            "buff": got_buff,
             "result": (ev.get("result_brief") or {}).get(opt_id, "")}
 
 
@@ -1136,6 +1294,9 @@ def api_trial(me, gid: int, body: dict) -> dict:
         if morale_add:
             c.execute("UPDATE group_run_season SET morale=MIN(?, morale+?) WHERE group_id=?",
                       (MORALE_MAX, morale_add, gid))
+        # 试炼成功带的增益（节奏 / 匀呼吸 / 稳上坡）。未核验时 `eff` 里已经
+        # 被剔掉，所以这条只在「证据对得上」时走到。
+        got_buff = add_buff(c, gid, uid, act_no, eff.get("buff"))
         # 失败之后立刻判受困：补给刚被扣掉，这一刻三个条件全部已知。
         # 等结算再判就晚了——那一幕已经结束，救援窗口根本打不开。
         stranded = bool(not done and maybe_strand(c, gid, uid, act_no, season))
@@ -1148,7 +1309,7 @@ def api_trial(me, gid: int, body: dict) -> dict:
     else:
         note = "记录里这一段没达到要求，按没跑成算。"
     return {"ok": True, "done": done, "level": level, "supply": supply,
-            "advance": int(eff.get("advance") or 0), "note": note,
+            "advance": int(eff.get("advance") or 0), "buff": got_buff, "note": note,
             # 叫 me_stranded 而不是 stranded：state 里的 `stranded` 是**数组**
             # （全组受困名单），同一个名字两种类型，客户端统一建模时会撞。
             "me_stranded": stranded,

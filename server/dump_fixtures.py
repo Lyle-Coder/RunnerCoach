@@ -404,6 +404,19 @@ def _season(gid: int, t: dict) -> None:
     _call("41_target_set", "POST", f"/v1/group/{gid}/run/target",
           "报本周目标（只能**下调**，上调会被拒）",
           body={"week_target_km": 30, "today": w4}, token=t["owner"])
+    # 增益：抽签抽不到就一定没有，所以造一条出来，让前端看到真实形状
+    import expedition as EXP
+
+    with EXP.G.db() as c:
+        EXP.add_buff(c, gid, 1, 4, {"id": "tailwind", "name": "顺风",
+                                    "icon": "advance", "effect": "weekly_cap_add",
+                                    "value": 2, "unit": "km", "weeks": 1,
+                                    "desc": "本周每天行程上限提高"})
+    _call("41b_state_with_buff", "GET",
+          f"/v1/group/{gid}/run/state?today={w4}",
+          "**带着增益的第一幕**：`me.buffs[]` 有值。界面只显示「名字 + 数值 + "
+          "单位」（顺风 +2 km/天），`effect` 是内部字段，别拿它做判断",
+          token=t["owner"])
     _call("42_outcome_ended", "GET", f"/v1/group/{gid}/run/outcome?today=2026-12-14",
           "赛季结束：`ended=true` + 结局 + `relics`。`ending` 取值见 index.md",
           token=t["owner"])

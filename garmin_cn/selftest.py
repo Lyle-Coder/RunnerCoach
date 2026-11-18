@@ -1053,6 +1053,21 @@ def run() -> int:
                                           "target": 0.0, "hit": False}]))
     assert "没走到" in _sh2 and "没够" not in _sh2, "分享图把没结算的段画成了没够"
 
+    # 增益：只写「名字 + 数值 + 单位」，绝不把 effect 这种内部字段写进页面
+    _bc = RU.buff_chips([{"id": "tw", "name": "顺风", "effect": "weekly_cap_add",
+                          "value": 2, "unit": "km", "desc": "本周每天行程上限提高"}])
+    assert "顺风" in _bc and "+2 km/天" in _bc, "增益没渲染出数值"
+    assert "weekly_cap_add" not in _bc, "增益把内部字段写进页面了"
+    assert RU.buff_chips([]) == "", "没有增益时不该占位置"
+    # 营地还没做：这类增益灰着显示，不装作有用
+    _bd = RU.buff_chips([{"id": "v", "name": "篝火", "effect": "act_vigor_add",
+                          "value": 1, "unit": "点"}])
+    assert "dim" in _bd and "休整点" in _bd, "未接入的增益没区分出来"
+    # 没有选项的补给事件是「抽到即生效」，得说明白，否则像张没画完的卡
+    _sup = {"id": "tw", "type": "supply", "act": 1, "title": "垭口顺风",
+            "text": "风从背后推着走。", "options": [], "chosen": "", "result": ""}
+    assert "已经算上" in RU.event_card(_sup, 0), "白给的补给事件没说明已生效"
+
     # 遗迹事件：标签要是「旧物」，不能混在普通「遭遇」里被划过去
     _relic = {"id": "x_relic", "type": "story", "act": 2, "title": "门框上的字",
               "text": "有人在门框上刻了字。", "relic": True, "chosen": "",

@@ -57,6 +57,17 @@ CSS = """
 .rbar .it.low{color:var(--amber)}
 .rbar .it.zero{color:var(--red)}
 
+/* ---------- 增益 ----------
+   一条小横排，不占卡片位置。写法固定为「名字 + 数值 + 单位」，不解释效果
+   ——效果本来就在事件卡里说过了，这里只提醒「本周你身上还挂着什么」。 */
+.buffs{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.buffs .b{display:flex;align-items:center;gap:5px;padding:4px 9px;border-radius:999px;
+  background:rgba(201,139,75,.10);border:1px solid rgba(201,139,75,.22);
+  font-size:11px;color:#DCA269;line-height:1.4}
+.buffs .b b{font-weight:600;font-variant-numeric:tabular-nums}
+/* 营地那类「还没接上」的效果，灰着显示：告诉玩家它在了，但不装作有用 */
+.buffs .b.dim{background:rgba(120,150,190,.07);border-color:var(--line2);color:var(--faint)}
+
 /* ---------- 四段路 ---------- */
 .route{margin-top:18px}
 .route .rh{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:3px}
@@ -177,6 +188,16 @@ METRIC_ZH = {
     "cadence_stable": "步频稳定",
     "hr_drift": "心率漂移",
     "climb_steady": "爬升稳定",
+}
+# 增益的写法：数值 + 单位 + 频率。effect 是内部字段，页面只读它来选后缀，
+# 不把它显示出来（玩家不该看到 weekly_cap_add 这种东西）。
+BUFF_TEXT = {
+    "weekly_cap_add": ("+{v:g} km/天", False),
+    "weekly_advance_add": ("结算 +{v:g} 格", False),
+    "weekly_morale_add": ("士气 +{v:g}", False),
+    "weekly_supply_add": ("补给 +{v:g}", False),
+    # 营地还没做，这类增益先灰着显示：在，但暂时不兑现
+    "act_vigor_add": ("休整点 +{v:g}", True),
 }
 TYPE_ZH = {"trial": "试炼", "supply": "补给", "story": "遭遇"}
 KIND_ZH = {"fork": "岔路"}
@@ -403,9 +424,33 @@ def event_card(ev: dict, slot: int) -> str:
         tail += ('<div class="gain">' + _icon("check", 12)
                  + "<span>已选 · 这一步算数</span></div>")
     else:
-        tail += _options_html(ev, slot)
+        opts = _options_html(ev, slot)
+        if opts:
+            tail += opts
+        else:
+            # 没有选项的事件（路上白给的补给，比如顺风）：抽到就已经生效了。
+            # 不给这一行的话，它看起来就是一张没画完的卡——有字、没处点。
+            tail += ('<div class="gain">' + _icon("check", 12)
+                     + "<span>路上遇到的，已经算上</span></div>")
 
     return f'<div class="{cls}"><div class="in">{head}{body}{tail}</div></div>'
+
+
+def buff_chips(buffs: list[dict]) -> str:
+    """本周挂着的增益。空就不占位置。"""
+    out = []
+    for b in buffs or []:
+        eff = str(b.get("effect") or "")
+        tpl, dim = BUFF_TEXT.get(eff, ("", True))
+        if not tpl:
+            # 认不出的效果宁可只显示名字，也不要瞎编一个数值
+            txt = ""
+        else:
+            txt = tpl.format(v=float(b.get("value") or 0))
+        name = str(b.get("name") or "")
+        out.append(f'<span class="b{" dim" if dim else ""}">{esc(name)}'
+                   + (f" <b>{esc(txt)}</b>" if txt else "") + "</span>")
+    return f'<div class="buffs">{"".join(out)}</div>' if out else ""
 
 
 # ---------------------------------------------------------------- 空态
@@ -570,7 +615,9 @@ def run_page(token: str, message: str = "", data: dict | None = None) -> str:
         # 不带日期：只留一季，说「上一季」就够了。写成 12-13 反而像一段区间。
         recap = (f'<div class="recap">上一季 · {esc(str(last.get("title") or ""))}'
                  f' <b>{float(last.get("team") or 0):g}</b> 格</div>')
-    body = msg + bar + route + cards + stuck + tgt + recap
+    # 增益紧贴状态条：它和「士气/补给/行程」一样是「你现在身上有什么」，
+    # 放到事件卡下面就会被当成某一条事件的注解。
+    body = msg + bar + buff_chips(mine.get("buffs") or []) + route + cards + stuck + tgt + recap
 
     js = ("<script>var TK=" + json.dumps(token) + ";"
           "function post(p,d){var f=new FormData();f.append('token',TK);"

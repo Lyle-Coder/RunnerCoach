@@ -475,6 +475,68 @@ def main() -> int:
     else:
         check("第二幕没试炼（跳过失败用例）", True)
 
+    # ---------------- 增益
+    print("\n12. 增益（以前只写在内容里，从来没人读）")
+    with EXP.G.db() as c:
+        c.execute("DELETE FROM group_run_buff WHERE group_id=?", (gid,))
+        b1 = EXP.add_buff(c, gid, 1, 1, {"id": "tw", "name": "顺风",
+                                         "effect": "weekly_cap_add", "value": 2,
+                                         "unit": "km"})
+        check("登记第一个增益生效", bool(b1) and b1["value"] == 2, str(b1))
+        b2 = EXP.add_buff(c, gid, 1, 1, {"id": "tw2", "name": "小风",
+                                         "effect": "weekly_cap_add", "value": 1})
+        check("同类更低的不叠加（返回 None）", b2 is None, str(b2))
+        b3 = EXP.add_buff(c, gid, 1, 1, {"id": "tw3", "name": "大风",
+                                         "effect": "weekly_cap_add", "value": 3})
+        check("同类更高会顶掉旧的", bool(b3), str(b3))
+        _bs = EXP.buffs_of(c, gid, 1, 1)
+        check("同类只留一条，且是最高值",
+              len(_bs) == 1 and _bs[0]["value"] == 3, str(_bs))
+        check("同类取最高而不是求和",
+              EXP.buff_sums(c, gid, 1)[1].get("weekly_cap_add") == 3,
+              str(EXP.buff_sums(c, gid, 1)[1]))
+        for _i, _e in enumerate(("weekly_advance_add", "weekly_morale_add",
+                                 "weekly_supply_add")):
+            EXP.add_buff(c, gid, 1, 1, {"id": f"x{_i}", "name": f"增益{_i}",
+                                        "effect": _e, "value": 1})
+        _bs = EXP.buffs_of(c, gid, 1, 1)
+        check("最多同时 3 个", len(_bs) == 3, str([x["id"] for x in _bs]))
+        check("挤掉的是最旧的（顺风被挤出）",
+              all(x["effect"] != "weekly_cap_add" for x in _bs),
+              str([(x["id"], x["effect"]) for x in _bs]))
+        check("未接入的效果也不报错",
+              EXP.add_buff(c, gid, 1, 1, {"id": "y", "name": "篝火",
+                                          "effect": "act_vigor_add", "value": 1}) is not None)
+
+    # 端到端：顺风真的让这一周多算格数。新开一个组，用同一份里程对比。
+    d5 = login("buff@test.local")
+    st, r = req("POST", "/v1/group/create", {"name": "增益组", "alias": "阿风"}, d5)
+    gid_b = r["group"]["id"]
+    req("POST", f"/v1/group/{gid_b}/report", {"days": [
+        {"date": "2026-11-17", "distance_m": 40000, "duration_s": 13000, "acts": 1}]}, d5)
+    st, db_ = state(gid_b, d5, "2026-11-17")
+    with EXP.G.db() as c:
+        _u = [int(x["user_id"]) for x in c.execute(
+            "SELECT user_id FROM group_run_member WHERE group_id=? AND act=1",
+            (gid_b,)).fetchall()]
+        check("新组里有成员行", bool(_u), str(_u))
+        for _uid in _u:
+            EXP.add_buff(c, gid_b, _uid, 1, {"id": "tw", "name": "顺风",
+                                             "effect": "weekly_cap_add", "value": 2,
+                                             "unit": "km"})
+    st, db2 = state(gid_b, d5, "2026-11-24")     # 触发第一幕结算
+    with EXP.G.db() as c:
+        _row2 = c.execute("SELECT flags FROM group_run_season WHERE group_id=?",
+                          (gid_b,)).fetchone()
+        _f2 = json.loads(_row2["flags"] or "{}")
+    _stage1 = float((_f2.get("stages") or {}).get("1") or 0)
+    # 40 km 一天，周上限 25 + 2×1 天 = 27 → 27/5 = 5.4 格，再乘士气加成 1.05
+    check("顺风按「实际跑过的天」加里程上限（不是按 7 天）",
+          5.5 < _stage1 < 5.8, f"第一幕 {_stage1}（应为 5.4×1.05≈5.67）")
+    with EXP.G.db() as c:
+        check("增益按幕失效（第二幕查不到）", EXP.buff_sums(c, gid_b, 2) == {},
+              str(EXP.buff_sums(c, gid_b, 2)))
+
     print(f"\n通过 {ok} 项，失败 {fail} 项")
     srv.shutdown()
     return 0 if fail == 0 else 1
