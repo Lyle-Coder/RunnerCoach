@@ -3892,11 +3892,19 @@ def diag_text(lines: int = 200) -> dict:
     from . import diag
 
     head = [f"RunnerCoach {VER}"]
+    # 连的是哪个服务器：换过 IP、或者用户手填了地址时，这一行是第一现场。
+    try:
+        from . import llm
+        head.append(f"服务端 {llm.load_config().get('platform_base') or '（未配置）'}")
+    except Exception:      # noqa: BLE001
+        pass
     try:
         from . import codepack
         st = codepack.status()
         if st.get("applied"):
-            head.append(f"代码包 {st['applied']}（已挂载）")
+            _b = st.get("base_version") or ""
+            head.append(f"代码包 {st['applied']}（已挂载"
+                        + (f"，适用 {_b}" if _b else "，未标注适用版本") + "）")
         elif st.get("pending"):
             head.append(f"代码包 未挂载（已下载 {st['pending']}，重启后生效）")
         else:
