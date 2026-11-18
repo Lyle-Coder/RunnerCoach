@@ -203,7 +203,12 @@ def load_config() -> dict:
     # 平台额度模式的地址兼容字段名
     if not cfg.get("platform_base") and cfg.get("gateway"):
         cfg["platform_base"] = cfg["gateway"]
-    return _resolve_platform(cfg)
+    cfg = _resolve_platform(cfg)
+    # 平台额度关着的时候，老用户存下来的 mode=platform 一律按 own 走：
+    # 否则他会在"问答"上撞一个 503，而界面上根本看不出是额度关了。
+    if not _BC.PLATFORM_QUOTA and cfg.get("mode") == "platform":
+        cfg["mode"] = "own"
+    return cfg
 
 
 def save_config(**patch) -> dict:
@@ -266,6 +271,8 @@ def public_config() -> dict:
                             else ("server" if cfg.get("platform_served_base")
                                   else "builtin")),
         "platform_hint": (token[:4] + "…（" + str(len(token)) + " 位）") if token else "",
+        # 界面据此决定要不要显示「平台额度」这个选项
+        "platform_quota": bool(_BC.PLATFORM_QUOTA),
         "has_platform_token": bool(token),
         "temperature": cfg["temperature"],
         "auto_advice": cfg["auto_advice"],

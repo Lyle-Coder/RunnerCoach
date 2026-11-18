@@ -105,9 +105,11 @@ systemctl daemon-reload
 systemctl enable "$SVC" >/dev/null 2>&1 || true
 
 echo
-if grep -q '^SMTP_USER=$' "$ETC/env" && grep -q '^SMS_PROVIDER=dev$' "$ETC/env"; then
+# 模板里留的是占位值（"你的发件邮箱@qq.com"），既不是空也不算填好——
+# 空密码和占位值都视为「还没配」，否则会启动一个马上被护栏拒掉的服务。
+if grep -qE '^SMTP_PASS=$|^SMTP_USER=你的' "$ETC/env"; then
   echo "！先别急，还差登录通道："
-  echo "   编辑 $ETC/env，填 SMTP_USER / SMTP_PASS（QQ 邮箱授权码，免费）"
+  echo "   编辑 $ETC/env，把 SMTP_USER / SMTP_PASS 换成你的 QQ 邮箱与授权码"
   echo "   然后：systemctl start $SVC && journalctl -u $SVC -n 30 --no-pager"
   echo "   （不填的话服务会拒绝启动——验证码明文回显等于谁都能登录任何账号）"
 else

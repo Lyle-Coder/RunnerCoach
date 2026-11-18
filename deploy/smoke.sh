@@ -51,6 +51,12 @@ else
 fi
 MODEL="$(echo "$H" | sed -n 's/.*"model": *"\([^"]*\)".*/\1/p')"
 [ -n "$MODEL" ] && echo "       模型 $MODEL"
+# 平台额度/代理与支付：资质没办之前应该是关的。开着不拦，但要提醒——
+# 无资质提供生成式 AI 服务 / 收费，都是实质性的合规风险。
+echo "$H" | grep -q '"ai_proxy": *true' && \
+  echo "       ！平台代理开着（无资质时不该开，检查 AI_PROXY）"
+echo "$H" | grep -q '"pay": *true' && \
+  echo "       ！支付通道开着（无资质时不该开，检查 PAY_PROVIDER）"
 
 echo "4. 未授权必须被拒"
 C="$(curl -s -o /dev/null -m 8 $CURL_TLS -w '%{http_code}' "$BASE/v1/me" 2>/dev/null)"

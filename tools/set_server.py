@@ -45,6 +45,11 @@ TEMPLATE = '''# -*- coding: utf-8 -*-
 
 PLATFORM_BASE = {base!r}
 PLATFORM_SHARE_CODE = {code!r}
+
+# 平台额度（充值/赠送）是否对外开放。资质办好之前是 False：
+# 界面只留"自配 API Key"，不留一个点了就报错的入口。
+# 服务端那边对应 AI_PROXY 开关，两处要一起开。
+PLATFORM_QUOTA = {quota!r}
 '''
 
 
@@ -66,6 +71,8 @@ def main() -> int:
     ap.add_argument("base", nargs="?", help="https://IP:端口")
     ap.add_argument("--cert", help="服务器证书（自签时必填），会裁成 App 的内置根")
     ap.add_argument("--code", default="", help="分享码（只在走了分享网关时需要）")
+    ap.add_argument("--quota", choices=("on", "off"), default="off",
+                    help="平台额度开关（默认关：资质办好前不对外提供）")
     ap.add_argument("--show", action="store_true", help="看当前配置")
     ap.add_argument("--reset", action="store_true", help="恢复默认")
     a = ap.parse_args()
@@ -81,7 +88,7 @@ def main() -> int:
     if a.reset:
         base = "https://garmin-daily-dashboard.app.workbuddy.host"
         code = "ORT7NXCECR"
-        cfg = TEMPLATE.format(base=base, code=code)
+        cfg = TEMPLATE.format(base=base, code=code, quota=False)
         CFG.write_text(cfg, encoding="utf-8")
         if CA.is_file():
             CA.unlink()
@@ -119,9 +126,11 @@ def main() -> int:
         print("！没给 --cert，且包内没有内置证书。")
         print("  如果服务器用的是自签证书，装完会报 CERTIFICATE_VERIFY_FAILED。")
 
-    CFG.write_text(TEMPLATE.format(base=base, code=a.code), encoding="utf-8")
+    CFG.write_text(TEMPLATE.format(base=base, code=a.code, quota=a.quota == "on"),
+                   encoding="utf-8")
     print(f"√ 地址 → {base}")
     print(f"√ 分享码 → {a.code or '（无）'}")
+    print(f"√ 平台额度 → {'开' if a.quota == 'on' else '关（只留自配 Key）'}")
     print()
     print("下一步：重新打包 APK（_buildcfg.py 和证书都是烧进包里的）")
     print("  cd android && build.bat assembleRelease")

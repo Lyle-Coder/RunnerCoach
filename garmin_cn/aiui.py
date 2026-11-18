@@ -176,7 +176,7 @@ BODY = """
 <div class="sheet" id="sheet">
   <div class="panel">
     <h2>模型服务</h2>
-    <div class="hint" id="setHint">两种接入方式：填自己的 API Key 直连，或接入平台额度（充值后按量扣）。</div>
+    <div class="hint" id="setHint">填自己的 API Key 直连（例如 DeepSeek，充值走它自己的后台）。</div>
 
     <div class="seg" id="aiSeg">
       <button data-on="1">AI 开启</button>
@@ -184,7 +184,7 @@ BODY = """
     </div>
     <div class="note" id="aiSegNote">关闭后不再调用模型：教练建议、看板点评、拍照识热量都会停，配置保留。</div>
 
-    <div class="seg" id="modeSeg">
+    <div class="seg" id="modeSeg" style="display:none">
       <button data-m="own">自配 API</button>
       <button data-m="platform">平台额度</button>
     </div>
@@ -759,7 +759,11 @@ window.__gcBack = function(){
 };
 
 function fillSheet(c) {
-  const mode = c.mode || 'own';
+  /* 平台额度关着时（资质没办），只留自配 Key：不给一个点了必然报错的入口。
+     `platform_quota` 由 public_config 下发，和服务端 AI_PROXY 是同一个决定。 */
+  const quota = c.platform_quota !== false;
+  shown('#modeSeg', quota);
+  const mode = quota ? (c.mode || 'own') : 'own';
   document.querySelectorAll('#modeSeg button').forEach(b =>
     b.classList.toggle('on', b.dataset.m === mode));
   shown('#ownBox', mode === 'own');

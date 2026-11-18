@@ -93,7 +93,12 @@ UPSTREAM_MODEL = os.environ.get("UPSTREAM_MODEL", "deepseek-chat")
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
 DB_PATH = os.environ.get("DB_PATH", str(Path(__file__).resolve().parent / "data.db"))
 MARGIN = float(os.environ.get("MARGIN", "1.15"))            # 平台加价倍率
-FREE_GRANT = int(os.environ.get("FREE_GRANT", "500_000"))   # 新用户赠送（微元，默认 0.5 元）
+# 新用户赠送额度（微元）。**默认 0**：平台额度与支付在资质办下来之前不开放，
+# 默认值必须是"关"。要送就显式配 FREE_GRANT=500000。
+FREE_GRANT = int(os.environ.get("FREE_GRANT", "0"))
+# 平台代理总开关。关掉时 /v1/chat/completions 直接 503 并提示"用自己的 Key"，
+# 不留半开状态：不卖额度却还替人转发请求，等于无资质提供生成式 AI 服务。
+AI_PROXY = os.environ.get("AI_PROXY", "off").strip().lower() in ("1", "on", "yes", "true")
 HOST = os.environ.get("BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8300"))
 
@@ -683,9 +688,9 @@ def api_order_create(row: sqlite3.Row, body: dict) -> dict:
     elif PAY_PROVIDER == "demo":
         code_url = "demo://pending"              # admin/orders/pay 模拟到账
     else:
-        raise Gate(503, "在线支付尚未开通：服务端未配置支付通道。"
-                        "目前可先用兑换码充值，新用户赠送额度也可直接问答；"
-                        "开通微信支付需商户资料并配置 PAY_PROVIDER")
+        raise Gate(503, "在线支付与平台额度暂未开放。请在自己的"
+                        "「模型服务」里填 API Key 直连使用（例如 DeepSeek），"
+                        "或先用 App 的自带功能。")
     with db() as c:
         cur = c.execute("INSERT INTO orders(out_trade_no,user_id,amount,status,channel,"
                         "code_url,created_at) VALUES(?,?,?,?,?,?,?)",
@@ -1138,7 +1143,11 @@ class Handler(BaseHTTPRequestHandler):
                                    # dev_echo=true 表示验证码明文回显（不能上公网），
                                    # tls=true 表示这条连接已经是 HTTPS
                                    "dev_echo": _dev_echo(),
-                                   "tls": bool(TLS_CERT)})
+                                   "tls": bool(TLS_CERT),
+                                   # 平台额度/支付没开时是 false，客户端据此
+                                   # 只显示"自配 Key"
+                                   "ai_proxy": AI_PROXY,
+                                   "pay": PAY_PROVIDER != ""})
             if self.path == "/v1/client/config":
                 # 公开接口：只回「App 该连哪」，不含任何密钥。App 校验为 https 后才采用。
                 return self._json({"ok": True,
@@ -1210,6 +1219,12 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/v1/wechat/notify":
                 return self._json(api_wechat_notify(body, self.headers))
             if self.path == "/v1/chat/completions":
+                if not AI_PROXY:
+                    return self._json({
+                        "ok": False,
+                        "error": "平台额度未开放。请在 App 右上角 ⚙「模型服务」里"
+                                 "填自己的 API Key（例如 DeepSeek），直连使用。",
+                        "code": "proxy_disabled"}, 503)
                 row = _auth(self.headers)
                 return api_chat(row, body, self)   # 流式时直接写完响应
             if self.path == "/admin/codes":

@@ -609,6 +609,23 @@ def main() -> int:
         {"alias": "x", "km": 0, "days": 0, "best": 0, "grid": 0, "trials": 0,
          "steady": None, "climb": None}, {}, 28) == ("", ""), "")
 
+    # ---------------- 平台额度与支付：资质没办之前必须是关的
+    print("\n14. 网关开关（平台额度 / 支付关闭）")
+    check("默认不送额度", app.FREE_GRANT == 0, str(app.FREE_GRANT))
+    check("默认不替人转发模型请求", app.AI_PROXY is False, str(app.AI_PROXY))
+    st, r = req("POST", "/v1/chat/completions",
+                {"model": "x", "messages": [{"role": "user", "content": "hi"}]})
+    check("代理关闭时 503 且说明怎么办",
+          st == 503 and r.get("code") == "proxy_disabled"
+          and "自己的" in str(r.get("error") or ""), f"{st} {r}")
+    check("关代理时连鉴权都不做（否则会误导成「你没登录」）",
+          st == 503, f"{st} {r}")
+    st, r = req("POST", f"/v1/orders", {"amount": 1}, a)
+    check("支付未开通时下单 503", st == 503, f"{st} {r}")
+    st, r = req("GET", "/health")
+    check("health 报 ai_proxy=false / pay=false",
+          r.get("ai_proxy") is False and r.get("pay") is False, str(r))
+
     print(f"\n通过 {ok} 项，失败 {fail} 项")
     srv.shutdown()
     return 0 if fail == 0 else 1
