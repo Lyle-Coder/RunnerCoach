@@ -63,6 +63,51 @@ CHALLENGES = {
 }
 
 
+S = {"yellow": ("黄衫", "里程王", "#E8C43A"), "green": ("绿衫", "出勤王", "#3FA76A"),
+     "polka": ("圆点衫", "爬升王", "#D8DEE9"), "white": ("白衫", "进步王", "#F2F5FA"),
+     "red": ("红衫", "计划完成王", "#D9534F"), "blue": ("蓝衫", "连续王", "#4C8DF6")}
+
+
+def _shirt(k):
+    n, t, c = S[k]
+    return {"id": k, "name": n, "title": t, "color": c}
+
+
+SEASON = {
+    "ok": True, "from": "2026-11-16", "to": "2026-11-22", "base_max": 90.0,
+    "hidden": 1,
+    "people": [
+        {"user_id": 2, "alias": "阿狗", "rank": 1, "score": 81.2,
+         "km": 42.3, "days": 5, "elev": 620, "streak": 5, "plan_rate": 1.0,
+         "progress": 0.12, "title": "远征队长",
+         "shirts": [_shirt("yellow"), _shirt("green"), _shirt("red")]},
+        {"user_id": 1, "alias": "老李", "rank": 2, "score": 63.8,
+         "km": 38.1, "days": 4, "elev": 410, "streak": 3, "plan_rate": 0.75,
+         "progress": 0.05, "title": "先锋",
+         "shirts": [_shirt("blue")]},
+        {"user_id": 3, "alias": "小赵", "rank": 3, "score": 28.4,
+         "km": 12.8, "days": 2, "elev": 90, "streak": 2, "plan_rate": 0.5,
+         "progress": -0.2, "title": "",
+         "shirts": []},
+    ],
+    "shirts": [
+        {"id": "yellow", "name": "黄衫", "title": "里程王", "color": "#E8C43A",
+         "winners": [{"user_id": 2, "alias": "阿狗"}]},
+        {"id": "green", "name": "绿衫", "title": "出勤王", "color": "#3FA76A",
+         "winners": [{"user_id": 2, "alias": "阿狗"}]},
+        {"id": "polka", "name": "圆点衫", "title": "爬升王", "color": "#D8DEE9",
+         "winners": []},
+        {"id": "white", "name": "白衫", "title": "进步王", "color": "#F2F5FA",
+         "winners": [{"user_id": 2, "alias": "阿狗"}]},
+        {"id": "red", "name": "红衫", "title": "计划完成王", "color": "#D9534F",
+         "winners": [{"user_id": 2, "alias": "阿狗"}]},
+        {"id": "blue", "name": "蓝衫", "title": "连续王", "color": "#4C8DF6",
+         "winners": [{"user_id": 1, "alias": "老李"}]},
+    ],
+}
+SEASON["me"] = SEASON["people"][1]
+
+
 def main() -> int:
     from garmin_cn import group as G
     from garmin_cn import groupui as GU
@@ -70,6 +115,7 @@ def main() -> int:
     G.detail = lambda gid: DETAIL                     # type: ignore[assignment]
     G.board = lambda gid, rng="week", today=None: BOARD   # type: ignore[assignment]
     G.challenge_list = lambda gid, today=None: CHALLENGES  # type: ignore[assignment]
+    G.season = lambda gid, today=None: SEASON          # type: ignore[assignment]
 
     html = GU.group_page("TOK", GID)
     # 站内绝对路径换成 file://，否则本地打开是一片空白

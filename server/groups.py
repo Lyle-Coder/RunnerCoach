@@ -37,6 +37,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import ranking
+
 DEFAULT_DB = Path(__file__).resolve().parent / "data" / "groups.db"
 GROUPS_DB = os.environ.get("GROUPS_DB", str(DEFAULT_DB))
 
@@ -55,6 +57,8 @@ REPORT_MAX_DAYS = 31           # 一次最多报 31 天（首次加入补 30 天
 DAY_DIST_MAX_M = 200_000       # 单日 200 km，超过直接拒（不是判作弊，是防脏数据）
 DAY_DUR_MAX_S = 24 * 3600
 DAY_ACTS_MAX = 20
+DAY_ELEV_MAX = 8000          # 单日爬升 8000 m，超过直接拒（防脏数据）
+_ELEV_PER_KM_MAX = 200.0      # 爬升密度上限（m/km），日报表只能按这个截断
 
 CHALLENGE_MAX_DAYS = 90
 CHALLENGE_MAX_RUNNING = 3
@@ -151,6 +155,9 @@ def init_db() -> None:
           duration_s   INTEGER NOT NULL DEFAULT 0,
           acts         INTEGER NOT NULL DEFAULT 0,
           plan_done    INTEGER,
+          -- 当日爬升（米）。圆点衫要用；老库靠下面的 _migrate 补列，
+          -- 默认 0 表示「这一版客户端还没传」，不是「这天没爬升」。
+          elevation_m  INTEGER NOT NULL DEFAULT 0,
           updated_at   INTEGER NOT NULL,
           PRIMARY KEY(group_id, user_id, date)
         );
@@ -181,6 +188,12 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_gaudit_group ON group_audit(group_id, id);
         """)
+        # 老库补列。SQLite 的 ADD COLUMN 支持带默认值，已有行会拿到 0；
+        # 不做数据回填——0 就是「那几天还没有这个字段」，回填成别的值是编数据。
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(group_daily)")}
+        if "elevation_m" not in cols:
+            c.execute("ALTER TABLE group_daily ADD COLUMN elevation_m INTEGER"
+                      " NOT NULL DEFAULT 0")
 
 
 # ---------------------------------------------------------------- 工具
@@ -532,6 +545,7 @@ def api_report(me, gid: int, body: dict) -> dict:
 
     _rate_limit(f"u{uid}", "report", 60)
     rows = []
+    clamped = 0
     for d in days:
         if not isinstance(d, dict):
             raise GroupError(400, "days 里每一项要是对象")
@@ -547,6 +561,7 @@ def api_report(me, gid: int, body: dict) -> dict:
             dist = int(d.get("distance_m") or 0)
             dur = int(d.get("duration_s") or 0)
             acts = int(d.get("acts") or 0)
+            elev = int(d.get("elevation_m") or 0)
         except (TypeError, ValueError):
             raise GroupError(400, f"{day} 的数值不合法")
         if not 0 <= dist <= DAY_DIST_MAX_M:
@@ -555,10 +570,20 @@ def api_report(me, gid: int, body: dict) -> dict:
             raise GroupError(400, f"{day} 单日时长超出范围")
         if not 0 <= acts <= DAY_ACTS_MAX:
             raise GroupError(400, f"{day} 单日次数超出范围")
+        if not 0 <= elev <= DAY_ELEV_MAX:
+            raise GroupError(400, f"{day} 单日爬升超出范围")
+        # 爬升密度防刷：日报表只有日汇总，没有单次数据，所以按
+        # 「爬升 / 里程 ≤ 200 m/km」在门口截断。0 公里的日子不截
+        # （室内跑步机没有 GPS，爬升本来就是 0；真报了个数也没法比）。
+        if dist > 0:
+            cap = int(dist / 1000.0 * _ELEV_PER_KM_MAX)
+            if elev > cap:
+                elev = cap
+                clamped += 1
         # plan_done 三态：null = 当天没有计划 / 拿不到计划，不当成 0
         raw = d.get("plan_done", None)
         plan = None if raw is None else (1 if raw else 0)
-        rows.append((gid, uid, day, dist, dur, acts, plan, _now()))
+        rows.append((gid, uid, day, dist, dur, acts, elev, plan, _now()))
 
     with db() as c:
         m = _require_member(c, gid, uid)
@@ -566,16 +591,85 @@ def api_report(me, gid: int, body: dict) -> dict:
             # 关掉共享的意图就是「别再收我的数据」。写进去再藏起来是自欺欺人。
             return {"ok": True, "saved": 0, "skipped": len(rows), "share": "off"}
         c.executemany("""
-            INSERT INTO group_daily(group_id,user_id,date,distance_m,duration_s,acts,plan_done,updated_at)
-            VALUES(?,?,?,?,?,?,?,?)
+            INSERT INTO group_daily(group_id,user_id,date,distance_m,duration_s,acts,elevation_m,plan_done,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?)
             ON CONFLICT(group_id,user_id,date) DO UPDATE SET
                 distance_m=excluded.distance_m,
                 duration_s=excluded.duration_s,
                 acts=excluded.acts,
+                elevation_m=excluded.elevation_m,
                 plan_done=excluded.plan_done,
                 updated_at=excluded.updated_at
         """, rows)
-    return {"ok": True, "saved": len(rows), "skipped": 0, "share": m["share_level"]}
+    out = {"ok": True, "saved": len(rows), "skipped": 0, "share": m["share_level"]}
+    if clamped:
+        # 说出来，不静默改数：客户端传了不合理的爬升，用户该知道被截了
+        out["clamped_elev"] = clamped
+    return out
+
+
+# ---------------------------------------------------------------- 周成绩
+def api_season(me, gid: int, query: dict) -> dict:
+    """本周的六件衫 + 赛季分 + 名次 + 称号。
+
+    「赛季分」目前满分 90：让分赛与预言那 10 分还没做，它们以后是往上加的
+    加分项，不是权重（见 ranking.py 顶部说明）。页面别写成 x/100。
+
+    只算开着共享的人——和数据进不来的道理一样：关掉共享就是「别拿我的数据
+    做比较」，把名字列进排名等于违背这句话。
+    """
+    uid = int(me["user_id"])
+    today = _today((query.get("today") or [None])[0])
+    wf, wt = _week(today)
+    pf, pt = wf - dt.timedelta(days=7), wf - dt.timedelta(days=1)
+
+    with db() as c:
+        _group(c, gid)
+        _require_member(c, gid, uid)
+        mem = c.execute(
+            "SELECT user_id, alias, share_level FROM group_members"
+            " WHERE group_id=? AND status='active' ORDER BY joined_at, user_id",
+            (gid,)).fetchall()
+        # 一次取回够长的一段（本组最早的记录到现在），在内存里分桶。
+        # 组小（<=200 人）、周数有限，比每人两次查询省得多。
+        since = c.execute("SELECT MIN(date) d FROM group_daily WHERE group_id=?",
+                          (gid,)).fetchone()["d"] or wf.isoformat()
+        rows = c.execute(
+            "SELECT user_id, date, distance_m, elevation_m, acts, plan_done"
+            " FROM group_daily WHERE group_id=? AND date BETWEEN ? AND ?"
+            " ORDER BY date", (gid, since, wt.isoformat())).fetchall()
+
+    shared = [m for m in mem if (m["share_level"] or "summary") == "summary"]
+    keep = {int(m["user_id"]) for m in shared}
+    aliases = {int(m["user_id"]): m["alias"] for m in shared}
+
+    this_w: dict[int, list[dict]] = {u: [] for u in keep}
+    prev_w: dict[int, list[dict]] = {u: [] for u in keep}
+    weeks: dict[int, set] = {u: set() for u in keep}
+    for r in rows:
+        u = int(r["user_id"])
+        if u not in keep:
+            continue
+        d = str(r["date"])
+        if int(r["acts"] or 0) > 0 or int(r["distance_m"] or 0) > 0:
+            try:
+                weeks[u].add(dt.date.fromisoformat(d).isocalendar()[:2])
+            except ValueError:
+                pass
+        if wf.isoformat() <= d <= wt.isoformat():
+            this_w[u].append(dict(r))
+        elif pf.isoformat() <= d <= pt.isoformat():
+            prev_w[u].append(dict(r))
+
+    out = ranking.build(this_w, prev_w,
+                        {u: len(weeks[u]) for u in keep}, aliases)
+    out["ok"] = True
+    out["from"] = wf.isoformat()
+    out["to"] = wt.isoformat()
+    out["me"] = next((p for p in out["people"]
+                      if int(p["user_id"]) == uid), None)
+    out["hidden"] = len(mem) - len(shared)
+    return out
 
 
 # ---------------------------------------------------------------- 榜单
@@ -925,6 +1019,8 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_report(me, gid, body), 200
         if action == "board" and method == "GET":
             return api_board(me, gid, query), 200
+        if action == "season" and method == "GET":
+            return api_season(me, gid, query), 200
         if action == "leave" and method == "POST":
             return api_leave(me, gid), 200
         if action == "share" and method == "POST":

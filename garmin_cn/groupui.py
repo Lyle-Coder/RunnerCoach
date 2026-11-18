@@ -294,6 +294,43 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
              f'<span class="chip">{_km(total_m)} km '
              + ("本月" if rng == "month" else "本周") + '</span>')
 
+    # 本周成绩条：我在组里第几、多少分、穿着哪件衫。
+    # 这是「竞赛感」最省地方的表达——一行字，不做榜单页。取不到就整块不显示，
+    # 组页不能因为一个新接口挂掉就打不开。
+    try:
+        _se = G.season(gid, today)
+    except Exception:      # noqa: BLE001 - 老服务端没有 /season，降级即可
+        _se = {}
+    score_line = ""
+    if _se.get("ok") and (_se.get("people") or []):
+        _me = _se.get("me") or {}
+
+        def _bits(shirts):
+            return "".join(
+                f'<span class="sbit"><i style="background:{esc(x.get("color"))}"></i>'
+                f'{esc(x.get("name"))}</span>'
+                for x in (shirts or []))
+
+        if _me:
+            _tt = str(_me.get("title") or "")
+            score_line = (
+                '<div class="sline">'
+                f'<span class="rk">我 · 第 {int(_me.get("rank") or 0)} 名</span>'
+                f'<b>{float(_me.get("score") or 0):g}<i>分</i></b>'
+                + (f'<span class="tt">{esc(_tt)}</span>' if _tt else "")
+                + _bits(_me.get("shirts")) + "</div>")
+        win = []
+        for sh in _se.get("shirts") or []:
+            names = [str(w.get("alias") or "") for w in (sh.get("winners") or [])]
+            if names:
+                win.append(f'<span class="sbit"><i style="background:'
+                           f'{esc(sh.get("color"))}"></i>{esc(sh.get("name"))} '
+                           f'{esc("/".join(names))}</span>')
+        if win:
+            score_line += '<div class="sline2">' + "".join(win) + "</div>"
+    if not score_line:
+        score_line = ""
+
     # 远征入口。放在榜单之前：榜单是每天看的，远征是这一季的进度，
     # 两者都不该埋在页面底部。只做入口不拉 state——组详情页要秒开。
     trail = ('<div class="card"><a class="grow" href="/run?gid=' + str(gid) + '">'
@@ -307,6 +344,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     more = ("月榜" if other == "month" else "周榜", f"/groups/{gid}?range={other}")
 
     body = (msg
+            + score_line
             + sec("远征", trail)
             + sec("月榜" if rng == "month" else "本周榜",
                   '<div class="flat">' + rank_rows + '</div>',
