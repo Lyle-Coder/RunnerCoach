@@ -749,7 +749,7 @@ def _settle(c, gid: int, act_no: int, season) -> None:
     morale = int(season["morale"])
     bonus = 1 + min(morale // 3, 3) * 0.05
     sums = buff_sums(c, gid, act_no)
-    # 老周的地图还在用：过半请了向导，第三、四幕每人每幕多走 1 格。
+    # 请了向导的 flag：过半选了「请人带路」，第三、四幕每人每幕多走 1 格。
     # 这一条文档里写着「已接入」，实际从来没算过——picks 只写不读。
     guided = _team_flag(flags, "guided", len(uids)) and act_no >= 3
     total = 0.0

@@ -936,9 +936,9 @@ def run() -> int:
     _th = RU.event_card(_trial, 0)
     assert "跑完了" in _th and "没跑成" in _th, "试炼没渲染出上报按钮"
     assert "渐加速" in _th, "试炼没显示要跑什么"
-    _trial2 = dict(_trial, chosen="success", result="最后两公里，老周没掉队。")
+    _trial2 = dict(_trial, chosen="success", result="最后两公里，谁也没掉队。")
     _th2 = RU.event_card(_trial2, 0)
-    assert "跑完了" not in _th2 and "老周没掉队" in _th2, "已报的试炼还在催人跑"
+    assert "跑完了" not in _th2 and "没掉队" in _th2, "已报的试炼还在催人跑"
 
     # 试炼是「数据说了算」不是「自己说了算」：点之前就要说清楚会去核，
     # 点完之后要能看出这次是核过、没核过、还是没跑成。三种说法不能混。
@@ -1031,7 +1031,7 @@ def run() -> int:
     # 那一行小字里。这一条挡的是「以后又把它加回四个大数字」。
     _oc3 = dict(_oc, km=372.0, hidden=1)
     _oc3["people"] = [
-        {"alias": "老周", "me": False, "km": 168.0, "days": 24, "runs": 24,
+        {"alias": "队友甲", "me": False, "km": 168.0, "days": 24, "runs": 24,
          "badge": "这一段他走得最远", "badge_id": "km", "status": "moving"},
         {"alias": "小林", "me": True, "km": 140.0, "days": 28, "runs": 28,
          "badge": "一天没断", "badge_id": "full", "status": "moving"},
@@ -1039,7 +1039,7 @@ def run() -> int:
          "badge": "", "badge_id": "", "status": "stranded"},
     ]
     _ohp = RU.outcome_page("TOK", _oc3)
-    assert "谁走了多少" in _ohp and "老周" in _ohp and "168.0" in _ohp, \
+    assert "谁走了多少" in _ohp and "队友甲" in _ohp and "168.0" in _ohp, \
         "结算页没列每个人的里程"
     assert "一天没断" in _ohp and "这一段他走得最远" in _ohp, "闪光点没显示"
     assert _ohp.count("没有记录") == 1, "没跑的人被写成了 0.0 km"
