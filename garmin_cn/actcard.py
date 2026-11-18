@@ -1380,17 +1380,17 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
             value = cm.get(key)
             return f"{value:.{digits}f}" if value is not None else "—"
         tech_cells = [(f"{cad_avg:.0f}" if cad_avg is not None else pv("cad_avg"), "踏频 rpm"),
-                      (pv("avg_power_w"), "均功率 W"), (pv("normalized_power_w"), "NP W"),
-                      (pv("intensity_factor", 2), "IF")]
-        power_note = (f'NP {pv("normalized_power_w")} W · IF {pv("intensity_factor", 2)} · TSS {pv("tss", 1)}'
-                      f'<br>功率覆盖 {cm.get("power_coverage", 0) * 100:.0f}% · '
-                      + (f'FTP {cm["ftp_w"]:.0f} W' if cm.get("ftp_w") else '未设置 FTP，IF / TSS 不计算'))
+                      (pv("avg_power_w"), "平均功率 W"), (pv("normalized_power_w"), "标准化功率 W"),
+                      (pv("intensity_factor", 2), "强度系数")]
+        power_note = (f'标准化功率（NP）{pv("normalized_power_w")} W · 强度系数（IF）{pv("intensity_factor", 2)} · 训练压力分数（TSS）{pv("tss", 1)}'
+                      f'<br>功率数据覆盖 {cm.get("power_coverage", 0) * 100:.0f}% · '
+                      + (f'FTP {cm["ftp_w"]:.0f} W' if cm.get("ftp_w") else '设置骑行 FTP 后可查看强度系数和训练压力分数'))
         zs = cm.get("power_zones") or []
         ztotal = sum(z["seconds"] for z in zs)
         if ztotal:
             colors = ("#778899", "#4DA3FF", "#4ADE80", "#E8C547", "#FF9E62", "#F87171", "#C2A8FF")
             bar = ''.join(f'<i title="Z{z["zone"]} {z["seconds"] / 60:.1f} 分钟" style="display:block;width:{z["seconds"] / ztotal * 100:.2f}%;background:{colors[z["zone"] - 1]}"></i>' for z in zs)
-            power_note += '<br>功率 Z1–Z7<div style="display:flex;height:10px;margin-top:5px;border-radius:5px;overflow:hidden">' + bar + '</div>'
+            power_note += '<br>功率区间（Z1–Z7）<div style="display:flex;height:10px;margin-top:5px;border-radius:5px;overflow:hidden">' + bar + '</div>'
     if chart_html is None:
         chart_html = chart_svg(points, CH_CW, 262, th)
     # hero 右侧固定「上 3 下 3」：用时 / 爬升 / 主要益处，然后技术三项。

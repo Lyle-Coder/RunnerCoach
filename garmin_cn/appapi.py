@@ -2936,7 +2936,7 @@ def motion_html(activity_id: str, fps: int = 24, duration: int = 30,
         detail = dict(detail)
         track_trim, _ = PV.mask_track(detail.get("track") or [], mode)
         if len(track_trim) < 2:
-            return {"ok": False, "error": "这个脱敏档位下没有可用的轨迹"}
+            return {"ok": False, "error": "按所选方式处理后，没有可用于回放的轨迹"}
         detail["track"] = track_trim
         # 轨迹被裁过，旧时间轴不能再用；缓存里也没有带时间的原始折线，
         # 所以统一按「累计里程」把 track 与 1Hz 序列对齐后现场合成一条。

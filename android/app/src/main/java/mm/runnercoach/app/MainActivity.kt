@@ -719,7 +719,7 @@ class MainActivity : Activity() {
                     Log.i(TAG, "backfill seg=$seg $a~$b fetched=${r.optInt("fetched")} " +
                         "skipped=${r.optInt("skipped")}")
                     ui {
-                        subtitle.text = "补齐历史 第 $seg 段：$a ~ $b（新拉 ${r.optInt("fetched")} 天）"
+                        subtitle.text = "同步历史记录 · 新增 ${r.optInt("fetched")} 天"
                         // 一段要跑一分多钟：停在「历史」页时每补完一段就刷一次，
                         // 否则用户盯着的是几分钟前的列表，以为没拉到东西。
                         if (activeTab == TAB_HISTORY) web.reload()
@@ -737,7 +737,7 @@ class MainActivity : Activity() {
                 if (seg > 0 && fetched > 0) {
                     val tail = if (done && earliest.isNotEmpty())
                         "，已到最早记录 $earliest" else "，下次刷新继续补齐"
-                    toast("已补 $seg 段历史：新拉 $fetched 天$tail")
+                    toast("已同步 $fetched 天的历史数据$tail")
                 }
                 thread {
                     setStatus(apiCall("status"))
@@ -1425,8 +1425,8 @@ class MainActivity : Activity() {
 
     private fun askMealPhoto() {
         AlertDialog.Builder(this)
-            .setTitle("记饮食")
-            .setItems(arrayOf("拍照", "从相册选", "直接描述（吃完了没拍）")) { _, which ->
+            .setTitle("记录一餐")
+            .setItems(arrayOf("拍摄食物照片", "从相册选择", "用文字描述")) { _, which ->
                 when (which) {
                     0 -> takeMealPhoto()
                     1 -> pickMealPhoto()
@@ -1591,7 +1591,7 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this)
             .setTitle("识别结果 · ${total.optInt("kcal")} kcal")
             .setMessage(sb.toString().trim())
-            .setPositiveButton("记下") { _, _ -> saveMeal(items) }
+            .setPositiveButton("保存饮食记录") { _, _ -> saveMeal(items) }
             .setNegativeButton("取消", null)
             .show()
     }
@@ -1684,7 +1684,7 @@ class MainActivity : Activity() {
                     return@ui
                 }
                 AlertDialog.Builder(this)
-                    .setTitle("顺便授权睡眠数据？")
+                    .setTitle("同步高驰睡眠数据？")
                     .setMessage(
                         "活动、HRV、静息心率已经能同步了；睡眠不在高驰的网页接口里，" +
                             "要再用官方 MCP 授权一次才能读到睡眠评分和深/浅/REM。\n\n" +
@@ -1692,7 +1692,7 @@ class MainActivity : Activity() {
                             "不会把手机上的高驰 App 挤下线，数据也不经过我们的服务器。"
                     )
                     .setPositiveButton("去授权") { _, _ -> startCorosMcpAuth() }
-                    .setNegativeButton("暂不") { _, _ -> doSync() }
+                    .setNegativeButton("暂不授权") { _, _ -> doSync() }
                     .setOnCancelListener { doSync() }
                     .show()
             }
@@ -1832,7 +1832,7 @@ class MainActivity : Activity() {
             setPadding(dp(20), dp(10), dp(20), 0)
         }
         box.addView(TextView(this).apply {
-            text = "填高德「Web 服务」Key 后，活动图会铺一张真实地图底图。\n\n" +
+            text = "填写高德地图的 Web 服务密钥后，活动图会显示地图底图。\n\n" +
                    "换取底图时会把这次跑步的轨迹中心点发给高德；不填则只画矢量轨迹。\n" +
                    "Key 只保存在本机，不会上传。"
             textSize = 13f
@@ -1932,13 +1932,13 @@ class MainActivity : Activity() {
             clipSelecting = false
             clipChecked.clear()
             AlertDialog.Builder(this)
-                .setTitle("素材")
+                .setTitle("回放素材")
                 .setMessage("还没有素材。\n\n" +
                     "可以加图片或视频：\n" +
                     "· 图片直接插到回放对应位置；\n" +
                     "· 视频能裁出想要的几秒（只搬样本不重编码，几秒就完成）。\n\n" +
                     "插入位置取文件里的拍摄时间；没有时间信息时按数量均匀铺在整段活动里。")
-                .setPositiveButton("添加") { _, _ -> pickMedia() }
+                .setPositiveButton("添加素材") { _, _ -> pickMedia() }
                 .setNegativeButton("关闭", null)
                 .show()
             return
@@ -2091,7 +2091,7 @@ class MainActivity : Activity() {
                                     .append("：").append(o.optString("error")).append("\n")
                             }
                             AlertDialog.Builder(this@MainActivity)
-                                .setTitle("有 $failN 个没删掉")
+                                .setTitle("有 $failN 项素材未能删除")
                                 .setMessage(sb.toString().trim())
                                 .setPositiveButton("知道了", null)
                                 .show()
@@ -2937,7 +2937,7 @@ class MainActivity : Activity() {
                 }
                 val names = arrayOf("小米", "华为")
                 AlertDialog.Builder(this)
-                    .setTitle("首选体重来源")
+                    .setTitle("首选体重数据来源")
                     .setSingleChoiceItems(names, ids.indexOf(preferred)) { dialog, which ->
                         dialog.dismiss()
                         thread {
@@ -3031,7 +3031,7 @@ class MainActivity : Activity() {
                     .setNegativeButton("关闭", null)
                 if (logged) {
                     dlg.setPositiveButton("同步体重") { _, _ -> doHwSync() }
-                    dlg.setNeutralButton("体检") { _, _ -> doHwProbe() }
+                    dlg.setNeutralButton("检查连接") { _, _ -> doHwProbe() }
                     dlg.setNegativeButton("退出登录") { _, _ -> doHwLogout() }
                 } else {
                     dlg.setPositiveButton("登录华为账号") { _, _ -> askHwLogin() }
@@ -3128,7 +3128,7 @@ class MainActivity : Activity() {
             ui {
                 busy(false)
                 if (!r.optBoolean("ok")) {
-                    toast("体检失败：${r.optString("error")}")
+                    toast("连接检查失败：${r.optString("error")}")
                     return@ui
                 }
                 val gates = r.optJSONObject("gates")
@@ -3139,8 +3139,8 @@ class MainActivity : Activity() {
                     "${if (g.optBoolean("ok")) "√" else "×"} $label　${g.optString("detail")}"
                 }
                 AlertDialog.Builder(this)
-                    .setTitle(if (r.optBoolean("all_ok")) "体检通过" else "体检未通过")
-                    .setMessage(lines.joinToString("\n").ifBlank { "没有返回体检明细" })
+                    .setTitle(if (r.optBoolean("all_ok")) "连接检查通过" else "连接检查未通过")
+                    .setMessage(lines.joinToString("\n").ifBlank { "没有收到连接检查结果" })
                     .setPositiveButton("关闭", null)
                     .show()
             }
@@ -3347,12 +3347,12 @@ class MainActivity : Activity() {
         val brand = if (huawei) "华为" else "小米"
         val healthApp = if (huawei) "华为运动健康" else "小米运动健康"
         busy(true)
-        ui { subtitle.text = "正在拉取${brand}体重…" }
+        ui { subtitle.text = "正在同步${brand}体重数据…" }
         thread {
             val r = apiCall(if (huawei) "hw_sync" else "mi_sync", 60)
             ui {
                 busy(false)
-                subtitle.text = "下拉同步 · 点活动名出图"
+                subtitle.text = "下拉同步 · 点击活动查看图片"
                 if (r.optBoolean("ok")) {
                     val n = r.optInt("count")
                     val msg = if (n > 0)
@@ -3454,7 +3454,7 @@ class MainActivity : Activity() {
                 AlertDialog.Builder(this)
                     .setTitle("发现新版本 " + tag)
                     .setView(sv)
-                    .setPositiveButton(if (r.optString("apk").isBlank()) "查看发布页" else "下载 APK") { _, _ ->
+                    .setPositiveButton(if (r.optString("apk").isBlank()) "查看发布页" else "下载安装包") { _, _ ->
                         downloadUpdate(r)
                     }
                     .setNeutralButton("下载记录") { _, _ -> openUpdateDownloads() }
@@ -3478,13 +3478,13 @@ class MainActivity : Activity() {
                 val state = ApkDownload.enqueue(applicationContext, release.optString("url"), name)
                 ui {
                     when (state) {
-                        ApkDownload.State.QUEUED -> toast("已开始下载 APK，完成后点系统下载通知安装；文件在「下载/RunnerCoach」")
+                        ApkDownload.State.QUEUED -> toast("安装包开始下载。下载完成后，点击系统通知即可安装。")
                         ApkDownload.State.RUNNING -> {
-                            toast("该版本正在下载，可在系统下载记录查看进度")
+                            toast("正在下载安装包，可在系统下载记录中查看进度。")
                             openUpdateDownloads()
                         }
                         ApkDownload.State.DOWNLOADED -> {
-                            toast("该版本已下载，请在下载记录中打开 APK 安装")
+                            toast("安装包已下载，请在下载记录中打开它。")
                             openUpdateDownloads()
                         }
                     }
@@ -3713,7 +3713,7 @@ class MainActivity : Activity() {
                         "$days 天日汇总 / $acts 条活动。\n" +
                             (if (bak.isEmpty()) "" else "\n原库已备份到：\n${File(bak).name}")
                     )
-                    .setPositiveButton("好") { _, _ ->
+                    .setPositiveButton("确定") { _, _ ->
                         goTab(0)
                         reload()
                     }
@@ -3735,7 +3735,7 @@ class MainActivity : Activity() {
             ui {
                 if (!r.optBoolean("ok")) {
                     busy(false)
-                    toast("出图失败：${r.optString("error")}")
+                    toast("生成图片失败：${r.optString("error")}")
                     return@ui
                 }
                 renderToPng(
@@ -3761,17 +3761,14 @@ class MainActivity : Activity() {
         val found = PRIVACY_MODES.indexOf(saved)
         var checked = if (found >= 0) found else 1
         AlertDialog.Builder(this)
-            .setTitle("分享前脱敏")
+            .setTitle("分享时如何显示轨迹")
             .setMessage(
-                "这张活动图含你的 GPS 轨迹，起终点可能暴露住址或常跑路线。\n" +
-                    "选好档位后才会生成图片并分享；原图会先存进相册。\n" +
-                    "配过地图 Key 时，「原图」和「裁剪」会铺地图底图（裁剪档只用中间段取景），" +
-                    "「隐藏轨迹」不显示地图。\n\n" +
-                    "回放视频在后台生成（通常一两分钟），可以先切到别的页面，"
-                    + "进度看「我的 → 产物文件」。"
+                "完整轨迹可能暴露住址或常走的路线。活动图会先保存到相册。\n\n" +
+                    "设置地图密钥后，底图会按保留的轨迹取景。隐藏轨迹时也会隐藏地图。\n\n" +
+                    "回放视频在后台生成，可在「我的 → 导出文件」查看进度。"
             )
             .setSingleChoiceItems(PRIVACY_LABELS, checked) { _, which -> checked = which }
-            .setNeutralButton("回放视频（后台）") { _, _ ->
+            .setNeutralButton("生成回放") { _, _ ->
                 val mode = PRIVACY_MODES[checked]
                 prefs.edit().putString("share_privacy", mode).apply()
                 exportMotion(id, mode, 30)
@@ -4441,7 +4438,7 @@ class MainActivity : Activity() {
         view.postDelayed({
             if (!done) {
                 done = true
-                toast("出图超时，请重试")
+                toast("生成图片超时，请重试")
                 cleanup(view)
             }
         }, 10000)
@@ -5053,7 +5050,7 @@ class MainActivity : Activity() {
                 "手动删掉的事件下次同步会补回；要彻底停止请点「关闭并清除」。\n\n" +
                 "当前状态：" + (if (on) "已开启" else "未开启"))
             .setPositiveButton("立即同步") { _, _ -> startCalendarSync(false) }
-            .setNegativeButton("关闭并清除") { _, _ -> disableCalendar() }
+            .setNegativeButton("关闭并删除提醒") { _, _ -> disableCalendar() }
             .setNeutralButton("取消", null)
             .show()
     }
@@ -5275,7 +5272,7 @@ class MainActivity : Activity() {
             startCalendarSync(false)
         } else {
             AlertDialog.Builder(this)
-                .setTitle("日历权限没开")
+                .setTitle("需要日历权限")
                 .setMessage(
                     "没有日历读写权限就写不进提醒。可以在 系统设置 → 应用 → " +
                     "RunnerCoach → 权限 里打开；不开也不影响 App 内的「该订了」清单。")
@@ -5338,9 +5335,9 @@ class MainActivity : Activity() {
         /** 与 garmin_cn/privacy.py 的 MODES 一一对应，顺序不能改。 */
         val PRIVACY_MODES = arrayOf("none", "trim", "hide")
         val PRIVACY_LABELS = arrayOf<CharSequence>(
-            "原图（含完整 GPS 轨迹）",
-            "裁首尾各 200 m（推荐）",
-            "完全隐藏轨迹与起跑时间",
+            "保留完整轨迹",
+            "隐藏首尾各 200 米（推荐）",
+            "隐藏整条轨迹和出发时间",
         )
 
         /** postVisualStateCallback 的请求号，非零即可，两个阶段各用一个。 */
