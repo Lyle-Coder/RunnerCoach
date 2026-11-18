@@ -275,13 +275,16 @@ def main() -> int:
             flags["relics"] = (["relic_1", "relic_2", "relic_3"]
                                if key == "discoverer"
                                else ([] if key == "lost" else ["relic_1"]))
+            # 「少一个人」：队达标了，但有一个人赛季结束时还困在雪里。
+            # 其余四种都是 0——这个数每季只由第 4 幕结算写一次。
+            flags["left"] = 1 if key == "missing" else 0
             flags["stages"] = stages
             c.execute("UPDATE group_run_season SET flags=?, morale=? WHERE group_id=?",
                       (json.dumps(flags, ensure_ascii=False),
                        2 if key == "detour" else 7, gid))
         return G.run_outcome(gid, "2026-12-14")
 
-    for key in ("arrive", "detour", "lost", "discoverer"):
+    for key in ("arrive", "detour", "missing", "lost", "discoverer"):
         d = outcome_for(key)
         h = runsui.outcome_page("PREVIEW", d)
         h = h.replace('url("/fonts/expedition-serif.woff2")', f'url("{font_url}")')
@@ -310,7 +313,7 @@ def main() -> int:
 
     pages = dict(pages)
     pages.update({f"end_{k}": None for k in
-                  ("arrive", "detour", "lost", "discoverer")})
+                  ("arrive", "detour", "missing", "lost", "discoverer")})
     pages["act_next"] = None
 
     exe = CHROME if Path(CHROME).is_file() else "chrome"

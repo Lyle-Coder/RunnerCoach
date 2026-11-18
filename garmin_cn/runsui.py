@@ -593,18 +593,19 @@ def run_page(token: str, message: str = "", data: dict | None = None) -> str:
 
 # ---------------------------------------------------------------- 结算
 def _ending_svg(key: str) -> str:
-    """结局面面：同一片雪地，用脚印的去向和屋里的灯光分四种结局。
+    """结局画面：同一片雪地，用脚印的去向和屋里的灯光分五种结局。
 
-    不用四张不同的插画，是因为「同一处地方、不同的到达方式」才是这个玩法
+    不用五张不同的插画，是因为「同一处地方、不同的到达方式」才是这个玩法
     的意思——玩家换一季再来，看见的还是这片雪地，变的是自己走成了什么样。
     """
     cabin = ('<rect x="262" y="74" width="66" height="38" rx="2" fill="#1B2739"'
              ' stroke="rgba(220,231,245,.28)" stroke-width="1"/>'
              '<path d="M256 74 l39 -22 l39 22 z" fill="#151F2E"'
              ' stroke="rgba(220,231,245,.3)" stroke-width="1" stroke-linejoin="round"/>')
-    # 窗：唯一的暖光。四结局里只有「抵达」和「发现者」亮着
+    # 窗：唯一的暖光。「少一个人」也亮着——屋是到了的，只是人没全；
+    # 灯亮着才是这件事难受的地方。真正熄灯的只有「没走完」。
     lit = ('<rect x="290" y="88" width="11" height="9" fill="#C98B4B" opacity=".9"/>'
-           if key in ("arrive", "discoverer") else
+           if key in ("arrive", "discoverer", "missing") else
            '<rect x="290" y="88" width="11" height="9" fill="#0B111B"'
            ' stroke="rgba(220,231,245,.2)" stroke-width=".8"/>')
 
@@ -644,6 +645,16 @@ def _ending_svg(key: str) -> str:
         prints.append('<path d="M158 111 L166 96 L180 104 L186 111 Z"'
                       ' fill="#1B2739" stroke="rgba(220,231,245,.24)"'
                       ' stroke-width="1" stroke-linejoin="round"/>')
+    elif key == "missing":
+        # 一串脚印到了门口，另一串在半路偏出去、越走越淡，断在雪里。
+        # 断口不能画成地面下的黑影（最早那版画成了雪堆压在基线下面，
+        # 看着像一块脏土），应该是往雪里越走越淡，最后一团浅雪堆。
+        for i in range(12):
+            prints.append(foot(26 + i * 16, 107 - i * 1.2, 0.66))
+        for i in range(6):
+            prints.append(foot(40 + i * 15, 104 - i * 5.4, 0.5 - i * 0.075))
+        prints.append('<ellipse cx="120" cy="72" rx="13" ry="3.4"'
+                      ' fill="#DCE7F5" opacity=".13"/>')
     else:  # discoverer
         for i in range(12):
             prints.append(foot(24 + i * 17, 106 - i * 1.5, 0.5 + i * 0.035))
