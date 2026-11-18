@@ -158,7 +158,7 @@ def groups_page(token: str, message: str = "") -> str:
 
 
 # ---------------------------------------------------------------- 组详情
-def group_page(token: str, gid: int, message: str = "") -> str:
+def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> str:
     from . import group as G
 
     today = dt.date.today().isoformat()
@@ -175,17 +175,22 @@ def group_page(token: str, gid: int, message: str = "") -> str:
     is_admin = role in ("owner", "admin")
     my_share = (g.get("me") or {}).get("share") or "summary"
 
-    b = G.board(gid, "week", today)
+    b = G.board(gid, rng, today)
     cl = G.challenge_list(gid, today)
     total_m = (b.get("summary") or {}).get("total_distance_m") or 0
 
-    # 本周榜
+    # 本周榜。「组长」跟着名字走——以前单开一个「成员」区块专门说这件事，
+    # 而成员就是榜上这些人，等于同一批名字排两遍。
+    owner_alias = next((m.get("alias") for m in (g.get("members") or [])
+                        if m.get("role") == "owner"), "")
     rank_rows = ""
     for i, x in enumerate(b.get("rows") or [], 1):
         cls = "rank me" if x.get("is_me") else "rank"
         name = esc(x.get("alias"))
         if x.get("is_me"):
             name += '<span class="sub">我</span>'
+        if owner_alias and x.get("alias") == owner_alias and not x.get("is_me"):
+            name += '<span class="sub">组长</span>'
         days = int(x.get("days") or 0)
         rank_rows += (f'<div class="{cls}"><span class="no">{i}</span>'
                       f'<span class="nm">{name}<span class="sub">{days} 天</span></span>'
@@ -238,51 +243,56 @@ def group_page(token: str, gid: int, message: str = "") -> str:
                      '<div class="pager"><button class="btn" type="submit">建赛事</button></div>'
                      '</form>')
 
-    # 成员
-    mem_rows = ""
-    for m in (g.get("members") or []):
-        r2 = {"owner": "组长", "admin": "管理员"}.get(m.get("role") or "", "")
-        tail = r2 or ("未共享" if m.get("share") != "summary" else "")
-        mem_rows += (f'<div class="rank"><span class="no"></span>'
-                     f'<span class="nm">{esc(m.get("alias"))}'
-                     f'<span class="sub">{esc(tail)}</span></span></div>')
+    # 成员不再单开一块：榜上就是成员。「另有 N 人关闭了共享」已经跟在
+    # 榜单行后面（rank_rows 里），这里不再重复一遍。
 
-    # 我 / 管理
+    # 设置：一行一项，不再是一条注释 + 一个按钮 + 一圈边框。
     my_alias = (g.get("me") or {}).get("alias") or ""
     mine = (f'<form action="/__group/{gid}/alias" method="post">{_tok(token)}'
-            '<div class="kvline"><span>我的昵称</span><b>'
+            '<div class="setrow"><span>昵称</span>'
             f'<input type="text" name="alias" maxlength="16" value="{esc(my_alias)}" '
-            'placeholder="组里怎么叫你"></b></div>'
-            '<p class="note">只在这个组里显示，换个组可以叫别的名字。</p>'
-            '<div class="pager"><button class="btn" type="submit">改昵称</button></div></form>'
+            'placeholder="组里怎么叫你" aria-label="组内昵称">'
+            '<button class="btn sm" type="submit">改</button></div></form>'
             f'<form action="/__group/{gid}/share" method="post">{_tok(token)}'
-            '<div class="kvline"><span>我的共享</span><b>'
-            f'<select name="share">'
+            '<div class="setrow"><span>共享</span>'
+            '<select name="share" aria-label="共享档位">'
             f'<option value="summary"{" selected" if my_share == "summary" else ""}>共享里程</option>'
             f'<option value="off"{" selected" if my_share == "off" else ""}>不共享</option>'
-            '</select></b></div>'
-            '<p class="note">关掉之后立刻停止上报，也不会出现在榜上。'
-            '已经传上去的会被新的一批覆盖掉。</p>'
-            '<div class="pager"><button class="btn" type="submit">保存</button></div>'
-            f'</form>'
+            '</select>'
+            '<button class="btn sm" type="submit">存</button></div></form>'
             f'<form action="/__group/{gid}/report" method="post">{_tok(token)}'
-            '<div class="pager"><button class="btn" type="submit">立即上报一次</button></div>'
-            '</form>')
+            '<div class="setrow"><span>上报</span>'
+            '<span class="note" style="flex:1 1 auto;margin:0">同步时会自动上报，'
+            '这里是不想等的时候用</span>'
+            '<button class="btn sm" type="submit">立即</button></div></form>')
 
-    admin_rows = ""
+    # 管理折叠：邀请码、换码、退出都是低频动作，默认收起。
+    admin_body = ""
     if is_admin and g.get("invite_code"):
-        admin_rows += (f'<div class="kvline"><span>邀请码</span>'
+        admin_body += (f'<div class="kvline"><span>邀请码</span>'
                        f'<b>{esc(g["invite_code"])}</b></div>')
-    admin_actions = (f'<form action="/__group/{gid}/rotate" method="post">{_tok(token)}'
-                     '<div class="pager"><button class="btn" type="submit">换邀请码</button></div>'
-                     '</form>') if is_admin else ""
-    leave_btn = (f'<form action="/__group/{gid}/leave" method="post">{_tok(token)}'
-                 '<div class="pager"><button class="btn" type="submit">退出小组</button></div>'
-                 '</form>') if role != "owner" else (
-        '<p class="note">你是组长。要先转让给别人，或者解散这个组。</p>')
+    admin_body += '<div class="pager">'
+    if is_admin:
+        admin_body += (f'<form action="/__group/{gid}/rotate" method="post">{_tok(token)}'
+                       '<button class="btn sm" type="submit">换邀请码</button></form>')
+    if role != "owner":
+        admin_body += (f'<form action="/__group/{gid}/leave" method="post">{_tok(token)}'
+                       '<button class="btn sm" type="submit">退出小组</button></form>')
+    admin_body += '</div>'
+    if role == "owner":
+        admin_body += '<p class="note">你是组长。要先转让给别人，或者解散这个组。</p>'
+    admin_fold = ('<details class="fold"><summary>邀请码与管理'
+                  '<span class="fx">›</span></summary>' + admin_body + '</details>')
+
+    # 建赛事也是折叠：一个月用一次的表单不该常驻占掉半屏。
+    chal_fold = ""
+    if chal_form:
+        chal_fold = ('<details class="fold"><summary>建一个赛事'
+                     '<span class="fx">›</span></summary>' + chal_form + '</details>')
 
     chips = (f'<span class="chip">{int(g.get("member_count") or 0)} 人</span>'
-             f'<span class="chip">{_km(total_m)} km 本周</span>')
+             f'<span class="chip">{_km(total_m)} km '
+             + ("本月" if rng == "month" else "本周") + '</span>')
 
     # 远征入口。放在榜单之前：榜单是每天看的，远征是这一季的进度，
     # 两者都不该埋在页面底部。只做入口不拉 state——组详情页要秒开。
@@ -291,17 +301,19 @@ def group_page(token: str, gid: int, message: str = "") -> str:
              '<div class="gmeta">这一季的路</div>'
              '<div class="chev">›</div></a></div>')
 
+    # 月榜/周榜互切。服务端一直支持 range=month，只是页面以前不读这个参数，
+    # 入口就被写死成关闭（`if False`）——那是死开关，不是功能。
+    other = "month" if rng == "week" else "week"
+    more = ("月榜" if other == "month" else "周榜", f"/groups/{gid}?range={other}")
+
     body = (msg
             + sec("远征", trail)
-            + sec("本周榜", '<div class="card">' + rank_rows + '</div>',
-                  more=("月榜", f"/groups/{gid}?range=month") if False else "")
-            + sec("赛事", '<div class="card">' + ch_rows + '</div>'
-                  + ('<div class="card" style="margin-top:10px">' + chal_form + '</div>'
-                     if chal_form else ""))
-            + sec("成员", '<div class="card">' + mem_rows + '</div>')
-            + sec("我的", '<div class="card">' + mine + '</div>')
-            + sec("管理", '<div class="card">' + (admin_rows or '<p class="note">只有组长和管理员能看到邀请码。</p>')
-                  + leave_btn + '</div>' + admin_actions))
+            + sec("月榜" if rng == "month" else "本周榜",
+                  '<div class="flat">' + rank_rows + '</div>',
+                  more=more)
+            + sec("赛事", '<div class="flat">' + ch_rows + '</div>' + chal_fold)
+            + sec("设置", '<div class="flat">' + mine + '</div>')
+            + sec("管理", admin_fold))
     return page("GROUP", g.get("name") or "小组",
                 f'{int(g.get("member_count") or 0)} 人 · '
                 + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),

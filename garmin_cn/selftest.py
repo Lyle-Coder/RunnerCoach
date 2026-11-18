@@ -1178,6 +1178,56 @@ def run() -> int:
         "设置页没把「平台额度」收起来"
     assert "platform_quota" in _U.JS, "界面没读额度开关"
 
+    # 组页的版式回归：数据块不许再套一圈卡、低频表单必须折叠、
+    # 成员不许和榜单排两遍。这些全是「改一次就会慢慢长回去」的东西，
+    # 所以在这里渲染一次真实页面来守（假数据换掉联网的三个函数）。
+    from garmin_cn import group as _GP
+    from garmin_cn import groupui as _GU
+
+    _gd, _gb, _gc = _GP.detail, _GP.board, _GP.challenge_list
+
+    def _fake_detail(_gid):
+        return {"ok": True, "group": {
+            "id": 1, "name": "测试队", "intro": "", "owner_id": 1,
+            "max_members": 20, "member_count": 2, "created_at": 0,
+            "role": "owner", "invite_code": "ABCD2345",
+            "me": {"alias": "我", "share": "summary"},
+            "members": [{"user_id": 1, "alias": "我", "role": "owner",
+                         "share": "summary", "is_me": True},
+                        {"user_id": 2, "alias": "队友", "role": "member",
+                         "share": "summary", "is_me": False}]}}
+
+    try:
+        _GP.detail = _fake_detail
+        _GP.board = lambda gid, rng="week", today=None: {
+            "ok": True, "range": rng, "rows": [
+                {"alias": "队友", "is_me": False, "distance_m": 12000,
+                 "days": 3, "acts": 3},
+                {"alias": "我", "is_me": True, "distance_m": 9000,
+                 "days": 2, "acts": 2}],
+            "hidden": 0,
+            "summary": {"members": 2, "shown": 2, "hidden": 0,
+                        "total_distance_m": 21000}}
+        _GP.challenge_list = lambda gid, today=None: {"ok": True, "challenges": []}
+        _gh = _GU.group_page("TOK", 1)
+    finally:
+        _GP.detail, _GP.board, _GP.challenge_list = _gd, _gb, _gc
+
+    # 榜单/赛事/设置三块直接铺在页面上，不再各发一个盒子
+    assert 'class="flat"' in _gh, "组页又给数据块套上卡片了"
+    assert _gh.count('class="flat"') >= 3, "数据块没有改用无框样式"
+    # 低频表单折叠：建赛事、管理
+    assert "建一个赛事" in _gh and "<details" in _gh, "建赛事表单又常驻展开了"
+    assert "邀请码与管理" in _gh, "管理区没折叠起来"
+    assert "<details class=\"fold\" open" not in _gh, "折叠块默认就展开了"
+    # 成员不许和榜单排两遍：榜单里有名字，就不该再有「成员」区块
+    assert "sec-head\"><h2>成员" not in _gh, "成员又单独占了一块（和榜单重复）"
+    # 月榜入口必须是真链接，不是 `if False` 的死开关
+    assert "?range=month" in _gh, "月榜入口又变成死开关了"
+    # 昵称能在页面上直接改
+    assert "/alias" in _gh and "我的昵称" not in _gh, "昵称入口不在设置行里"
+    assert ">昵称<" in _gh, "设置区没有昵称那一行"
+
     # 无域名部署：自签证书靠「把那一张加进信任链」生效，不是关校验。
     # 没有证书时必须是 no-op——用公共 CA 的部署不该被这段影响。
     from garmin_cn import tlstrust as _TLS
