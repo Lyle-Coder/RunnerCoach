@@ -1182,6 +1182,26 @@ def run() -> int:
         "设置页没把「平台额度」收起来"
     assert "platform_quota" in _U.JS, "界面没读额度开关"
 
+    # 诊断日志：能清空，而且重复清不报错。清空是对「老噪音淹掉真问题」的
+    # 唯一解法——日志是 append-only 的，代码里删掉的日志行不会自己消失。
+    from garmin_cn import diag as _DG
+    from garmin_cn import appapi as _AA
+    _old_dpath = _DG.log_path
+    _dhome = Path(tempfile.mkdtemp())
+    _dlog = _dhome / "diag.log"
+    try:
+        _DG.log_path = lambda: _dlog
+        _DG.log_exc("test", "第一条")
+        assert _dlog.is_file() and "第一条" in _dlog.read_text(encoding="utf-8")
+        _r = _DG.clear()
+        assert _r.get("ok") and not _dlog.exists(), f"没清掉：{_r}"
+        _r2 = _DG.clear()
+        assert _r2.get("ok") and _r2.get("bytes") == 0, f"重复清空报错：{_r2}"
+        assert "diag_clear" in _AA._API, "diag_clear 没进桥的白名单，Kotlin 调不到"
+    finally:
+        _DG.log_path = _old_dpath
+        shutil.rmtree(_dhome, ignore_errors=True)
+
     # 代码包（覆盖式更新）：没有包时必须是 no-op，有包时要把目录挂到
     # garmin_cn.__path__ 最前面，而且用完能还原——这个 Package 对象整个进程
     # 只有一份，测试改坏了后面所有页面都会从临时目录导入。

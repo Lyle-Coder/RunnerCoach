@@ -45,6 +45,24 @@ def log_exc(scope: str, exc: BaseException | str) -> None:
         pass
 
 
+def clear() -> dict:
+    """清空日志。返回删掉了多少字节，好在界面上说一句「清了多少」。
+
+    直接删文件而不是写空：日志是 append-only 的，删掉之后下次写入会重建，
+    不需要额外处理权限或残留的半行。删不掉也不抛——清日志失败不该变成
+    一个新的错误。
+    """
+    p = log_path()
+    size = 0
+    try:
+        if p.is_file():
+            size = p.stat().st_size
+            p.unlink()
+    except OSError:
+        return {"ok": False, "error": "删不掉（可能被占用）", "bytes": size}
+    return {"ok": True, "bytes": size}
+
+
 def read_text(lines: int = 200) -> str:
     p = log_path()
     if not p.is_file():
