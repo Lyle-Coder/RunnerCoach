@@ -325,6 +325,8 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .grow{display:flex;align-items:center;gap:10px;padding:11px 0;
   border-bottom:1px solid var(--line2);color:inherit;text-decoration:none}
 .grow:last-child{border-bottom:0}
+/* 组名后面的角色小标签（组长/成员）：不给样式会直接粘成名的一部分 */
+.grow .gname .sub{font-size:11px;font-weight:400;color:var(--faint);margin-left:6px}
 .grow .gname{flex:1 1 auto;min-width:0;font-size:13.5px;font-weight:600;color:var(--ink);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .grow .gmeta{flex:0 0 auto;font-size:11px;color:var(--muted);text-align:right;line-height:1.4}

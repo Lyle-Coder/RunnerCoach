@@ -227,10 +227,19 @@ def _month(today: dt.date) -> tuple[dt.date, dt.date]:
     return first, nxt - dt.timedelta(days=1)
 
 
-def _clean_alias(v, phone: str = "") -> str:
+def _clean_alias(v, phone: str = "", fallback: str = "") -> str:
+    """组内昵称。空值时按「账号昵称 → 打码账号 → 跑者」逐级兜底。
+
+    账号昵称排在最前，是因为同一个人本来就叫那个名字；让他每建一个组都
+    重新想一次，只会得到一堆「aa」「111」。组内仍然可以改（那是另一回事，
+    同一个账号在不同组确实可能想叫不同名字）。
+    """
     s = str(v or "").strip()[:16]
     if s:
         return s
+    f = str(fallback or "").strip()[:16]
+    if f:
+        return f
     p = str(phone or "")
     if len(p) >= 7:
         return p[:3] + "****" + p[-4:]
@@ -346,7 +355,8 @@ def api_create(me, body: dict) -> dict:
         raise GroupError(400, "人数上限要是整数")
     if not MAX_MEMBERS_MIN <= cap <= MAX_MEMBERS_MAX:
         raise GroupError(400, f"人数上限 {MAX_MEMBERS_MIN}–{MAX_MEMBERS_MAX}")
-    alias = _clean_alias(body.get("alias"), me["phone"])
+    alias = _clean_alias(body.get("alias"), me["phone"],
+                         me["nickname"] if "nickname" in me.keys() else "")
 
     _rate_limit(f"u{uid}", "create", 3, 86400)
     with db() as c:
@@ -403,7 +413,8 @@ def api_join(me, body: dict, ip: str) -> dict:
         if n >= MAX_GROUPS_PER_USER:
             raise GroupError(409, f"最多同时加入 {MAX_GROUPS_PER_USER} 个组")
 
-        alias = _clean_alias(body.get("alias"), me["phone"])
+        alias = _clean_alias(body.get("alias"), me["phone"],
+                             me["nickname"] if "nickname" in me.keys() else "")
         if m:
             c.execute("UPDATE group_members SET status='active', alias=?, joined_at=? "
                       "WHERE group_id=? AND user_id=?", (alias, _now(), gid, uid))
@@ -440,6 +451,25 @@ def api_me_update(me, gid: int, body: dict) -> dict:
     return {"ok": True, "alias": alias, "changed": True}
 
 
+def _week_rank(c, gid: int, uid: int) -> dict | None:
+    """我在这个组本周排第几。列表页要「一眼看到排名」，不点进去也算得出来。
+
+    只看本周有里程的人：一个人本周还没跑，不该被算成「最后一名」，
+    而是「本周还没有记录」。
+    """
+    wf, wt = _week(_today())
+    rows = c.execute(
+        "SELECT user_id, SUM(distance_m) m FROM group_daily"
+        " WHERE group_id=? AND date BETWEEN ? AND ? GROUP BY user_id",
+        (gid, wf.isoformat(), wt.isoformat())).fetchall()
+    km = {int(r["user_id"]): float(r["m"] or 0) / 1000.0 for r in rows}
+    mine = round(km.get(uid, 0.0), 1)
+    if mine <= 0:
+        return None
+    rank = 1 + sum(1 for v in km.values() if v > mine)
+    return {"rank": rank, "total": len(km), "km": mine}
+
+
 def api_list(me) -> dict:
     uid = int(me["user_id"])
     with db() as c:
@@ -456,6 +486,8 @@ def api_list(me) -> dict:
             g = _group_brief(r, r["my_role"], r["n"])
             if r["my_role"] in ("owner", "admin"):
                 g["invite_code"] = r["invite_code"]
+            # 本周名次：列表页直接显示，不用点进去才知道自己第几
+            g["week"] = _week_rank(c, int(r["id"]), uid)
             out.append(g)
     return {"ok": True, "groups": out}
 

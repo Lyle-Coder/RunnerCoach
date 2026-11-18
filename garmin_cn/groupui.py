@@ -39,11 +39,22 @@ def account_page(token: str, message: str = "", account: str = "",
     st = AC.state()
     msg = _msg(message)
     if st["logged_in"]:
+        _me = AC.me()
+        _nick = str((_me or {}).get("nickname") or "") if _me.get("ok") else ""
         body = (msg
                 + sec("当前账号", '<div class="card">'
                       f'<div class="kvline"><span>账号</span><b>{esc(st["label"] or "已登录")}</b></div>'
                       '<p class="note">令牌只存在这台手机里。换手机重新登录就能找回组和榜单，'
                       '不需要备份什么。</p></div>')
+                # 账号昵称是建组/入组时的默认名字，在这里改一次就够
+                + sec("昵称", '<div class="flat">'
+                      f'<form action="/__account/nickname" method="post">{_tok(token)}'
+                      '<div class="setrow"><span>昵称</span>'
+                      f'<input type="text" name="nickname" maxlength="16" value="{esc(_nick)}" '
+                      'placeholder="榜上显示的名字" aria-label="账号昵称">'
+                      '<button class="btn sm" type="submit">改</button></div></form>'
+                      '<div class="tinyline">建组、入组时默认用它；组里还可以单独改。</div>'
+                      '</div>')
                 + f'<form action="/__account/logout" method="post">{_tok(token)}'
                   '<div class="pager"><button class="btn" type="submit">退出登录</button></div></form>')
         return page("ACCOUNT", "账号", "已登录", body,
@@ -70,6 +81,12 @@ def account_page(token: str, message: str = "", account: str = "",
                   '<div class="kvline"><span>验证码</span><b>'
                   '<input type="text" name="code" inputmode="numeric" maxlength="6" '
                   'placeholder="6 位数字" autocomplete="one-time-code">'
+                  '</b></div>'
+                  # 昵称放在这里而不是建组时问：一个人只有一个名字，
+                  # 每建一个组都重新填一次，只会得到「aa」「111」这种。
+                  '<div class="kvline"><span>昵称</span><b>'
+                  '<input type="text" name="nickname" maxlength="16" '
+                  'placeholder="榜上显示的名字（首次注册用）">'
                   '</b></div></div>'
                   + tip +
                   '<div class="pager"><button class="btn primary" type="submit">登录</button></div>'
@@ -113,12 +130,28 @@ def groups_page(token: str, message: str = "") -> str:
                     back=("返回我的", "/me"))
 
     items = r.get("groups") or []
+    # 只有一个组就直接进详情：点「小组」最想看的是排名，而不是一行组名。
+    # 组多了才需要「先选哪个」这一步，那时列表本身就有意义。
+    if len(items) == 1:
+        try:
+            return group_page(token, int(items[0]["id"]))
+        except Exception:      # noqa: BLE001 - 详情页挂了也要能回到列表
+            pass
     rows = ""
     for g in items:
         role = {"owner": "组长", "admin": "管理员"}.get(g.get("role") or "", "成员")
+        # 名次优先于人数：点「小组」想知道的是「我在组里怎么样」，
+        # 而不是这个组有几口人。人数退到括号里。
+        wk = g.get("week") or {}
+        if wk.get("rank"):
+            meta = (f'本周第 {int(wk["rank"])}/{int(wk["total"])} 名'
+                    f' · {float(wk["km"]):g} km')
+        else:
+            meta = f'本周还没有里程 · {int(g.get("member_count") or 0)} 人'
         rows += (f'<a class="grow" href="/groups/{g["id"]}">'
-                 f'<span class="gname">{esc(g.get("name"))}</span>'
-                 f'<span class="gmeta">{int(g.get("member_count") or 0)} 人 · {esc(role)}</span>'
+                 f'<span class="gname">{esc(g.get("name"))}'
+                 f'<span class="sub">{esc(role)}</span></span>'
+                 f'<span class="gmeta">{meta}</span>'
                  '<span class="chev">›</span></a>')
     if not rows:
         rows = '<p class="note">还没有加入小组。自己建一个，或者拿邀请码加入。</p>'
@@ -148,10 +181,19 @@ def groups_page(token: str, message: str = "") -> str:
                    '</form>')
 
     chips = "".join([f'<span class="chip">{len(items)} 个组</span>']) if items else ""
-    body = (msg
-            + sec("我的小组", '<div class="card">' + rows + '</div>')
-            + sec("加入小组", '<div class="card">' + join_form + '</div>')
-            + sec("创建小组", '<div class="card">' + create_form + '</div>'))
+    if items:
+        # 已经有组的人，建组/加入是低频动作：折成一行放在底部，
+        # 别让它和「我的小组」抢版面。
+        body = (msg
+                + sec("我的小组", '<div class="card">' + rows + '</div>')
+                + '<details class="fold"><summary>再加入一个，或者自己建一个'
+                  '<span class="fx">›</span></summary>'
+                  + '<div class="flat">' + join_form + create_form + '</div></details>')
+    else:
+        # 一个组都没有：这两个表单就是这一页的全部意义，平铺出来
+        body = (msg
+                + sec("加入小组", '<div class="card">' + join_form + '</div>')
+                + sec("创建小组", '<div class="card">' + create_form + '</div>'))
     return page("GROUP", "训练小组", "本周榜只在组内可见", body, chips,
                 foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
                 back=("返回我的", "/me"))

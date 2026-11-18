@@ -67,10 +67,13 @@ def req(method: str, path: str, body=None, token: str = ""):
         return r.status, {"_raw": raw}
 
 
-def login(email: str) -> str:
+def login(email: str, nickname: str = "") -> str:
     st, r = req("POST", "/v1/sms/send", {"account": email})
     assert st == 200 and r.get("dev_code"), f"验证码发送失败：{st} {r}"
-    st, r2 = req("POST", "/v1/auth", {"account": email, "code": r["dev_code"]})
+    body = {"account": email, "code": r["dev_code"]}
+    if nickname:
+        body["nickname"] = nickname
+    st, r2 = req("POST", "/v1/auth", body)
     assert st == 200 and r2.get("token"), f"登录失败：{st} {r2}"
     return r2["token"]
 
@@ -411,6 +414,38 @@ def main() -> int:
     st, r = req("GET", "/v1/group/99999/home", None, a)
     check("home 对不存在的组不 500（各块自己报错）",
           st in (200, 403, 404) and isinstance(r, dict), f"{st} {r}")
+
+    # ---------------- 账号昵称
+    print("\n12. 账号昵称")
+    _nick_mail = "nick_user@test.local"
+    _nick_tok = login(_nick_mail, nickname="阿夜")
+    st, r = req("GET", "/v1/me", None, _nick_tok)
+    check("注册时填的昵称被保存", st == 200 and r.get("nickname") == "阿夜",
+          f"{st} {r.get('nickname')}")
+
+    # 老账号再登录：传了昵称也不能把已有名字盖掉（登录不等于改名）
+    # 发码有 60 秒限频（看 sms_log），测试里清掉这条记录再发，不要去改生产逻辑
+    with app.db() as _c:
+        _c.execute("DELETE FROM sms_log WHERE phone=?", (_nick_mail,))
+    _again = login(_nick_mail, nickname="另一个名字")
+    st, r = req("GET", "/v1/me", None, _again)
+    check("老账号登录不会覆盖已有昵称", r.get("nickname") == "阿夜", str(r.get("nickname")))
+
+    st, r = req("POST", "/v1/me/nickname", {"nickname": "夜里跑的那个"}, _again)
+    check("可以改账号昵称", st == 200 and r.get("nickname") == "夜里跑的那个", f"{st} {r}")
+    st, r = req("POST", "/v1/me/nickname", {"nickname": ""}, _again)
+    check("空昵称被拒（400）", st == 400, f"{st} {r}")
+
+    # 建组时不填昵称 → 用账号昵称，而不是「138****0000」
+    st, r = req("POST", "/v1/group/create",
+                {"name": "昵称兜底组", "max_members": 10}, _again)
+    _gid = (r.get("group") or {}).get("id")
+    check("建组不填昵称时用账号昵称",
+          st == 200 and bool(_gid), f"{st} {r}")
+    if _gid:
+        st, r = req("GET", f"/v1/group/{_gid}", None, _again)
+        _mine = [m["alias"] for m in r["group"]["members"] if m.get("is_me")]
+        check("组内默认名 = 账号昵称", _mine == ["夜里跑的那个"], str(_mine))
 
     # ---------------- 汇总
     print(f"\n通过 {ok} 项，失败 {fail} 项")

@@ -99,9 +99,6 @@ class MainActivity : Activity() {
     private lateinit var bar: ProgressBar
     private lateinit var pull: PullRefreshLayout
     private lateinit var subtitle: TextView
-    private lateinit var groupBtn: TextView
-    /** 当前页面是不是小组那一块：顶栏入口据此高亮，跟底部 tab 同一套语义。 */
-    private var onGroupPage = false
     private lateinit var secrets: Secrets
 
     private var port = 0
@@ -213,29 +210,9 @@ class MainActivity : Activity() {
         }
         titles.addView(subtitle)
         toolbar.addView(titles, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        // 小组入口放顶栏：它是主打功能，但又不该占掉底部第 5 个 tab 的位置
-        // （底部是「每天要看的东西」，小组是「一天里想进去看看的」）。
-        // 顶栏这个位置一直空着，用它比在「我的」里埋一格更像入口。
-        groupBtn = TextView(this).apply {
-            text = "小组"
-            textSize = 12f
-            setTextColor(0xFF8CB6E8.toInt())
-            gravity = Gravity.CENTER
-            isClickable = true
-            isFocusable = true
-            setPadding(dp(11), 0, dp(11), 0)
-            background = GradientDrawable().apply {
-                cornerRadius = dp(15).toFloat()
-                setColor(0x1F3B82F6)
-                setStroke(dp(1), 0x4D60A5FA)
-            }
-            setOnClickListener { openGroups() }
-        }
-        toolbar.addView(groupBtn, LinearLayout.LayoutParams(WRAP_CONTENT, dp(30)).apply {
-            leftMargin = dp(8)
-            rightMargin = dp(10)
-        })
-        // 顶栏不再有别的按钮：同步走今日页下拉，动作都在页面卡片里。
+        // 顶栏不放按钮：小组入口已经进了底部导航第 3 位（那里才找得到），
+        // 同步走今日页下拉，动作都在页面卡片里。
+        // 以前右上角挂过「⟳」「⋮」「小组」，和底部 tab、页内入口重复了三遍。：同步走今日页下拉，动作都在页面卡片里。
         // 以前右上角挂过「⟳」和「⋮」，和底部 tab、页内入口重复了三遍。
         chromeBars.add(toolbar)
         shell.addView(toolbar, LinearLayout.LayoutParams(MATCH_PARENT, toolH))
@@ -621,18 +598,21 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------ 底部导航
-    // 教练排第二位：它是每天要点的东西，不该比「历史」还靠后。
-    private val TAB_NAMES = arrayOf("今日", "教练", "历史", "我的")
-    private val TAB_URLS = arrayOf("/", "/ai", "/history", "/me")
+    // 顺序：今日 / 教练 / 小组 / 历史 / 我的。
+    // 小组插在教练后面：它是主打功能，而底部是「一天里会主动点进去」的地方；
+    // 之前塞在顶栏右上角做成一枚胶囊，位置既不像入口也不像按钮，用户找不到。
+    private val TAB_NAMES = arrayOf("今日", "教练", "小组", "历史", "我的")
+    private val TAB_URLS = arrayOf("/", "/ai", "/groups", "/history", "/me")
     private val TAB_ICONS = intArrayOf(
         R.drawable.ic_tab_today, R.drawable.ic_tab_coach,
-        R.drawable.ic_tab_history, R.drawable.ic_tab_me)
+        R.drawable.ic_tab_group, R.drawable.ic_tab_history, R.drawable.ic_tab_me)
 
-    // 语义化索引：顺序调过一次（教练 3→2），别再往逻辑里写裸数字
+    // 语义化索引：顺序调过两次（教练 3→2，小组插到 2），别再往逻辑里写裸数字
     private val TAB_TODAY = 0
     private val TAB_COACH = 1
-    private val TAB_HISTORY = 2
-    private val TAB_ME = 3
+    private val TAB_GROUP = 2
+    private val TAB_HISTORY = 3
+    private val TAB_ME = 4
 
     private fun buildTabBar(): LinearLayout {
         val nav = LinearLayout(this).apply {
@@ -701,30 +681,12 @@ class MainActivity : Activity() {
     }
 
     /** 页面内链接也会切分区，底部高亮跟着 URL 走，不能只认 tab 点击。 */
-    /** 顶栏「小组」：进小组列表；已经在组页时再点一下回到列表。 */
-    private fun openGroups() {
-        if (port == 0) {
-            toast("还在启动，稍等一下")
-            return
-        }
-        web.loadUrl("http://127.0.0.1:$port/groups")
-    }
-
-    private fun updateGroupBtn() {
-        if (!this::groupBtn.isInitialized) return
-        groupBtn.setTextColor(if (onGroupPage) 0xFFBFDBFE.toInt() else 0xFF8CB6E8.toInt())
-    }
-
     private fun syncTabByUrl(url: String) {
         val path = url.substringAfter(":$port", url)
-        // 小组包括列表页、组详情、远征（/run）——它们都属于「小组」这条线，
-        // 从组详情点进远征时顶栏入口应该一直亮着，否则用户会以为自己掉出来了。
-        val g = path.startsWith("/groups") || path.startsWith("/run")
-        if (g != onGroupPage) {
-            onGroupPage = g
-            updateGroupBtn()
-        }
         val t = when {
+            // 小组这条线包括列表、组详情、远征（/run）——从组详情点进远征时
+            // 底部应该停在「小组」，否则用户会以为自己掉出来了。
+            path.startsWith("/groups") || path.startsWith("/run") -> TAB_GROUP
             path.startsWith("/ai") -> TAB_COACH
             path.startsWith("/me") || path.startsWith("/files") ||
                 path.startsWith("/privacy") || path.startsWith("/sports") -> TAB_ME

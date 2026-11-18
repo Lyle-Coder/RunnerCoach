@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import inspect
 import io
 import json
 import os
@@ -1346,6 +1347,32 @@ def run() -> int:
                 "——代码包挂载后它会偏到下载目录，用户数据会「消失」")
     finally:
         shutil.rmtree(_dhome2, ignore_errors=True)
+
+    # 底部导航：小组必须是一个 tab，且排在教练后面（第 3 位）。
+    # 用户明确否掉了「顶栏右上角一枚胶囊」——那个位置既不像入口也不像按钮。
+    _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
+    assert 'arrayOf("今日", "教练", "小组", "历史", "我的")' in _kt5, \
+        "底部导航没有把「小组」放进去"
+    assert '"/groups"' in _kt5 and "TAB_GROUP = 2" in _kt5, \
+        "小组 tab 的位置或路径不对（应在教练之后、历史之前）"
+    assert "groupBtn" not in _kt5, "顶栏那个「小组」胶囊又回来了"
+    assert 'path.startsWith("/run") -> TAB_GROUP' in _kt5, \
+        "远征页没归到小组 tab，从组详情点进去会掉出这个分区"
+
+    # 组列表页：只有一个组时直接进详情——点「小组」最想看的是排名
+    from garmin_cn import groupui as _GU
+    _gsrc = inspect.getsource(_GU.groups_page)
+    assert "if len(items) == 1:" in _gsrc and "return group_page(" in _gsrc, \
+        "只有一个组时没有直接进详情页"
+    assert '<details class="fold"><summary>再加入一个' in _gsrc, \
+        "建组/加入没有折起来，会跟「我的小组」抢版面"
+
+    # 账号昵称：建组/入组的默认名字，别再让用户每组填一次
+    _asrc2 = (ROOT / "garmin_cn" / "group.py").read_text(encoding="utf-8")
+    assert "def set_alias" in _asrc2, "组内昵称接口丢了"
+    _accsrc = (ROOT / "garmin_cn" / "account.py").read_text(encoding="utf-8")
+    assert "def set_nickname" in _accsrc, "账号昵称接口缺失"
+    assert "nickname" in _accsrc, "登录没有把昵称带上（注册时要用）"
 
     # 组页的版式回归：数据块不许再套一圈卡、低频表单必须折叠、
     # 成员不许和榜单排两遍。这些全是「改一次就会慢慢长回去」的东西，
