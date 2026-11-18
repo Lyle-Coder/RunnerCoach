@@ -1123,6 +1123,11 @@ def run() -> int:
         RU.PLATE_DIR = _old2
         shutil.rmtree(_pd2, ignore_errors=True)
 
+    # 部署脚本必须是 LF：Windows 上写文件默认 CRLF，`set -eu\r` 在 Linux 上
+    # 会报 "Illegal option -"，而且只有真到服务器上才炸。这类问题不能靠记性。
+    for _sh in sorted((Path(__file__).resolve().parent.parent / "deploy").glob("*.sh")):
+        assert b"\r" not in _sh.read_bytes(), f"{_sh.name} 是 CRLF 行尾，Linux 上跑不了"
+
     # 平台额度关闭时：界面只留"自配 Key"，不给一个点了必然报错的入口。
     # 这是和服务端 AI_PROXY=off 配套的一半，改一处忘一处就会出现
     # "能点、点了 503"的尴尬。
@@ -1140,12 +1145,15 @@ def run() -> int:
     # 无域名部署：自签证书靠「把那一张加进信任链」生效，不是关校验。
     # 没有证书时必须是 no-op——用公共 CA 的部署不该被这段影响。
     from garmin_cn import tlstrust as _TLS
+    # 部署之后仓库里**会**有 content/server-ca.pem，所以"没有证书"这一态
+    # 不能靠真实文件判断，得临时指到一个不存在的路径上去。
+    _old_ca = _TLS.CA_PATH
+    _TLS.CA_PATH = Path(tempfile.mkdtemp()) / "不存在的证书.pem"
     _TLS.reset()
     _r = _TLS.install()
-    assert _r.get("ok") is False, "包里没有证书却报装好了"
+    assert _r.get("ok") is False, "没有证书却报装好了"
     assert _r.get("reason"), "没装成却没说明原因"
     _tmp_ca = Path(tempfile.mkdtemp()) / "server-ca.pem"
-    _old_ca = _TLS.CA_PATH
     try:
         _tmp_ca.write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
                            encoding="utf-8")

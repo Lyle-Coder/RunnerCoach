@@ -14,8 +14,8 @@
 朋友第一步就是面对一个空白输入框，比连不上更劝退。
 """
 
-PLATFORM_BASE = 'https://garmin-daily-dashboard.app.workbuddy.host'
-PLATFORM_SHARE_CODE = 'ORT7NXCECR'
+PLATFORM_BASE = 'https://39.106.174.153:8443'
+PLATFORM_SHARE_CODE = ''
 
 # 平台额度（充值/赠送）是否对外开放。资质办好之前是 False：
 # 界面只留"自配 API Key"，不留一个点了就报错的入口。
