@@ -388,20 +388,13 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .sline .tt{font-size:11px;color:#F5C26B;background:rgba(245,165,36,.09);
   border:1px solid rgba(245,165,36,.22);border-radius:99px;padding:1px 7px}
 /* 衫：一个小色块 + 名字。六件同时出现也不会挤，因为字号压到 10.5 */
-.sbit{display:inline-flex;align-items:center;gap:4px;font-size:11px;
+.sbit{display:inline-flex;align-items:center;gap:5px;font-size:11px;
   color:var(--muted);white-space:nowrap}
-.sbit i{width:8px;height:8px;border-radius:50%;flex:0 0 8px;
-  box-shadow:0 0 0 1px rgba(255,255,255,.16) inset}
+/* 9px 而不是 8px：圆点衫要在这一颗小点上画波点，8px 只能塞下 2×2 个红点，
+   远看和白衫没有区别；多给 1px 就能看出「白底红点」这件事。 */
+.sbit i{width:9px;height:9px;border-radius:50%;flex:0 0 9px;
+  box-shadow:0 0 0 1px rgba(255,255,255,.2) inset}
 .sline2{display:flex;flex-wrap:wrap;gap:4px 10px;padding:2px 0 8px}
-/* 「本周」那三行（目标 / 结对 / 预言）。每项自带前缀，所以间距可以给大一点，
-   让眼睛能分块读；不加边框——它不是卡片，是这一周的三个事实。 */
-.weekline{padding:2px 0 6px;gap:5px 14px}
-.weekline .sbit{color:var(--ink2)}
-/* 第一项（目标进度）独占一行：它是最常看的一行，和「结对」挤在一起时
-   「…达成   结对 阿狗…」读起来像一句话。 */
-.weekline .sbit:first-child{flex:1 0 100%}
-.weekline b{color:var(--ink);font-weight:600}
-.weekline .hit{color:var(--cyan)}
 /* Bingo 5×5。grid item 默认 min-height:auto，会被文字撑高，一行里有长任务
    时整行就会变高、格子不再方正；所以显式 min-height:0 + overflow:hidden。 */
 .bgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:2px 0 10px}
@@ -411,6 +404,69 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
   font-size:11px;line-height:1.3;color:var(--faint);letter-spacing:-.2px}
 .bcell.on{background:var(--brand-soft);border-color:rgba(59,130,246,.34);color:var(--ink)}
 .bcell.free{background:var(--cyan-soft);border-color:rgba(34,211,238,.3);color:var(--cyan)}
+/* 组内路线图。卡片贴边、图例压在下面一行——地图是主体，图例别抢高度。 */
+.gmapcard{padding:0;overflow:hidden}
+.gmap{display:block;width:100%;height:auto}
+.gmap .mapsrc{font:10px/1 -apple-system,system-ui,sans-serif;fill:rgba(232,240,251,.5)}
+.lgs{display:flex;flex-wrap:wrap;gap:6px 12px;padding:10px 12px 12px;
+  border-top:1px solid var(--line2)}
+.lgi{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--ink2)}
+.lgi i{width:9px;height:9px;border-radius:2px;flex:0 0 9px}
+.lgi b{font-weight:600;color:var(--muted)}
+/* setrow 的左侧标签默认会被 flex 压缩换行（「路线共／享」），有需要时钉住 */
+.nowrap{white-space:nowrap;flex:0 0 auto}
+/* 六件衫：一行一件。左色点 / 中榜名 / 右得主与成绩 / 下面一行小字写口径和前 2、3 名。
+   不用卡片：这是张榜单，不是六个功能入口。 */
+.shirtlist .shr{display:grid;grid-template-columns:10px 1fr auto;gap:2px 9px;
+  padding:9px 0;border-bottom:1px solid var(--line2)}
+.shirtlist .shr:last-child{border-bottom:0}
+.shr .dot{width:10px;height:10px;border-radius:50%;margin-top:3px;
+  box-shadow:0 0 0 1px rgba(255,255,255,.34), inset 0 0 0 1px rgba(0,0,0,.18)}
+/* 圆点衫：白底红点。它和白衫的色号都是白，纯色画出来是两个一模一样的小点，
+   所以按公路车赛的规矩画波点——这是唯一能在一颗 8–10px 的点上区分开的办法。 */
+/* 圆点衫：白底红点 + 一圈红边。
+   只画波点不够——9px 的点上 1px 的红点被抗锯齿冲淡成粉色，远看仍是一个白点。
+   加红边不是为了好看，是为了在 9px 这个尺寸上还能一眼和白衫分开：
+   白衫是「纯白 + 白边」，圆点衫是「白心 + 红边」。 */
+i.pd{background:#F7F9FC;
+  background-image:radial-gradient(#C6342E 1.15px, rgba(198,52,46,0) 1.3px);
+  background-size:2.9px 2.9px;background-position:.55px .55px;
+  box-shadow:0 0 0 1.4px #D9534F}
+.shr .t{font-size:13px;font-weight:600;color:var(--ink)}
+.shr .v{font-size:12px;color:var(--ink2);text-align:right;white-space:nowrap}
+.shr .v b{font-weight:600;color:var(--ink)}
+.shr .v i{font-style:normal;color:var(--muted);margin-left:5px}
+.shr .v .none{color:var(--faint);font-weight:400}
+.shr .h{grid-column:2/4;font-size:11px;color:var(--faint);line-height:1.5}
+.shr .r3{margin-left:8px}
+.shr .r3 .rest{margin-right:8px}
+/* 「本周」三行：标签固定列宽 + 内容，左对齐。
+   原来的 flex 换行里三项语序各不相同（目标…已跑…达成 / 结对…我/他…逆袭），
+   读起来像三句不相干的话。对齐成两列，扫一眼就知道哪行是什么。 */
+.wk{display:grid;grid-template-columns:24px minmax(0,1fr);gap:4px 8px;
+  padding:2px 0 8px;font-size:11px;color:var(--ink2);line-height:1.5}
+.wk .k{color:var(--faint)}
+.wk .v{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wk .v.wrap{white-space:normal;overflow:visible;display:flex;flex-wrap:wrap;
+  gap:2px 9px}
+.wk .v s{text-decoration:none;color:var(--muted);margin-left:7px}
+.wk .v b{font-weight:600;color:var(--ink)}
+.wk .v b.hit{color:var(--cyan)}
+/* 功能入口：4 列并列小图标。数据用行、功能用图标，两类东西形态不同才好扫。
+   不加卡片边框——加了就是四张大卡片，占掉一行多的高度；这里要的是「一排
+   应用图标」，主体应该是图标本身。 */
+.qgrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;
+  padding:4px 0 10px}
+.qg{display:flex;flex-direction:column;align-items:center;gap:5px;
+  padding:7px 2px 5px;border-radius:12px;text-decoration:none;min-width:0}
+.qg:active{background:rgba(59,130,246,.10)}
+.qg i{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;
+  justify-content:center;font-size:16px;font-style:normal;
+  background:linear-gradient(160deg,rgba(34,211,238,.24),rgba(59,130,246,.13));
+  color:#9BEDF9;border:1px solid rgba(34,211,238,.26);
+  box-shadow:inset 0 0 14px rgba(34,211,238,.2)}
+.qg .qn{font-size:11px;font-weight:600;color:var(--ink2);white-space:nowrap;
+  max-width:100%;overflow:hidden;text-overflow:ellipsis}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，

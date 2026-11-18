@@ -43,19 +43,25 @@ PROGRESS_MIN_PREV_KM = 10.0
 ELEV_PER_KM_MAX = 200.0
 
 # 六件衫。color 是页面上的小球色，用十六进制字符串，前端直接当 CSS 用。
+# `hint` 是「这件衫在比什么」的一句话——颜色和名字（黄衫/绿衫）本身不表意，
+# 页面上只写「黄衫 阿狗」的话，新来的人根本不知道那是里程榜。
+# `pattern` 是给「光靠颜色分不出来」的那一两件用的：圆点衫按公路车赛的规矩
+# 是白底红点，纯色画出来和白衫一模一样（#D8DEE9 vs #F2F5FA，都是白），
+# 所以让前端画波点，而不是继续调色号——调浅调深都还是两个白点。
 SHIRTS = [
     {"id": "yellow", "name": "黄衫", "title": "里程王", "field": "km",
-     "color": "#E8C43A"},
+     "color": "#E8C43A", "unit": "km", "hint": "本周跑步里程"},
     {"id": "green", "name": "绿衫", "title": "出勤王", "field": "days",
-     "color": "#3FA76A"},
+     "color": "#3FA76A", "unit": "天", "hint": "本周有运动的天数"},
     {"id": "polka", "name": "圆点衫", "title": "爬升王", "field": "elev",
-     "color": "#D8DEE9"},
+     "color": "#D8DEE9", "unit": "m", "hint": "本周累计爬升",
+     "pattern": "dots"},
     {"id": "white", "name": "白衫", "title": "进步王", "field": "progress",
-     "color": "#F2F5FA"},
+     "color": "#F2F5FA", "unit": "%", "hint": "比上周多跑了多少"},
     {"id": "red", "name": "红衫", "title": "计划完成王", "field": "plan_rate",
-     "color": "#D9534F"},
+     "color": "#D9534F", "unit": "%", "hint": "有课的日子里完成了多少"},
     {"id": "blue", "name": "蓝衫", "title": "连续王", "field": "streak",
-     "color": "#4C8DF6"},
+     "color": "#4C8DF6", "unit": "天", "hint": "本周最长连续出勤"},
 ]
 
 
@@ -64,6 +70,25 @@ def _f(v, default: float = 0.0) -> float:
         return float(v)
     except (TypeError, ValueError):
         return default
+
+
+def _fmt_val(field: str, v) -> str:
+    """衫榜上的成绩写法。单位跟着口径走，别让客户端自己猜。"""
+    if v is None:
+        return "—"
+    f = _f(v)
+    if field == "km":
+        return f"{f:.1f} km"
+    if field == "elev":
+        return f"{int(round(f))} m"
+    if field in ("days", "streak"):
+        return f"{int(round(f))} 天"
+    if field == "progress":
+        # 进步可以是负的：榜上要看得出谁在退步，不藏
+        return f"{f * 100:+.0f}%"
+    if field == "plan_rate":
+        return f"{f * 100:.0f}%"
+    return f"{f:g}"
 
 
 def streak_days(rows: list[dict]) -> int:
@@ -390,14 +415,27 @@ def build(rows_by_user: dict[int, list[dict]],
         p["title"] = title_of(int(p["rank"]), len(people),
                               int(weeks_by_user.get(int(p["user_id"]), 1)), all_active)
 
-    # 衫的得主也按名字列出来：组页那一条「黄衫 阿狗」要用
+    # 衫的得主也按名字列出来：组页那一条「黄衫 阿狗」要用。
+    # 顺带把「这件衫在比什么」和「前 3 名 + 成绩」一起给出去：客户端只拿
+    # id 和 winners 的话，页面上就只剩一排彩色小点，没人知道黄衫是里程榜。
     by_shirt = []
     for s in SHIRTS:
         uids = shirt_win.get(s["id"]) or []
+        field = s["field"]
+        ranked = sorted(
+            ((u, m.get(field)) for u, m in all_m.items() if m.get(field) is not None),
+            key=lambda x: -_f(x[1]))
+        top = [{"user_id": u, "alias": aliases.get(u, ""),
+                "text": _fmt_val(field, v)}
+               for u, v in ranked[:3]]
         by_shirt.append({"id": s["id"], "name": s["name"], "title": s["title"],
-                         "color": s["color"],
+                         "color": s["color"], "field": field,
+                         "unit": s.get("unit", ""), "hint": s.get("hint", ""),
+                         # 圆点衫靠波点区分，纯色和白衫撞车
+                         "pattern": s.get("pattern", ""),
                          "winners": [{"user_id": u, "alias": aliases.get(u, "")}
-                                     for u in uids]})
+                                     for u in uids],
+                         "top": top})
 
     return {"people": people, "shirts": by_shirt,
             "max": {"km": round(maxes["km"], 1), "days": int(maxes["days"]),

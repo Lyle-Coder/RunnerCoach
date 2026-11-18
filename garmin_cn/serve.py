@@ -192,6 +192,10 @@ class _Handler(SimpleHTTPRequestHandler):
             seg = u.path.rstrip("/").split("/")[2:]
             if len(seg) == 2 and seg[0].isdigit() and seg[1] == "bingo":
                 return self._html(groupui.bingo_page(tok, int(seg[0]), msg))
+            if len(seg) == 2 and seg[0].isdigit() and seg[1] == "map":
+                return self._html(groupui.map_page(tok, int(seg[0]), msg))
+            if len(seg) == 2 and seg[0].isdigit() and seg[1] == "shirts":
+                return self._html(groupui.shirts_page(tok, int(seg[0]), msg))
             if len(seg) == 1 and seg[0].isdigit():
                 rng = "month" if (q.get("range") or [""])[0] == "month" else "week"
                 return self._html(groupui.group_page(tok, int(seg[0]), msg, rng))
@@ -1607,6 +1611,26 @@ class _Handler(SimpleHTTPRequestHandler):
                         r = G.set_goal(gid, km, int(pred) if pred.isdigit() else None)
                         msg = (f"本周目标 {r.get('km'):g} km" if r.get("ok")
                                else (r.get("error") or "报目标失败"))
+                    elif act == "mapshare":
+                        from . import appapi as _A
+                        from .store import Store as _Store
+
+                        on = (values.get("on") or "").strip() == "1"
+                        _st = _Store(_A.DB)
+                        try:
+                            r = G.set_mapshare(gid, on, store=_st)
+                            # 刚打开就把本周已经跑过的格子推上去，不用等下次上报；
+                            # 关掉时服务端已经删干净，不用再发。
+                            if r.get("ok") and on:
+                                from . import explore as EX
+
+                                cells = EX.week_cells(_st)
+                                if cells:
+                                    G.push_cells(gid, cells)
+                        finally:
+                            _st.close()
+                        msg = ("路线共享已打开" if on else "已关闭，格子已删除") \
+                            if r.get("ok") else (r.get("error") or "设置失败")
                     elif act == "rotate":
                         r = G.rotate(gid)
                         msg = (f'新邀请码 {r["invite_code"]}' if r.get("ok")
