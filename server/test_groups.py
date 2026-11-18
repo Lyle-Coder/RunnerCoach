@@ -415,6 +415,143 @@ def main() -> int:
     check("home 对不存在的组不 500（各块自己报错）",
           st in (200, 403, 404) and isinstance(r, dict), f"{st} {r}")
 
+    # ---------------- P2：探索 / 让分赛 / 预言
+    print("\n11b. P2：探索徽章 + 让分赛 + 预言")
+
+    # 探索：一天报 80 格，应该被截到 50 并明说
+    st, r = req("POST", f"/v1/group/{gid}/report", {"days": [
+        {"date": "2026-11-17", "distance_m": 8000, "duration_s": 2400,
+         "acts": 1, "explorer": 80}]}, a)
+    check("探索格数超上限被截断并告知",
+          st == 200 and r.get("clamped_explorer") == 1, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/season?today=2026-11-18", None, a)
+    _badges = {x["user_id"]: x["cells"] for x in (r.get("explore") or {}).get("badges") or []}
+    _me_a = (r.get("me") or {})
+    check("探索徽章按 ≥5 格发，且记下格数",
+          int(_me_a.get("explorer") or 0) == 50 and _me_a.get("user_id") in _badges,
+          str(_badges))
+    check("没踩新路的人不发探索徽章",
+          int(_me_a.get("user_id")) not in []
+          and all(v >= (r.get("explore") or {}).get("min_cells", 5)
+                  for v in _badges.values()), str(_badges))
+
+    # 报目标
+    st, r = req("POST", f"/v1/group/{gid}/goal", {"km": 30, "today": "2026-11-18"}, a)
+    check("报本周目标 200", st == 200 and r.get("km") == 30.0, f"{st} {r}")
+    check("一个人报目标时不配对", r.get("pairs") == 0, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/goal", {"km": 35, "today": "2026-11-18"}, a)
+    check("周内可以改目标", st == 200 and r.get("km") == 35.0, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/goal", {"km": 0.2, "today": "2026-11-18"}, a)
+    check("目标太小被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/goal", {"km": 5000, "today": "2026-11-18"}, a)
+    check("目标太大被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/goal", {"km": "abc", "today": "2026-11-18"}, a)
+    check("目标不是数字被拒（400）", st == 400, f"{st} {r}")
+
+    # 预言的三条硬约束。uid 从组成员里认自己——/v1/me 不返回内部 id。
+    def uid_of(tok: str) -> int:
+        _st, _r = req("GET", f"/v1/group/{gid}", None, tok)
+        return int(next(m["user_id"] for m in _r["group"]["members"] if m.get("is_me")))
+
+    _uid_a, _uid_b = uid_of(a), uid_of(b)
+    st, r = req("POST", f"/v1/group/{gid}/goal",
+                {"km": 35, "predict": _uid_a, "today": "2026-11-18"}, a)
+    check("不能预测自己（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/goal",
+                {"km": 35, "predict": 99999, "today": "2026-11-18"}, a)
+    check("预测不在组里的人被拒（400）", st == 400, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/goal",
+                {"km": 35, "predict": _uid_b, "today": "2026-11-18"}, a)
+    check("对方还没报目标时不能预测他（400）", st == 400, f"{st} {r}")
+
+    # b 报目标 → 配对自动生成
+    st, r = req("POST", f"/v1/group/{gid}/goal", {"km": 20, "today": "2026-11-18"}, b)
+    check("两个人都有目标后生成对子", st == 200 and r.get("pairs") == 1, f"{st} {r}")
+
+    st, r = req("GET", f"/v1/group/{gid}/week?today=2026-11-18", None, a)
+    check("week 可读", st == 200 and r.get("ok") is True, f"{st} {r}")
+    _pairs = r.get("pairs") or []
+    check("本周一对", len(_pairs) == 1, str(_pairs))
+    if _pairs:
+        _p = _pairs[0]
+        check("目标高的当大神", _p["big"]["user_id"] == _uid_a, str(_p))
+        check("大神让分 = 自报 + 小白目标×50%",
+              _p["big"]["target"] == 45.0, str(_p["big"]))
+        check("小白按自报跑", _p["small"]["target"] == 20.0, str(_p["small"]))
+    check("week 带建议目标（给没报的人预填）",
+          isinstance((r.get("goal") or {}).get("suggest"), (int, float)), str(r.get("goal")))
+    check("week 的可猜对象不含自己、不含没报目标的人",
+          all(t["user_id"] != _uid_a for t in r.get("targets") or [])
+          and all(t["user_id"] in (_uid_b,) for t in r.get("targets") or []),
+          str(r.get("targets")))
+
+    # 现在能投预言了：a 猜 b 完不成（b 实际 29km > 目标 20km，会打脸）
+    st, r = req("POST", f"/v1/group/{gid}/goal",
+                {"km": 35, "predict": _uid_b, "today": "2026-11-18"}, a)
+    check("报目标时能同时投票", st == 200 and r.get("predict") == _uid_b, f"{st} {r}")
+
+    st, r = req("GET", f"/v1/group/{gid}/season?today=2026-11-18", None, a)
+    _rows = {p["user_id"]: p for p in r.get("people") or []}
+    check("预言结算：猜错的人不加分",
+          float(_rows[_uid_a].get("bonus") or 0) == 0.0, str(_rows[_uid_a]))
+    check("预言结算：被猜却完成的人 +3",
+          float(_rows[_uid_b].get("bonus") or 0) == 3.0, str(_rows[_uid_b]))
+    check("加分并进了总分（不是另开一栏）",
+          float(_rows[_uid_b]["score"]) >= 3.0, str(_rows[_uid_b]["score"]))
+    check("返回 bonus_max，页面不用写死 90", r.get("bonus_max") == 10.0)
+    check("返回我的目标，页面能回显", (r.get("goal") or {}).get("km") == 35.0,
+          str(r.get("goal")))
+
+    # 配对关系不因改目标而重排
+    st, r = req("POST", f"/v1/group/{gid}/goal", {"km": 40, "today": "2026-11-18"}, a)
+    st, r = req("GET", f"/v1/group/{gid}/week?today=2026-11-18", None, a)
+    check("改目标不会把对子重排（还是同一对）",
+          len(r.get("pairs") or []) == 1
+          and r["pairs"][0]["big"]["user_id"] == _uid_a, str(r.get("pairs")))
+
+    # 后报目标的人也要能配到对（不然 6 人组永远只有一对在比）
+    # 邀请码中途可能被换过，从当前组详情里取，别用最早的变量
+    _stc, _rc = req("GET", f"/v1/group/{gid}", None, a)
+    _code_now = (_rc.get("group") or {}).get("invite_code") or code
+    _tok4 = login("fourth@test.local")
+    st, r = req("POST", "/v1/group/join", {"code": _code_now, "alias": "老四"}, _tok4)
+    check("第 4 人加入", st == 200, f"{st} {r}")
+    _st4, _r4 = req("GET", f"/v1/group/{gid}", None, _tok4)
+    _uid4 = int(next(m["user_id"] for m in _r4["group"]["members"] if m.get("is_me")))
+    st, r = req("POST", f"/v1/group/{gid}/goal", {"km": 80, "today": "2026-11-18"}, _tok4)
+    check("单人报目标不会凭空配对", r.get("pairs") == 1, f"{st} {r}")
+    _tok5 = login("fifth@test.local")
+    st, r = req("POST", "/v1/group/join", {"code": _code_now, "alias": "老五"}, _tok5)
+    check("第 5 人加入", st == 200, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/goal", {"km": 50, "today": "2026-11-18"}, _tok5)
+    check("后报的两人补成第 2 对（老对子不拆）",
+          r.get("pairs") == 2, f"{st} {r}")
+
+    # 关掉共享的人不能报目标（报了也没人看得到）
+    st, r = req("POST", f"/v1/group/{gid}/share", {"share": "off"}, b)
+    st, r = req("POST", f"/v1/group/{gid}/goal", {"km": 20, "today": "2026-11-18"}, b)
+    check("关了共享报目标被拒（409）", st == 409, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/bingo?today=2026-11-18", None, b)
+    check("关了共享也看不了 Bingo（409）", st == 409, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/share", {"share": "summary"}, b)
+    check("恢复共享", st == 200, f"{st} {r}")
+
+    # Bingo 卡
+    st, r = req("GET", f"/v1/group/{gid}/bingo?today=2026-11-18", None, a)
+    check("Bingo 卡可读", st == 200 and len(r.get("cells") or []) == 25, f"{st} {r}")
+    _cells = r.get("cells") or []
+    check("中心是免费格", _cells and _cells[12]["task"] == "free", str(_cells[12:13]))
+    check("已经跑出来的格子被点亮", int(r.get("done") or 0) >= 1, str(r.get("done")))
+    _c2 = req("GET", f"/v1/group/{gid}/bingo?today=2026-11-18", None, a)[1]
+    check("同一周再拉一次，卡不变",
+          [c["task"] for c in _c2.get("cells") or []] == [c["task"] for c in _cells])
+    st, r = req("GET", f"/v1/group/{gid}/week?today=2026-11-18", None, a)
+    check("Bingo 进度并进了 week",
+          (r.get("bingo") or {}).get("total") == 25, str(r.get("bingo")))
+    st, r = req("GET", f"/v1/group/{gid}/bingo?today=2026-11-18", None, c3)
+    check("非成员看不了 Bingo（403）", st == 403, f"{st} {r}")
+
     # ---------------- 账号昵称
     print("\n12. 账号昵称")
     _nick_mail = "nick_user@test.local"

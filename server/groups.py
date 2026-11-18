@@ -59,6 +59,9 @@ DAY_DUR_MAX_S = 24 * 3600
 DAY_ACTS_MAX = 20
 DAY_ELEV_MAX = 8000          # 单日爬升 8000 m，超过直接拒（防脏数据）
 _ELEV_PER_KM_MAX = 200.0      # 爬升密度上限（m/km），日报表只能按这个截断
+# 探索徽章：单日新增格数上限。和客户端 explore.DAY_CAP 必须一致
+# （客户端封顶后再传，这里再截一次——两边都守一遍，客户端被改坏也不会脏库）。
+DAY_EXPLORER_MAX = 50
 
 CHALLENGE_MAX_DAYS = 90
 CHALLENGE_MAX_RUNNING = 3
@@ -158,6 +161,8 @@ def init_db() -> None:
           -- 当日爬升（米）。圆点衫要用；老库靠下面的 _migrate 补列，
           -- 默认 0 表示「这一版客户端还没传」，不是「这天没爬升」。
           elevation_m  INTEGER NOT NULL DEFAULT 0,
+          -- 当日新踩的 500 m 格数（探索徽章）。只有整数上来，格子 ID 留在手机。
+          explorer     INTEGER NOT NULL DEFAULT 0,
           updated_at   INTEGER NOT NULL,
           PRIMARY KEY(group_id, user_id, date)
         );
@@ -187,12 +192,47 @@ def init_db() -> None:
           ts           INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_gaudit_group ON group_audit(group_id, id);
+
+        -- 本周目标（P2 让分赛与预言的基准）。周一报一次，本周内可改，
+        -- 结算看最后一条。存 km 是因为这是给人看的数，不是里程账。
+        CREATE TABLE IF NOT EXISTS group_goal(
+          group_id   INTEGER NOT NULL,
+          user_id    INTEGER NOT NULL,
+          week_start TEXT NOT NULL,
+          km         REAL NOT NULL,
+          source     TEXT NOT NULL DEFAULT 'manual',
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(group_id, user_id, week_start)
+        );
+
+        -- 让分赛结对：一周一组关系。small 按自报跑，big 要让分。
+        CREATE TABLE IF NOT EXISTS group_pair(
+          group_id   INTEGER NOT NULL,
+          week_start TEXT NOT NULL,
+          slot       INTEGER NOT NULL,
+          small_uid  INTEGER NOT NULL,
+          big_uid    INTEGER NOT NULL,
+          PRIMARY KEY(group_id, week_start, slot)
+        );
+
+        -- 预言投票：本周猜「谁完不成」。一人一周一票，可改。
+        CREATE TABLE IF NOT EXISTS group_predict(
+          group_id   INTEGER NOT NULL,
+          week_start TEXT NOT NULL,
+          user_id    INTEGER NOT NULL,
+          target_uid INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(group_id, week_start, user_id)
+        );
         """)
         # 老库补列。SQLite 的 ADD COLUMN 支持带默认值，已有行会拿到 0；
         # 不做数据回填——0 就是「那几天还没有这个字段」，回填成别的值是编数据。
         cols = {r["name"] for r in c.execute("PRAGMA table_info(group_daily)")}
         if "elevation_m" not in cols:
             c.execute("ALTER TABLE group_daily ADD COLUMN elevation_m INTEGER"
+                      " NOT NULL DEFAULT 0")
+        if "explorer" not in cols:
+            c.execute("ALTER TABLE group_daily ADD COLUMN explorer INTEGER"
                       " NOT NULL DEFAULT 0")
 
 
@@ -577,7 +617,8 @@ def api_report(me, gid: int, body: dict) -> dict:
 
     _rate_limit(f"u{uid}", "report", 60)
     rows = []
-    clamped = 0
+    clamped_elev = 0
+    clamped_explorer = 0
     for d in days:
         if not isinstance(d, dict):
             raise GroupError(400, "days 里每一项要是对象")
@@ -594,6 +635,7 @@ def api_report(me, gid: int, body: dict) -> dict:
             dur = int(d.get("duration_s") or 0)
             acts = int(d.get("acts") or 0)
             elev = int(d.get("elevation_m") or 0)
+            expl = int(d.get("explorer") or 0)
         except (TypeError, ValueError):
             raise GroupError(400, f"{day} 的数值不合法")
         if not 0 <= dist <= DAY_DIST_MAX_M:
@@ -611,11 +653,18 @@ def api_report(me, gid: int, body: dict) -> dict:
             cap = int(dist / 1000.0 * _ELEV_PER_KM_MAX)
             if elev > cap:
                 elev = cap
-                clamped += 1
+                clamped_elev += 1
         # plan_done 三态：null = 当天没有计划 / 拿不到计划，不当成 0
         raw = d.get("plan_done", None)
         plan = None if raw is None else (1 if raw else 0)
-        rows.append((gid, uid, day, dist, dur, acts, elev, plan, _now()))
+        # 探索：负数当 0，超单日上限截断。客户端已经封顶过一遍（explore.DAY_CAP），
+        # 这里再截一次是为了「客户端被改坏也不脏库」。截断不静默，响应里报数。
+        if expl < 0:
+            expl = 0
+        if expl > DAY_EXPLORER_MAX:
+            expl = DAY_EXPLORER_MAX
+            clamped_explorer += 1
+        rows.append((gid, uid, day, dist, dur, acts, elev, expl, plan, _now()))
 
     with db() as c:
         m = _require_member(c, gid, uid)
@@ -623,29 +672,293 @@ def api_report(me, gid: int, body: dict) -> dict:
             # 关掉共享的意图就是「别再收我的数据」。写进去再藏起来是自欺欺人。
             return {"ok": True, "saved": 0, "skipped": len(rows), "share": "off"}
         c.executemany("""
-            INSERT INTO group_daily(group_id,user_id,date,distance_m,duration_s,acts,elevation_m,plan_done,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?)
+            INSERT INTO group_daily(group_id,user_id,date,distance_m,duration_s,acts,elevation_m,explorer,plan_done,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(group_id,user_id,date) DO UPDATE SET
                 distance_m=excluded.distance_m,
                 duration_s=excluded.duration_s,
                 acts=excluded.acts,
                 elevation_m=excluded.elevation_m,
+                explorer=excluded.explorer,
                 plan_done=excluded.plan_done,
                 updated_at=excluded.updated_at
         """, rows)
     out = {"ok": True, "saved": len(rows), "skipped": 0, "share": m["share_level"]}
-    if clamped:
-        # 说出来，不静默改数：客户端传了不合理的爬升，用户该知道被截了
-        out["clamped_elev"] = clamped
+    # 说出来，不静默改数：客户端传了不合理的爬升或格数，用户该知道被截了。
+    # 两个字段分开报——老字段名 clamped_elev 被客户端读过，不能改语义。
+    if clamped_elev:
+        out["clamped_elev"] = clamped_elev
+    if clamped_explorer:
+        out["clamped_explorer"] = clamped_explorer
     return out
 
 
 # ---------------------------------------------------------------- 周成绩
-def api_season(me, gid: int, query: dict) -> dict:
-    """本周的六件衫 + 赛季分 + 名次 + 称号。
+# 周目标（让分赛 / 预言的基准）。上限 1000 km 是防手滑：把「45」打成「4500」
+# 会让整周对子全废，而且这人自己还不知道。
+GOAL_MIN_KM, GOAL_MAX_KM = 1.0, 1000.0
 
-    「赛季分」目前满分 90：让分赛与预言那 10 分还没做，它们以后是往上加的
-    加分项，不是权重（见 ranking.py 顶部说明）。页面别写成 x/100。
+
+def _goals(c, gid: int, wf: dt.date) -> dict[int, float]:
+    rows = c.execute("SELECT user_id, km FROM group_goal"
+                     " WHERE group_id=? AND week_start=?", (gid, wf.isoformat())).fetchall()
+    return {int(r["user_id"]): float(r["km"]) for r in rows}
+
+
+def _suggest_goal(c, gid: int, uid: int, wf: dt.date) -> float:
+    """没报过目标时给个建议值：近 4 周周均里程 × 0.8。
+
+    为什么是 0.8：目标是拿来达成的，不是拿来吓自己的。按上周平均报，
+    状态一波动就完不成，让分赛和预言会变成「谁猜得准」的运气游戏。
+    """
+    since = (wf - dt.timedelta(days=28)).isoformat()
+    end = (wf - dt.timedelta(days=1)).isoformat()
+    r = c.execute("SELECT SUM(distance_m) m, COUNT(DISTINCT date) d FROM group_daily"
+                  " WHERE group_id=? AND user_id=? AND date BETWEEN ? AND ?",
+                  (gid, uid, since, end)).fetchone()
+    km = float(r["m"] or 0) / 1000.0
+    if km <= 0:
+        return 0.0
+    weeks = 4.0
+    return round(km / weeks * 0.8, 1)
+
+
+def _pairs(c, gid: int, wf: dt.date) -> list[dict]:
+    rows = c.execute("SELECT slot, small_uid, big_uid FROM group_pair"
+                     " WHERE group_id=? AND week_start=? ORDER BY slot",
+                     (gid, wf.isoformat())).fetchall()
+    return [{"slot": int(r["slot"]), "small_uid": int(r["small_uid"]),
+             "big_uid": int(r["big_uid"])} for r in rows]
+
+
+def _maybe_pair(c, gid: int, wf: dt.date) -> None:
+    """把这次新报到的人跟同样还没配对的人配成对，已有对子不动。
+
+    为什么不是「整组重配」：打到周三突然重排，已经领先的那对等于白打。
+    为什么不是「只配一次」：报目标是陆续发生的，只配一次的话，第一对之后
+    报进来的人永远是 solo（组里 6 个人只会有一对在比）。
+    """
+    goals = _goals(c, gid, wf)
+    if len(goals) < 2:
+        return
+    old = _pairs(c, gid, wf)
+    used: set[int] = set()
+    slot = 0
+    for p in old:
+        used |= {p["small_uid"], p["big_uid"]}
+        slot = max(slot, p["slot"])
+    rest = {u: km for u, km in goals.items() if u not in used}
+    if len(rest) < 2:
+        return
+    rows = []
+    for p in ranking.pairing(rest):
+        if "solo_uid" in p:
+            continue
+        slot += 1
+        rows.append((gid, wf.isoformat(), slot,
+                     int(p["small_uid"]), int(p["big_uid"])))
+    if rows:
+        c.executemany("INSERT OR IGNORE INTO group_pair(group_id,week_start,slot,small_uid,big_uid)"
+                      " VALUES(?,?,?,?,?)", rows)
+
+
+def api_goal(me, gid: int, body: dict) -> dict:
+    """报本周目标，顺便可以投一票预言。
+
+    一次请求干两件事，是因为它们本来就发生在同一个动作里：周一早上你
+    想「这周跑 50」，顺手就想「谁会完不成」。分成两个接口，第二个永远
+    没人点。
+    """
+    uid = int(me["user_id"])
+    today = _today(body.get("today"))
+    wf, _wt = _week(today)
+    try:
+        km = float(body.get("km"))
+    except (TypeError, ValueError):
+        raise GroupError(400, "目标要是数字，单位 km")
+    if not GOAL_MIN_KM <= km <= GOAL_MAX_KM:
+        raise GroupError(400, f"目标要在 {GOAL_MIN_KM:g}–{GOAL_MAX_KM:g} km 之间")
+
+    predict = body.get("predict")
+    with db() as c:
+        _group(c, gid)
+        m = _require_member(c, gid, uid)
+        if m["share_level"] == "off":
+            raise GroupError(409, "你关闭了共享，报目标也不会有人看到")
+        c.execute("""
+            INSERT INTO group_goal(group_id,user_id,week_start,km,source,created_at)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(group_id,user_id,week_start) DO UPDATE SET
+                km=excluded.km, created_at=excluded.created_at
+        """, (gid, uid, wf.isoformat(), km,
+              str(body.get("source") or "manual"), _now()))
+
+        if predict not in (None, "", 0):
+            try:
+                target = int(predict)
+            except (TypeError, ValueError):
+                raise GroupError(400, "预言对象不合法")
+            if target == uid:
+                # 自投是无意义的——你既知道自己跑没跑，又能自己放弃
+                raise GroupError(400, "不能预测自己")
+            tm = c.execute("SELECT 1 FROM group_members WHERE group_id=? AND user_id=?"
+                           " AND status='active'", (gid, target)).fetchone()
+            if not tm:
+                raise GroupError(400, "这个人不在组里")
+            if target not in _goals(c, gid, wf):
+                raise GroupError(400, "他还没报本周目标，没法判他完没完成")
+            c.execute("""
+                INSERT INTO group_predict(group_id,week_start,user_id,target_uid,created_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(group_id,week_start,user_id) DO UPDATE SET
+                    target_uid=excluded.target_uid, created_at=excluded.created_at
+            """, (gid, wf.isoformat(), uid, target, _now()))
+
+        _maybe_pair(c, gid, wf)
+        pairs = _pairs(c, gid, wf)
+        goals = _goals(c, gid, wf)
+        pred = c.execute("SELECT target_uid FROM group_predict"
+                         " WHERE group_id=? AND week_start=? AND user_id=?",
+                         (gid, wf.isoformat(), uid)).fetchone()
+    return {"ok": True, "week_start": wf.isoformat(), "km": round(km, 1),
+            "pairs": len(pairs), "goals": len(goals),
+            "predict": int(pred["target_uid"]) if pred else None}
+
+
+def api_week(me, gid: int, query: dict) -> dict:
+    """本周的目标、对子、预言、建议目标——组页「本周玩法」那一块要的原料。
+
+    单独一个接口而不是塞进 /home：这些数据只有组页展开「本周玩法」时才需要，
+    塞进 home 会让每次进组都多算一遍配对结算。
+    """
+    uid = int(me["user_id"])
+    today = _today((query.get("today") or [None])[0])
+    wf, wt = _week(today)
+    with db() as c:
+        _group(c, gid)
+        _require_member(c, gid, uid)
+        mem = c.execute("SELECT user_id, alias, share_level FROM group_members"
+                        " WHERE group_id=? AND status='active'", (gid,)).fetchall()
+        goals = _goals(c, gid, wf)
+        pairs_db = _pairs(c, gid, wf)
+        preds = c.execute("SELECT user_id, target_uid FROM group_predict"
+                          " WHERE group_id=? AND week_start=?",
+                          (gid, wf.isoformat())).fetchall()
+        agg = c.execute("""
+            SELECT user_id, SUM(distance_m) m FROM group_daily
+             WHERE group_id=? AND date BETWEEN ? AND ? GROUP BY user_id
+        """, (gid, wf.isoformat(), min(wt, today).isoformat())).fetchall()
+        # Bingo 要的是「我这一周的日明细」，不是合计——一半任务问的是「有一天」
+        my_rows = c.execute(
+            "SELECT date, distance_m, duration_s, acts, plan_done, explorer"
+            " FROM group_daily WHERE group_id=? AND user_id=? AND date BETWEEN ? AND ?"
+            " ORDER BY date",
+            (gid, uid, wf.isoformat(), min(wt, today).isoformat())).fetchall()
+        suggest = _suggest_goal(c, gid, uid, wf)
+    alias = {int(m["user_id"]): m["alias"] for m in mem}
+    actual = {int(r["user_id"]): round(float(r["m"] or 0) / 1000.0, 1) for r in agg}
+
+    # 落库的只有 uid 对；目标与结果要按本周 goal 现算，不能落库——
+    # 目标周内可改，落了就会和榜单对不上。
+    built = []
+    for p in pairs_db:
+        s_u, b_u = p["small_uid"], p["big_uid"]
+        s_km = float(goals.get(s_u) or 0)
+        b_km = float(goals.get(b_u) or 0)
+        gap = (b_km - s_km) / s_km if s_km > 0 else 0.0
+        even = gap < ranking.PAIR_GAP_MIN
+        b_target = b_km if even else min(b_km * ranking.BIG_CAP,
+                                         b_km + s_km * ranking.BIG_HANDICAP)
+        built.append({"slot": p["slot"],
+                      "small": {"user_id": s_u, "alias": alias.get(s_u, ""),
+                                "km": round(s_km, 1), "target": round(s_km, 1),
+                                "actual": actual.get(s_u, 0.0)},
+                      "big": {"user_id": b_u, "alias": alias.get(b_u, ""),
+                              "km": round(b_km, 1), "target": round(b_target, 1),
+                              "actual": actual.get(b_u, 0.0)},
+                      "even": even})
+    # 结果用纯函数算，和 api_season 里给分的口径必须是同一份
+    flat = [{"slot": p["slot"], "small_uid": p["small"]["user_id"],
+             "big_uid": p["big"]["user_id"],
+             "small_target": p["small"]["target"], "big_target": p["big"]["target"],
+             "even": p["even"]} for p in built]
+    res = {r["slot"]: r for r in ranking.pair_results(flat, actual)}
+    for p in built:
+        p["result"] = res[p["slot"]]["result"]
+
+    pred_map = {int(r["user_id"]): int(r["target_uid"]) for r in preds}
+    pres = ranking.prediction_result(pred_map, actual, goals)
+    my_pred = pred_map.get(uid)
+
+    # Bingo 只报个进度（几点亮 / 几条线），整张卡另外用 /bingo 拉。
+    # 组页要的就是一行字，没必要每次进组都传 25 个格子。
+    import bingo as B
+
+    _my_rows = [dict(r) for r in my_rows]
+    _bm = ranking.metrics(_my_rows, [])
+    _bcard = B.card_for(_my_rows, _bm, gid, uid, wf.isoformat())
+
+    return {"ok": True, "from": wf.isoformat(), "to": wt.isoformat(),
+            "bingo": {"done": _bcard["done"], "total": _bcard["total"],
+                      "lines": _bcard["line_count"]},
+            "goal": {"km": goals.get(uid), "suggest": suggest,
+                     "reported": uid in goals},
+            "pairs": built,
+            "predict": {"mine": my_pred,
+                        "rows": [dict(r, alias=alias.get(int(r["user_id"]), ""),
+                                      target_alias=alias.get(int(r["target_uid"]), ""))
+                                 for r in pres["rows"]]},
+            "bonus": pres["bonus"],
+            "goal_rows": [{"user_id": u, "alias": alias.get(u, ""), "km": round(k, 1)}
+                          for u, k in sorted(goals.items(), key=lambda x: -x[1])],
+            "targets": [{"user_id": int(m["user_id"]), "alias": m["alias"]}
+                        for m in mem
+                        if int(m["user_id"]) != uid
+                        and (m["share_level"] or "summary") == "summary"
+                        and int(m["user_id"]) in goals]}
+
+
+def api_bingo(me, gid: int, query: dict) -> dict:
+    """我的本周 Bingo 卡（25 格 + 连线）。
+
+    不落库：卡由 (组, 人, 周一) 的种子确定性生成，同一周每次请求算出来一样。
+    25 行/人/周 的表不值得为这一点随机性去维护。
+    """
+    uid = int(me["user_id"])
+    today = _today((query.get("today") or [None])[0])
+    wf, wt = _week(today)
+    pf, pt = wf - dt.timedelta(days=7), wf - dt.timedelta(days=1)
+    with db() as c:
+        _group(c, gid)
+        m = _require_member(c, gid, uid)
+        if m["share_level"] == "off":
+            raise GroupError(409, "你关闭了共享，Bingo 也不参与了")
+        rows = c.execute(
+            "SELECT user_id, date, distance_m, duration_s, acts, plan_done, explorer"
+            " FROM group_daily WHERE group_id=? AND user_id=? AND date BETWEEN ? AND ?"
+            " ORDER BY date", (gid, uid, wf.isoformat(), wt.isoformat())).fetchall()
+        prev = c.execute(
+            "SELECT user_id, date, distance_m, duration_s, acts, plan_done, explorer"
+            " FROM group_daily WHERE group_id=? AND user_id=? AND date BETWEEN ? AND ?"
+            " ORDER BY date", (gid, uid, pf.isoformat(), pt.isoformat())).fetchall()
+
+    import bingo as B
+
+    this_rows = [dict(r) for r in rows]
+    met = ranking.metrics(this_rows, [dict(r) for r in prev])
+    out = B.card_for(this_rows, met, gid, uid, wf.isoformat())
+    out["ok"] = True
+    out["from"] = wf.isoformat()
+    out["to"] = wt.isoformat()
+    return out
+
+
+def api_season(me, gid: int, query: dict) -> dict:
+    """本周的六件衫 + 探索徽章 + 赛季分 + 名次 + 称号 + 让分/预言的加分。
+
+    赛季分满分 100：基础 90（里程/出勤/爬升/连续/进步）+ 让分预言加分 ≤10
+    （见 ranking.py 顶部说明）。页面别写成「x/100」以外的比例，也别拿
+    90 当满分去算百分比。
 
     只算开着共享的人——和数据进不来的道理一样：关掉共享就是「别拿我的数据
     做比较」，把名字列进排名等于违背这句话。
@@ -667,9 +980,15 @@ def api_season(me, gid: int, query: dict) -> dict:
         since = c.execute("SELECT MIN(date) d FROM group_daily WHERE group_id=?",
                           (gid,)).fetchone()["d"] or wf.isoformat()
         rows = c.execute(
-            "SELECT user_id, date, distance_m, elevation_m, acts, plan_done"
+            "SELECT user_id, date, distance_m, elevation_m, acts, plan_done, explorer"
             " FROM group_daily WHERE group_id=? AND date BETWEEN ? AND ?"
             " ORDER BY date", (gid, since, wt.isoformat())).fetchall()
+        # 让分赛与预言：加分要并进本赛季分，所以必须在这一个请求里算完，
+        # 不能等页面再发一次 /week——那样榜单和分数会对不上。
+        goals = _goals(c, gid, wf)
+        preds = c.execute("SELECT user_id, target_uid FROM group_predict"
+                          " WHERE group_id=? AND week_start=?",
+                          (gid, wf.isoformat())).fetchall()
 
     shared = [m for m in mem if (m["share_level"] or "summary") == "summary"]
     keep = {int(m["user_id"]) for m in shared}
@@ -693,14 +1012,28 @@ def api_season(me, gid: int, query: dict) -> dict:
         elif pf.isoformat() <= d <= pt.isoformat():
             prev_w[u].append(dict(r))
 
+    # 实际里程按本周已上报的算。预言里「没上报」就是 0 km，会被判没完成——
+    # 这是服务端唯一的态度：只信上报。
+    actual = {u: round(sum(float(x["distance_m"] or 0) for x in lst) / 1000.0, 1)
+              for u, lst in this_w.items()}
+    pres = ranking.prediction_result(
+        {int(r["user_id"]): int(r["target_uid"]) for r in preds}, actual, goals)
+
     out = ranking.build(this_w, prev_w,
-                        {u: len(weeks[u]) for u in keep}, aliases)
+                        {u: len(weeks[u]) for u in keep}, aliases,
+                        bonus=pres["bonus"])
     out["ok"] = True
     out["from"] = wf.isoformat()
     out["to"] = wt.isoformat()
     out["me"] = next((p for p in out["people"]
                       if int(p["user_id"]) == uid), None)
     out["hidden"] = len(mem) - len(shared)
+    out["goal"] = {"km": goals.get(uid),
+                   "max": GOAL_MAX_KM,
+                   "reported": uid in goals}
+    out["predict"] = {"mine": next((int(r["target_uid"]) for r in preds
+                                    if int(r["user_id"]) == uid), None),
+                      "bonus": pres["bonus"]}
     return out
 
 
@@ -724,7 +1057,10 @@ def api_home(me, gid: int, query: dict) -> dict:
             "detail": _safe(api_get, me, gid),
             "board": _safe(api_board, me, gid, query),
             "challenges": _safe(api_challenge_list, me, gid, query),
-            "season": _safe(api_season, me, gid, query)}
+            "season": _safe(api_season, me, gid, query),
+            # 本周玩法（目标 / 对子 / 预言）。合并进来而不是让页面再发一次：
+            # 手机上多一个请求就是多一次 TLS 握手，不值。
+            "week": _safe(api_week, me, gid, query)}
 
 
 # ---------------------------------------------------------------- 榜单
@@ -751,6 +1087,7 @@ def api_board(me, gid: int, query: dict) -> dict:
                    COUNT(*) AS days,
                    SUM(CASE WHEN plan_done=1 THEN 1 ELSE 0 END) AS plan_ok,
                    SUM(CASE WHEN plan_done IS NOT NULL THEN 1 ELSE 0 END) AS plan_total,
+                   SUM(explorer) AS expl,
                    MAX(updated_at) AS seen
             FROM group_daily
             WHERE group_id=? AND date BETWEEN ? AND ?
@@ -774,6 +1111,9 @@ def api_board(me, gid: int, query: dict) -> dict:
             "days": int(a["days"] or 0) if a else 0,
             # 计划完成率：没有计划的那几天不进分母，不伪造 0
             "plan_rate": (round(int(a["plan_ok"] or 0) / plan_total, 3) if plan_total else None),
+            # 探索徽章的原料：本周新踩格数。榜单要能标一句「新 N 格」，
+            # 否则徽章只在 season 里发，页面上根本看不见。
+            "explorer": int(a["expl"] or 0) if a else 0,
             "updated_at": int(a["seen"] or 0) if a else 0,
         })
     # 里程优先，其次天数——同里程时「跑得更分散」的人排前面
@@ -1076,6 +1416,12 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_board(me, gid, query), 200
         if action == "season" and method == "GET":
             return api_season(me, gid, query), 200
+        if action == "week" and method == "GET":
+            return api_week(me, gid, query), 200
+        if action == "bingo" and method == "GET":
+            return api_bingo(me, gid, query), 200
+        if action == "goal" and method == "POST":
+            return api_goal(me, gid, body), 200
         if action == "home" and method == "GET":
             return api_home(me, gid, query), 200
         if action == "leave" and method == "POST":
