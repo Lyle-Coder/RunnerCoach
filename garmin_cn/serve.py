@@ -191,7 +191,8 @@ class _Handler(SimpleHTTPRequestHandler):
                 return self._html(groupui.groups_page(tok, msg))
             seg = u.path.rstrip("/").split("/")[2:]
             if len(seg) == 1 and seg[0].isdigit():
-                return self._html(groupui.group_page(tok, int(seg[0]), msg))
+                rng = "month" if (q.get("range") or [""])[0] == "month" else "week"
+                return self._html(groupui.group_page(tok, int(seg[0]), msg, rng))
             return self._json({"ok": False, "error": "没有这个页面"}, 404)
         if u.path == "/sports":
             if not self._is_loopback():

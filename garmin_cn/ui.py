@@ -347,6 +347,29 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .bar{height:5px;border-radius:3px;background:var(--line2);margin-top:7px;overflow:hidden}
 .bar i{display:block;height:100%;background:#3B82F6;border-radius:3px}
 .bar.done i{background:#1D9E75}
+/* 无框区块：组页里除了「远征」那张入口，其余数据块都直接铺在页面上。
+   每条卡都有 1px 边框 + 圆角 + 内阴影，六个区块叠起来就是一堵墙；
+   数据本身有分隔线，不需要再给它们各发一个盒子。 */
+.flat{padding:2px 0}
+/* 折叠：一年用一次的（建赛事、换邀请码）默认收起，行本身当标题用。
+   summary 去掉默认三角，换成右侧一个会转的 ›，展开与否一眼能看出来。 */
+.fold{border-top:1px solid var(--line2);margin-top:6px}
+.fold>summary{list-style:none;cursor:pointer;display:flex;align-items:center;
+  gap:8px;min-height:44px;font-size:12.5px;color:var(--brand-ink)}
+.fold>summary::-webkit-details-marker{display:none}
+.fold>summary .fx{margin-left:auto;color:var(--muted);transition:transform .15s}
+.fold[open]>summary .fx{transform:rotate(90deg)}
+/* 设置项一行一个：左边名字、右边控件，没有外框，只靠间距分组 */
+.setrow{display:flex;align-items:center;gap:10px;min-height:44px;
+  border-bottom:1px solid var(--line2)}
+.setrow:last-of-type{border-bottom:0}
+.setrow>span{flex:0 0 44px;font-size:12.5px;color:var(--muted)}
+.setrow input,.setrow select{flex:1 1 auto;min-width:0}
+.setrow>.btn,.setrow>button{flex:0 0 auto}
+.btn.sm{min-height:34px;padding:0 12px;font-size:12.5px;border-radius:10px}
+/* 一行小字：把「还有谁没共享 / 谁是组长」这种备注压在榜单底下，
+   不再单开一个「成员」区块——成员就是榜上那些人。 */
+.tinyline{font-size:11px;color:var(--faint);margin-top:8px;line-height:1.5}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，
