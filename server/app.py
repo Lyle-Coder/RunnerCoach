@@ -137,6 +137,16 @@ _content_index: dict | None = None      # name → {size, sha256, mime}
 # 元数据（版本号、SHA256）仍走 8443，加密通道上取，取到再用。
 # 0 = 关闭这个端口。
 APK_PORT = int(os.environ.get("RC_APK_PORT", "0") or 0)
+# ── 代码包（覆盖式更新）──────────────────────────────────────────────
+# APK 里带完整代码，这里下发的是「补丁包」：只含变更过的 .py，解压到客户端
+# 私有目录后挂在 garmin_cn.__path__ 最前面，包里的同名模块就被盖掉。
+# 为什么是 .py 而不是 .pyc：pyc 的魔数和解释器版本绑死，哪天真升了 Python，
+# 旧包会**静默**失效；源码包一样大，还能直接 diff。
+# 没下过 / 校验不过 / 目录坏掉 → 客户端一律回落到包内那份，不能因为更新
+# 挂了就打不开。
+CODEPACK_DIR = Path(os.environ.get(
+    "RC_CODEPACK_DIR", str(Path(__file__).resolve().parent / "codepack")))
+
 APK_DIR = Path(os.environ.get("RC_APK_DIR",
                               str(Path(__file__).resolve().parent / "apk")))
 
@@ -1109,6 +1119,27 @@ class Handler(BaseHTTPRequestHandler):
                     "error": SERVICE_CLOSED_MESSAGE}, 400)
         return True
 
+    def _send_code(self, name: str) -> None:
+        """代码包下载。只认目录里真实存在的 .zip，不做路径拼接。"""
+        base = os.path.basename(name)
+        if not base or base != name or not base.endswith(".zip"):
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        f = CODEPACK_DIR / base
+        if not f.is_file():
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        data = f.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except BrokenPipeError:
+            pass
+        self.close_connection = True
+
     def _send_content(self, name: str) -> None:
         """按需下发的素材（字体 / 结局插画）。
 
@@ -1221,6 +1252,10 @@ class Handler(BaseHTTPRequestHandler):
                                    "pay": PAY_PROVIDER != ""})
             if self.path.split("?")[0] == "/v1/app/latest":
                 return self._json(api_app_latest())
+            if self.path.split("?")[0] == "/v1/code/latest":
+                return self._json(api_code_latest())
+            if self.path.split("?")[0].startswith("/v1/code/"):
+                return self._send_code(self.path.split("?")[0][len("/v1/code/"):])
             if self.path.split("?")[0] == "/v1/content/index":
                 return self._json(api_content_index())
             if self.path.split("?")[0].startswith("/v1/content/"):
@@ -1407,6 +1442,33 @@ def api_content_index() -> dict:
                                "mime": mime}
         _content_index = idx
     return {"ok": True, "files": [dict(name=k, **v) for k, v in _content_index.items()]}
+
+
+def api_code_latest() -> dict:
+    """最新代码包的元数据。没发布过就 ok=False，客户端按「没有更新」处理。"""
+    meta_path = CODEPACK_DIR / "latest.json"
+    if not meta_path.is_file():
+        return {"ok": False, "error": "还没有发布过代码包"}
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as e:      # noqa: BLE001
+        return {"ok": False, "error": f"latest.json 读不出来：{type(e).__name__}"}
+    fname = str(meta.get("file") or "")
+    if not fname or not (CODEPACK_DIR / fname).is_file():
+        return {"ok": False, "error": "代码包文件不存在"}
+    return {"ok": True,
+            "version": str(meta.get("version") or ""),
+            "file": fname,
+            "size": int(meta.get("size") or 0),
+            "sha256": str(meta.get("sha256") or ""),
+            "notes": str(meta.get("notes") or "")[:400],
+            "published": str(meta.get("published") or ""),
+            # 部分包（只含几个模块）也允许发布，但客户端要按不同标准校验：
+            # 整包必须有 appapi.py，部分包只要求「至少一个模块」。
+            "partial": bool(meta.get("partial")),
+            # 走加密端口：下载是 Python 干的，它信任内置那张证书。
+            # 不像 APK 那样受系统下载管理器限制。
+            "url": f"/v1/code/{fname}"}
 
 
 def api_app_latest() -> dict:

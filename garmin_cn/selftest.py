@@ -1182,6 +1182,44 @@ def run() -> int:
         "设置页没把「平台额度」收起来"
     assert "platform_quota" in _U.JS, "界面没读额度开关"
 
+    # 代码包（覆盖式更新）：没有包时必须是 no-op，有包时要把目录挂到
+    # garmin_cn.__path__ 最前面，而且用完能还原——这个 Package 对象整个进程
+    # 只有一份，测试改坏了后面所有页面都会从临时目录导入。
+    import garmin_cn as _pkg
+    from garmin_cn import codepack as _CPK2
+    _old_root, _old_ptr, _old_path = _CPK2.ROOT, _CPK2.POINTER, list(_pkg.__path__)
+    _cphome = Path(tempfile.mkdtemp())
+    _old_en = _CPK2.ENABLED
+    try:
+        # apply() 只看本地目录、不联网，所以这里可以开；refresh() 才是网络的。
+        # 关掉的是「整块停用」，测试里要验的正是挂载本身。
+        _CPK2.ENABLED = True
+        _CPK2.ROOT = _cphome / "code"
+        _CPK2.POINTER = _CPK2.ROOT / "current"
+        _r = _CPK2.apply()
+        assert _r.get("ok") and not _r.get("applied"), f"没有包时不该挂载：{_r}"
+
+        _ver = "9.9.9-1"
+        _d = _CPK2.ROOT / _ver / "garmin_cn"
+        _d.mkdir(parents=True)
+        (_d / "appapi.py").write_text("X = 1\n", encoding="utf-8")
+        _CPK2.POINTER.write_text(_ver, encoding="utf-8")
+        _r = _CPK2.apply()
+        assert _r.get("applied") == _ver, f"没挂上：{_r}"
+        assert str(_pkg.__path__[0]) == str(_d), "挂载位置不在最前面（会被包内模块盖掉）"
+        assert _CPK2.status().get("applied") == _ver, "status 没反映当前版本"
+
+        # 目录里没有 appapi.py = 坏包，不能挂
+        (_d / "appapi.py").unlink()
+        _pkg.__path__ = list(_old_path)          # 先还原再验「坏包不挂」
+        _r = _CPK2.apply()
+        assert not _r.get("applied"), f"坏包被挂上了：{_r}"
+    finally:
+        _pkg.__path__ = list(_old_path)
+        _CPK2.ROOT, _CPK2.POINTER = _old_root, _old_ptr
+        _CPK2.ENABLED = _old_en
+        shutil.rmtree(_cphome, ignore_errors=True)
+
     # 组页的版式回归：数据块不许再套一圈卡、低频表单必须折叠、
     # 成员不许和榜单排两遍。这些全是「改一次就会慢慢长回去」的东西，
     # 所以在这里渲染一次真实页面来守（假数据换掉联网的三个函数）。

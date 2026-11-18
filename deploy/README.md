@@ -126,6 +126,33 @@ sha256 和实际文件对不上，客户端会反复重下（校验不过会丢�
 `opts.flavor` 不会影响 `font.save()`。加上 `font.flavor = "woff2"` 之后
 1.54 MB → 714 KB，而且这回浏览器真的会用上它（以前解码失败、静默回落）。
 
+## 六点八、代码包：发版不用重下 21 MB
+
+APK 里始终带完整代码；**改代码时只下发差异包**，客户端解压到私有目录、
+挂在 `garmin_cn.__path__` 最前面，同名模块被盖掉。
+
+```bash
+# 整包（正常发版）——86 个模块，约 1.3 MB
+python tools/publish_code.py --host <IP> --version 1.5.0-7 --notes "结算页改版"
+
+# 只发一个模块（**仅用于验证机制**，正式发版别用）
+python tools/publish_code.py --host <IP> --version 1.5.0-8 --only easteregg --probe
+```
+
+- `--probe` 会塞一个 `_packprobe.py`：只有代码包真的接管了导入才 import 得到。
+  App 的「我的 → 诊断日志」顶部会显示 `包外代码 <版本>`，用来确认这件事。
+- **`codepack.py` 永不进包**：它是装载器，必须始终来自 APK。否则一个坏包会
+  把装载逻辑自己换掉，下一次连回退能力都没有。
+- 生效时机是**下次启动**，运行中不热替换。
+- 下载失败 / 校验不过 / 目录损坏 → 一律回落到包里那份，行为与今天完全一致。
+
+### 为什么不能把 APK 做到 2 MB
+
+Android 10+ 明确禁止从可写目录 `dlopen()` / `execve()`（W^X）：
+「应用应只加载嵌入在应用 APK 文件中的二进制代码」。我们 `targetSdk = 34`，
+所以 libpython / OpenSSL / sqlite 这 11.75 MB 必须在 APK 的 `lib/` 里。
+带 Python 的 APK 下限约 13 MB；要到 2–3 MB 只能放弃本地 Python，那是重写。
+
 ## 七、发版：安装包走自己的服务器
 
 源码转私有之后，Gitee Release 就不能匿名下载了，App 的更新入口会断。

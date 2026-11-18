@@ -3882,12 +3882,31 @@ def check_update() -> dict:
 
 
 def diag_text(lines: int = 200) -> dict:
-    """最近若干条异常，给「我的 → 诊断日志」弹窗用。"""
+    """最近若干条异常，给「我的 → 诊断日志」弹窗用。
+
+    开头几行是「现在跑的是哪份代码」：版本、代码包有没有挂上、挂的是哪一版。
+    代码包是覆盖式的，出问题时最先要分清的就是「这是包里的代码还是下发的那份」，
+    否则同一个 bug 在两个版本上表现不同，排查会绕很远。
+    """
+    from . import __version__ as VER
     from . import diag
 
+    head = [f"RunnerCoach {VER}"]
+    try:
+        from . import codepack
+        st = codepack.status()
+        head.append(f"代码包 {st.get('applied') or '未使用'}（{st.get('note') or '-'}）")
+    except Exception as e:      # noqa: BLE001 - 老包没有这个模块
+        head.append(f"代码包 不可用（{type(e).__name__}）")
+    try:
+        # 发布验证用的探针：只有「代码包真的接管了导入」才 import 得到
+        from . import _packprobe
+        head.append(f"包外代码 {getattr(_packprobe, 'VERSION', '?')}")
+    except Exception:           # noqa: BLE001
+        pass
     txt = diag.read_text(lines)
     return {"ok": True,
-            "text": txt or "（还没有异常记录）",
+            "text": "\n".join(head) + "\n\n" + (txt or "（还没有异常记录）"),
             "path": str(diag.log_path())}
 
 
