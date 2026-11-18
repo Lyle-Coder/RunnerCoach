@@ -26,7 +26,7 @@
 
 from . import brand as BR
 from .exportspec import BG_ACT, probe as _export_probe
-from .runsui import CN_NUM, FONT_CSS, _ending_svg
+from .runsui import CN_NUM, FONT_CSS, SCENE_CSS, _ending_scene
 from .ui import esc
 
 W = 1080
@@ -164,14 +164,14 @@ def build_html(d: dict) -> str:
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width={W},initial-scale=1">
 <title>{title} · {season}</title>
-<style>{FONT_CSS}{CSS}</style></head><body>
+<style>{FONT_CSS}{CSS}{SCENE_CSS}</style></head><body>
 <div class="wrap" data-gc-canvas>
   <div class="top">
     <div class="kicker">EXPEDITION · {season}</div>
     <div class="dates">{esc(start)} — {esc(end)}</div>
   </div>
 
-  <div class="scene">{_ending_svg(key)}</div>
+  <div class="scene">{_ending_scene(key)}</div>
 
   <div class="end">
     <h1>{title}</h1>

@@ -1036,6 +1036,35 @@ def run() -> int:
         "「没走完」的窗户不该是亮的"
     assert _svgs["discoverer"].count("<rect") > 4, "隐藏结局没画出三本日志"
 
+    # 底图模式：有 `ending_scene_lit/dark` 两版就走「底图 + 矢量脚印」，
+    # 缺任何一张退回纯 SVG（半套底图会在某个结局上亮错灯，比没有更糟）。
+    _pd = Path(tempfile.mkdtemp())
+    _old_pd = RU.PLATE_DIR
+    try:
+        assert RU._plates() == ("", ""), "没有底图时不该报出底图"
+        assert '<div class="escene">' not in RU._ending_scene("arrive"), \
+            "没有底图却走了底图分支"
+        (_pd / "ending_scene_lit.png").write_bytes(b"x")
+        assert RU._plates() == ("", ""), "只有亮窗版就不该启用（会亮错灯）"
+        (_pd / "ending_scene_dark.png").write_bytes(b"x")
+        RU.PLATE_DIR = _pd
+        assert all(RU._plates()), "两版底图都在却没启用"
+        _hit = RU._ending_scene("arrive")
+        _drk = RU._ending_scene("lost")
+        assert '<div class="escene">' in _hit and "ending_scene_lit" in _hit, \
+            "亮窗的结局没用亮窗底图"
+        assert '<div class="escene">' in _drk and "ending_scene_dark" in _drk, \
+            "熄灯的结局没用暗窗底图"
+        # 底下那层只能有脚印和道具：底图已经有天、地、屋、灯了
+        assert "<rect x=\"262\"" not in _hit and "circle" not in _hit.split('class="prints"')[1], \
+            "叠加层把夜空/小屋又画了一遍（会和底图叠影）"
+        # 亮雪上白脚印等于没画：底图模式下脚印要压深
+        assert "#8CA0BC" in _hit, "底图上的脚印还是白的，会看不见"
+        assert "#DCE7F5" in RU._ending_svg("arrive"), "纯 SVG 模式的脚印依旧是白的"
+    finally:
+        RU.PLATE_DIR = _old_pd
+        shutil.rmtree(_pd, ignore_errors=True)
+
     # 分享图：1080×1920 的竖图，走和活动图同一套出图链路（探针 + 9:16）。
     # 它**不能带**轨迹、昵称或别人的名字——发出去最多暴露「我参加了一个跑步
     # 小组」。版式锁死高度，否则出图时上下会留一大块底色。

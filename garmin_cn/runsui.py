@@ -25,6 +25,7 @@
 """
 
 import json
+from pathlib import Path
 
 from . import ui
 from .ui import esc
@@ -180,6 +181,16 @@ CSS = """
   text-align:center;font-size:11.5px;color:var(--faint);line-height:1.7}
 .recap b{color:var(--ink2);font-weight:600;font-variant-numeric:tabular-nums}
 """
+
+# 结局画面：底图 + 矢量脚印。高度用 padding-top 顶（132/372 = 35.48%），
+# 不用 aspect-ratio——WebView 版本差异大，padding 顶高是老办法但一定对。
+SCENE_CSS = """
+.escene{position:relative;width:100%;padding-top:35.48%;overflow:hidden}
+.escene .plate{position:absolute;left:0;top:0;width:100%;height:100%;
+  object-fit:cover;display:block}
+.escene .prints{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
+"""
+
 
 # 试炼类型的中文。这是「怎么演」不是「演什么」——它描述要跑什么，不涉及剧情。
 METRIC_ZH = {
@@ -639,85 +650,161 @@ def run_page(token: str, message: str = "", data: dict | None = None) -> str:
 
 
 # ---------------------------------------------------------------- 结算
-def _ending_svg(key: str) -> str:
-    """结局画面：同一片雪地，用脚印的去向和屋里的灯光分五种结局。
+# 场景的几何约定。**底图和脚印必须共用这一套数字**，否则接上真图之后
+# 脚印会飘在天空里——原来的 SVG 没有雪地填充，雪线只是一条线，脚印画在
+# 线上方也看不出来；换成有雪地的底图，这个错就全暴露了。
+#
+#   HORIZON_Y = 92   雪线（132 高的视图里 = 70%）。小屋底边压在这条线上，
+#                    雪地占下面 30%——和生成底图的要求是同一个数。
+#   脚印带 = 96..130 都在雪里。最左（远）在底部，靠近门口（近）抬高一点。
+HORIZON_Y = 92
 
-    不用五张不同的插画，是因为「同一处地方、不同的到达方式」才是这个玩法
-    的意思——玩家换一季再来，看见的还是这片雪地，变的是自己走成了什么样。
+
+def _scene_props(key: str, on_plate: bool = False) -> str:
+    """脚印与道具。底图模式下这一层单独叠上去，纯 SVG 模式下跟底一起画。
+
+    `on_plate` 决定脚印的颜色，这一步不能省：底图上的雪是**亮的**，
+    白脚印铺上去等于没画。压在亮雪上的脚印应该是被踩实的那点灰蓝；
+    纯 SVG 模式的雪是透明的（露出深色卡片），白脚印才看得见。
     """
-    cabin = ('<rect x="262" y="74" width="66" height="38" rx="2" fill="#1B2739"'
-             ' stroke="rgba(220,231,245,.28)" stroke-width="1"/>'
-             '<path d="M256 74 l39 -22 l39 22 z" fill="#151F2E"'
-             ' stroke="rgba(220,231,245,.3)" stroke-width="1" stroke-linejoin="round"/>')
-    # 窗：唯一的暖光。「少一个人」也亮着——屋是到了的，只是人没全；
-    # 灯亮着才是这件事难受的地方。真正熄灯的只有「没走完」。
-    lit = ('<rect x="290" y="88" width="11" height="9" fill="#C98B4B" opacity=".9"/>'
-           if key in ("arrive", "discoverer", "missing") else
-           '<rect x="290" y="88" width="11" height="9" fill="#0B111B"'
-           ' stroke="rgba(220,231,245,.2)" stroke-width=".8"/>')
+    ink = "#8CA0BC" if on_plate else "#DCE7F5"
+    # 亮雪比深色卡片「吃」颜色：同样的透明度在浅底上会淡一档，所以底图模式
+    # 整体再压深 12%。不这一下的话，缩到 420 宽就只剩一排若有若无的点。
+    gain = 1.12 if on_plate else 1.0
 
     def foot(x, y, op=1.0):
         # 脚印要看得见才有「有人走过」的意思。之前 rx=2.6、透明度从 0.3 起，
         # 在 420 宽的手机上几乎是一层噪点。
         return (f'<ellipse cx="{x:.1f}" cy="{y:.1f}" rx="3.4" ry="1.9"'
-                f' fill="#DCE7F5" opacity="{min(0.95, op):.2f}"/>')
+                f' fill="{ink}" opacity="{min(0.95, op * gain):.2f}"/>')
 
-    prints = []
-    ground = '<path d="M8 111 H364" stroke="rgba(220,231,245,.16)" stroke-width="1"/>'
-    snow = ('<circle cx="60" cy="34" r="1.2" fill="#DCE7F5" opacity=".3"/>'
-            '<circle cx="128" cy="52" r="1" fill="#DCE7F5" opacity=".22"/>'
-            '<circle cx="196" cy="30" r="1.3" fill="#DCE7F5" opacity=".26"/>'
-            '<circle cx="236" cy="58" r="1" fill="#DCE7F5" opacity=".2"/>'
-            '<circle cx="330" cy="44" r="1.1" fill="#DCE7F5" opacity=".24"/>')
+    def trail(x0, y0, x1, y1, n, op=0.62, fade=0.0):
+        """一串脚印：从 (x0,y0) 走到 (x1,y1)。`fade` 是每一步减掉的透明度。"""
+        out = []
+        for i in range(n):
+            k = i / max(1, n - 1)
+            out.append(foot(x0 + (x1 - x0) * k, y0 + (y1 - y0) * k, op - fade * i))
+        return out
 
+    prints: list[str] = []
     if key == "arrive":
-        for i in range(13):
-            prints.append(foot(26 + i * 17, 106 - i * 1.3, 0.6 + i * 0.03))
+        # 走到门廊前（x≈252）。脚印在雪里：远端压底，近端抬到门口。
+        prints += trail(26, 127, 252, 101, 13, 0.6, fade=-0.025)
     elif key == "detour":
-        # 三条散开的脚印，只有最右那条走到了门口
-        for i in range(9):
-            prints.append(foot(26 + i * 15, 108 - i * 0.8, 0.62))
-        for i in range(6):
-            prints.append(foot(26 + i * 15, 100 + i * 2.6, 0.5))
-        for i in range(5):
-            prints.append(foot(26 + i * 15, 116 - i * 1.4, 0.44))
-        for i in range(6):
-            prints.append(foot(168 + i * 16, 96 - i * 1.1, 0.66))
+        # 三条散开：只最上面那条走到门口，另两条在雪里各自淡出
+        prints += trail(26, 127, 252, 101, 10, 0.62)
+        prints += trail(26, 120, 150, 106, 7, 0.5, fade=0.03)
+        prints += trail(26, 130, 132, 127, 6, 0.44, fade=0.03)
     elif key == "lost":
         # 走到一半就断了，后面什么都没有。
         # 断的地方放一块石头——文案里写的是「退回背风的那块石头下面」，
         # 图里没有它，那句话就是空的。
-        for i in range(8):
-            prints.append(foot(26 + i * 15, 108 - i * 1.1, 0.66 - i * 0.045))
-        prints.append('<path d="M158 111 L166 96 L180 104 L186 111 Z"'
+        prints += trail(26, 127, 146, 113, 8, 0.66, fade=0.045)
+        prints.append('<path d="M158 118 L168 100 L186 108 L192 118 Z"'
                       ' fill="#1B2739" stroke="rgba(220,231,245,.24)"'
                       ' stroke-width="1" stroke-linejoin="round"/>')
     elif key == "missing":
         # 一串脚印到了门口，另一串在半路偏出去、越走越淡，断在雪里。
         # 断口不能画成地面下的黑影（最早那版画成了雪堆压在基线下面，
         # 看着像一块脏土），应该是往雪里越走越淡，最后一团浅雪堆。
-        for i in range(12):
-            prints.append(foot(26 + i * 16, 107 - i * 1.2, 0.66))
-        for i in range(6):
-            prints.append(foot(40 + i * 15, 104 - i * 5.4, 0.5 - i * 0.075))
-        prints.append('<ellipse cx="120" cy="72" rx="13" ry="3.4"'
-                      ' fill="#DCE7F5" opacity=".13"/>')
+        prints += trail(26, 127, 252, 101, 12, 0.66)
+        prints += trail(40, 122, 118, 104, 6, 0.5, fade=0.075)
+        # 雪堆：亮雪上是更亮的一小片（不是阴影），暗底上只是淡淡的
+        prints.append(f'<ellipse cx="124" cy="102" rx="14" ry="3.6"'
+                      f' fill="{"#FFFFFF" if on_plate else "#DCE7F5"}"'
+                      f' opacity="{".5" if on_plate else ".13"}"/>')
     else:  # discoverer
-        for i in range(12):
-            prints.append(foot(24 + i * 17, 106 - i * 1.5, 0.5 + i * 0.035))
-        # 三本叠着的日志，压在路边
+        prints += trail(24, 127, 252, 102, 12, 0.5, fade=-0.03)
+        # 三本叠着的日志，压在路边、坐在雪上（底边贴雪线以下）
         prints += [
-            '<rect x="44" y="96" width="26" height="7" rx="1" fill="#1B2739"'
+            '<rect x="44" y="120" width="26" height="6" rx="1" fill="#1B2739"'
             ' stroke="rgba(201,139,75,.55)" stroke-width=".9"/>',
-            '<rect x="47" y="89" width="26" height="7" rx="1" fill="#16202F"'
+            '<rect x="47" y="113" width="26" height="6" rx="1" fill="#16202F"'
             ' stroke="rgba(201,139,75,.4)" stroke-width=".9"/>',
-            '<rect x="50" y="82" width="26" height="7" rx="1" fill="#121A28"'
+            '<rect x="50" y="106" width="26" height="6" rx="1" fill="#121A28"'
             ' stroke="rgba(201,139,75,.28)" stroke-width=".9"/>',
         ]
+    return "".join(prints)
 
+
+def _ending_svg(key: str, props: bool = True) -> str:
+    """结局画面（纯矢量版，没有底图时用）：同一片雪地，五种到达方式。
+
+    `props=False` 只画底（夜空、雪地、小屋、灯），不画脚印与石头/日志——
+    生成「底图」时用：底图上不该已经踩着别人的脚印。
+    """
+    # 小屋底边压在雪线上（HORIZON_Y），和底图的要求是同一个几何
+    cabin = ('<rect x="262" y="54" width="66" height="38" rx="2" fill="#1B2739"'
+             ' stroke="rgba(220,231,245,.28)" stroke-width="1"/>'
+             '<path d="M256 54 l39 -22 l39 22 z" fill="#151F2E"'
+             ' stroke="rgba(220,231,245,.3)" stroke-width="1" stroke-linejoin="round"/>')
+    # 窗：唯一的暖光。「少一个人」也亮着——屋是到了的，只是人没全；
+    # 灯亮着才是这件事难受的地方。真正熄灯的只有「没走完」和「人散了」。
+    lit = ('<rect x="290" y="68" width="11" height="9" fill="#C98B4B" opacity=".9"/>'
+           if key in LIT_KEYS else
+           '<rect x="290" y="68" width="11" height="9" fill="#0B111B"'
+           ' stroke="rgba(220,231,245,.2)" stroke-width=".8"/>')
+    ground = (f'<path d="M8 {HORIZON_Y} H364" stroke="rgba(220,231,245,.16)"'
+              ' stroke-width="1"/>')
+    snow = ('<circle cx="60" cy="26" r="1.2" fill="#DCE7F5" opacity=".3"/>'
+            '<circle cx="128" cy="44" r="1" fill="#DCE7F5" opacity=".22"/>'
+            '<circle cx="196" cy="22" r="1.3" fill="#DCE7F5" opacity=".26"/>'
+            '<circle cx="236" cy="50" r="1" fill="#DCE7F5" opacity=".2"/>'
+            '<circle cx="330" cy="36" r="1.1" fill="#DCE7F5" opacity=".24"/>')
+    inner = snow + ground + cabin + lit + (_scene_props(key) if props else "")
+    if not props:
+        return ('<svg viewBox="0 0 372 132" class="endsvg" role="img"'
+                f' aria-hidden="true">{inner}</svg>')
     return ('<svg viewBox="0 0 372 132" class="endsvg" role="img"'
-            f' aria-label="结局示意图：{esc(key)}">'
-            + snow + ground + cabin + lit + "".join(prints) + "</svg>")
+            f' aria-label="结局示意图：{esc(key)}">{inner}</svg>')
+
+
+# 灯亮着的三种。判定和插画、底图选版共用这一份，避免「图换了灯没换」。
+LIT_KEYS = ("arrive", "discoverer", "missing")
+
+
+# 底图放这里：`ending_scene_lit.*` / `ending_scene_dark.*`。
+# 之所以要两版：灯亮不亮是这五个结局唯一的信号，一张图靠后期压暗窗户会
+# 变成一块贴上去的黑片。两版都必须**没有脚印、没有石头和日志**——那些由
+# 代码画，换个底图不用重画脚印，缩放时也还是矢量。
+PLATE_DIR = Path(__file__).resolve().parent / "content"
+PLATE_EXTS = (".webp", ".png", ".jpg")
+
+
+def _plates() -> tuple[str, str]:
+    """(亮窗, 暗窗) 的 URL。缺一张就两个都不给——半套底图会在某个结局上
+    亮错灯，比没有底图更糟。"""
+    out = []
+    for name in ("ending_scene_lit", "ending_scene_dark"):
+        out.append(next((f"/content/{name}{e}" for e in PLATE_EXTS
+                         if (PLATE_DIR / f"{name}{e}").is_file()), ""))
+    return (out[0], out[1]) if all(out) else ("", "")
+
+
+def _ending_scene(key: str) -> str:
+    """结局画面。有底图就「底图 + 矢量脚印」，没有就整张退回纯 SVG。
+
+    为什么脚印留在代码里
+    --------------------
+    1. **一致性**：同一张底图，五种去向由代码精确控制，永远不会画出五个
+       不同的房子；
+    2. **缩到 420 宽还清楚**：结算页里这张图只有 148 高，位图脚印会糊成一排
+       噪点，矢量不会；
+    3. **改剧情不用重出图**。
+    """
+    lit, dark = _plates()
+    if not lit:
+        return _ending_svg(key)
+    # 「人散了」「没走完」是熄灯的；其余三个亮着（少一个人也亮——屋里到了，
+    # 只是人没全，灯亮着才难受）
+    plate = dark if key in ("detour", "lost") else lit
+    # 只取「脚印 + 道具」那一层：底图已经有了夜空、地面、小屋和灯。
+    props = _scene_props(key, on_plate=True)
+    return ('<div class="escene">'
+            f'<img class="plate" src="{esc(plate)}" alt="" aria-hidden="true">'
+            '<svg class="prints" viewBox="0 0 372 132" preserveAspectRatio="none"'
+            f' aria-label="结局示意图：{esc(key)}">{props}</svg>'
+            "</div>")
 
 
 def outcome_page(token: str, data: dict | None = None) -> str:
@@ -755,7 +842,7 @@ def outcome_page(token: str, data: dict | None = None) -> str:
                  f'<span class="av">{val}</span>'
                  f'<span class="am">{mark}</span></div>')
 
-    body = (f'<div class="endwrap">{_ending_svg(key)}'
+    body = (f'<div class="endwrap">{_ending_scene(key)}'
             f'<div class="endk">SEASON OVER · {esc(season)}</div>'
             f'<h1 class="endh">{esc(title)}</h1>'
             f'<div class="endl">{esc(line)}</div>'
@@ -780,7 +867,7 @@ def outcome_page(token: str, data: dict | None = None) -> str:
     # 页头不放 h1：结算页的大标题是结局名，页头再来一个「这一季」
     # 就是两个并列的主标题，谁也不是谁的上级。
     return ui.page("EXPEDITION · 雪线之前", "", "", body,
-                   css=FONT_CSS + END_CSS,
+                   css=FONT_CSS + END_CSS + SCENE_CSS,
                    foot="进度来自你上报的里程，不上传轨迹与位置。",
                    back=("返回", "/groups"))
 

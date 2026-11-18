@@ -153,6 +153,8 @@ class _Handler(SimpleHTTPRequestHandler):
             return self._html(_with_fix(aiui.render(), ui.AI_FIX))
         if u.path.startswith("/fonts/"):
             return self._font(u.path.rsplit("/", 1)[-1])
+        if u.path.startswith("/content/"):
+            return self._content(u.path.rsplit("/", 1)[-1])
         token = getattr(self.server, "token", "")
         if token and not self._gate(u, token):
             return
@@ -1323,6 +1325,30 @@ class _Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         # 字体只在重打包时变，长缓存让 WebView 不必每次重新解析 1.5 MB
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.end_headers()
+        self.wfile.write(data)
+
+    # 白名单：结局底图。和字体同一个理由——只认文件名，不做路径拼接，
+    # 免得 `../../` 在这条本地服务上读出用户目录。
+    CONTENT_TYPES = {".webp": "image/webp", ".png": "image/png",
+                     ".jpg": "image/jpeg", ".woff2": "font/woff2"}
+
+    def _content(self, name: str) -> None:
+        """包内静态资源（结局底图、字体）。"""
+        import os as _os
+        from pathlib import Path as _P
+
+        ctype = self.CONTENT_TYPES.get(_os.path.splitext(name)[1].lower())
+        if not ctype or "/" in name or "\\" in name or name.startswith("."):
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        f = _P(__file__).resolve().parent / "content" / name
+        if not f.is_file():
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        data = f.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "public, max-age=31536000, immutable")
         self.end_headers()
         self.wfile.write(data)
