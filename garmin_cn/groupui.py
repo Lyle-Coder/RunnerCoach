@@ -163,7 +163,17 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
 
     today = dt.date.today().isoformat()
     msg = _msg(message)
-    d = G.detail(gid)
+    # 一次拿齐四块（detail / board / challenges / season）。老服务端没有
+    # /home 就退回逐个请求——四次握手约 0.5 秒，能省则省。
+    _h = {}
+    try:
+        _h = G.home(gid, rng, today)
+    except Exception:      # noqa: BLE001
+        _h = {}
+    if not _h.get("ok"):
+        _h = {}
+
+    d = _h.get("detail") or G.detail(gid)
     if not d.get("ok"):
         err = d.get("error") or "打不开这个组"
         body = (msg + f'<div class="card"><p class="note">{esc(err)}</p>'
@@ -175,8 +185,8 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     is_admin = role in ("owner", "admin")
     my_share = (g.get("me") or {}).get("share") or "summary"
 
-    b = G.board(gid, rng, today)
-    cl = G.challenge_list(gid, today)
+    b = _h.get("board") or G.board(gid, rng, today)
+    cl = _h.get("challenges") or G.challenge_list(gid, today)
     total_m = (b.get("summary") or {}).get("total_distance_m") or 0
 
     # 本周榜。「组长」跟着名字走——以前单开一个「成员」区块专门说这件事，
@@ -298,7 +308,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     # 这是「竞赛感」最省地方的表达——一行字，不做榜单页。取不到就整块不显示，
     # 组页不能因为一个新接口挂掉就打不开。
     try:
-        _se = G.season(gid, today)
+        _se = _h.get("season") or G.season(gid, today)
     except Exception:      # noqa: BLE001 - 老服务端没有 /season，降级即可
         _se = {}
     score_line = ""

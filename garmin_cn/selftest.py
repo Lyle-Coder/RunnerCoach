@@ -59,6 +59,10 @@ OUT = ROOT / "output"
 def run() -> int:
     """跑完整自检，返回进程退出码（0 = 全过）。"""
     """不联网的自检：解析、指标、渲染全链路。"""
+    # 关掉素材下载：自检必须离线，也不该在仓库目录里造下载缓存。
+    # 放在第一行——后面任何一次页面渲染都可能去补那 1.7 MB 素材。
+    from garmin_cn import contentpack as _CPK
+    _CPK.ENABLED = False
     from garmin_cn.sync import parse_activity, parse_hrv, parse_sleep
 
     assert parse_hrv({"hrvSummary": {"lastNightAvg": 62, "weeklyAvg": 55, "status": "BALANCED"}})["hrv_night"] == 62
@@ -1308,8 +1312,12 @@ def run() -> int:
 
     # 衬线字体：正文靠它和「数据」区分开。Android 的 WebView 里 serif 对中文
     # 没有可用字体，不内嵌就 fallback 成无衬线，故事感直接消失。
-    _font = ROOT / "garmin_cn" / "content" / "expedition-serif.woff2"
-    assert _font.is_file(), ("衬线字体没构建：python tools/build_font.py "
+    # 字体现在有两个可能的位置：随包（本地开发）和 server/assets（正式来源，
+    # 由 /v1/content 按需下发）。只要有一处存在就算合格。
+    _font = next((p for p in (
+        ROOT / "garmin_cn" / "content" / "expedition-serif.woff2",
+        ROOT / "server" / "assets" / "expedition-serif.woff2") if p.is_file()), None)
+    assert _font is not None, ("衬线字体没构建：python tools/build_font.py "
                              "（缺了的话正文会静默退化成正文字体）")
     assert _font.stat().st_size > 200_000, "字体文件太小，可能只子集到几个字"
     assert 'font-family:"RC Serif"' in RU.CSS, "正文没用衬线字体族"

@@ -116,6 +116,9 @@ def main() -> int:
     G.board = lambda gid, rng="week", today=None: BOARD   # type: ignore[assignment]
     G.challenge_list = lambda gid, today=None: CHALLENGES  # type: ignore[assignment]
     G.season = lambda gid, today=None: SEASON          # type: ignore[assignment]
+    G.home = lambda gid, rng="week", today=None: {    # type: ignore[assignment]
+        "ok": True, "detail": DETAIL, "board": BOARD,
+        "challenges": CHALLENGES, "season": SEASON}
 
     html = GU.group_page("TOK", GID)
     # 站内绝对路径换成 file://，否则本地打开是一片空白

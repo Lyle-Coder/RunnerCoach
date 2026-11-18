@@ -672,6 +672,29 @@ def api_season(me, gid: int, query: dict) -> dict:
     return out
 
 
+def api_home(me, gid: int, query: dict) -> dict:
+    """组页首屏要的四块，一次给完。
+
+    原来是 detail / board / challenges / season 四个请求。每次都是新建 TLS
+    连接，实测一次 122 ms——组页光握手就快半秒，手机上更差。合成一个，
+    往返从 4 次降到 1 次；数据库那边还是四次查询，但那是本地 SQLite，
+    加起来几毫秒，和网络不是一个量级。
+
+    任何一块出错都给 null，不让一个次要板块把整页拖垮。
+    """
+    def _safe(fn, *a):
+        try:
+            return fn(*a)
+        except Exception as e:      # noqa: BLE001
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    return {"ok": True,
+            "detail": _safe(api_get, me, gid),
+            "board": _safe(api_board, me, gid, query),
+            "challenges": _safe(api_challenge_list, me, gid, query),
+            "season": _safe(api_season, me, gid, query)}
+
+
 # ---------------------------------------------------------------- 榜单
 def api_board(me, gid: int, query: dict) -> dict:
     uid = int(me["user_id"])
@@ -1021,6 +1044,8 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_board(me, gid, query), 200
         if action == "season" and method == "GET":
             return api_season(me, gid, query), 200
+        if action == "home" and method == "GET":
+            return api_home(me, gid, query), 200
         if action == "leave" and method == "POST":
             return api_leave(me, gid), 200
         if action == "share" and method == "POST":

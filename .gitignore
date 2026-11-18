@@ -72,3 +72,6 @@ server/content/*.json
 # certs/ 里有服务器私钥——都只该存在于那台机器上。
 deploy/env
 deploy/certs/
+
+# 素材下载缓存（开发时 HOME 就是仓库根，contentpack 会写这里）
+/content/

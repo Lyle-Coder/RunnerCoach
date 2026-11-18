@@ -33,6 +33,8 @@ from .ui import esc
 # 衬线正文用的字体。名字带前缀避免和系统字体撞；font-display:swap 让正文
 # 先用无衬线顶上，字体到了再换——内嵌 1.5 MB，不能让首屏空着等。
 FONT_CSS = """
+/* font-display:swap：字体没下发（首次进远征页）时先用系统衬线渲染，
+   拿到再换字体。不做 block——白屏等字体是最难受的一种等待。 */
 @font-face{font-family:"RC Serif";font-weight:400;font-display:swap;
   src:url("/fonts/expedition-serif.woff2") format("woff2")}
 """
@@ -828,9 +830,16 @@ def _ending_plate(key: str) -> str:
     """
     if key not in ENDING_KEYS:
         return ""
+    from . import contentpack
+
     for e in ENDING_EXTS:
-        if (PLATE_DIR / f"ending_{key}{e}").is_file():
-            return f"/content/ending_{key}{e}"
+        name = f"ending_{key}{e}"
+        # 素材是按需下发的（包体省 1.7 MB），所以要问 contentpack 而不是
+        # 直接看包目录。没有就退到 SVG，画面朴素一点但不缺口。
+        # 两处都认：下载目录（正式来源）和随包目录（本地开发 / 旧包）。
+        # PLATE_DIR 留着是为了能在临时目录里造一张图来测这段逻辑。
+        if contentpack.exists(name) or (PLATE_DIR / name).is_file():
+            return f"/content/{name}"
     return ""
 
 
@@ -875,6 +884,13 @@ def outcome_page(token: str, data: dict | None = None) -> str:
     d = data or {}
     detail = d.get("ending_detail") or {}
     key = str(d.get("ending") or "lost")
+    # 结算页是这一季唯一一次「看画面」的时刻，值得等一小会儿把那张图取回来。
+    # 只等 1.2 秒：超过就让 SVG 兜底，不能让一张图拖住结算。
+    try:
+        from . import contentpack
+        contentpack.ensure([f"ending_{key}.jpg"], budget=1.2)
+    except Exception:      # noqa: BLE001
+        pass
     title = str(detail.get("title") or "结束了")
     line = str(detail.get("line") or "")
     text = str(detail.get("text") or "")
