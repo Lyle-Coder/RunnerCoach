@@ -43,6 +43,11 @@ GROUPS_DB = os.environ.get("GROUPS_DB", str(DEFAULT_DB))
 # 邀请码去掉 0/O/1/I/L：手抄和口述时最容易错的那几个
 CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 CODE_LEN = 8
+# 允许上报的最远未来天数。**生产必须是 0**：设备时钟快一天就会把「明天」的
+# 里程写进来，而那些里程会落进后面几幕的窗口，等于提前灌格。
+# 只有测试要一次性模拟整季时会临时放宽（见 test_groups.py）。
+FUTURE_DAYS = 0
+
 
 MAX_MEMBERS_MIN, MAX_MEMBERS_MAX = 2, 200
 MAX_GROUPS_PER_USER = 3        # 一个人最多同时加入 3 个组
@@ -505,7 +510,14 @@ def api_report(me, gid: int, body: dict) -> dict:
     for d in days:
         if not isinstance(d, dict):
             raise GroupError(400, "days 里每一项要是对象")
-        day = _date(d.get("date")).isoformat()
+        day_d = _date(d.get("date"))
+        # 未来日期一律不收。设备时间快一天是最常见的输入错误，而后果不只是
+        # 榜单多一行：那些里程会落进后面几幕的窗口，等于提前把格数灌进去，
+        # 整季的判定就废了。宁可让他看到一句「检查手机时间」。
+        if day_d > _today() + dt.timedelta(days=FUTURE_DAYS):
+            raise GroupError(400, f"{day_d.isoformat()} 还没到，"
+                                  "不能上报未来的里程（检查手机时间是否准确）")
+        day = day_d.isoformat()
         try:
             dist = int(d.get("distance_m") or 0)
             dur = int(d.get("duration_s") or 0)

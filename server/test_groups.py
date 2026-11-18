@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import http.client
 import json
 import os
@@ -29,6 +30,12 @@ os.environ.pop("SMTP_HOST", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import app  # noqa: E402
+import groups  # noqa: E402
+
+# 这套测试用「未来几天」的日志一次性模拟整周/整季，所以要把上报的未来天数
+# 上限放宽；生产里它是 0（见 groups.FUTURE_DAYS）。下面单测「未来日期被拒」
+# 时会临时调回 0。
+groups.FUTURE_DAYS = 40
 
 PORT = 0
 ok = fail = 0
@@ -143,6 +150,18 @@ def main() -> int:
 
     st, r = req("POST", f"/v1/group/{gid}/report", {"days": [{"date": "2026-13-40"}]}, a)
     check("非法日期被拒（400）", st == 400, f"{st} {r}")
+
+    # 未来日期：设备时钟快一天就会把「明天」的里程写进来，而那些里程会落进
+    # 后面几幕的窗口，等于提前灌格。用相对日期算，别让这条测试自己过期。
+    _fut = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+    groups.FUTURE_DAYS = 0                   # 按生产值验一次
+    try:
+        st, r = req("POST", f"/v1/group/{gid}/report",
+                    {"days": [{"date": _fut, "distance_m": 5000, "duration_s": 1800,
+                               "acts": 1}]}, a)
+    finally:
+        groups.FUTURE_DAYS = 40
+    check("未来日期被拒（400）", st == 400 and "未来" in str(r.get("error")), f"{st} {r}")
 
     st, r = req("POST", f"/v1/group/{gid}/report", {"days": days_a}, c3)
     check("非成员不能上报（403）", st == 403, f"{st} {r}")
