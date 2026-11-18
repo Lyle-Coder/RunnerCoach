@@ -99,11 +99,20 @@ def main() -> int:
         print("× 远端写失败：", (r.stderr or r.stdout or "").strip()[:300])
         return 1
 
-    # 顺手校验一次：服务端读到的元数据要和刚写的一致
+    # 顺手校验：下这个文件本身（不是 /apk/ 目录——那个按设计就是 404），
+    # 并且元数据里的 sha256 要和刚算的一致。
     time.sleep(1)
-    r = _ssh(a, f"curl -s http://127.0.0.1:8088/apk/ -o /dev/null -w '%{{http_code}}' ; "
-                f"echo; sudo head -c 200 {REMOTE_DIR}/latest.json")
-    print("→ 远端确认：", (r.stdout or "").strip()[:220])
+    r = _ssh(a, f"curl -s -o /dev/null -w '%{{http_code}} %{{size_download}}' -I "
+                f"http://127.0.0.1:8088/apk/{fname}; echo; "
+                f"sudo cat {REMOTE_DIR}/latest.json")
+    out = (r.stdout or "").strip()
+    print("→ 远端确认：", out[:60])
+    if "200" not in out.split("\n")[0]:
+        print(f"× 8088 上取不到 {fname}：检查防火墙是否放行 8088")
+        return 1
+    if meta["sha256"] not in out:
+        print("× latest.json 里的 sha256 和刚上传的不一致")
+        return 1
 
     print()
     print("发布完成。客户端下次检查更新会读到：")

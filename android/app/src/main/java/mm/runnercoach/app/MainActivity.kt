@@ -99,6 +99,9 @@ class MainActivity : Activity() {
     private lateinit var bar: ProgressBar
     private lateinit var pull: PullRefreshLayout
     private lateinit var subtitle: TextView
+    private lateinit var groupBtn: TextView
+    /** 当前页面是不是小组那一块：顶栏入口据此高亮，跟底部 tab 同一套语义。 */
+    private var onGroupPage = false
     private lateinit var secrets: Secrets
 
     private var port = 0
@@ -197,7 +200,29 @@ class MainActivity : Activity() {
         }
         titles.addView(subtitle)
         toolbar.addView(titles, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        // 顶栏只留标题与副标题：同步走今日页下拉，动作都在页面卡片里。
+        // 小组入口放顶栏：它是主打功能，但又不该占掉底部第 5 个 tab 的位置
+        // （底部是「每天要看的东西」，小组是「一天里想进去看看的」）。
+        // 顶栏这个位置一直空着，用它比在「我的」里埋一格更像入口。
+        groupBtn = TextView(this).apply {
+            text = "小组"
+            textSize = 12f
+            setTextColor(0xFF8CB6E8.toInt())
+            gravity = Gravity.CENTER
+            isClickable = true
+            isFocusable = true
+            setPadding(dp(11), 0, dp(11), 0)
+            background = GradientDrawable().apply {
+                cornerRadius = dp(15).toFloat()
+                setColor(0x1F3B82F6)
+                setStroke(dp(1), 0x4D60A5FA)
+            }
+            setOnClickListener { openGroups() }
+        }
+        toolbar.addView(groupBtn, LinearLayout.LayoutParams(WRAP_CONTENT, dp(30)).apply {
+            leftMargin = dp(8)
+            rightMargin = dp(10)
+        })
+        // 顶栏不再有别的按钮：同步走今日页下拉，动作都在页面卡片里。
         // 以前右上角挂过「⟳」和「⋮」，和底部 tab、页内入口重复了三遍。
         chromeBars.add(toolbar)
         shell.addView(toolbar, LinearLayout.LayoutParams(MATCH_PARENT, toolH))
@@ -663,8 +688,29 @@ class MainActivity : Activity() {
     }
 
     /** 页面内链接也会切分区，底部高亮跟着 URL 走，不能只认 tab 点击。 */
+    /** 顶栏「小组」：进小组列表；已经在组页时再点一下回到列表。 */
+    private fun openGroups() {
+        if (port == 0) {
+            toast("还在启动，稍等一下")
+            return
+        }
+        web.loadUrl("http://127.0.0.1:$port/groups")
+    }
+
+    private fun updateGroupBtn() {
+        if (!this::groupBtn.isInitialized) return
+        groupBtn.setTextColor(if (onGroupPage) 0xFFBFDBFE.toInt() else 0xFF8CB6E8.toInt())
+    }
+
     private fun syncTabByUrl(url: String) {
         val path = url.substringAfter(":$port", url)
+        // 小组包括列表页、组详情、远征（/run）——它们都属于「小组」这条线，
+        // 从组详情点进远征时顶栏入口应该一直亮着，否则用户会以为自己掉出来了。
+        val g = path.startsWith("/groups") || path.startsWith("/run")
+        if (g != onGroupPage) {
+            onGroupPage = g
+            updateGroupBtn()
+        }
         val t = when {
             path.startsWith("/ai") -> TAB_COACH
             path.startsWith("/me") || path.startsWith("/files") ||
