@@ -247,7 +247,9 @@ def main() -> int:
                         f"--screenshot={OUT / ('ending_scene_' + kind + '.png')}",
                         src.as_uri()], capture_output=True)
 
-    if all(runsui._plates()):
+    if any(runsui._ending_plate(k) for k in runsui.ENDING_KEYS):
+        print("结局图：content/ 里的每结局一张")
+    elif all(runsui._plates()):
         print(f"底图：{runsui._plates()}")
     else:
         # 预览目录里已经有占位就沿用（可以手工换一张试效果），没有才合成
@@ -256,14 +258,17 @@ def main() -> int:
                 _plate(_k)
         runsui.PLATE_DIR = OUT
         print(f"底图：占位 → {OUT}")
-    assert all(runsui._plates()), "占位底图没生成出来"
+    if not any(runsui._ending_plate(k) for k in runsui.ENDING_KEYS):
+        assert all(runsui._plates()), "占位底图没生成出来"
     font_url = (ROOT / "garmin_cn/content/expedition-serif.woff2").as_uri()
 
     def _fix(h: str, font_url: str) -> str:
         """`/fonts/...`、`/content/...` 是给 App 的本地 HTTP 服务用的。
         预览走 file://，不换成本地绝对路径就都是 404——底图会变成一块空框。"""
         h = h.replace('url("/fonts/expedition-serif.woff2")', f'url("{font_url}")')
-        return h.replace('"/content/', f'"{OUT.as_uri()}/')
+        # `/content/...` 要指向**当前真正在用的**图目录：可能是 content/，
+        # 也可能是预览目录里合成的占位
+        return h.replace('"/content/', f'"{runsui.PLATE_DIR.as_uri()}/')
 
 
     wrap = (f"<style>html{{background:#05080d}}"
