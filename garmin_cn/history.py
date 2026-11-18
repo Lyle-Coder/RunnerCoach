@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""「历史」tab 的两个页面：按日期看板 + 历史活动列表。
+"""「历史」tab 的两个页面：每日看板 + 历史活动列表。
 
   /view?date=YYYY-MM-DD   按需生成该日看板，注入统一移动端适配与日期导航
   /history                 历史活动列表（区间 / 类型 / 分页 / 点一行出活动图）
@@ -61,21 +61,21 @@ def nav_html(day: str, cov: dict, from_: str = "history") -> str:
 def index_section(cov: dict) -> str:
     """「历史」页顶部的覆盖情况与按日期查看看板的入口。"""
     if not cov.get("days"):
-        return ('<div class="card"><div class="empty">本地库还是空的。'
-                '下拉同步一次，或到「我的 → 历史数据」补全更早的区间。</div></div>')
+        return ('<div class="card"><div class="empty">还没有同步运动数据。'
+                '回到「今日」下拉同步，App 会在后台补齐更早的记录。</div></div>')
     first, last = cov["first"], cov["last"]
     quick = "".join(
         f'<a class="chip" href="/view?date={_esc(d)}&from=history" data-nopush>{_esc(d[5:])}</a>'
         for d in (cov.get("recent") or [])[:12])
     dates = (f'<form class="filters" method="get" action="/view" data-nopush style="margin-top:12px">'
              f'<input type="hidden" name="from" value="history">'
-             f'<label>按日期查看板 <input type="date" name="date" '
+             f'<label>看板日期 <input type="date" name="date" '
              f'min="{_esc(first)}" max="{_esc(last)}" value="{_esc(last)}"></label>'
-             f'<button class="btn primary" type="submit">打开</button></form>')
+             f'<button class="btn primary" type="submit">查看看板</button></form>')
     return (f'<div class="grid three">' +
-            ui.stat("日汇总覆盖", f"{cov['days']} 天", f"{first} ~ {last}") +
+            ui.stat("每日数据", f"{cov['days']} 天", f"{first} ~ {last}") +
             ui.stat("活动", f"{cov['activities']} 条", f"最早 {cov['act_first'] or '—'}") +
-            ui.stat("按日期看板", "已就绪", "选中日期即可切换") +
+            ui.stat("每日看板", "已就绪", "选择日期查看") +
             '</div>' + f'<div class="card" style="margin-top:10px">{dates}'
             f'<div class="tags">{quick}</div></div>')
 
@@ -102,9 +102,9 @@ def view_page(qs: dict) -> str:
     from_ = "today" if _one(qs, "from") == "today" else "history"
     if cov.get("first") and not (cov["first"] <= day <= cov["last"]):
         return _message(
-            "这天还没有日汇总",
-            f"{day} 不在已覆盖的日汇总区间 {cov['first']} ~ {cov['last']} 内。"
-            "要更早的看板，请先到「我的 → 历史数据」补全；已经落库的历史活动"
+            "这一天还没有每日数据",
+            f"{day} 不在已同步的日期范围 {cov['first']} ~ {cov['last']} 内。"
+            "更早的每日数据会在后台陆续补齐。已同步的活动"
             "可以直接在「历史活动」里查到。", cov)
     r = A.dashboard(day, False)
     if not r.get("ok"):
@@ -140,7 +140,7 @@ def _month_bars(months: list[dict], hot: str = "", link: str = "") -> str:
     """
     today_hint = hot
     if not months:
-        return '<div class="empty">还没有活动，先同步，或到「我的 → 历史数据」补全</div>'
+        return '<div class="empty">还没有活动记录。可以回到「今日」下拉同步。</div>'
     n = len(months)
     # 周/月视图会给到 28~31 根：密排时隐藏数值、轴标签每 5 格标一次，
     # 否则 9px 宽的柱子上挤一堆字比柱子本身还乱。
@@ -297,25 +297,25 @@ def history_page(qs: dict) -> str:
     cur_y = stats.get("year") or {}
     months = stats.get("months") or []
 
-    chips = (ui.chip(f"{total.get('count', 0)} 次{sport_name}", "ok") +
-             ui.chip(f"累计 {float(total.get('km') or 0):.0f} km") +
-             ui.chip(f"{(stats.get('range') or {}).get('first') or '—'} 起") +
+    # 「多少次」「累计多少公里」在下面的概览里已经写着——页头再来一遍，
+    # 读者会以为上下两个数不一样。页头只留「从哪天开始」和「数据在哪」。
+    chips = (ui.chip(f"{(stats.get('range') or {}).get('first') or '—'} 起", "ok") +
              ui.chip("本机 · 离线可用"))
 
     # ---- 页首：三个数和一张柱状图
     # 单位从值里拆出去：`.val` 只放数字（21px，约 55px 宽），
     # 「13.5 km」整串塞进去要 82px，而卡片内容宽就是 82px —— 必然折行。
-    hero = ('<div class="grid three">' +
-            ui.stat(f"本月{volume_name}", f"{float(cur_m.get('km') or 0):.1f}",
-                    f"{cur_m.get('count') or 0} 次 · {cur_m.get('key') or ''}",
-                    unit="km") +
-            ui.stat(f"本年{volume_name}", f"{float(cur_y.get('km') or 0):.0f}",
-                    f"{cur_y.get('count') or 0} 次 · {cur_y.get('key') or ''}",
-                    unit="km") +
-            ui.stat(f"累计{volume_name}", f"{float(total.get('km') or 0):.0f}",
-                    f"{total.get('count') or 0} 次 · "
-                    f"{float(total.get('dur_h') or 0):.0f} 小时", unit="km") +
-            '</div>')
+    # 三个数字是一句话的三个时间尺度（本月/本年/累计），拆成三张卡反而
+    # 读不出递进关系；一行摆开，一眼能看出「这个月占全年多少」。
+    hero = (f'<div class="minirow">'
+            f'<span><b>{float(cur_m.get("km") or 0):.1f}</b> 本月{volume_name}</span>'
+            f'<span><b>{float(cur_y.get("km") or 0):.0f}</b> 本年{volume_name}</span>'
+            f'<span><b>{float(total.get("km") or 0):.0f}</b> 累计{volume_name}</span></div>'
+            f'<div class="tinyline">'
+            f'{cur_m.get("count") or 0} 次（{_esc(cur_m.get("key") or "")}）· '
+            f'{cur_y.get("count") or 0} 次（{_esc(cur_y.get("key") or "")}）· '
+            f'共 {total.get("count") or 0} 次 {float(total.get("dur_h") or 0):.0f} 小时'
+            f'</div>')
     today = dt.date.today().isoformat()
 
     def chart_card(title: str, series: list, hot: str = "", foot: str = "",
@@ -455,10 +455,10 @@ def history_page(qs: dict) -> str:
         selected_bike = " selected" if kind == "bike" else ""
         form = f"""<form class="card filters" method="get" action="/history" data-nopush>
       <input type="hidden" name="mode" value="list">
-      <label>起 <input type="date" name="start" value="{_esc(start)}"></label>
-      <label>止 <input type="date" name="end" value="{_esc(end)}"></label>
-      <label>类型 <select name="type">
-        <option value="all"{selected_all}>全部</option>
+      <label>开始日期 <input type="date" name="start" value="{_esc(start)}"></label>
+      <label>结束日期 <input type="date" name="end" value="{_esc(end)}"></label>
+      <label>运动类型 <select name="type">
+        <option value="all"{selected_all}>全部运动</option>
         <option value="run"{selected_run}>只看跑步</option>
         <option value="bike"{selected_bike}>只看骑行</option>
       </select></label>
@@ -473,12 +473,12 @@ def history_page(qs: dict) -> str:
         rows = "".join(
             ui.row("▶", f"{i.get('date')} {i.get('start')} · {i.get('name')}",
                    f"{i.get('dist', 0):.2f} km · {i.get('metric_text') or i.get('pace')} · "
-                   f"时长 {i.get('dur')} · 心率 {i.get('hr') or '—'} · 点这行出图",
+                   f"时长 {i.get('dur')} · 心率 {i.get('hr') or '—'} · 查看活动图",
                    aid=str(i.get("id") or ""), tone="b")
             for i in items)
         if not rows:
-            rows = ('<div class="empty">这个区间没有活动。可以放宽日期，'
-                    '或到「我的 → 历史数据」补全。</div>')
+            rows = ('<div class="empty">这段时间没有活动记录。可以试试扩大日期范围，'
+                    '或回到「今日」下拉同步。</div>')
 
         pager = '<div class="pager">'
         if offset:
@@ -492,15 +492,16 @@ def history_page(qs: dict) -> str:
         pager += '</div>'
 
         # 柱子可点：点哪个月就切到「按月」并选中它，省得先去按月再翻。
-        chart = chart_card(f"近 12 个月{volume_name}（km） · 点柱子看当月", months,
+        chart = chart_card(f"近 12 个月{volume_name}（km） · 点击柱子查看对应月份", months,
                            hot=str((stats.get("month") or {}).get("key") or ""),
                            link="/history?mode=month&type=" + kind + "&sel={key}")
         detail = (ui.sec("活动", chart + rows + pager +
                          '<div class="note" style="margin-top:8px">'
                          f'当前 {offset + 1}~{offset + len(items)} 条 · 共 {r.get("total", 0)} 条 · {_esc(scope)}'
                          '</div>') +
-                  ui.sec("筛选", form))
+                  '<details class="fold"><summary>按日期或类型筛选'
+                  '<span class="fx">›</span></summary>' + form + '</details>')
 
     body = ui.sec("概览", hero) + grouping + detail
     return ui.page("HISTORY · 历史", "历史数据",
-                   "点周期看当期柱状图，按周 / 月 / 年管理", body, chips)
+                   "查看活动记录，以及每周、每月和每年的运动统计", body, chips)

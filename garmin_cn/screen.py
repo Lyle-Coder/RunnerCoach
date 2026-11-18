@@ -451,7 +451,7 @@ def load_chart(ctl, atl, *, w: int = 360, h: int = 96) -> str:
     a = [float(v) for v in (ctl or []) if isinstance(v, (int, float))]
     b = [float(v) for v in (atl or []) if isinstance(v, (int, float))]
     if len(a) < 3 and len(b) < 3:
-        return '<div class="rc-win">负荷曲线样本不足</div>'
+        return '<div class="rc-win">训练记录不足，暂无法绘制负荷曲线</div>'
     vals = a + b
     lo, hi = min(vals), max(vals)
     span = (hi - lo) or 1.0

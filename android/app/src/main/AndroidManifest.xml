@@ -16,6 +16,9 @@
     <!-- Android 13+ 通知要运行时授权；没授权时前台服务照常跑，只是通知栏
          看不到进度。这里只声明，不主动弹权限框打断生成。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 应用内更新：下载完自己拉起系统安装器。Android 8+ 要求显式声明，
+         且用户还得在「安装未知应用」里给本 App 授权（系统会引导）。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- 直接唤起高德地图 App：Android 11+ 包可见性。不声明的话
          resolveActivity 即使装了高德也返回 null，会被误判成「没装」而走网页。 -->
@@ -88,6 +91,13 @@
             android:name=".MotionService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- 安装包出口：file:// 不能交给外部（FileUriExposed），
+             更新包下载完从这里以 content:// 交给系统安装器。 -->
+        <provider
+            android:name=".ApkProvider"
+            android:authorities="${applicationId}.apk"
+            android:exported="false"
+            android:grantUriPermissions="true" />
         <receiver
             android:name=".TodayWidget"
             android:exported="true">

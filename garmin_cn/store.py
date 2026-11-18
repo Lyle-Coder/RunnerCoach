@@ -80,6 +80,15 @@ CREATE TABLE IF NOT EXISTS race_results (
 );
 CREATE INDEX IF NOT EXISTS idx_race_date ON race_results(date);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_race_key ON race_results(date, event);
+-- 组上报队列：断网时先落这里，下次前台补传。
+-- 同组只保留最新一批——上报发的是「最近 N 天全量」，新的那批包含旧的，
+-- 留着旧批次只会让同一批数字发两遍。
+CREATE TABLE IF NOT EXISTS group_outbox (
+    group_id INTEGER PRIMARY KEY,
+    payload  TEXT NOT NULL,
+    tries    INTEGER NOT NULL DEFAULT 0,
+    next_at  INTEGER NOT NULL DEFAULT 0
+);
 """
 
 

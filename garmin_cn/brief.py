@@ -19,12 +19,17 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from pathlib import Path
 
 from .actcard import WEATHER_CN, benefit, dur_txt, kmh, pace_txt, theme_for
 from .metrics import num
 
-ROOT = Path(__file__).resolve().parent.parent
+# 数据目录跟着 GARMIN_HOME 走，**不能**用 `__file__` 推算：代码包是覆盖式
+# 更新的，这个模块自己可能来自 HOME/code/<ver>/garmin_cn/，那样地形缓存会
+# 写进下载目录，每次发版丢一次、还白占一份空间。
+ROOT = (Path(os.environ["GARMIN_HOME"]).expanduser()
+        if os.environ.get("GARMIN_HOME") else Path(__file__).resolve().parent.parent)
 CACHE = ROOT / "data" / "basemaps"
 
 # 时段称呼：只分四档，多了反而要查表

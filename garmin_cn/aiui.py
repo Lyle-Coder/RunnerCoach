@@ -176,21 +176,21 @@ BODY = """
 <div class="sheet" id="sheet">
   <div class="panel">
     <h2>模型服务</h2>
-    <div class="hint" id="setHint">两种接入方式：填自己的 API Key 直连，或接入平台额度（充值后按量扣）。</div>
+    <div class="hint" id="setHint">填自己的 API Key 直连（例如 DeepSeek，充值走它自己的后台）。</div>
 
     <div class="seg" id="aiSeg">
-      <button data-on="1">AI 开启</button>
-      <button data-on="0">已关闭</button>
+      <button data-on="1">开启 AI</button>
+      <button data-on="0">关闭 AI</button>
     </div>
-    <div class="note" id="aiSegNote">关闭后不再调用模型：教练建议、看板点评、拍照识热量都会停，配置保留。</div>
+    <div class="note" id="aiSegNote">关闭后，AI 教练建议、看板点评和饮食照片识别会暂停，设置会保留。</div>
 
-    <div class="seg" id="modeSeg">
+    <div class="seg" id="modeSeg" style="display:none">
       <button data-m="own">自配 API</button>
       <button data-m="platform">平台额度</button>
     </div>
 
     <div id="ownBox">
-      <label class="f">供应商</label>
+      <label class="f">模型服务商</label>
       <select class="f" id="provider"></select>
       <div class="note" id="provNote"></div>
 
@@ -198,21 +198,21 @@ BODY = """
       <input class="f" id="baseUrl" placeholder="https://api.deepseek.com/v1" autocapitalize="off" spellcheck="false">
       <div class="note">留空即用上面预设的地址。</div>
 
-      <label class="f">模型名</label>
+      <label class="f">模型名称</label>
       <input class="f" id="model" placeholder="deepseek-chat" autocapitalize="off" spellcheck="false">
 
-      <label class="f">API Key</label>
+      <label class="f">API 密钥</label>
       <input class="f" id="apiKey" type="password" placeholder="sk-…" autocapitalize="off" spellcheck="false">
-      <div class="note" id="keyNote">只存在本机 data/llm_config.json（权限 600），不上传。已有：<span id="keyHint">无</span></div>
+      <div class="note" id="keyNote">密钥保存在本机，用于连接你选择的服务。当前密钥：<span id="keyHint">无</span></div>
 
-      <label class="f">鉴权方式</label>
+      <label class="f">身份验证方式</label>
       <select class="f" id="authStyle">
         <option value="">自动识别（推荐）</option>
         <option value="bearer">Authorization: Bearer</option>
         <option value="x-api-key">x-api-key</option>
-        <option value="both">两个都带</option>
+        <option value="both">同时使用两种验证方式</option>
       </select>
-      <div class="note" id="authNote">自动：先按 Bearer 发，被 401/403 拒绝就换 x-api-key 重试，命中后记住这个域名要哪种头。</div>
+      <div class="note" id="authNote">选择自动识别时，App 会尝试这两种验证方式，并记住这个服务地址可用的方式。</div>
     </div>
 
     <div id="platBox" style="display:none">
@@ -223,7 +223,7 @@ BODY = """
         <label class="f"><span class="step">1</span>手机号 / 邮箱</label>
         <div class="row2">
           <input class="f" id="phoneInput" type="text" placeholder="11 位手机号或邮箱" autocapitalize="off" autocorrect="off" spellcheck="false">
-          <button class="btn" id="smsBtn">发验证码</button>
+          <button class="btn" id="smsBtn">发送验证码</button>
         </div>
 
         <label class="f"><span class="step">2</span>验证码</label>
@@ -241,7 +241,7 @@ BODY = """
         </div>
         <div class="note" id="acctNote">余额挂在账号上：卸载重装 / 换手机后登录同一账号即可找回。新用户赠送额度已到账，可直接问答。</div>
 
-        <label class="f">充值 · 在线支付</label>
+        <label class="f">选择充值金额</label>
         <div class="row2">
           <button class="btn" data-pay="5">¥ 5</button>
           <button class="btn" data-pay="10">¥ 10</button>
@@ -252,7 +252,7 @@ BODY = """
         </div>
         <div class="note" id="payNote">在线支付由服务端开通，未开通时点金额会明确提示；期间可先用兑换码充值。</div>
 
-        <label class="f">充值 · 兑换码</label>
+        <label class="f">使用兑换码</label>
         <div class="row2">
           <input class="f" id="codeInput" placeholder="RC-XXXX-XXXX" autocapitalize="characters" spellcheck="false">
           <button class="btn primary" id="redeemBtn">兑换</button>
@@ -331,8 +331,8 @@ async function api(action, body) {
 /* 错误要给出下一步动作，而不是只报一句红字 */
 function errBox(j, retry) {
   const map = {
-    config: ['还没配置模型服务', '点右上角 ⚙ 填 API Key，或切到平台额度。', 'gap'],
-    auth:   ['密钥无效', '检查 API Key 是否复制完整、有没有多余空格；平台令牌可能已吊销。', 'gap'],
+    config: ['还没配置模型服务', '打开右上角的设置，填写 API 密钥或选择平台额度。', 'gap'],
+    auth:   ['密钥无效', '请检查 API 密钥是否复制完整，或重新登录平台后再试。', 'gap'],
     quota:  ['额度不足', '上游账户余额用完了。去供应商后台充值，或用兑换码加平台额度。', 'gap'],
     rate:   ['请求太频繁', '等 30 秒再试。连续失败先确认账户额度。', 'retry'],
     net:    ['网络到不了', '检查手机网络；平台额度还需要电脑开机且隧道客户端在运行。', 'retry'],
@@ -390,7 +390,7 @@ async function viewToday(force) {
   if (j.focus) card.appendChild(el('div', 'focus', esc(j.focus)));
 
   if ((j.dos || []).length) {
-    card.appendChild(el('h3', null, '今天做'));
+    card.appendChild(el('h3', null, '今天的安排'));
     const ul = el('ul', 'list');
     j.dos.forEach(t => {
       const li = el('li');
@@ -401,7 +401,7 @@ async function viewToday(force) {
     card.appendChild(ul);
   }
   if ((j.donts || []).length) {
-    const h = el('h3', null, '今天别'); h.style.marginTop = '16px';
+    const h = el('h3', null, '今天先别做'); h.style.marginTop = '16px';
     card.appendChild(h);
     const ul = el('ul', 'list');
     j.donts.forEach(t => {
@@ -439,7 +439,7 @@ async function viewToday(force) {
   // 最近一次训练：一句话解读，点开看详情
   const last = el('div', 'card');
   last.appendChild(el('h3', null, '上一次训练'));
-  last.appendChild(el('div', 'focus', '让教练单独拆解这次训练的质量和下次怎么改。'));
+  last.appendChild(el('div', 'focus', '看看这次练得怎么样，下次有什么可以调整。'));
   const ab = el('button', 'btn', '分析最近一次训练');
   ab.style.marginTop = '12px';
   ab.onclick = () => analyzeLast(ab, last);
@@ -451,9 +451,8 @@ async function viewToday(force) {
   const mealCard = el('div', 'card');
   mealCard.appendChild(el('h3', null, '今天吃了什么'));
   mealCard.appendChild(el('div', 'focus',
-    '拍照让教练估热量和三大营养素，可以补一句描述（主食多少、几个菜）会更准。' +
-    '吃完了没拍照也行——直接写一句吃了什么。照片只用于这一次识别、不留存；' +
-    '记完一图流与看板同步更新。'));
+    '拍张照，或直接写下吃了什么。补一句份量能让热量和营养估算更准。' +
+    '照片只用于这次识别。保存后可在每日看板和导出的长图里查看。'));
   const mtxt = el('div', 'note', '正在读取今日记录…');
   mtxt.style.marginTop = '10px';
   mealCard.appendChild(mtxt);
@@ -512,7 +511,7 @@ async function analyzeLast(btn, host) {
 /* ---------------- 体重 ---------------- */
 function spark(points, key) {
   const W = 320, H = 96, P = 8;
-  if (!points || points.length < 2) return el('div', 'note', '数据点太少，画不出趋势');
+  if (!points || points.length < 2) return el('div', 'note', '至少有两次记录才能看到趋势。');
   const vs = points.map(p => p[key]);
   const min = Math.min(...vs), max = Math.max(...vs);
   const span = (max - min) || 1;
@@ -661,7 +660,7 @@ function renderChat() {
   if (!CHAT.length) {
     const e = el('div', 'empty');
     e.appendChild(el('b', null, '问点什么'));
-    e.appendChild(el('div', null, '教练已经知道你今天的数据：恢复度、睡眠、处方和体重。直接问就行。'));
+    e.appendChild(el('div', null, '可以问今天怎么练，或结合恢复度、睡眠和体重记录聊聊训练安排。'));
     const q = el('div', 'quick');
     QUICK.forEach(t => {
       const b = el('button', null, esc(t));
@@ -759,7 +758,11 @@ window.__gcBack = function(){
 };
 
 function fillSheet(c) {
-  const mode = c.mode || 'own';
+  /* 平台额度关着时（资质没办），只留自配 Key：不给一个点了必然报错的入口。
+     `platform_quota` 由 public_config 下发，和服务端 AI_PROXY 是同一个决定。 */
+  const quota = c.platform_quota !== false;
+  shown('#modeSeg', quota);
+  const mode = quota ? (c.mode || 'own') : 'own';
   document.querySelectorAll('#modeSeg button').forEach(b =>
     b.classList.toggle('on', b.dataset.m === mode));
   shown('#ownBox', mode === 'own');
@@ -781,11 +784,11 @@ function fillSheet(c) {
   $('#apiKey').value = '';
   $('#keyHint').textContent = c.api_key_hint || '无';
   $('#authStyle').value = c.auth_style || '';
-  const _authLabel = {bearer: 'Authorization: Bearer', 'x-api-key': 'x-api-key', both: '两个头都带'};
+  const _authLabel = {bearer: 'Authorization: Bearer', 'x-api-key': 'x-api-key', both: '同时使用两种验证方式'};
   $('#authNote').textContent = c.auth_style
-    ? ('已固定用 ' + (_authLabel[c.auth_style] || c.auth_style) + '（失败时不再自动换头）')
-    : ('自动：这个地址上次实测用 ' + (_authLabel[c.auth_effective] || 'Bearer')
-       + (c.session_on ? '；已自动补 x-opencode-session 会话头' : ''));
+    ? ('已固定用 ' + (_authLabel[c.auth_style] || c.auth_style) + '（连接失败时需要手动更换验证方式）')
+    : ('自动识别，上次可用的验证方式为 ' + (_authLabel[c.auth_effective] || 'Bearer')
+       + (c.session_on ? '。已自动添加 x-opencode-session 会话信息' : ''));
   /* 官方服务地址出厂内置，界面上不再让用户填；只有勾了「自定义」才显示输入框 */
   const auto = c.platform_auto !== false;
   const cb = $('#platCustom');
@@ -808,13 +811,13 @@ function fillSheet(c) {
     ? (logged
         ? '平台额度：已登录，每次问答按用量扣费。'
         : '平台额度：服务地址已内置，邮箱 / 手机号登录即可。')
-    : '自配 API：用你自己的 Key 直连模型服务商，数据只发给这一家。';
+    : '填写密钥后，请求会直接发给你选择的模型服务商。';
   const aiOn = c.ai_enabled !== false;
   document.querySelectorAll('#aiSeg button').forEach(b =>
     b.classList.toggle('on', (b.dataset.on === '1') === aiOn));
   $('#aiSegNote').textContent = aiOn
-    ? '关闭后不再调用模型：教练建议、看板点评、拍照识热量都会停，配置保留。'
-    : '当前已关闭：不会调用模型，配置仍保留；重新打开不用重填 Key。';
+    ? '关闭后，AI 教练建议、看板点评和饮食照片识别会暂停，设置会保留。'
+    : 'AI 已关闭。再次开启时可以继续使用已保存的设置。';
 
   const p = (c.providers || []).find(x => x.id === sel.value);
   if (p) $('#provNote').textContent = p.note + (p.key_url ? ' · 申请地址 ' + p.key_url : '');
@@ -977,7 +980,7 @@ function refreshSub() {
   if (!c) { s.textContent = ''; return; }
   if (c.ai_enabled === false) { s.textContent = 'AI 已关闭 · 点右上角设置可重新打开'; return; }
   if (!c.configured) { s.textContent = '还没配置模型服务 · 点右上角设置'; return; }
-  const mode = c.mode === 'platform' ? '平台额度' : '自配 API';
+  const mode = c.mode === 'platform' ? '平台额度' : '自己的 API 密钥';
   s.textContent = mode + ' · ' + (c.model || '') + ' · ' + (c.provider_label || '');
 }
 

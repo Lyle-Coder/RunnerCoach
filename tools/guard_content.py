@@ -27,8 +27,13 @@ def main(argv: list[str]) -> int:
     wide = "--all" in argv
     dirs = ("garmin_cn", "android", "server", "docs", "tools") if wide else CG.DEFAULT_DIRS
     issues = CG.scan(ROOT, dirs)
+    # 第二道：整仓不许原样抄服务端正文（预览工具、文档、注释都算）
+    copy_issues = CG.scan_story_copy(ROOT)
+    fps = CG.story_fingerprints(ROOT)
+    issues += copy_issues
     if not issues:
-        print("[ok] 客户端目录里没有受保护内容（只在服务端下发）")
+        print(f"[ok] 客户端目录里没有受保护内容（只在服务端下发）"
+              + (f"；{len(fps)} 段正文指纹，全仓无原样搬运" if fps else ""))
         return 0
     print("[x] 发现受保护内容混进了客户端：")
     for it in issues:

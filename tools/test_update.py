@@ -87,25 +87,54 @@ class AssetTest(unittest.TestCase):
 
 
 class DownloadContractTest(unittest.TestCase):
-    def test_android_pins_apk_mime_destination_and_completion_notification(self):
-        kt = ROOT / "android/app/src/main/java/mm/runnercoach/app"
-        download = (kt / "ApkDownload.kt").read_text(encoding="utf8")
-        main = (kt / "MainActivity.kt").read_text(encoding="utf8")
-        # Regression contract for a server returning application/zip: neither
-        # Content-Type nor Content-Disposition may choose the output extension.
-        self.assertIn('const val MIME = "application/vnd.android.package-archive"', download)
-        self.assertIn('.setMimeType(MIME)', download)
-        self.assertIn('.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "RunnerCoach/$filename")', download)
-        self.assertIn('UUID.randomUUID().toString().take(8) + ".apk"', download)
-        self.assertIn('VISIBILITY_VISIBLE_NOTIFY_COMPLETED', download)
-        self.assertIn('DownloadManager.STATUS_RUNNING', download)
-        self.assertIn('manager.openDownloadedFile(previous)', download)
-        self.assertIn('ApkDownload.enqueue(applicationContext', main)
-        self.assertIn('DownloadManager.ACTION_VIEW_DOWNLOADS', main)
-        body = main.split('private fun downloadUpdate(', 1)[1].split('private fun openUpdateDownloads(', 1)[0]
-        self.assertIn('if (name.isBlank())', body)
-        self.assertLess(body.index('if (name.isBlank())'), body.index('ApkDownload.enqueue'))
-        self.assertNotIn('Intent.ACTION_VIEW', body)
+    """应用内更新链路的契约。
+
+    2026-11 之前走 DownloadManager，那条路在自签证书 + targetSdk 34 下必然
+    「下载失败 0.00 B」（系统只信根证书、明文又被 networkSecurityConfig 拦），
+    所以改成了 Python 下载（8443 加密）+ 自写 ApkProvider 交给安装器。
+    这里锁死新链路的关键点，防止哪天又被人改回下载管理器。
+    """
+
+    KP = ROOT / "android/app/src/main/java/mm/runnercoach/app"
+
+    def test_python_downloads_the_apk(self):
+        main = (self.KP / "MainActivity.kt").read_text(encoding="utf8")
+        body = main.split("private fun downloadUpdate(", 1)[1].split(
+            "private fun tipsDownloadFailed(", 1)[0]
+        self.assertIn('apiCall("apk_fetch"', body)
+        # 没有加密地址就别硬下，给浏览器兜底（浏览器不拦明文）
+        self.assertIn("url_tls", body)
+        self.assertIn("tipsDownloadFailed", body)
+
+    def test_reader_apk_goes_through_content_provider(self):
+        provider = (self.KP / "ApkProvider.kt").read_text(encoding="utf8")
+        main = (self.KP / "MainActivity.kt").read_text(encoding="utf8")
+        # 只读
+        self.assertIn('if (mode != "r") throw SecurityException', provider)
+        # 只映射 updates 目录、只认 .apk、拦路径穿越
+        self.assertIn('"updates"', provider)
+        self.assertIn('.endsWith(".apk", ignoreCase = true)', provider)
+        self.assertIn('name.contains("..")', provider)
+        # 安装器必须收到 content:// + 临时读权限
+        self.assertIn('content://$packageName.apk/', main)
+        self.assertIn("FLAG_GRANT_READ_URI_PERMISSION", main)
+
+    def test_manifest_declares_provider_and_install_permission(self):
+        mani = (ROOT / "android/app/src/main/AndroidManifest.xml").read_text(
+            encoding="utf8")
+        self.assertIn("REQUEST_INSTALL_PACKAGES", mani)
+        self.assertIn('android:name=".ApkProvider"', mani)
+        self.assertIn('android:authorities="${applicationId}.apk"', mani)
+        # exported 必须是 false：安装包只经本 App 授权的 URI 出去
+        seg = mani.split(".ApkProvider", 1)[1].split("/>", 1)[0]
+        self.assertIn('android:exported="false"', seg)
+
+    def test_download_manager_is_gone(self):
+        # 回归：DownloadManager 认不了自签证书，这条路已经删干净
+        self.assertFalse((self.KP / "ApkDownload.kt").exists(),
+                         "ApkDownload.kt 已被 Python 下载取代，不该回来")
+        main = (self.KP / "MainActivity.kt").read_text(encoding="utf8")
+        self.assertNotIn("DownloadManager.", main)
 
     def test_uploaded_attachment_mime_preserves_apk_and_zip_distinction(self):
         from tools import release

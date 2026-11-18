@@ -78,7 +78,7 @@ def pick_session(res: dict) -> dict:
     if s is None:
         return {
             "type": "数据不足", "duration": "—", "intensity": "—",
-            "why": "今天还没有同步到足够的生理数据，先按体感安排，建议同步后再看。",
+            "why": "先同步一下设备。数据补齐前，今天怎么练可以先看自己的体感。",
         }
 
     plan_rest, plan_text, plan_next = _plan_today(res)
@@ -95,12 +95,12 @@ def pick_session(res: dict) -> dict:
                   if sports.family(a.get("type")) == sport) / 1000
     done_txt = ""
     if done_min >= 5:
-        done_txt = f"另外，今天已记录 {done_min:.0f} 分钟"
+        done_txt = f"今天已经练了 {done_min:.0f} 分钟"
         if done_km >= 0.1:
             done_txt += f" / {done_km:.2f} km"
-        done_txt += "，后续训练也要考虑这部分负荷。"
+        done_txt += "，安排接下来的训练时把这段也算进去。"
     if all_min - done_min >= 5:
-        done_txt += f"今天另有其他运动 {all_min - done_min:.0f} 分钟，计入总负荷，不抵扣本项目课表。"
+        done_txt += f"另外还有 {all_min - done_min:.0f} 分钟其他运动。这些运动计入总负荷，当前项目的课表进度单独计算。"
 
     parts = {p["name"]: p for p in (res["readiness"].get("parts") or [])}
     hrv_score = (parts.get("HRV") or {}).get("score")
@@ -127,35 +127,33 @@ def pick_session(res: dict) -> dict:
                 "type": "休息日加练 · 补恢复",
                 "duration": f"已练 {done_full}",
                 "intensity": "Z1",
-                "why": f"课表今天是休息日，实际练了 {done_full}。练都练了不用自责，"
-                       "但明天别再叠加：睡前补碳水、做 10 分钟小腿和髋的放松，"
-                       "把这次加练当成「提前支取」的恢复额度。",
+                "why": f"今天原本休息，已经练了 {done_full}。明天先别加量。"
+                       "睡前补点碳水，再花 10 分钟放松小腿和髋部。",
                 "source": "raceplan",
             }
-        plan_txt = (f"课表{race['abbr']}" if race and race.get("abbr")
-                    else (f"课表{plan_text}" if plan_text else "今天没有排课"))
+        plan_txt = (f"今天的课是 {race['abbr']}" if race and race.get("abbr")
+                    else (f"今天的课是 {plan_text}" if plan_text else "今天没有排课"))
         tgt_txt = ""
         if tgt_km > 0 or tgt_min > 0:
             tgt_txt = "（原排 " + " / ".join(x for x in [
                 f"{tgt_km:g} km" if tgt_km else "", f"{tgt_min:.0f} 分钟" if tgt_min else ""] if x) + "）"
-        tail = ("恢复度不高是这次训练的结果，不是「今天不该练」的理由——"
-                "接下来只做恢复，别再追加训练。" if s < 75 else
-                "剩下的时间交给恢复：补水、补碳水、拉伸 10 分钟。")
+        tail = ("现在恢复度偏低，今天接下来就休息。" if s < 75 else
+                "接下来补水、补点碳水，再拉伸 10 分钟。")
         return {
             "type": "课表已完成 · 放松恢复" if race or items else "今日已训练 · 放松恢复",
             "duration": f"已完成 {done_full}",
             "intensity": "—",
-            "why": f"{plan_txt}{tgt_txt}今天已经完成 {done_full}，不用再叠加训练量。{tail}",
+            "why": f"{plan_txt}{tgt_txt}。已经练了 {done_full}，今天不用再加量。{tail}",
             "source": "raceplan" if race else "garmin_plan" if items else "coach",
         }
 
     if s < 60 or tsb < -25:
-        tail = f"课表原排{race['abbr']}，" if race and not race.get("is_rest") else (
-            f"佳明教练今天原排{plan_text}，" if plan_text else "")
+        tail = f"原计划是 {race['abbr']}，" if race and not race.get("is_rest") else (
+            f"佳明原计划是 {plan_text}，" if plan_text else "")
         return {
             "type": "完全休息 / 主动恢复", "duration": "20–30 分钟", "intensity": "Z1",
-            "why": "恢复度低或疲劳积累明显，今天的目标是让身体回到基线，而不是完成训练量。"
-                   "可选散步、泡沫轴、髋踝活动度。" + (f"{tail}建议改期或降级。" if tail else "")
+            "why": "今天先留点时间恢复。想活动一下的话，可以散步、滚泡沫轴，或者活动一下髋和脚踝。"
+                   + (f"{tail}可以改天练，或者降低强度。" if tail else "")
                    + (done_txt or ""),
             "source": "raceplan" if race else "",
         }
@@ -165,10 +163,8 @@ def pick_session(res: dict) -> dict:
     if race and race.get("is_rest"):
         return {
             "type": "按计划休息", "duration": "0–20 分钟", "intensity": "Z1",
-            "why": f"备赛课表今天是休息日（W{race['week']} {race['phase']}期），"
-                   f"恢复度 {s} 只说明「可以练」，不代表「应该练」。"
-                   "休息是计划的一部分，别自己加练；"
-                   + (f"{race['tip']}。" if race.get("tip") else "可做 10–15 分钟活动度、泡沫轴。")
+            "why": f"备赛第 {race['week']} 周（{race['phase']}期），今天按课表休息。恢复度 {s}，不用临时加课。"
+                   + (f"{race['tip']}。" if race.get("tip") else "想活动的话，可以花 10–15 分钟做做关节活动或滚泡沫轴。")
                    + (done_txt or ""),
             "source": "raceplan",
         }
@@ -179,11 +175,11 @@ def pick_session(res: dict) -> dict:
             "type": f"{race.get('abbr') or '比赛'} · 比赛日",
             "duration": (race.get("sub") or (f"{int(race['minutes'])} 分钟" if race.get("minutes") else "—")),
             "intensity": "比赛强度",
-            "why": "今天是目标赛事，赛前只做热身与激活，不要加任何额外训练量。"
-                   + (f"课表说明：{detail}。" if detail else "")
+            "why": "今天比赛，赛前把热身做好就行。"
+                   + (f"计划里还有这条提醒：{detail}。" if detail else "")
                    + (f"恢复度 {s}" + (f"、HRV 分项 {hrv_score}" if hrv_score else "")
-                      + "，状态够用就别在赛前改计划。" if s >= 75 else
-                      f"恢复度 {s} 偏低，赛前把目标放保守一档，前程宁慢勿快。"),
+                      + "。赛前按原计划准备。" if s >= 75 else
+                      f"恢复度 {s} 偏低，起跑放慢一点，目标也可以调得保守些。"),
             "source": "raceplan",
         }
 
@@ -203,23 +199,23 @@ def pick_session(res: dict) -> dict:
                 dur_txt = f"{low}–{mins} 分钟"
             reasons = []
             if hrv_score is not None and hrv_score < 70:
-                reasons.append("HRV 还在基线下")
+                reasons.append("HRV 低于平时")
             if debt >= 6:
-                reasons.append(f"睡眠缺口 {debt:.1f} h")
+                reasons.append(f"近 7 天少睡了 {debt:.1f} 小时")
             if s < 75:
                 reasons.append(f"恢复度只有 {s}")
-            why_bits.append(("状态一般（" + "、".join(reasons) + "），" if reasons else "状态一般，")
-                            + "先按短的一端跑，全程守住心率上限，不追配速。")
+            why_bits.append(("今天状态一般（" + "、".join(reasons) + "）。" if reasons else "今天状态一般。")
+                            + "选较短的时长。心率快到上限就放慢，配速不用追。")
         else:
-            why_bits.append("状态在线，按课表原样执行。")
+            why_bits.append("今天照课表练就好。")
         if detail:
-            why_bits.append(f"课表说明：{detail}。")
+            why_bits.append(f"{detail}。")
         if mins and done_min >= 5:
             left = max(0, mins - done_min)
             why_bits.append(
-                f"今天已记录 {done_min:.0f} 分钟"
+                f"今天已经练了 {done_min:.0f} 分钟"
                 + (f" / {done_km:.2f} km" if done_km >= 0.1 else "")
-                + (f"，课表还差约 {left:.0f} 分钟。" if left >= 5 else "，课表的量已经够了，剩下的时间做放松。"))
+                + (f"，离计划时长还差约 {left:.0f} 分钟。" if left >= 5 else "，今天的量够了，做点放松就好。"))
         elif done_txt:
             why_bits.append(done_txt)
         return {
@@ -233,9 +229,9 @@ def pick_session(res: dict) -> dict:
     if plan_rest:
         return {
             "type": "按计划休息", "duration": "0–20 分钟", "intensity": "Z1",
-            "why": f"佳明教练今天排的是休息日，恢复度 {s} 只说明「可以练」，不代表「应该练」。"
-                   "休息是计划的一部分，别自己加练；可做 10–15 分钟活动度、泡沫轴。"
-                   + (f"{plan_next}，把力气留到那天。" if plan_next else "")
+            "why": f"佳明今天安排休息。恢复度 {s}，按课表走就好。"
+                   "想活动的话，可以花 10–15 分钟做做关节活动或滚泡沫轴。"
+                   + (f"{plan_next}。" if plan_next else "")
                    + (done_txt or ""),
             "source": "garmin_plan",
         }
@@ -246,33 +242,32 @@ def pick_session(res: dict) -> dict:
         if profile.get("lthr"):
             result["why"] += f"骑行阈值心率参考 {profile['lthr']:.0f} bpm，心率分区以设备设置为准。"
         if plan_text:
-            result.update(type="按骑行课表训练", why=f"今日课表：{plan_text}。" + result["why"])
+            result.update(type="按骑行课表训练", why=f"今天安排了 {plan_text}。" + result["why"])
         result["why"] += done_txt
         return result
     if s < 75 or (acwr or 0) > 1.5 or debt >= 6:
-        extra = "，另外近 7 天睡眠缺口偏大" if debt >= 6 else ""
-        plan_hint = f"今天计划是{plan_text}，建议按状态降一档执行。" if plan_text else ""
+        extra = "这 7 天睡得偏少，今天尤其需要留些余力。" if debt >= 6 else ""
+        plan_hint = f"原计划是 {plan_text}，今天可以练轻松一点。" if plan_text else ""
         return {
             "type": "轻松有氧", "duration": "30–50 分钟", "intensity": "Z1–Z2",
-            "why": "状态一般" + extra + "。用低强度维持有氧基础，全程保持能正常说话的强度，"
-                   "心率不超 Z2 上限；今天不适合加码。" + plan_hint,
+            "why": "今天轻松练就好。保持能正常说话的强度，心率别超过 Z2 上限，也先别加量。" + extra + plan_hint,
         }
     if s < 88:
         return {
             "type": "常规训练", "duration": "50–70 分钟", "intensity": "Z2 + 少量 Z3",
-            "why": "恢复良好，可以安排正常训练量；主体放在有氧，末尾加 2–3 组短爬坡或节奏段。"
-                   + (f"今天计划是{plan_text}。" if plan_text else ""),
+            "why": "恢复得还可以，今天按平时的量练。大部分时间保持有氧，最后加 2–3 组短爬坡或节奏段。"
+                   + (f"今天安排了 {plan_text}。" if plan_text else ""),
         }
     if tsb > 8:
         return {
             "type": "质量课", "duration": "60–75 分钟", "intensity": "Z3–Z4",
-            "why": "恢复度和新鲜度都到位，这是本周最适合上强度的窗口，好好利用。"
-                   + (f"今天计划是{plan_text}。" if plan_text else ""),
+            "why": "今天恢复得不错，近期疲劳也低，可以做强度课。"
+                   + (f"今天安排了 {plan_text}。" if plan_text else ""),
         }
     return {
         "type": "中等强度训练", "duration": "50–70 分钟", "intensity": "Z2–Z3",
-        "why": "身体状态在线，按计划推进即可，注意把强度控制在能完成全程的程度。"
-               + (f"今天计划是{plan_text}。" if plan_text else ""),
+        "why": "今天按计划练。把强度控制在能稳稳完成整节课的程度。"
+               + (f"今天安排了 {plan_text}。" if plan_text else ""),
     }
 
 

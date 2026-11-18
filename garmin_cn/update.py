@@ -1,10 +1,13 @@
-"""应用内检查更新：只读 Gitee 的公开 Release 接口。
+"""应用内检查更新：优先问自己的服务器，失败再回落 Gitee。
 
-为什么走 Gitee
---------------
-App 没有应用商店渠道，安装包只发在 Gitee Release（`liyufei-lyle/RunnerCoach`）。
-Gitee 的 `/releases/latest` 可以匿名读、国内直连、不涉及账号，于是「有没有
-新版本、新版本在哪下载」这两件事不需要自建后端，也不需要推送通道。
+为什么改
+--------
+原来只读 Gitee 的公开 Release。但 Release 挂在源码仓库上——源码一旦转私有，
+这个接口就要登录，更新功能立刻失效。而源码该私有（算法是我们的东西）。
+
+所以先问 `{platform_base}/v1/app/latest`（我们自己的服务器，走已内置的
+自签证书），拿不到再回落 Gitee。两个来源返回同一个结构，上层不用区分。
+自建的那份还多一个 `sha256`，可以核对下载到的包。
 
 隐私边界
 --------
@@ -21,6 +24,7 @@ import re
 import urllib.request
 
 REPO = "liyufei-lyle/RunnerCoach"
+SERVER_LATEST = "/v1/app/latest"
 API_LATEST = f"https://gitee.com/api/v5/repos/{REPO}/releases/latest"
 PAGE = f"https://gitee.com/{REPO}/releases"
 TIMEOUT = 8
@@ -88,11 +92,62 @@ def parse(payload: dict | None, current: str | None) -> dict:
     }
 
 
+def from_server(cur: str, timeout: float = TIMEOUT) -> dict | None:
+    """问自建服务器。拿不到就返回 None，交给 Gitee 兜底。
+
+    这条路径要过自签证书，所以先 install 信任链——顺序不能反，
+    否则第一条 HTTPS 就 CERTIFICATE_VERIFY_FAILED，然后静默回落。
+    """
+    from . import llm, tlstrust
+
+    tlstrust.install()
+    try:
+        base = str(llm.load_config().get("platform_base") or "").rstrip("/")
+    except Exception:  # noqa: BLE001
+        return None
+    if not base.startswith("https://"):
+        return None
+    req = urllib.request.Request(f"{base}{SERVER_LATEST}",
+                                 headers={"User-Agent": f"RunnerCoach/{cur}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.loads(r.read().decode("utf-8", "ignore"))
+    except Exception:      # noqa: BLE001 - 服务器没起来 / 没发布过，都算"没有"
+        return None
+    if not isinstance(d, dict) or not d.get("ok") or not d.get("url"):
+        return None
+    tag = str(d.get("version") or "").strip()
+    return {
+        "ok": bool(tag),
+        "current": cur,
+        "latest": tag,
+        "newer": bool(tag) and is_newer(tag, cur),
+        "url": str(d.get("url") or ""),
+        "page": str(d.get("url") or ""),        # 自建的没有网页，指向同一个包
+        "apk": str(d.get("file") or ""),
+        "notes": str(d.get("notes") or "")[:NOTES_MAX],
+        "published": str(d.get("published") or ""),
+        "prerelease": False,
+        "sha256": str(d.get("sha256") or ""),
+        "size": int(d.get("size") or 0),
+        "source": "server",
+        # 加密地址：App 内部下载用它。系统下载管理器只信系统根证书，
+        # 认不了自签证书；改走明文又会被 networkSecurityConfig 拦掉
+        # （targetSdk 34 默认禁明文，DownloadManager 也受这条约束）——
+        # 用户看到的就是「下载失败 0.00 B」。所以走 Python + TLS。
+        "url_tls": (f"{base}{d['url_tls']}"
+                    if str(d.get("url_tls") or "").startswith("/") else ""),
+    }
+
+
 def check(current: str | None = None, timeout: float = TIMEOUT) -> dict:
-    """联网查最新 Release。任何异常都返回 ok=False，调用方按「不提示」处理。"""
+    """联网查最新版本。任何异常都返回 ok=False，调用方按「不提示」处理。"""
     from . import __version__
 
     cur = current or __version__
+    got = from_server(cur, timeout)
+    if got:
+        return got
     req = urllib.request.Request(
         f"{API_LATEST}?t={int(__import__('time').time())}",   # 绕过中间缓存
         headers={"User-Agent": f"RunnerCoach/{cur}",
@@ -106,4 +161,5 @@ def check(current: str | None = None, timeout: float = TIMEOUT) -> dict:
                 "error": f"{type(e).__name__}: {e}"[:160]}
     out = parse(payload, cur)
     out.setdefault("current", cur)
+    out["source"] = "gitee"
     return out
