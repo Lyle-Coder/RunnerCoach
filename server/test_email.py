@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""邮箱/手机号双通道登录 · 临时全链路测试（跑完可删）"""
+"""邮箱/手机号双通道登录 · 临时全链路测试（跑完可删）
+
+手机号那几条要在**内网联调**的前提下跑：服务端需要显式放开 dev 回显，
+否则 `/v1/sms/send` 对手机号直接 400（这是有意的，见 app.py 里的说明）。
+
+    SMS_PROVIDER=dev RC_ALLOW_DEV_ECHO=1 PORT=8399 python app.py
+"""
 import json
 import urllib.request
 

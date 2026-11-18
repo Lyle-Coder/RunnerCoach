@@ -38,10 +38,12 @@ scp 本地:server/content/expedition_events.json server/content/
 # 2. 装：建用户 → 拷程序 → 生证书 → 写 env 模板 → 装 systemd
 sudo sh deploy/install.sh <服务器IP>
 
-# 3. 填密钥（这是唯一需要手工的一步）
-sudo vim /etc/runnercoach/env
-#   SMTP_USER / SMTP_PASS   ← QQ 邮箱授权码，免费，两分钟
-#   UPSTREAM_API_KEY        ← 模型 Key
+# 3. 密钥：本机已经配过的会自动搬过去
+#    install.sh 读 server/.env，把 SMTP_* / UPSTREAM_* / ADMIN_TOKEN 抄进
+#    /etc/runnercoach/env（只搬白名单，RC_SERVICE_CLOSED 这类故意不搬）。
+#    想看会搬哪些键而不动手：
+python3 deploy/import_env.py --from server/.env --dry-run
+
 sudo systemctl start runnercoach
 sudo journalctl -u runnercoach -n 30 --no-pager
 ```

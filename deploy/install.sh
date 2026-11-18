@@ -70,6 +70,15 @@ else
   echo "  已生成 $ETC/env（ADMIN_TOKEN 已随机填好）"
 fi
 
+# 本机 server/.env 里已经配过 SMTP / 上游 Key 了，直接搬过去——
+# 让人在服务器上再抄一遍 16 位授权码，抄错一位的表现是"验证码发不出去"，
+# 而错误信息不会指向"你打错字了"。
+if [ -f server/.env ]; then
+  echo "→ 复用本机 server/.env 里的密钥"
+  "$PY" deploy/import_env.py --from server/.env --into "$ETC/env" || true
+  chmod 600 "$ETC/env"
+fi
+
 echo "→ systemd"
 cat > "/etc/systemd/system/$SVC.service" <<EOF
 [Unit]
