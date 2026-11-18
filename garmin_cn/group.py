@@ -72,6 +72,15 @@ def build_days(store, today: str | None = None, days: int = 14) -> list[dict]:
             a["ran"] = True
 
     plan = _plan_flags(s, e, agg)
+    # 探索徽章：先扫轨迹落格（增量，只扫没扫过的），再取窗口内每日新增格数。
+    # 只在本机算，上报的只有这个整数——格子 ID 不出手机。
+    from . import explore as EX
+
+    try:
+        EX.scan(store)
+        new_cells = EX.daily_new(store, s, e)
+    except Exception:      # noqa: BLE001 - 网格算不出来不能拖垮上报
+        new_cells = {}
     dates = sorted(set(agg) | {k for k, v in plan.items() if v is not None})
     out = []
     for d in dates:
@@ -82,6 +91,9 @@ def build_days(store, today: str | None = None, days: int = 14) -> list[dict]:
             "duration_s": int(round(a.get("duration_s") or 0)),
             "acts": int(a.get("acts") or 0),
             "elevation_m": int(round(a.get("elevation_m") or 0)),
+            # 0 = 这天没踩到新路面（跑了老路也算 0），不是「没数据」。
+            # 老版本客户端不传这个字段，服务端按 0 处理，两者在徽章上等价。
+            "explorer": int(new_cells.get(d) or 0),
             "plan_done": plan.get(d),
         })
     return out
@@ -285,6 +297,27 @@ def season(gid: int, today: str | None = None) -> dict:
     """本周的衫、分、名次、称号。"""
     q = f"?today={today}" if today else ""
     return _call("GET", f"/v1/group/{int(gid)}/season{q}")
+
+
+def week(gid: int, today: str | None = None) -> dict:
+    """本周玩法：目标、对子、预言、建议目标。"""
+    q = f"?today={today}" if today else ""
+    return _call("GET", f"/v1/group/{int(gid)}/week{q}")
+
+
+def set_goal(gid: int, km: float, predict: int | None = None,
+             today: str | None = None) -> dict:
+    """报本周目标；顺手可以把预言一起投了。
+
+    两个动作合成一个请求，是因为它们发生在同一个念头里（「这周跑多少 /
+    谁会完不成」）。分成两步，第二步永远没人做。
+    """
+    body: dict = {"km": float(km)}
+    if predict:
+        body["predict"] = int(predict)
+    if today:
+        body["today"] = today
+    return _call("POST", f"/v1/group/{int(gid)}/goal", body)
 
 
 def board(gid: int, rng: str = "week", today: str | None = None) -> dict:

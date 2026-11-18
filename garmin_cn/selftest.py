@@ -1381,6 +1381,7 @@ def run() -> int:
     from garmin_cn import groupui as _GU
 
     _gd, _gb, _gc = _GP.detail, _GP.board, _GP.challenge_list
+    _gw = getattr(_GP, "week", None)
 
     def _fake_detail(_gid):
         return {"ok": True, "group": {
@@ -1398,16 +1399,33 @@ def run() -> int:
         _GP.board = lambda gid, rng="week", today=None: {
             "ok": True, "range": rng, "rows": [
                 {"alias": "队友", "is_me": False, "distance_m": 12000,
-                 "days": 3, "acts": 3},
+                 "days": 3, "acts": 3, "explorer": 12},
                 {"alias": "我", "is_me": True, "distance_m": 9000,
-                 "days": 2, "acts": 2}],
+                 "days": 2, "acts": 2, "explorer": 3}],
             "hidden": 0,
             "summary": {"members": 2, "shown": 2, "hidden": 0,
                         "total_distance_m": 21000}}
         _GP.challenge_list = lambda gid, today=None: {"ok": True, "challenges": []}
+        # P2 的「本周」块：目标 + 结对 + 预言。不 mock 会去连真服务器，
+        # 虽然失败很快，但每次自检都白等一次连接。
+        _GP.week = lambda gid, today=None: {
+            "ok": True, "from": "2026-11-16", "to": "2026-11-22",
+            "goal": {"km": 30, "suggest": 28.0, "reported": True},
+            "pairs": [{"slot": 1,
+                       "small": {"user_id": 1, "alias": "我", "km": 30,
+                                 "target": 30, "actual": 9.0},
+                       "big": {"user_id": 2, "alias": "队友", "km": 60,
+                               "target": 75, "actual": 12.0},
+                       "even": False, "result": "upset"}],
+            "predict": {"mine": 2, "rows": [
+                {"user_id": 1, "target_uid": 2, "result": "wrong",
+                 "alias": "我", "target_alias": "队友"}]},
+            "bonus": {}, "goal_rows": [],
+            "targets": [{"user_id": 2, "alias": "队友"}]}
         _gh = _GU.group_page("TOK", 1)
     finally:
         _GP.detail, _GP.board, _GP.challenge_list = _gd, _gb, _gc
+        _GP.week = _gw
 
     # 榜单/赛事/设置三块直接铺在页面上，不再各发一个盒子
     assert 'class="flat"' in _gh, "组页又给数据块套上卡片了"
@@ -1423,6 +1441,39 @@ def run() -> int:
     # 昵称能在页面上直接改
     assert "/alias" in _gh and "我的昵称" not in _gh, "昵称入口不在设置行里"
     assert ">昵称<" in _gh, "设置区没有昵称那一行"
+
+    # ---- P2：本周玩法（目标 / 结对 / 预言）
+    # 三条口径：结论一行、表单折叠、预言只能选已报目标的人。
+    assert "本周" in _gh and "/goal" in _gh, "组页没有报目标的入口"
+    assert "目标 <b>30</b> km" in _gh, "本周目标没在页面上显示"
+    assert "结对" in _gh and "我 30" in _gh, "结对让分没显示出来"
+    assert "预言" in _gh and "完不成" in _gh, "我投的预言没回显"
+    assert 'name="predict"' in _gh, "没有预言选择框"
+    assert "定本周目标" in _gh, "报目标表单没折叠"
+    # 探索徽章不占衫：board 里够 5 格才在榜上标一句，不够就不标
+    assert 'class="sub">新 12 格' in _gh, "够格的探索徽章没显示在榜上"
+    assert 'class="sub">新 3 格' not in _gh, "不到 5 格也标了探索徽章"
+
+    # ---- P2 口径守卫：数字必须两端同一套，否则用户看到的格数和服务端记的
+    # 对不上，而且这种偏差没人会主动报 bug，只会觉得「徽章不准」。
+    from garmin_cn import explore as _EX
+    from garmin_cn import group as _GX
+
+    _gg = (ROOT / "server/groups.py").read_text(encoding="utf-8")
+    _rk = (ROOT / "server/ranking.py").read_text(encoding="utf-8")
+    assert _EX.CELL_M == 500.0, "探索网格边长不是 500 m"
+    assert _EX.MIN_ACT_M == 3000.0, "单次计入门槛不是 3 km"
+    assert f"DAY_EXPLORER_MAX = {_EX.DAY_CAP}" in _gg, \
+        "服务端单日格数上限和客户端 explore.DAY_CAP 不一致"
+    assert tuple(_EX.RUN_TYPES) == tuple(_GX.RUN_TYPES), \
+        "探索和里程对「跑步类」的定义分叉了"
+    assert "explorer     INTEGER NOT NULL DEFAULT 0" in _gg, \
+        "group_daily 没有 explorer 列（老库迁移会漏）"
+    # 赛季分：基础 90 + 让分/预言加分 10 = 100。改权重前先想清楚页面上的满分。
+    assert "W_KM = 30.0" in _rk and "BONUS_MAX = 10.0" in _rk, \
+        "赛季分权重或加分上限被改动，页面满分要跟着改"
+    assert "PREDICT_HIT = 2.0" in _rk and "PREDICT_UNDERESTIMATED = 3.0" in _rk, \
+        "预言的 +2 / +3 口径变了"
 
     # 无域名部署：自签证书靠「把那一张加进信任链」生效，不是关校验。
     # 没有证书时必须是 no-op——用公共 CA 的部署不该被这段影响。
