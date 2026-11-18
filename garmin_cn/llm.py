@@ -118,7 +118,9 @@ DEFAULT_PROVIDER = "deepseek"
 BUILTIN_PLATFORM_BASE = _BC.PLATFORM_BASE
 BUILTIN_PLATFORM_SHARE_CODE = _BC.PLATFORM_SHARE_CODE
 CLIENT_CONFIG_PATH = "/v1/client/config"
-CLIENT_CONFIG_TTL = 6 * 3600    # 下发结果的缓存时长（秒）
+CLIENT_CONFIG_TTL = 6 * 3600    # 下发成功后的缓存时长（秒）
+# 同步失败后的重试间隔。短到「换个网络就有救」，长到不会每次请求都等一个超时。
+SYNC_RETRY = 60
 
 DEFAULTS = {
     "mode": "own",              # own=自配 API / platform=平台额度
@@ -139,6 +141,7 @@ DEFAULTS = {
     "platform_served_base": "",
     "platform_served_share_code": "",
     "platform_sync_at": 0,      # 上次尝试下发的时刻（成功失败都记，避免反复等超时）
+    "platform_sync_ok": False,  # 上次是否真的问到了（决定缓存 6 小时还是 60 秒）
     "temperature": 0.6,
     "auto_advice": True,        # 打开看板时自动生成今日建议
     # AI 总开关：关掉后不再调用模型（教练页、看板点评、拍照识热量都停），
@@ -827,10 +830,16 @@ def _valid_public_base(url: str) -> bool:
 
 
 def sync_platform_config(force: bool = False) -> dict:
-    """向网关问一次「现在该连哪个地址」，结果缓存 6 小时。
+    """向网关问一次「现在该连哪个地址」。成功缓存 6 小时，失败只缓存 60 秒。
 
     引导请求固定走出厂内置入口（带内置分享码）；整个同步失败静默——
     隧道没开、断网、网关升级中都不影响用内置值继续登录。
+
+    为什么失败要单独算：老用户的 config.json 里存着上一代服务器地址
+    （`platform_served_base`），而它优先于出厂内置地址。换服务器之后，
+    第一次启动若恰好断网，同步失败 → 继续用那个死地址；如果失败也记
+    6 小时，用户会被钉在死地址上最多 6 小时，表现是「装上新包还是连不上」，
+    而界面上没有任何提示告诉他再等等。失败只等 60 秒，下次请求就重试。
     """
     from . import tlstrust as _TLS
 
@@ -839,9 +848,12 @@ def sync_platform_config(force: bool = False) -> dict:
     if not cfg.get("platform_auto", True):
         return cfg
     now = time.time()
-    if not force and now - float(cfg.get("platform_sync_at") or 0) < CLIENT_CONFIG_TTL:
+    ttl = CLIENT_CONFIG_TTL if cfg.get("platform_sync_ok") else SYNC_RETRY
+    if not force and now - float(cfg.get("platform_sync_at") or 0) < ttl:
         return cfg
-    patch: dict = {"platform_sync_at": int(now)}
+    # 先按「这次同步失败」记，成功了再改回 True——有答案（哪怕服务端
+    # 说「没配」）才算成功，连不上不算。
+    patch: dict = {"platform_sync_at": int(now), "platform_sync_ok": False}
     try:
         req = urllib.request.Request(
             BUILTIN_PLATFORM_BASE + CLIENT_CONFIG_PATH, method="GET")
@@ -858,6 +870,9 @@ def sync_platform_config(force: bool = False) -> dict:
         else:
             # 服务端没配（或配错）：清掉旧下发值，回落出厂内置
             patch.update(platform_served_base="", platform_served_share_code="")
+        # 这里两种情况都算「问到了」：服务端明确说没配，也是有效答案，
+        # 不该每分钟重问一遍。
+        patch["platform_sync_ok"] = True
     except Exception:
         pass
     return save_config(**patch)
