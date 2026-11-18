@@ -1027,6 +1027,33 @@ def run() -> int:
     _oh2 = RU.outcome_page("TOK", _oc2)
     assert "没走到" in _oh2 and "0/0" not in _oh2, "未结算的幕没显示成「没走到」"
 
+    # 结算页的主角是「谁走了多少」：局内数值（士气/旧日志）只能出现在页脚
+    # 那一行小字里。这一条挡的是「以后又把它加回四个大数字」。
+    _oc3 = dict(_oc, km=372.0, hidden=1)
+    _oc3["people"] = [
+        {"alias": "老周", "me": False, "km": 168.0, "days": 24, "runs": 24,
+         "badge": "这一段他走得最远", "badge_id": "km", "status": "moving"},
+        {"alias": "小林", "me": True, "km": 140.0, "days": 28, "runs": 28,
+         "badge": "一天没断", "badge_id": "full", "status": "moving"},
+        {"alias": "阿灰", "me": False, "km": 0.0, "days": 0, "runs": 0,
+         "badge": "", "badge_id": "", "status": "stranded"},
+    ]
+    _ohp = RU.outcome_page("TOK", _oc3)
+    assert "谁走了多少" in _ohp and "老周" in _ohp and "168.0" in _ohp, \
+        "结算页没列每个人的里程"
+    assert "一天没断" in _ohp and "这一段他走得最远" in _ohp, "闪光点没显示"
+    assert _ohp.count("没有记录") == 1, "没跑的人被写成了 0.0 km"
+    assert "最后没走出来" in _ohp, "受困的人没在名单里标出来"
+    assert "另有 1 人" in _ohp, "关掉共享的人没交代"
+    assert _ohp.count("士气") == 1, "士气出现了不止一次，又变回主角了"
+    assert "总行程" not in _ohp, "旧的四个大数字还在"
+    # 没拿到旧日志时不提它：它是藏起来的东西，写「旧日志 0/3」等于
+    # 替玩家宣布他错过了什么
+    _oc4 = dict(_oc3, relic_count=0)
+    assert "旧日志" not in RU.outcome_page("TOK", _oc4), "没拿到旧日志却提了它"
+    assert "旧日志 1/3" in _ohp, "拿到了旧日志却没写"
+    
+
     # 结局的脚印图形：四种结局必须真的不一样，否则「同一片雪地、不同的
     # 到达方式」这个说法就是空的
     _svgs = {k: RU._ending_svg(k) for k in
@@ -1101,9 +1128,17 @@ def run() -> int:
     # 小组」。版式锁死高度，否则出图时上下会留一大块底色。
     from garmin_cn import runcard as RC
     assert RC.W == 1080 and RC.H == 1920 and RC.W * 16 == RC.H * 9, "分享图不是 9:16"
-    _sh = RC.build_html(_oc)
+    _sh = RC.build_html(_oc3)
     assert "data-gc-canvas" in _sh and "__gcExportInfo" in _sh, "分享图缺出图探针"
-    assert "抵达" in _sh and ">52<" in _sh, "分享图缺结局名或总行程"
+    assert "抵达" in _sh and "372" in _sh, "分享图缺结局名或总里程"
+    # 分享图也讲「人走了多远」：士气/旧日志这种局内数值不该占大数字的位置
+    assert "士气" not in _sh, "分享图又把士气当成了四大数字之一"
+    assert "走到的里程" in _sh and "走过的人" in _sh, "分享图缺里程或人数"
+    # 旧日志没拿到时不占格子：一张「旧日志 0/3」的分享图是在替玩家
+    # 宣布他错过了什么
+    assert "旧日志" in _sh
+    assert "旧日志" not in RC.build_html(dict(_oc3, relic_count=0)), \
+        "没拿到旧日志却在分享图上写了 0/3"
     assert _sh.count('class="ar') == 4, "四段路没画全"
     assert "height:1920px" in _sh, "分享图没锁高度，出图会上下留白"
     for _bad in ("track", "latitude", "小赵", "老李"):

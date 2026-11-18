@@ -1362,6 +1362,138 @@ def _last_of(season) -> dict:
         return {}
 
 
+# ---------------------------------------------------------------- 每人的一段
+# 结算页的主角是「谁走了多少」，不是士气补给——后者是过程，前者是这一季
+# 真正留在这个人身上的东西。所以每个人一行：里程、天数，以及**他自己**
+# 最突出的那一点。
+#
+# 为什么不排成排行榜、只给第一名一个头衔：一条队里五个人的差异往往不在
+# 「谁多」，而在「强在哪」——有人总量不高但一天没断，有人跑得少但单次最长。
+# 按总量排名会把后面四个人全抹平，而「都被看见」才是这类小组想要的。
+def _people_stats(c, gid: int, season, uid_me: int) -> tuple[list[dict], int]:
+    """赛季里每个人走了多少，以及一句话的「他这一段的样子」。
+
+    只列**开着共享**的人：关掉共享的人数据本来就没上报，凭空列一行
+    「0 km」等于替他说他没跑。他们只计入 `hidden`。
+    """
+    start = dt.date.fromisoformat(season["season_start"])
+    season_days = (dt.date.fromisoformat(season["season_end"]) - start).days + 1
+
+    mem = {int(r["user_id"]): r for r in c.execute(
+        "SELECT user_id, alias, share_level FROM group_members"
+        " WHERE group_id=? AND status='active'", (gid,)).fetchall()}
+
+    acc: dict[int, dict] = {}
+    for r in c.execute("SELECT user_id, date, distance_m, acts FROM group_daily"
+                       " WHERE group_id=? AND date BETWEEN ? AND ?",
+                       (gid, season["season_start"], season["season_end"])).fetchall():
+        u = int(r["user_id"])
+        a = acc.setdefault(u, {"km": 0.0, "days": 0, "runs": 0, "best": 0.0,
+                               "weeks": [0.0] * ACTS})
+        m = int(r["distance_m"] or 0)
+        a["km"] += m / 1000.0
+        if m > 0:
+            a["days"] += 1
+        a["runs"] += int(r["acts"] or 0)
+        a["best"] = max(a["best"], m / 1000.0)
+        w = (dt.date.fromisoformat(r["date"]) - start).days // ACT_DAYS
+        if 0 <= w < ACTS:
+            a["weeks"][w] += m / 1000.0
+
+    trials = {int(r["user_id"]): int(r["n"] or 0) for r in c.execute(
+        "SELECT user_id, COUNT(*) AS n FROM group_run_trial"
+        " WHERE group_id=? AND done=1 AND level='verified' GROUP BY user_id",
+        (gid,)).fetchall()}
+    # 事件格：走了岔路、选了支线拿到的推进。它不体现在里程上，但也是贡献。
+    grids = {int(r["user_id"]): int(r["g"] or 0) for r in c.execute(
+        "SELECT user_id, SUM(pos) AS g FROM group_run_member WHERE group_id=?"
+        " GROUP BY user_id", (gid,)).fetchall()}
+    last = {int(r["user_id"]): r for r in c.execute(
+        "SELECT user_id, status, excluded FROM group_run_member"
+        " WHERE group_id=? AND act=?", (gid, ACTS)).fetchall()}
+
+    rows: list[dict] = []
+    hidden = 0
+    for u, m in mem.items():
+        if m["share_level"] != "summary":
+            hidden += 1
+            continue
+        a = acc.get(u) or {"km": 0.0, "days": 0, "runs": 0, "best": 0.0,
+                           "weeks": [0.0] * ACTS}
+        weeks = a["weeks"]
+        used = [w for w in weeks if w > 0]
+        mean = sum(weeks) / ACTS if ACTS else 0.0
+        # 稳：四周的离散程度。只用跑过的周算，没跑的那几周不参与——
+        # 出差两周的人不该因为「有两周是 0」被评为不稳。
+        steady = None
+        if len(used) >= 3 and mean > 0:
+            var = sum((w - mean) ** 2 for w in weeks) / ACTS
+            steady = max(0.0, 1 - (var ** 0.5) / mean)
+        first2 = sum(weeks[:2])
+        climb = (sum(weeks[2:]) / first2) if first2 > 0 else None
+        r = last.get(u)
+        rows.append({
+            "alias": str(m["alias"] or ""),
+            "me": u == uid_me,
+            "km": round(a["km"], 1),
+            "days": a["days"],
+            "runs": a["runs"],
+            "best": round(a["best"], 1),
+            "grid": grids.get(u, 0),
+            "trials": trials.get(u, 0),
+            "steady": round(steady, 3) if steady is not None else None,
+            "climb": round(climb, 2) if climb is not None else None,
+            # 受困的人也要列：他跑了多少是既成事实，不能因为最后没走出来
+            # 就从统计里消失（那才叫「没被看见」）。
+            "status": str(r["status"]) if r else "moving",
+            "excluded": bool(r and int(r["excluded"] or 0)),
+        })
+
+    # 谁在某一项上是队里第一。只给**独一无二**的第一，并列就不说「最」——
+    # 两个人并列却只夸一个，比不夸更伤人。
+    def top_of(key: str) -> str:
+        vals = [x[key] for x in rows if x[key]]
+        if len(vals) < 2:
+            return ""
+        best = max(vals)
+        if best <= 0 or vals.count(best) > 1:
+            return ""
+        return next(x["alias"] for x in rows if x[key] == best)
+
+    lead = {k: top_of(k) for k in ("km", "days", "best", "grid", "trials")}
+    for x in rows:
+        x["badge"], x["badge_id"] = _badge_of(x, lead, season_days)
+    # 里程多的排前面：这只是顺序，不是名次（界面不标 1/2/3）
+    rows.sort(key=lambda x: (-x["km"], -x["days"], -x["trials"]))
+    return rows, hidden
+
+
+def _badge_of(x: dict, lead: dict, season_days: int) -> tuple[str, str]:
+    """一个人最突出的那一点。**每人只给一条**——三条并列等于没重点。
+
+    顺序是「这件事有多难忘」：跑完的试炼 > 走得最远 > 一天没断 > 单次最长
+    > 出勤 > 稳 > 后程发力 > 路上推进。最后没有可说的就不给，不硬凑。
+    """
+    alias = x["alias"]
+    if x["trials"] and lead["trials"] == alias:
+        return f"试炼 {x['trials']} 次，全对得上", "trials"
+    if x["km"] and lead["km"] == alias:
+        return "这一段他走得最远", "km"
+    if x["days"] and x["days"] >= season_days and season_days >= 7:
+        return "一天没断", "full"
+    if x["best"] and lead["best"] == alias and x["best"] >= 8:
+        return f"最长的一天 {x['best']:g} km", "best"
+    if x["days"] and lead["days"] == alias and x["days"] >= 3:
+        return f"出门 {x['days']} 天，队里最多", "days"
+    if x["steady"] is not None and x["steady"] >= 0.72:
+        return "每周都差不多，最稳", "steady"
+    if x["climb"] is not None and x["climb"] >= 1.3:
+        return f"后两段多走 {round((x['climb'] - 1) * 100):d}%", "climb"
+    if x["grid"] and lead["grid"] == alias and x["grid"] >= 3:
+        return "路上推进得最远", "grid"
+    return "", ""
+
+
 def _ending_view(key: str) -> dict:
     """结局的标题与文案。
 
@@ -1409,6 +1541,7 @@ def api_outcome(me, gid: int, query: dict) -> dict:
                          "got": round(got, 1), "target": round(need, 1),
                          "hit": need > 0 and got >= need})
         members = len(_members(c, gid, ACTS))
+        people, hidden = _people_stats(c, gid, season, uid)
     if not ended:
         with G.db() as c:
             team_now, target_now = team_progress(c, gid, season, act_no)
@@ -1421,11 +1554,15 @@ def api_outcome(me, gid: int, query: dict) -> dict:
     # 判定只有一处（`_ending_key`）：翻篇后「上一季」的结论也走它，
     # 两处各写一套迟早对不上。
     ending = _ending_key(flags, total, morale)
+    # 全队真实里程。和「格」不是一回事：格是按周目标封顶的推进单位，
+    # 里程是人真的跑出来的距离。结算页讲「走了多远」，用后者。
+    km = round(sum(float(x.get("km") or 0) for x in people), 1)
     return {"ok": True, "ended": True, "ending": ending,
             "ending_detail": _ending_view(ending),
-            "team": round(total, 1), "morale": morale, "relics": relics,
+            "team": round(total, 1), "km": km, "morale": morale, "relics": relics,
             "left": int(flags.get("left") or 0),
             "acts": acts, "members": members, "relic_count": len(relics),
+            "people": people, "hidden": hidden,
             "start": season["season_start"], "end": season["season_end"],
             "season": pool().get("season") or "雪线之前"}
 

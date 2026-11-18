@@ -244,6 +244,16 @@ def main() -> int:
     check("结局是四种之一",
           r.get("ending") in ("arrive", "detour", "missing", "lost", "discoverer"), str(r.get("ending")))
     check("结局带团队总量", "team" in r, str(r))
+    # 结算页的主角是「谁走了多少」，所以这份名单必须有，且数据自洽
+    _ppl = r.get("people") or []
+    check("结局带每个人的一行", len(_ppl) == 2, str(_ppl))
+    check("每人的里程加起来等于全队里程",
+          abs(sum(float(x.get("km") or 0) for x in _ppl) - float(r.get("km") or 0)) < 0.05,
+          f'{_ppl} vs {r.get("km")}')
+    check("按里程从多到少排", [x["km"] for x in _ppl] == sorted(
+        [x["km"] for x in _ppl], reverse=True), str([x["km"] for x in _ppl]))
+    check("每人都有天数与次数",
+          all("days" in x and "runs" in x for x in _ppl), str(_ppl))
 
     # ---------------- 翻篇
     print("\n9b. 翻篇（结束后留一天看结果，第二天开新的一季）")
@@ -536,6 +546,68 @@ def main() -> int:
     with EXP.G.db() as c:
         check("增益按幕失效（第二幕查不到）", EXP.buff_sums(c, gid_b, 2) == {},
               str(EXP.buff_sums(c, gid_b, 2)))
+
+    print("\n13. 结算页：每个人的里程与「他这一段最亮的一点」")
+    # 直接用库造三种人，不经过上报接口：这里要测的是统计口径，
+    # 走 HTTP 只会把「日期要落在赛季里」这类无关的约束带进来。
+    dp1, dp2, dp3, dp4 = (login(x) for x in
+                          ("pp1@test.local", "pp2@test.local",
+                           "pp3@test.local", "pp4@test.local"))
+    st, r = req("POST", "/v1/group/create",
+                {"name": "每人一段", "alias": "甲"}, dp1)
+    gid_p, code_p = r["group"]["id"], r["group"]["invite_code"]
+    for _tok, _al in ((dp2, "乙"), (dp3, "丙"), (dp4, "丁")):
+        req("POST", "/v1/group/join", {"code": code_p, "alias": _al}, _tok)
+
+    season_p = {"season_start": "2026-11-16", "season_end": "2026-12-13"}
+    with EXP.G.db() as c:
+        ids = {r_["alias"]: int(r_["user_id"]) for r_ in c.execute(
+            "SELECT user_id, alias FROM group_members WHERE group_id=?",
+            (gid_p,)).fetchall()}
+        # 丁关掉共享：数据本来就不该有他
+        c.execute("UPDATE group_members SET share_level='off' WHERE group_id=?"
+                  " AND user_id=?", (gid_p, ids["丁"]))
+        rows = []
+        for i in range(28):
+            date = (dt.date(2026, 11, 16) + dt.timedelta(days=i)).isoformat()
+            rows.append((gid_p, ids["甲"], date, 5000, 1800, 1, None, 1))
+            if i % 7 != 6:                       # 丙一周少一天
+                rows.append((gid_p, ids["丙"], date, 7000, 2400, 1, None, 1))
+            if i % 7 == 2:                       # 乙一周只跑一次，但一次很远
+                rows.append((gid_p, ids["乙"], date, 16000, 5400, 1, None, 1))
+        c.executemany("INSERT INTO group_daily(group_id,user_id,date,distance_m,"
+                      "duration_s,acts,plan_done,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                      rows)
+        # 乙最后受困：他跑得少、又在雪里没出来，但**不能**从名单里消失
+        c.execute("INSERT INTO group_run_member(group_id,user_id,act,pos,supply,"
+                  "week_target_km,branch,status,updated_at) VALUES(?,?,?,0,0,25,'',"
+                  "'stranded',1)", (gid_p, ids["乙"], EXP.ACTS))
+        pp, hh = EXP._people_stats(c, gid_p, season_p, ids["甲"])
+
+    by_alias = {x["alias"]: x for x in pp}
+    check("只列开着共享的人（丁不在）", "丁" not in by_alias, str(list(by_alias)))
+    check("关掉共享的人计入 hidden", hh == 1, str(hh))
+    check("甲 28 天 140 km", by_alias["甲"]["days"] == 28
+          and abs(by_alias["甲"]["km"] - 140) < .1, str(by_alias["甲"]))
+    check("丙 24 天 168 km（总量第一）", by_alias["丙"]["days"] == 24
+          and abs(by_alias["丙"]["km"] - 168) < .1, str(by_alias["丙"]))
+    check("受困的人仍在名单里", by_alias["乙"]["status"] == "stranded",
+          str(by_alias["乙"]))
+    check("里程第一的人拿到「走得最远」",
+          by_alias["丙"]["badge_id"] == "km", str(by_alias["丙"]["badge"]))
+    check("一天没断是被单独看见的（不是总量第一）",
+          by_alias["甲"]["badge_id"] == "full", str(by_alias["甲"]["badge"]))
+    check("跑得少但一次远的人也有话说",
+          by_alias["乙"]["badge_id"] == "best" and "16" in by_alias["乙"]["badge"],
+          str(by_alias["乙"]["badge"]))
+    check("一人只给一条（不堆三个标签）",
+          all(str(x["badge"]).count("，") <= 1 for x in pp), str([x["badge"] for x in pp]))
+    check("排序按里程降序",
+          [x["km"] for x in pp] == sorted([x["km"] for x in pp], reverse=True),
+          str([x["km"] for x in pp]))
+    check("没跑过的人不给空话", EXP._badge_of(
+        {"alias": "x", "km": 0, "days": 0, "best": 0, "grid": 0, "trials": 0,
+         "steady": None, "climb": None}, {}, 28) == ("", ""), "")
 
     print(f"\n通过 {ok} 项，失败 {fail} 项")
     srv.shutdown()
