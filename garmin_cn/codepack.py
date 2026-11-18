@@ -165,7 +165,15 @@ def status() -> dict:
     在界面上必须分得清——否则用户只会看到一句「没有代码包」，不知道该
     再开一次还是该查网络。
     """
-    return {"applied": _last.get("applied") or "",
+    applied = _last.get("applied") or ""
+    base = ""
+    if applied:
+        # 已挂载那一份标注适用的 APK 版本。诊断里一起显示，
+        # 以后「APK 是 X、代码包是给 Y 的」这种事故一眼能看出来。
+        d = ROOT / applied / "garmin_cn"
+        base = str(_meta_of(d.parent).get("base_version") or "") if d.is_dir() else ""
+    return {"applied": applied,
+            "base_version": base,
             "pending": _last.get("pending") or "",
             "error": _last.get("error") or "",
             "note": _last.get("note") or "",
