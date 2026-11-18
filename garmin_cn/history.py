@@ -297,25 +297,25 @@ def history_page(qs: dict) -> str:
     cur_y = stats.get("year") or {}
     months = stats.get("months") or []
 
-    chips = (ui.chip(f"{total.get('count', 0)} 次{sport_name}", "ok") +
-             ui.chip(f"累计 {float(total.get('km') or 0):.0f} km") +
-             ui.chip(f"{(stats.get('range') or {}).get('first') or '—'} 起") +
+    # 「多少次」「累计多少公里」在下面的概览里已经写着——页头再来一遍，
+    # 读者会以为上下两个数不一样。页头只留「从哪天开始」和「数据在哪」。
+    chips = (ui.chip(f"{(stats.get('range') or {}).get('first') or '—'} 起", "ok") +
              ui.chip("本机 · 离线可用"))
 
     # ---- 页首：三个数和一张柱状图
     # 单位从值里拆出去：`.val` 只放数字（21px，约 55px 宽），
     # 「13.5 km」整串塞进去要 82px，而卡片内容宽就是 82px —— 必然折行。
-    hero = ('<div class="grid three">' +
-            ui.stat(f"本月{volume_name}", f"{float(cur_m.get('km') or 0):.1f}",
-                    f"{cur_m.get('count') or 0} 次 · {cur_m.get('key') or ''}",
-                    unit="km") +
-            ui.stat(f"本年{volume_name}", f"{float(cur_y.get('km') or 0):.0f}",
-                    f"{cur_y.get('count') or 0} 次 · {cur_y.get('key') or ''}",
-                    unit="km") +
-            ui.stat(f"累计{volume_name}", f"{float(total.get('km') or 0):.0f}",
-                    f"{total.get('count') or 0} 次 · "
-                    f"{float(total.get('dur_h') or 0):.0f} 小时", unit="km") +
-            '</div>')
+    # 三个数字是一句话的三个时间尺度（本月/本年/累计），拆成三张卡反而
+    # 读不出递进关系；一行摆开，一眼能看出「这个月占全年多少」。
+    hero = (f'<div class="minirow">'
+            f'<span><b>{float(cur_m.get("km") or 0):.1f}</b> 本月{volume_name}</span>'
+            f'<span><b>{float(cur_y.get("km") or 0):.0f}</b> 本年{volume_name}</span>'
+            f'<span><b>{float(total.get("km") or 0):.0f}</b> 累计{volume_name}</span></div>'
+            f'<div class="tinyline">'
+            f'{cur_m.get("count") or 0} 次（{_esc(cur_m.get("key") or "")}）· '
+            f'{cur_y.get("count") or 0} 次（{_esc(cur_y.get("key") or "")}）· '
+            f'共 {total.get("count") or 0} 次 {float(total.get("dur_h") or 0):.0f} 小时'
+            f'</div>')
     today = dt.date.today().isoformat()
 
     def chart_card(title: str, series: list, hot: str = "", foot: str = "",
@@ -499,7 +499,8 @@ def history_page(qs: dict) -> str:
                          '<div class="note" style="margin-top:8px">'
                          f'当前 {offset + 1}~{offset + len(items)} 条 · 共 {r.get("total", 0)} 条 · {_esc(scope)}'
                          '</div>') +
-                  ui.sec("筛选", form))
+                  '<details class="fold"><summary>按日期或类型筛选'
+                  '<span class="fx">›</span></summary>' + form + '</details>')
 
     body = ui.sec("概览", hero) + grouping + detail
     return ui.page("HISTORY · 历史", "历史数据",
