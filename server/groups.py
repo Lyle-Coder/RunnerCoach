@@ -402,6 +402,31 @@ def api_join(me, body: dict, ip: str) -> dict:
     return {"ok": True, "already": False, "group": _group_brief(g, "member", members)}
 
 
+def api_me_update(me, gid: int, body: dict) -> dict:
+    """改我在这个组里的昵称。任何在组的成员都能改自己，不需要管理员。
+
+    昵称是冗余存在 group_members.alias 里的（不 JOIN users），所以「同一个
+    账号在不同组叫不同名字」是天然支持的——这正是组内昵称的意义。
+    """
+    uid = int(me["user_id"])
+    raw = str(body.get("alias") or "").strip()
+    # 空值不走 _clean_alias 的兜底：那会回落到「138****0000」这种
+    # 打码账号，比原来的昵称更糟，还会漏一半账号出去。
+    if not raw:
+        raise GroupError(400, "昵称不能为空")
+    if len(raw) > 16:
+        raise GroupError(400, "昵称最多 16 个字")
+    alias = _clean_alias(raw, me["phone"])
+    with db() as c:
+        m = _require_member(c, gid, uid)
+        if m["alias"] == alias:
+            return {"ok": True, "alias": alias, "changed": False}
+        c.execute("UPDATE group_members SET alias=? WHERE group_id=? AND user_id=?",
+                  (alias, gid, uid))
+        _audit(c, gid, uid, "alias", uid)
+    return {"ok": True, "alias": alias, "changed": True}
+
+
 def api_list(me) -> dict:
     uid = int(me["user_id"])
     with db() as c:
@@ -904,6 +929,8 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_leave(me, gid), 200
         if action == "share" and method == "POST":
             return api_share(me, gid, body), 200
+        if action == "me" and method == "POST":
+            return api_me_update(me, gid, body), 200
         if action == "transfer" and method == "POST":
             return api_transfer(me, gid, body), 200
         if action == "archive" and method == "POST":

@@ -1571,6 +1571,11 @@ class _Handler(SimpleHTTPRequestHandler):
                     elif act == "share":
                         r = G.set_share(gid, values.get("share") or "summary")
                         msg = "已保存" if r.get("ok") else (r.get("error") or "保存失败")
+                    elif act == "alias":
+                        r = G.set_alias(gid, values.get("alias") or "")
+                        msg = (f'昵称已改成「{r.get("alias")}」' if r.get("changed")
+                               else "昵称没变") if r.get("ok") \
+                            else (r.get("error") or "改名失败")
                     elif act == "report":
                         r = self._group_report(gid)
                         msg = (f'已上报 {r.get("saved", 0)} 天'

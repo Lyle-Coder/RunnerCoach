@@ -259,6 +259,38 @@ def main() -> int:
     st, r = req("GET", f"/v1/group/{gid}/board?range=week&today=2026-11-21", None, a)
     check("重新打开后回到榜单", "小赵" in [x["alias"] for x in r["rows"]])
 
+    # ---------------- 组内昵称
+    print("\n6b. 组内昵称可以自己改")
+    st, r = req("POST", f"/v1/group/{gid}/me", {"alias": "夜里跑的那个"}, b)
+    check("成员改自己的昵称（不需管理员）",
+          st == 200 and r.get("alias") == "夜里跑的那个" and r.get("changed") is True,
+          f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}", None, a)
+    names = [m["alias"] for m in r["group"]["members"]]
+    check("榜单/成员里看到新昵称", "夜里跑的那个" in names, str(names))
+    check("不影响组里别人的昵称", "老李" in names, str(names))
+
+    st, r = req("POST", f"/v1/group/{gid}/me", {"alias": "夜里跑的那个"}, b)
+    check("改成同一个名字时 changed=false", st == 200 and r.get("changed") is False,
+          f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/me", {"alias": ""}, b)
+    check("空昵称被拒（400），不回落成打码账号",
+          st == 400 and "空" in str(r.get("error")), f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/me", {"alias": "一" * 17}, b)
+    check("超长昵称被拒（400）", st == 400, f"{st} {r}")
+
+    # 昵称是 per-group 的：同一个账号在别的组应该还是原来的名字
+    st, r = req("POST", "/v1/group/create", {"name": "另一个组", "alias": "阿甲"}, b)
+    gid2 = (r.get("group") or {}).get("id") if r.get("ok") else None
+    if gid2:
+        st, r = req("GET", f"/v1/group/{gid2}", None, b)
+        mine2 = [m["alias"] for m in r["group"]["members"] if m.get("is_me")]
+        check("昵称按组独立（新组里是阿甲）", mine2 == ["阿甲"], str(mine2))
+        # 收尾：不然下面「另一个人建新组」会撞 409（一个账号只能当一个组的组长）
+        req("POST", f"/v1/group/{gid2}/archive", {"confirm": "1"}, b)
+
     # ---------------- 权限
     print("\n7. 权限")
     st, r = req("GET", f"/v1/group/{gid}", None, a)

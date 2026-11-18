@@ -248,8 +248,14 @@ def group_page(token: str, gid: int, message: str = "") -> str:
                      f'<span class="sub">{esc(tail)}</span></span></div>')
 
     # 我 / 管理
-    mine = (f'<form action="/__group/{gid}/share" method="post">{_tok(token)}'
-            '<div class="card">'
+    my_alias = (g.get("me") or {}).get("alias") or ""
+    mine = (f'<form action="/__group/{gid}/alias" method="post">{_tok(token)}'
+            '<div class="kvline"><span>我的昵称</span><b>'
+            f'<input type="text" name="alias" maxlength="16" value="{esc(my_alias)}" '
+            'placeholder="组里怎么叫你"></b></div>'
+            '<p class="note">只在这个组里显示，换个组可以叫别的名字。</p>'
+            '<div class="pager"><button class="btn" type="submit">改昵称</button></div></form>'
+            f'<form action="/__group/{gid}/share" method="post">{_tok(token)}'
             '<div class="kvline"><span>我的共享</span><b>'
             f'<select name="share">'
             f'<option value="summary"{" selected" if my_share == "summary" else ""}>共享里程</option>'
@@ -257,7 +263,7 @@ def group_page(token: str, gid: int, message: str = "") -> str:
             '</select></b></div>'
             '<p class="note">关掉之后立刻停止上报，也不会出现在榜上。'
             '已经传上去的会被新的一批覆盖掉。</p>'
-            '<div class="pager"><button class="btn" type="submit">保存</button></div></div>'
+            '<div class="pager"><button class="btn" type="submit">保存</button></div>'
             f'</form>'
             f'<form action="/__group/{gid}/report" method="post">{_tok(token)}'
             '<div class="pager"><button class="btn" type="submit">立即上报一次</button></div>'
