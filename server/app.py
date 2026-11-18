@@ -96,6 +96,18 @@ MARGIN = float(os.environ.get("MARGIN", "1.15"))            # 平台加价倍率
 FREE_GRANT = int(os.environ.get("FREE_GRANT", "500_000"))   # 新用户赠送（微元，默认 0.5 元）
 HOST = os.environ.get("BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8300"))
+
+# ── HTTPS（无域名部署方式）──────────────────────────────────────────────
+# 没有域名就没有 Let's Encrypt，也不该让 App 走明文 HTTP（令牌会被同网段
+# 的人看见）。所以直接用自签证书 + IP SAN：证书里把服务器 IP 写进
+# subjectAltName，App 端把这一个证书当成唯一的根，校验照样成立。
+# 两个变量任一为空就不启 TLS，本地开发仍然是 http。
+TLS_CERT = os.environ.get("RC_TLS_CERT", "").strip()
+TLS_KEY = os.environ.get("RC_TLS_KEY", "").strip()
+# 开发模式（验证码回显）会让人**登录任意账号**。绑在公网地址上时默认拒绝
+# 启动；内网联调确实需要的话显式设 RC_ALLOW_DEV_ECHO=1。
+ALLOW_DEV_ECHO = os.environ.get("RC_ALLOW_DEV_ECHO", "") == "1"
+
 # 每日看板静态目录（site/index.html、site/card.png，由 daily.bat 生成）
 SITE_DIR = Path(os.environ.get("RC_SITE_DIR",
                                str(Path(__file__).resolve().parent.parent / "site")))
@@ -1121,7 +1133,12 @@ class Handler(BaseHTTPRequestHandler):
                     channel = "email(dev)/sms:" + SMS_PROVIDER
                 return self._json({"ok": True, "model": UPSTREAM_MODEL,
                                    "sms": SMS_PROVIDER, "email": smtp_ready(),
-                                   "channel": channel, "service": "open"})
+                                   "channel": channel, "service": "open",
+                                   # 这两个字段是给部署自检看的：
+                                   # dev_echo=true 表示验证码明文回显（不能上公网），
+                                   # tls=true 表示这条连接已经是 HTTPS
+                                   "dev_echo": _dev_echo(),
+                                   "tls": bool(TLS_CERT)})
             if self.path == "/v1/client/config":
                 # 公开接口：只回「App 该连哪」，不含任何密钥。App 校验为 https 后才采用。
                 return self._json({"ok": True,
@@ -1267,7 +1284,36 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("  %s %s\n" % (self.address_string(), self.path.split("?")[0]))
 
 
+def _dev_echo() -> bool:
+    """验证码是否会明文回显。短信走 dev、或邮箱没配 SMTP，都会回显。"""
+    return SMS_PROVIDER == "dev" or not smtp_ready()
+
+
+def _loopback_bind() -> bool:
+    return HOST in ("127.0.0.1", "localhost", "::1")
+
+
+def _tls_context():
+    """自签证书 + IP SAN 的服务器上下文。只在 RC_TLS_CERT 配了时用。"""
+    import ssl
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(TLS_CERT, TLS_KEY or None)
+    return ctx
+
+
 def main() -> int:
+    # 先拦最危险的一种启动方式：绑在公网、验证码却明文回显。那样等于
+    # 把「登录任意账号」公布在互联网上，一条 curl 就能复现。
+    if _dev_echo() and not _loopback_bind() and not ALLOW_DEV_ECHO:
+        print(f"× 拒绝启动：验证码会明文回显，而服务绑在 {HOST}:{PORT}。")
+        print("  任何拿到地址的人都能登录任意账号，读到他们小组的数据。")
+        print("  修法（二选一）：")
+        print("    · 配 SMTP_HOST / SMTP_USER / SMTP_PASS（QQ 邮箱授权码，零成本）")
+        print("    · 或 SMS_PROVIDER=aliyun + 阿里云短信四件套")
+        print("  只在内网联调、且明确接受风险时：RC_ALLOW_DEV_ECHO=1")
+        return 2
     init_db()
     if group_api is not None:
         group_api.init_db()
@@ -1275,7 +1321,14 @@ def main() -> int:
         expedition_api.init_db()
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     srv.daemon_threads = True
-    print(f"√ RunnerCoach 网关 http://{HOST}:{PORT}")
+    if TLS_CERT:
+        try:
+            srv.socket = _tls_context().wrap_socket(srv.socket, server_side=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"× TLS 起不来（证书/私钥不匹配，或权限不足）：{type(e).__name__}: {e}")
+            return 2
+    scheme = "https" if TLS_CERT else "http"
+    print(f"√ RunnerCoach 网关 {scheme}://{HOST}:{PORT}")
     print(f"  上游 {UPSTREAM_BASE} · 模型 {UPSTREAM_MODEL} · 加价 {MARGIN}×")
     if smtp_ready():
         print(f"  邮箱验证码 {SMTP_USER} → {SMTP_HOST}:{SMTP_PORT}")

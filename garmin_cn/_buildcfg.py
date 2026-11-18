@@ -1,0 +1,18 @@
+# -*- coding: utf-8 -*-
+"""出厂配置：App 第一次启动该连哪。
+
+这个文件**由 `tools/set_server.py` 生成**，不要手改——换服务器时跑一次
+那条命令，它会把地址、分享码和证书一起写进来，免得三处改漏一处。
+
+    python tools/set_server.py https://1.2.3.4:8443 --cert cert.pem
+
+为什么烧进包里而不是运行时问：首次启动时 App 还不知道该问谁。这就是
+"先有鸡还是先有蛋"，只能内置一个引导入口。之后每次启动前会向
+`/v1/client/config` 要一次最新值（换地址不必重新发版），失败就用这里的。
+
+留空 = 让用户自己填（设置里有「自定义服务地址」）。内测不建议留空：
+朋友第一步就是面对一个空白输入框，比连不上更劝退。
+"""
+
+PLATFORM_BASE = 'https://garmin-daily-dashboard.app.workbuddy.host'
+PLATFORM_SHARE_CODE = 'ORT7NXCECR'

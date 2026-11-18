@@ -1123,6 +1123,34 @@ def run() -> int:
         RU.PLATE_DIR = _old2
         shutil.rmtree(_pd2, ignore_errors=True)
 
+    # 无域名部署：自签证书靠「把那一张加进信任链」生效，不是关校验。
+    # 没有证书时必须是 no-op——用公共 CA 的部署不该被这段影响。
+    from garmin_cn import tlstrust as _TLS
+    _TLS.reset()
+    _r = _TLS.install()
+    assert _r.get("ok") is False, "包里没有证书却报装好了"
+    assert _r.get("reason"), "没装成却没说明原因"
+    _tmp_ca = Path(tempfile.mkdtemp()) / "server-ca.pem"
+    _old_ca = _TLS.CA_PATH
+    try:
+        _tmp_ca.write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+                           encoding="utf-8")
+        _TLS.CA_PATH = _tmp_ca
+        _TLS.reset()
+        import ssl as _ssl
+        _before = _ssl.create_default_context
+        _r2 = _TLS.install()
+        assert _r2.get("ok") is True, f"有证书却没装上：{_r2}"
+        assert _ssl.create_default_context is not _before, "没接管默认上下文"
+        # 坏证书不能让 App 起不来：装的时候要吞掉异常，只记录
+        assert _TLS.install() == _r2, "install 不是幂等"
+    finally:
+        _TLS.CA_PATH = _old_ca
+        _TLS.reset()            # 真的还原 ssl，别让后面的 HTTPS 带着死证书跑
+        import ssl as _ssl2
+        assert _ssl2.create_default_context is not None
+        shutil.rmtree(_tmp_ca.parent, ignore_errors=True)
+
     # 分享图：1080×1920 的竖图，走和活动图同一套出图链路（探针 + 9:16）。
     # 它**不能带**轨迹、昵称或别人的名字——发出去最多暴露「我参加了一个跑步
     # 小组」。版式锁死高度，否则出图时上下会留一大块底色。
