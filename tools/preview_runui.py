@@ -228,13 +228,50 @@ def main() -> int:
     assert _card.get("ok"), f"出图接口失败：{_card}"
 
     OUT.mkdir(parents=True, exist_ok=True)
+
+    # 结局画面是「底图 + 矢量脚印」。如果 content/ 里已经有真底图就用真的；
+    # 没有就用矢量场景合成两张（亮窗/暗窗）当占位，这样预览走的是和 App
+    # 完全相同的那条路——`_ending_scene()` 只会有一个分支被跑到。
+    def _plate(kind: str) -> None:
+        svg = runsui._ending_svg("arrive" if kind == "lit" else "lost", props=False)
+        html = (f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+                f'<style>html,body{{margin:0;padding:0;background:#0B1220}}'
+                f'svg{{display:block;width:1920px;height:680px}}</style></head><body>'
+                f'{svg}</body></html>')
+        src = OUT / f"_{kind}.html"
+        src.write_text(html, encoding="utf-8")
+        subprocess.run([CHROME if Path(CHROME).is_file() else "chrome",
+                        "--headless=new", "--disable-gpu", "--no-first-run",
+                        "--allow-file-access-from-files", "--hide-scrollbars",
+                        "--virtual-time-budget=2000", "--window-size=1920,680",
+                        f"--screenshot={OUT / ('ending_scene_' + kind + '.png')}",
+                        src.as_uri()], capture_output=True)
+
+    if all(runsui._plates()):
+        print(f"底图：{runsui._plates()}")
+    else:
+        # 预览目录里已经有占位就沿用（可以手工换一张试效果），没有才合成
+        if not all((OUT / f"ending_scene_{k}.png").is_file() for k in ("lit", "dark")):
+            for _k in ("lit", "dark"):
+                _plate(_k)
+        runsui.PLATE_DIR = OUT
+        print(f"底图：占位 → {OUT}")
+    assert all(runsui._plates()), "占位底图没生成出来"
     font_url = (ROOT / "garmin_cn/content/expedition-serif.woff2").as_uri()
+
+    def _fix(h: str, font_url: str) -> str:
+        """`/fonts/...`、`/content/...` 是给 App 的本地 HTTP 服务用的。
+        预览走 file://，不换成本地绝对路径就都是 404——底图会变成一块空框。"""
+        h = h.replace('url("/fonts/expedition-serif.woff2")', f'url("{font_url}")')
+        return h.replace('"/content/', f'"{OUT.as_uri()}/')
+
+
     wrap = (f"<style>html{{background:#05080d}}"
             f"body{{width:{WIDTH}px;margin:0 auto}}</style>")
     share_pages: list[str] = []
     for name, data in pages.items():
         h = runsui.run_page("PREVIEW", "", data)
-        h = h.replace('url("/fonts/expedition-serif.woff2")', f'url("{font_url}")')
+        h = _fix(h, font_url)
         (OUT / f"{name}.html").write_text(h.replace("</body>", wrap + "</body>"),
                                           encoding="utf-8")
         print(f"{name}.html  ({len(h)} 字节)")
@@ -287,7 +324,7 @@ def main() -> int:
     for key in ("arrive", "detour", "missing", "lost", "discoverer"):
         d = outcome_for(key)
         h = runsui.outcome_page("PREVIEW", d)
-        h = h.replace('url("/fonts/expedition-serif.woff2")', f'url("{font_url}")')
+        h = _fix(h, font_url)
         (OUT / f"end_{key}.html").write_text(h.replace("</body>", wrap + "</body>"),
                                             encoding="utf-8")
         print(f"end_{key}.html  结局={d.get('ending')} "
@@ -297,8 +334,7 @@ def main() -> int:
         # 直接用 1080×1920 的窗口截，看到什么就是分享出去的样子
         from garmin_cn import runcard as RC
 
-        c = RC.build_html(d)
-        c = c.replace('url("/fonts/expedition-serif.woff2")', f'url("{font_url}")')
+        c = _fix(RC.build_html(d), font_url)
         (OUT / f"share_{key}.html").write_text(c, encoding="utf-8")
         share_pages.append(f"share_{key}")
 
@@ -306,7 +342,7 @@ def main() -> int:
     # 留的——没有它，那一季就等于没发生过。
     nxt = G.run_state(gid, "2026-12-15")
     _h = runsui.run_page("PREVIEW", "", nxt)
-    _h = _h.replace('url("/fonts/expedition-serif.woff2")', f'url("{font_url}")')
+    _h = _fix(_h, font_url)
     (OUT / "act_next.html").write_text(_h.replace("</body>", wrap + "</body>"),
                                        encoding="utf-8")
     print(f"act_next.html  上一季={(nxt.get('season') or {}).get('last')}")
