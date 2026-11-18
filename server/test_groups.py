@@ -394,6 +394,24 @@ def main() -> int:
     st, r = req("GET", f"/v1/group/{gid}/season?today=2026-11-18", None, c3)
     check("非成员不能看 season（403）", st == 403, f"{st} {r}")
 
+    # 聚合接口：一次拿四块，形状和四个单接口一致
+    st, r = req("GET", f"/v1/group/{gid}/home?today=2026-11-18", None, a)
+    check("home 一次返回四块",
+          st == 200 and r.get("ok") and all(
+              isinstance(r.get(k), dict) and r[k].get("ok")
+              for k in ("detail", "board", "challenges", "season")),
+          f"{st} {[k for k in ('detail','board','challenges','season') if not (r.get(k) or {}).get('ok')]}")
+    check("home 里的 detail 和单接口一致",
+          (r.get("detail") or {}).get("group", {}).get("id") == gid, str(r.get("detail"))[:120])
+    check("home 里的 season 也有六件衫",
+          len((r.get("season") or {}).get("shirts") or []) == 6,
+          str(len((r.get("season") or {}).get("shirts") or [])))
+
+    # 一块出错不该把整页拖垮：传个不存在的 gid，四块都该是 ok=False 而不是 500
+    st, r = req("GET", "/v1/group/99999/home", None, a)
+    check("home 对不存在的组不 500（各块自己报错）",
+          st in (200, 403, 404) and isinstance(r, dict), f"{st} {r}")
+
     # ---------------- 汇总
     print(f"\n通过 {ok} 项，失败 {fail} 项")
     srv.shutdown()

@@ -108,6 +108,24 @@ sudo sh deploy/harden.sh
 
 撤销：删掉那个文件 → `systemctl reload ssh`。
 
+## 六点五、素材按需下发（字体 / 结局插画）
+
+远征页的衬线字体和五张结局插画不进 APK 了，改成首次用到时从
+`/v1/content/` 取，缓存在 `GARMIN_HOME/content/`。
+
+- 服务端：素材放 `server/assets/`（**入库**，要版本控制），由
+  `/v1/content/index`（清单 + sha256）和 `/v1/content/<name>` 下发
+- 客户端：`contentpack.py` 负责补；App 启动时后台预取，结算页最多等 1.2 秒
+- 拿不到也不影响页面：字体回落系统衬线，结局图退化到纯 SVG
+- 收益：APK 23.9 → 21.65 MB；改插画/字体不用发版
+
+**素材改动后要重新部署 `server/assets/`**，否则 `/v1/content/index` 里的
+sha256 和实际文件对不上，客户端会反复重下（校验不过会丢弃）。
+
+顺带修了一个老问题：字体原来「叫 woff2、内容是未压缩 TTF」，因为
+`opts.flavor` 不会影响 `font.save()`。加上 `font.flavor = "woff2"` 之后
+1.54 MB → 714 KB，而且这回浏览器真的会用上它（以前解码失败、静默回落）。
+
 ## 七、发版：安装包走自己的服务器
 
 源码转私有之后，Gitee Release 就不能匿名下载了，App 的更新入口会断。

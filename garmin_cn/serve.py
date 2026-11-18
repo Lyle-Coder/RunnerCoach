@@ -1315,12 +1315,13 @@ class _Handler(SimpleHTTPRequestHandler):
         ctype = allowed.get(name)
         if not ctype:
             return self._json({"ok": False, "error": "没有这个文件"}, 404)
-        from pathlib import Path as _P
+        from . import contentpack
 
-        f = _P(__file__).resolve().parent / "content" / name
-        if not f.is_file():
-            return self._json({"ok": False,
-                               "error": "字体未构建：python tools/build_font.py"}, 404)
+        f = contentpack.path(name)
+        if f is None:
+            # 素材是按需下发的：第一次进远征页时可能还没下完。回 404，
+            # CSS 那边有系统衬线兜底，页面照常可读。
+            return self._json({"ok": False, "error": "素材还没下发"}, 404)
         data = f.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", ctype)
@@ -1343,8 +1344,10 @@ class _Handler(SimpleHTTPRequestHandler):
         ctype = self.CONTENT_TYPES.get(_os.path.splitext(name)[1].lower())
         if not ctype or "/" in name or "\\" in name or name.startswith("."):
             return self._json({"ok": False, "error": "没有这个文件"}, 404)
-        f = _P(__file__).resolve().parent / "content" / name
-        if not f.is_file():
+        from . import contentpack
+
+        f = contentpack.path(name)
+        if f is None:
             return self._json({"ok": False, "error": "没有这个文件"}, 404)
         data = f.read_bytes()
         self.send_response(200)
@@ -1786,6 +1789,14 @@ def run_server(root: Path, lan: bool = False, port: int = 8765,
         return 3
     srv.token = token or ""  # type: ignore[attr-defined]
     srv.daemon_threads = True
+
+    # 素材（远征字体 / 结局插画）后台补。放在服务起来之后：先让首屏能开，
+    # 再慢慢下那 1.7 MB。失败也不影响任何页面（有兜底）。
+    try:
+        from . import contentpack
+        contentpack.prefetch_async()
+    except Exception:      # noqa: BLE001
+        pass
 
     q = f"?k={token}" if token else ""
     print("√ 只读看板服务已启动（关掉本窗口即停止）")

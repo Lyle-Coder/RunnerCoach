@@ -31,11 +31,16 @@ id "$SVC" >/dev/null 2>&1 || useradd --system --home "$APP" --shell /usr/sbin/no
 mkdir -p "$APP" "$APP/data" "$APP/certs" "$APP/site" "$APP/apk" "$ETC"
 
 echo "→ 拷贝程序"
-for f in app.py groups.py expedition.py tick.py; do
+for f in app.py groups.py expedition.py tick.py ranking.py; do
   [ -f "server/$f" ] && cp -f "server/$f" "$APP/$f"
 done
 if [ -d server/content ]; then
   cp -rf server/content "$APP/"
+fi
+# 素材（字体 / 结局插画）：按需下发给客户端，不随 APK 走
+if [ -d server/assets ]; then
+  mkdir -p "$APP/assets"
+  cp -f server/assets/* "$APP/assets/" 2>/dev/null || true
 fi
 if [ -d site ]; then
   cp -rf site/. "$APP/site/" 2>/dev/null || true

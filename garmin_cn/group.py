@@ -269,6 +269,18 @@ def set_alias(gid: int, alias: str) -> dict:
     return _call("POST", f"/v1/group/{int(gid)}/me", {"alias": alias})
 
 
+def home(gid: int, rng: str = "week", today: str | None = None) -> dict:
+    """组页首屏四块（detail / board / challenges / season）一次取回。
+
+    一次往返代替四次：实测一次新建 TLS 连接 122 ms，四次就是近半秒。
+    老服务端没有这个接口，调用方要能退回逐个请求。
+    """
+    q = f"?range={rng}"
+    if today:
+        q += f"&today={today}"
+    return _call("GET", f"/v1/group/{int(gid)}/home{q}")
+
+
 def season(gid: int, today: str | None = None) -> dict:
     """本周的衫、分、名次、称号。"""
     q = f"?today={today}" if today else ""

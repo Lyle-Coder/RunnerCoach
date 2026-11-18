@@ -114,6 +114,22 @@ TLS_KEY = os.environ.get("RC_TLS_KEY", "").strip()
 # 启动；内网联调确实需要的话显式设 RC_ALLOW_DEV_ECHO=1。
 ALLOW_DEV_ECHO = os.environ.get("RC_ALLOW_DEV_ECHO", "") == "1"
 
+# ── 内容包（字体 / 结局插画按需下发）─────────────────────────────────
+# 这些东西占了包体的 8%，但大部分人一辈子不会打开远征页。放在服务器上：
+# 首包小一截，而且改文案/换插画不用发版。
+# 注意：**不是剧情**。剧情（expedition_events.json）也在这台机器上，
+# 但走的是 /run/* 接口按幕下发，和这里的静态素材是两回事。
+# 放在 server/assets/：**入库**（要版本控制，改错了能回滚），但**不进 APK**。
+# 之前它们在 garmin_cn/content/ 里，跟着客户端一起打包，1.7 MB 白送。
+CONTENT_DIR = Path(os.environ.get(
+    "RC_CONTENT_DIR", str(Path(__file__).resolve().parent / "assets")))
+CONTENT_MIME = {
+    ".woff2": "font/woff2", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".svg": "image/svg+xml", ".webp": "image/webp",
+}
+_content_index: dict | None = None      # name → {size, sha256, mime}
+
+
 # ── APK 分发（只读 http，单独端口）────────────────────────────────────
 # 为什么单独一个明文端口：手机端用系统 DownloadManager 下载安装包，它只信
 # 系统根证书，我们这张自签证书它不认（握手直接失败）。而 APK 本身是公开物，
@@ -1093,6 +1109,41 @@ class Handler(BaseHTTPRequestHandler):
                     "error": SERVICE_CLOSED_MESSAGE}, 400)
         return True
 
+    def _send_content(self, name: str) -> None:
+        """按需下发的素材（字体 / 结局插画）。
+
+        只认素材目录里真实存在、且扩展名在白名单里的文件——不做路径拼接。
+        带上 ETag：客户端第二次带上 If-None-Match 就能拿 304，省掉重复的
+        1.5 MB 传输。
+        """
+        base = os.path.basename(name)
+        if not base or base != name or base.startswith("."):
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        mime = CONTENT_MIME.get(Path(base).suffix.lower())
+        f = CONTENT_DIR / base
+        if not mime or not f.is_file():
+            return self._json({"ok": False, "error": "没有这个文件"}, 404)
+        data = f.read_bytes()
+        etag = '"%s"' % hashlib.sha256(data).hexdigest()[:16]
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.end_headers()
+            self.close_connection = True
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "public, max-age=604800")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except BrokenPipeError:
+            pass
+        self.close_connection = True
+
     def _json(self, obj, code: int = 200) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -1170,6 +1221,10 @@ class Handler(BaseHTTPRequestHandler):
                                    "pay": PAY_PROVIDER != ""})
             if self.path.split("?")[0] == "/v1/app/latest":
                 return self._json(api_app_latest())
+            if self.path.split("?")[0] == "/v1/content/index":
+                return self._json(api_content_index())
+            if self.path.split("?")[0].startswith("/v1/content/"):
+                return self._send_content(self.path.split("?")[0][len("/v1/content/"):])
             if self.path == "/v1/client/config":
                 # 公开接口：只回「App 该连哪」，不含任何密钥。App 校验为 https 后才采用。
                 return self._json({"ok": True,
@@ -1328,6 +1383,30 @@ def _apk_host() -> str:
     if "://" in base:
         base = base.split("://", 1)[1]
     return base.split("/")[0].split(":")[0]
+
+
+def api_content_index() -> dict:
+    """素材清单：名字、大小、sha256。客户端靠它判断本地缓存要不要更新。
+
+    sha256 只在第一次请求时算一遍然后缓存在内存里；素材是发版时才变的，
+    每次请求都读 1.7 MB 去算哈希，纯属浪费。
+    """
+    global _content_index
+    if _content_index is None:
+        idx = {}
+        if CONTENT_DIR.is_dir():
+            for f in sorted(CONTENT_DIR.iterdir()):
+                if not f.is_file():
+                    continue
+                mime = CONTENT_MIME.get(f.suffix.lower())
+                if not mime:
+                    continue
+                data = f.read_bytes()
+                idx[f.name] = {"size": len(data),
+                               "sha256": hashlib.sha256(data).hexdigest(),
+                               "mime": mime}
+        _content_index = idx
+    return {"ok": True, "files": [dict(name=k, **v) for k, v in _content_index.items()]}
 
 
 def api_app_latest() -> dict:

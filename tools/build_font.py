@@ -39,11 +39,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC_FONT = Path(r"C:\Windows\Fonts\NotoSerifSC-VF.ttf")
-# 放 garmin_cn/content/ 而不是仓库根的 assets/：sync_python 会把整个包目录
-# 复制进 app/src/main/python，Chaquopy 再把它打成数据文件；根目录的 assets/
-# 不在这条链路上，放那儿等于没进包。
-# 和 terms.json 同一个位置，读取方式也一样（Path(__file__).parent / "content"）。
-OUT_DIR = ROOT / "garmin_cn" / "content"
+# 产物放 server/assets/：字体**不再进包**，由 /v1/content 按需下发。
+# 以前它跟着客户端走，1.6 MB 里还都是没压过的 TTF（见下面 flavor 那段）。
+OUT_DIR = ROOT / "server" / "assets"
 OUT_FONT = OUT_DIR / "expedition-serif.woff2"
 POOL = ROOT / "server" / "content" / "expedition_events.json"
 
@@ -138,6 +136,13 @@ def build() -> int:
     sub = Subsetter(options=opts)
     sub.populate(text="".join(sorted(chars)))
     sub.subset(font)
+
+    # 压缩格式必须设在 font 上，不能只写在 subsetter 的 Options 里：
+    # `opts.flavor` 只影响子集化过程，`font.save()` 看的是 `font.flavor`。
+    # 之前漏了这一行，产物其实是**未压缩的 TTF**（魔数 00 01 00 00），
+    # 却顶着 .woff2 的名字、用 format("woff2") 声明——浏览器解码失败会
+    # 静默回落到系统衬线，页面看着「还行」，其实字体从来没生效过。
+    font.flavor = "woff2"
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     font.save(OUT_FONT)
