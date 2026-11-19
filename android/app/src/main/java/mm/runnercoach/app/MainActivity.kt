@@ -553,8 +553,10 @@ class MainActivity : Activity() {
                     web.loadUrl("http://127.0.0.1:$port$back")
                 } else {
                     // 组详情的上一级是**组列表**，不是今日——只有组列表才是
-                    // 小组 tab 的根，从它再返回才该回今日
-                    web.loadUrl("http://127.0.0.1:$port/groups")
+                    // 小组 tab 的根，从它再返回才该回今日。
+                    // 一定要带 list=1：不带的话只有一个组的人会被「单组直达」
+                    // 又弹回同一个组，按完返回看着像没反应（要按两次才回今日）。
+                    web.loadUrl("http://127.0.0.1:$port/groups?list=1")
                 }
             }
             path == "/groups" -> goTab(TAB_TODAY)  // 小组列表是小组 tab 根
