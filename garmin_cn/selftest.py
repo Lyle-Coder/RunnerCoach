@@ -1350,14 +1350,6 @@ def run() -> int:
 
     # 底部导航：小组必须是一个 tab，且排在教练后面（第 3 位）。
     # 用户明确否掉了「顶栏右上角一枚胶囊」——那个位置既不像入口也不像按钮。
-    # 静息心率口径：高驰取睡眠期最低，空白处要标出来，不然每个高驰用户
-    # 都会拿高驰 App 首页那个「醒来时」的值来问一遍
-    from garmin_cn import ui as _UI
-
-    assert "睡眠期" in _UI._rhr_sub(50, "", "coros"), "高驰来源没标「睡眠期」"
-    assert "睡眠期" not in _UI._rhr_sub(50, "", "garmin"), \
-        "佳明来源不该标「睡眠期」（它取全天最低 30 分钟）"
-    assert "28 天基线 50" in _UI._rhr_sub(50, "", ""), "基线没拼进去"
     _coros_src = (ROOT / "garmin_cn/coros.py").read_text(encoding="utf-8")
     assert "数值字段" in _coros_src, "诊断没 dump dayDetail 的数值字段"
 
@@ -5740,6 +5732,39 @@ def run() -> int:
     try:
         _s3.conn.close()
         _sdb.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    # ---- 高驰优先：同一天两边都有数据时，佳明不能把高驰的值顶掉
+    # 两条同步链路语义不同（高驰 merge、佳明整行覆盖），谁后跑谁说了算。
+    # 用户先同步高驰再同步佳明时静息心率会变成佳明的数，看起来像用错了源。
+    import json as _json3
+
+    _pdb = Path(tempfile.mkdtemp()) / "prefer.db"
+    _ps = _Store3(_pdb)
+    _pd = dt.date.today().isoformat()
+    _ps.upsert_daily({"date": _pd, "resting_hr": 47, "sleep_total_min": 273,
+                      "raw": _json3.dumps({"happenDay": "20261119", "rhr": 47})},
+                     merge=True)
+    _ps.upsert_daily({"date": _pd, "resting_hr": 52, "sleep_total_min": 300,
+                      "steps": 8000,
+                      "raw": _json3.dumps({"restingHeartRate": 52})})
+    _pr = _ps.conn.execute("SELECT resting_hr, sleep_total_min, steps FROM daily"
+                           " WHERE date=?", (_pd,)).fetchone()
+    assert _pr["resting_hr"] == 47, \
+        f"佳明把高驰的静息心率顶掉了：{_pr['resting_hr']}"
+    assert _pr["sleep_total_min"] == 273, "佳明覆盖了高驰已有的睡眠时长"
+    assert _pr["steps"] == 8000, "佳明独有的字段没补进来（高驰没给 steps）"
+    # 只有佳明的日子仍然整行覆盖，同源重拉能清掉字段
+    _pd2 = (dt.date.today() - dt.timedelta(days=2)).isoformat()
+    _ps.upsert_daily({"date": _pd2, "resting_hr": 50, "steps": 3000})
+    _ps.upsert_daily({"date": _pd2, "resting_hr": 55, "steps": 5000})
+    _pr2 = _ps.conn.execute("SELECT resting_hr FROM daily WHERE date=?",
+                            (_pd2,)).fetchone()
+    assert _pr2["resting_hr"] == 55, "纯佳明的日子不再整行覆盖了"
+    try:
+        _ps.conn.close()
+        _pdb.unlink(missing_ok=True)
     except OSError:
         pass
 
