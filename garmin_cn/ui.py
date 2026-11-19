@@ -530,34 +530,54 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .shard-h i{font-style:normal;font-size:11px;font-weight:400;color:var(--faint)}
 /* setrow 的左侧标签默认会被 flex 压缩换行（「路线共／享」），有需要时钉住 */
 .nowrap{white-space:nowrap;flex:0 0 auto}
-/* 六件衫：一行一件。左色点 / 中榜名 / 右得主与成绩 / 下面一行小字写口径和前 2、3 名。
-   不用卡片：这是张榜单，不是六个功能入口。 */
-.shirtlist .shr{display:grid;grid-template-columns:10px 1fr auto;gap:2px 9px;
-  padding:9px 0;border-bottom:1px solid var(--line2)}
-.shirtlist .shr:last-child{border-bottom:0}
-.shr .dot{width:10px;height:10px;border-radius:50%;margin-top:3px;
-  box-shadow:0 0 0 1px rgba(255,255,255,.34), inset 0 0 0 1px rgba(0,0,0,.18)}
-/* 圆点衫：白底红点。它和白衫的色号都是白，纯色画出来是两个一模一样的小点，
-   所以按公路车赛的规矩画波点——这是唯一能在一颗 8–10px 的点上区分开的办法。 */
-/* 圆点衫：白底红点 + 一圈红边。
-   只画波点不够——9px 的点上 1px 的红点被抗锯齿冲淡成粉色，远看仍是一个白点。
-   加红边不是为了好看，是为了在 9px 这个尺寸上还能一眼和白衫分开：
-   白衫是「纯白 + 白边」，圆点衫是「白心 + 红边」。 */
-/* 只给「衫的色点」用，`i.pd` 这条一定要排除 .sbd：
-   六件衫徽章同样是 `i.sbd.pd`，选择器写成 `i.pd` 会把波点图案
-   盖到「没拿到」的空心徽章上——真机上就是「1/6 却画着 6 件衫」。 */
-i.pd:not(.sbd){background:var(--map-shared);
-  background-image:radial-gradient(#C6342E 1.15px, rgba(198,52,46,0) 1.3px);
-  background-size:2.9px 2.9px;background-position:.55px .55px;
-  box-shadow:0 0 0 1.4px #D9534F}
-.shr .t{font-size:14px;font-weight:600;color:var(--ink)}
-.shr .v{font-size:12px;color:var(--ink2);text-align:right;white-space:nowrap}
-.shr .v b{font-weight:600;color:var(--ink)}
-.shr .v i{font-style:normal;color:var(--muted);margin-left:5px}
-.shr .v .none{color:var(--faint);font-weight:400}
-.shr .h{grid-column:2/4;font-size:11px;color:var(--faint);line-height:1.5}
-.shr .r3{margin-left:8px}
-.shr .r3 .rest{margin-right:8px}
+/* ---- 本周荣誉：一项称号一张卡 ----
+   原来是一行一件的窄表：左色点、中榜名、右得主，前 3 名塞在一行灰字里。
+   问题是「黄衫」这个词本身没人懂，色点也看不出是件衫，点进来还是看不出
+   每项在比什么。现在称号当主标、衫型图标当识别、每项下面列组内完整榜
+   （组最多 20 人，全列出来只比翻页快）。 */
+.jsh{width:28px;height:28px;display:block;flex:0 0 auto}
+.jsh.lg{width:34px;height:34px}
+.hintro{margin:0 0 4px;font-size:var(--fs-cap,12px);color:var(--ink-3);
+  line-height:1.65}
+.hintro + .hintro{margin-top:6px}
+.hon{background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-3);padding:14px 14px 6px;margin-bottom:10px}
+.hon-h{display:flex;align-items:center;gap:10px}
+.hon-t{flex:1 1 auto;min-width:0}
+.hon-t h3{margin:0;font-size:var(--fs-title,16px);font-weight:600;color:var(--ink)}
+.hon-t p{margin:2px 0 0;font-size:var(--fs-cap,12px);color:var(--ink-3);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 颜色标签：称号是主标，颜色退成第二层——不点进来也知道「这是黄衫那一项」 */
+.hon-tag{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;height:24px;
+  padding:0 9px;border-radius:var(--r-pill);font-size:var(--fs-micro,11px);
+  font-weight:600;color:var(--ink-2);background:var(--surface-2);
+  border:1px solid var(--line)}
+.hon-tag i{width:7px;height:7px;border-radius:50%;background:var(--c)}
+/* 得主行：一条就够了，不要「第 1 名 大熊 56.8 km」占一行、下面再从第 1 名重列 */
+.hon-w{display:flex;align-items:center;gap:8px;margin-top:11px;padding:8px 11px;
+  border-radius:var(--r-1);background:var(--brand-soft);font-size:var(--fs-body,14px);
+  color:var(--ink-2)}
+.hon-w .kw{font-size:var(--fs-micro,11px);font-weight:600;color:var(--brand-ink)}
+.hon-w b{font-weight:600;color:var(--ink)}
+.hon-w .kv{margin-left:auto;font-size:var(--fs-cap,12px);color:var(--ink-3);
+  font-variant-numeric:tabular-nums}
+.hon-w.empty{background:transparent;border:1px dashed var(--line)}
+.hon-w.empty .kw{color:var(--muted)}
+/* 完整榜：人少，全部列出来。每行 34px，比自己那行用品牌色标出来 */
+.hlist{list-style:none;margin:6px 0 4px;padding:0}
+.hlist li{display:flex;align-items:center;gap:9px;min-height:34px;
+  font-size:var(--fs-body,14px);color:var(--ink2);border-top:1px solid var(--line2)}
+.hlist li:first-child{border-top:0}
+.hlist .n{flex:0 0 18px;font-size:var(--fs-micro,11px);color:var(--muted);
+  font-variant-numeric:tabular-nums}
+.hlist .a{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.hlist .v{flex:0 0 auto;font-weight:600;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+.hlist li.me{color:var(--brand-ink)}
+.hlist li.me .a,.hlist li.me .v{color:var(--brand-ink)}
+.hlist li.win .a{font-weight:600;color:var(--ink)}
+
 /* ---- 小组页核心数据卡（名次 + 分数 + 称号 / 六件衫徽章） ----
    参考稿的「一卡收拢核心数据」：分数是这张卡的主数，六件衫从两行文字
    压成 6 枚 28px 圆徽章。得主信息进 title 和点击后的榜单页，不再铺在首屏。 */
@@ -580,20 +600,10 @@ i.pd:not(.sbd){background:var(--map-shared);
   margin-top:14px;padding-top:13px;border-top:1px solid var(--line);
   text-decoration:none;color:inherit;min-height:44px}
 .sc-badges{display:flex;align-items:center;gap:12px}
-/* 徽章：28px 圆。**没得到的是空心**——原来压到 38% 透明度，在深底上
-   就是一个黑点，用户根本数不出「一共六件、我有一件」。
-   现在空心虚线 = 位置在、但没拿到；实色 + 2px 同色外环 = 拿到了。
-   空心不能再用透明色填充：透明度和「没有」是同一个视觉信号。 */
-.sbd{width:28px;height:28px;border-radius:50%;background:transparent;
-  border:1px dashed rgba(255,255,255,.22);box-sizing:border-box}
-.sbd.on{background:var(--c);border:0;
-  box-shadow:0 0 0 2px var(--c)}
-/* 圆点衫不是纯色：白底红波点，和 §六件衫 的图标保持同一张脸。
-   只在「拿到了」的时候上波点，空心态保持统一的虚线轮廓。 */
-.sbd.pd.on{background:var(--map-shared);
-  background-image:radial-gradient(var(--bad) 2px,rgba(242,85,90,0) 2.2px);
-  background-size:5px 5px;background-position:1px 1px;
-  box-shadow:0 0 0 2px var(--bad)}
+/* 徽章就是那一组衫的小号版：没拿到是空心虚线衫，拿到了是实色衫。
+   原来画圆点——六个彩色圆点谁也说不清是衫还是标签，圆点衫的波点在
+   小圆上又和白衫糊成一片（1/6 看着像 6 件全有）。 */
+.sc-badges .jsh{width:26px;height:26px}
 .sc-more{font-size:var(--fs-micro,11px);color:var(--brand-ink);white-space:nowrap}
 
 /* ---- 目标入口行 ----
