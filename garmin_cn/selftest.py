@@ -1632,7 +1632,12 @@ def run() -> int:
     assert '<ol class="hlist">' in _shp_html, "荣誉页没有完整榜"
     assert "class=\"me\"" in _shp_html or "class='me'" in _shp_html, \
         "完整榜里没标出我自己"
-    assert "本周还没有数据" in _shp_html, "没数据的一项没给出说明"
+    assert "还没有数据" in _shp_html, "没数据的一项没给出说明"
+    # 收起态只显示得主：六项必须是 <details>，得主在 summary 里，
+    # 这样六项能在一屏里看完，点哪行展哪行的完整榜
+    assert _shp_html.count("<details class=\"hon\">") == 6, \
+        "六项荣誉不是可折叠的 details"
+    assert _shp_html.count('class="hw"') == 6, "收起态没显示得主"
 
     # ---- 跨省的分片：一张图装不下 900 km，格子会缩成看不见的点
     from garmin_cn import basemap as _BM
