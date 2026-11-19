@@ -176,7 +176,7 @@ def _month_bars(months: list[dict], hot: str = "", link: str = "") -> str:
         y = H - pad_b - h
         bars.append(
             f'<rect x="{x:.0f}" y="{y:.0f}" width="{bw:.0f}" height="{h:.0f}" rx="4" '
-            f'fill="url(#mb)" opacity="{1 if cur else 0.52}"/>'
+            f'fill="url(#mb)" opacity="{1 if cur else 0.44}"/>'
             + (f'<text x="{x + bw / 2:.0f}" y="{y - 7:.0f}" text-anchor="middle" '
                f'font-size="11" fill="{"#8CC2FF" if cur else "#7C8FA8"}">{km:.0f}</text>'
                if not dense else "")
@@ -196,7 +196,7 @@ def _month_bars(months: list[dict], hot: str = "", link: str = "") -> str:
             f'xmlns="http://www.w3.org/2000/svg" '
             f'style="display:block;max-width:520px;margin:0 auto">'
             f'<defs><linearGradient id="mb" x1="0" y1="1" x2="0" y2="0">'
-            f'<stop offset="0" stop-color="#1D5FC4"/><stop offset="1" stop-color="#22D3EE"/>'
+            f'<stop offset="0" stop-color="#2563EB"/><stop offset="1" stop-color="#3B82F6"/>'
             f'</linearGradient></defs>{"".join(bars)}</svg>')
 
 
@@ -257,6 +257,17 @@ def _bucket_rows(items: list[dict], mode: str, kind: str, sel: str = "") -> str:
                 f'<span>{_esc(a)} – {_esc(b)} · {len(chunk)} {unit}无记录</span>'
                 f'<span class="gx">展开</span></summary>{inner}</details>')
 
+    # 进度条的基准：这批周期里跑量最多的那个。用「占最大值多少」而不是
+    # 「占目标多少」——历史没有目标，横向比较才是这一列要回答的问题。
+    _maxkm = max([float(b.get("km") or 0) for b in items] or [0.0]) or 1.0
+    _today = dt.date.today()
+    if mode == "week":
+        _cur_key = (_today - dt.timedelta(days=_today.weekday())).isoformat()
+    elif mode == "month":
+        _cur_key = _today.strftime("%Y-%m")
+    else:
+        _cur_key = str(_today.year)
+
     rows = []
     _empty: list[dict] = []
     for b in items:
@@ -267,25 +278,41 @@ def _bucket_rows(items: list[dict], mode: str, kind: str, sel: str = "") -> str:
             rows.append(_gap(_empty))
             _empty = []
         key = str(b.get("key") or "")
+        span = ""
         if mode == "week":
             # 行的日期用**完整 ISO 周**（周一到周日），不用活动里的 min/max：
             # 某一周只跑了周二、周四时，min/max 会显示成「11-03~11-05」，
             # 看着像这周只有三天，和柱状图的 7 根对不上。
             ws, we = _week_span(key)
             span = f"{ws[5:]}~{we[5:]}" if ws and we else (b.get("label") or "")
-            title = f"{key} · {span}"
-            icon = "▤"
+            title = key[5:] or key
         elif mode == "month":
-            title = f"{key} · {int(key[5:7])} 月"
-            icon = "▦"
+            title = key
         else:
-            title = f"{key} 年"
-            icon = "▣"
-        desc = (f"{b.get('count') or 0} 次 · {float(b.get('km') or 0):.1f} km"
+            title = key
+        # 左列第二行：说清这一段是「正在进行」还是「有多长」，比写次数有用
+        if key == _cur_key:
+            sub = "进行中"
+        elif mode == "week":
+            sub = span
+        elif mode == "month":
+            end = str(b.get("end") or _month_end(key) or "")
+            sub = f"{int(end[8:10])} 天" if len(end) >= 10 else "整月"
+        else:
+            sub = "12 个月"
+        km = float(b.get("km") or 0)
+        pct = max(3, min(100, round(100 * km / _maxkm))) if km > 0 else 0
+        desc = (f"{b.get('count') or 0} 次 · {km:.1f} km"
                 f" · {float(b.get('dur_h') or 0):.1f} 小时")
         href = f"/history?{_q(mode=mode, sel=key, type=kind)}"
-        rows.append(ui.row(icon, title, desc, href=href, tone="b",
-                           on=bool(sel) and key == sel, nopush=True))
+        _on = " on" if (bool(sel) and key == sel) else ""
+        rows.append(
+            f'<a class="prow{_on}" href="{_esc(href)}" data-nopush>'
+            f'<span class="pm">{_esc(title)}'
+            f'<i{" class=\"now\"" if key == _cur_key else ""}>{_esc(sub)}</i></span>'
+            f'<span class="pd">{_esc(desc)}'
+            f'<span class="pb"><i style="width:{pct}%"></i></span></span>'
+            '<span class="go" aria-hidden="true">›</span></a>')
     if _empty:
         rows.append(_gap(_empty))
     return "".join(rows)
@@ -334,13 +361,16 @@ def history_page(qs: dict) -> str:
     # 「13.5 km」整串塞进去要 82px，而卡片内容宽就是 82px —— 必然折行。
     # 三个数字是一句话的三个时间尺度（本月/本年/累计），拆成三张卡反而
     # 读不出递进关系；一行摆开，一眼能看出「这个月占全年多少」。
-    hero = (f'<div class="minirow">'
-            f'<span><b>{float(cur_m.get("km") or 0):.1f}</b> 本月{volume_name}</span>'
-            f'<span><b>{float(cur_y.get("km") or 0):.0f}</b> 本年{volume_name}</span>'
-            f'<span><b>{float(total.get("km") or 0):.0f}</b> 累计{volume_name}</span></div>'
+    hero = (f'<div class="ovrow">'
+            f'<div class="ovc"><div class="v">{float(cur_m.get("km") or 0):.1f}'
+            f'<small>km</small></div><div class="k">本月{volume_name}</div></div>'
+            f'<div class="ovc"><div class="v">{float(cur_y.get("km") or 0):.0f}'
+            f'<small>km</small></div><div class="k">本年{volume_name}</div></div>'
+            f'<div class="ovc"><div class="v">{float(total.get("km") or 0):.0f}'
+            f'<small>km</small></div><div class="k">累计{volume_name}</div></div></div>'
             f'<div class="tinyline">'
-            f'{cur_m.get("count") or 0} 次（{_esc(cur_m.get("key") or "")}）· '
-            f'{cur_y.get("count") or 0} 次（{_esc(cur_y.get("key") or "")}）· '
+            f'本月 {cur_m.get("count") or 0} 次 · '
+            f'今年 {cur_y.get("count") or 0} 次 · '
             f'共 {total.get("count") or 0} 次 {float(total.get("dur_h") or 0):.0f} 小时'
             f'</div>')
     today = dt.date.today().isoformat()
