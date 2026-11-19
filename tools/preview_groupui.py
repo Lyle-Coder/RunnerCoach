@@ -167,6 +167,27 @@ BINGO["lines"] = ["r1"]
 BINGO["line_count"] = 1
 
 
+FEED = {
+    "ok": True, "hidden": 1, "emojis": ["👍", "💪", "🔥", "😂", "👏", "🎉"],
+    "rows": [
+        {"id": 3, "user_id": 2, "alias": "阿狗", "color": "#3FA76A", "is_me": False,
+         "date": TODAY, "kind": "run", "kind_name": "跑步", "distance_m": 12800,
+         "duration_s": 4020, "elevation_m": 120, "comments": 3,
+         "recent": [{"user_id": 1, "alias": "老李", "text": "这个配速可以",
+                     "emoji": ""},
+                    {"user_id": 3, "alias": "小赵", "text": "", "emoji": "🔥"}]},
+        {"id": 2, "user_id": 1, "alias": "老李", "color": "#5EA0FF", "is_me": True,
+         "date": "2026-11-18", "kind": "run", "kind_name": "跑步",
+         "distance_m": 8000, "duration_s": 2700, "elevation_m": 60, "comments": 1,
+         "recent": [{"user_id": 2, "alias": "阿狗", "text": "", "emoji": "💪"}]},
+        {"id": 1, "user_id": 3, "alias": "小赵", "color": "#E8C43A", "is_me": False,
+         "date": "2026-11-17", "kind": "ride", "kind_name": "骑行",
+         "distance_m": 46000, "duration_s": 6300, "elevation_m": 380, "comments": 0,
+         "recent": []},
+    ],
+}
+
+
 def main() -> int:
     from garmin_cn import group as G
     from garmin_cn import groupui as GU
@@ -177,6 +198,7 @@ def main() -> int:
     G.season = lambda gid, today=None: SEASON          # type: ignore[assignment]
     G.week = lambda gid, today=None: WEEK              # type: ignore[assignment]
     G.bingo = lambda gid, today=None: BINGO            # type: ignore[assignment]
+    G.feed = lambda gid, today=None, act=None: FEED    # type: ignore[assignment]
     G.home = lambda gid, rng="week", today=None: {    # type: ignore[assignment]
         "ok": True, "detail": DETAIL, "board": BOARD,
         "challenges": CHALLENGES, "season": SEASON, "week": WEEK}
@@ -212,6 +234,25 @@ def main() -> int:
     _p3 = OUT / "shirts.html"
     _p3.write_text(_sh, encoding="utf-8")
     print(f"{_p3}  {len(_sh)} 字节")
+
+    _st2 = GU.settings_page("TOK", GID)
+    for prefix, sub in (("/content/", "garmin_cn/content"),):
+        _st2 = _st2.replace(f'"{prefix}', f'"{ (ROOT / sub).as_uri()}/')
+    _st2 = _st2.replace("</body>", '<style>html{background:#05080d}'
+                                   'body{width:420px;margin:0;padding:0 14px}</style></body>')
+    _p4 = OUT / "settings.html"
+    _p4.write_text(_st2, encoding="utf-8")
+    print(f"{_p4}  {len(_st2)} 字节")
+
+    for _name, _html in (("feed", GU.feed_page("TOK", GID)),
+                         ("feedone", GU.feed_page("TOK", GID, "", 3))):
+        for prefix, sub in (("/content/", "garmin_cn/content"),):
+            _html = _html.replace(f'"{prefix}', f'"{ (ROOT / sub).as_uri()}/')
+        _html = _html.replace("</body>", '<style>html{background:#05080d}'
+                                         'body{width:420px;margin:0;padding:0 14px}</style></body>')
+        _f = OUT / f"{_name}.html"
+        _f.write_text(_html, encoding="utf-8")
+        print(f"{_f}  {len(_html)} 字节")
     return 0
 
 

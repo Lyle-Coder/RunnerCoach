@@ -199,6 +199,90 @@ def groups_page(token: str, message: str = "") -> str:
                 back=("返回我的", "/me"))
 
 
+# ---------------------------------------------------------------- 设置
+def settings_page(token: str, gid: int, message: str = "") -> str:
+    """小组设置：我的（昵称 / 共享 / 上报）+ 组（邀请码 / 换码 / 转让 / 退出）。
+
+    这些原来是组页最底下的一块。组页主体是排名和动态，把「改昵称」这种
+    低频操作压在最下面，既挤，也不像"随时能改"的东西——用户的原话是
+    「放在最下面太突兀」。挪到页头右上角一个齿轮里。
+    """
+    from . import group as G
+
+    d = G.detail(gid)
+    if not d.get("ok"):
+        body = (_msg(message)
+                + f'<div class="card"><p class="note">{esc(d.get("error") or "打不开设置")}</p>'
+                f'<div class="pager"><a class="btn" href="/groups/{gid}">返回小组</a></div></div>')
+        return page("GROUP", "小组设置", "", body, back=("返回小组", f"/groups/{gid}"))
+
+    g = d["group"]
+    role = g.get("role") or "member"
+    is_owner = role == "owner"
+    is_admin = role in ("owner", "admin")
+    my_share = (g.get("me") or {}).get("share") or "summary"
+    my_alias = (g.get("me") or {}).get("alias") or ""
+
+    mine = (f'<form action="/__group/{gid}/alias" method="post">{_tok(token)}'
+            '<div class="setrow"><span>昵称</span>'
+            f'<input type="text" name="alias" maxlength="16" value="{esc(my_alias)}" '
+            'placeholder="组里怎么叫你" aria-label="组内昵称">'
+            '<button class="btn sm" type="submit">改</button></div></form>'
+            f'<form action="/__group/{gid}/share" method="post">{_tok(token)}'
+            '<div class="setrow"><span>共享</span>'
+            '<select name="share" aria-label="共享档位">'
+            f'<option value="summary"{" selected" if my_share == "summary" else ""}>共享里程</option>'
+            f'<option value="off"{" selected" if my_share == "off" else ""}>不共享</option>'
+            '</select>'
+            '<button class="btn sm" type="submit">存</button></div></form>'
+            f'<form action="/__group/{gid}/report" method="post">{_tok(token)}'
+            '<div class="setrow"><span>上报</span>'
+            '<span class="note" style="flex:1 1 auto;margin:0">同步时自动上报，'
+            '这里是不想等的时候用</span>'
+            '<button class="btn sm" type="submit">立即</button></div></form>')
+
+    grp = ""
+    if is_admin and g.get("invite_code"):
+        grp += (f'<div class="setrow"><span>邀请码</span>'
+                f'<b style="letter-spacing:1.2px;font-size:13px">{esc(g["invite_code"])}</b>'
+                f'<form action="/__group/{gid}/rotate" method="post">{_tok(token)}'
+                '<button class="btn sm" type="submit">换一个</button></form></div>')
+    # 转让：只有组长能转，而且是可逆的（转回来就行），所以放在普通设置里，
+    # 解散这种不可逆的没放——它该有自己的二次确认流程，不该和改昵称并排。
+    if is_owner:
+        _opts = "".join(
+            f'<option value="{int(m["user_id"])}">{esc(m["alias"])}</option>'
+            for m in (g.get("members") or []) if not m.get("is_me"))
+        if _opts:
+            grp += (f'<form action="/__group/{gid}/transfer" method="post">{_tok(token)}'
+                    '<div class="setrow"><span>转让组长</span>'
+                    f'<select name="uid" aria-label="转给谁">{_opts}</select>'
+                    '<button class="btn sm" type="submit">转让</button></div></form>')
+    if not is_owner:
+        grp += (f'<form action="/__group/{gid}/leave" method="post">{_tok(token)}'
+                '<div class="setrow"><span>退出</span>'
+                '<span class="note" style="flex:1 1 auto;margin:0">'
+                '退出后我在这个组的记录会删掉</span>'
+                '<button class="btn sm" type="submit">退出小组</button></div></form>')
+    else:
+        grp += ('<p class="note">你是组长：先把组长转给别人，才能退出这个组。</p>')
+    grp += (f'<a class="setrow" href="/groups/{gid}/map">'
+            '<span>路线共享</span>'
+            '<span class="note" style="flex:1 1 auto;margin:0">'
+            '在足迹地图里开关</span><span class="chev">›</span></a>')
+
+    body = (_msg(message)
+            + sec("我的", '<div class="flat">' + mine + '</div>')
+            + sec("组", '<div class="flat">' + grp + '</div>')
+            + '<p class="note">组里只收每日里程合计和活动概要；轨迹、配速、'
+              '位置都不上传。关掉共享之后，这些数据在组内立刻不可见。</p>')
+    return page("GROUP", "小组设置",
+                f'{esc(g.get("name"))} · '
+                + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
+                body, foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+                back=("返回小组", f"/groups/{gid}"))
+
+
 # ---------------------------------------------------------------- Bingo
 def bingo_page(token: str, gid: int, message: str = "") -> str:
     """本周 Bingo 卡：5×5 格，连成一行/列/对角线算一条线。
@@ -393,6 +477,120 @@ def _map_svg(pts, people, bm, EX, BM) -> str:
             f'<g clip-path="url(#gmclip)">{bg}{veil}{paths}{credit}</g></svg>')
 
 
+# ---------------------------------------------------------------- 动态
+def _rel_day(d: str, today: str) -> str:
+    try:
+        n = (dt.date.fromisoformat(today) - dt.date.fromisoformat(d)).days
+    except (TypeError, ValueError):
+        return d[5:]
+    return "今天" if n == 0 else "昨天" if n == 1 else f"{n} 天前"
+
+
+def _hm(sec: int) -> str:
+    """统一成 h:mm / m:ss。
+
+    以前 60 分钟以上写 `1:07`、以下写 `45 分钟`，同一列里两种量纲，
+    扫下来眼睛要换算。现在全是时钟写法。
+    """
+    t = max(0, int(sec or 0))
+    h, m, r = t // 3600, (t % 3600) // 60, t % 60
+    return f"{h}:{m:02d}" if h else f"{m}:{r:02d}"
+
+
+def _act_line(a: dict, today: str, detail: bool = False) -> str:
+    """一条动态。只有概要：类型、距离、时长、爬升——没有图，也没有配速。"""
+    km = float(a.get("distance_m") or 0) / 1000
+    bits = [f'{km:.1f} km']
+    if a.get("duration_s"):
+        bits.append(_hm(int(a["duration_s"])))
+    if int(a.get("elevation_m") or 0) > 0:
+        bits.append(f'爬升 {int(a["elevation_m"])} m')
+    tail = ""
+    if not detail:
+        tail = (f'<span class="fc">{int(a.get("comments") or 0)} 条</span>'
+                if int(a.get("comments") or 0) else "")
+    return (f'<span class="fd" style="background:{esc(a.get("color"))}"></span>'
+            f'<span class="fn">{esc(a.get("alias"))}'
+            f'<i class="fk">{esc(a.get("kind_name"))}</i></span>'
+            f'<span class="fv">{" · ".join(bits)}</span>'
+            f'<span class="ft">{esc(_rel_day(str(a.get("date")), today))}</span>'
+            + tail)
+
+
+def feed_page(token: str, gid: int, message: str = "", act: int = 0) -> str:
+    """大家的动态：活动概要瀑布流。点一条进详情，在详情里留言或挑表情。"""
+    from . import group as G
+
+    today = dt.date.today().isoformat()
+    r = G.feed(gid, today, act or None)
+    if not r.get("ok"):
+        body = (_msg(message)
+                + f'<div class="card"><p class="note">{esc(r.get("error") or "打不开动态")}</p>'
+                f'<div class="pager"><a class="btn" href="/groups/{gid}">返回小组</a></div></div>')
+        return page("GROUP", "动态", "", body, back=("返回小组", f"/groups/{gid}"))
+
+    rows = r.get("rows") or []
+    emojis = r.get("emojis") or []
+
+    if act:
+        # 单条详情：概要 + 全部评论 + 输入框
+        one = next((x for x in rows if int(x.get("id") or 0) == act), None)
+        if not one:
+            body = (_msg(message)
+                    + '<div class="card"><p class="note">这条动态不在了</p>'
+                    f'<div class="pager"><a class="btn" href="/groups/{gid}/feed">'
+                    '返回动态</a></div></div>')
+            return page("GROUP", "动态", "", body, back=("返回动态", f"/groups/{gid}/feed"))
+        emo = ""
+        for e in emojis:
+            emo += (f'<form action="/__group/{gid}/comment" method="post" class="eform">'
+                    f'{_tok(token)}<input type="hidden" name="act" value="{act}">'
+                    f'<input type="hidden" name="emoji" value="{esc(e)}">'
+                    f'<button class="ebtn" type="submit">{esc(e)}</button></form>')
+        cmts = ""
+        for c in (one.get("recent") or []):
+            _e = esc(c.get("emoji") or "")
+            _t = esc(c.get("text") or "")
+            cmts += (f'<div class="cm"><b>{esc(c.get("alias"))}</b>'
+                     + (f'<span class="ce">{_e}</span>' if _e else "")
+                     + (f'<span>{_t}</span>' if _t else "")
+                     + "</div>")
+        body = (_msg(message)
+                + sec("这条", '<div class="flat"><div class="frow">'
+                      + _act_line(one, today, detail=True) + "</div></div>")
+                + (sec("评论", '<div class="flat">' + cmts + '</div>') if cmts else "")
+                + sec("说一句", '<div class="flat">'
+                      '<div class="erow">' + emo + '</div>'
+                      f'<form action="/__group/{gid}/comment" method="post">{_tok(token)}'
+                      f'<input type="hidden" name="act" value="{act}">'
+                      '<div class="setrow"><span class="nowrap">留言</span>'
+                      '<input type="text" name="text" maxlength="60" '
+                      'placeholder="一句话" aria-label="留言"></div>'
+                      '<div class="pager"><button class="btn sm primary" type="submit">'
+                      '发出去</button></div></form></div>'))
+        return page("GROUP", "动态", f'{esc(one.get("alias"))} · '
+                    f'{esc(one.get("kind_name"))}', body,
+                    back=("返回动态", f"/groups/{gid}/feed"))
+
+    items = ""
+    for a in rows:
+        items += (f'<a class="frow" href="/groups/{gid}/feed?act={int(a["id"])}">'
+                  + _act_line(a, today) + "</a>")
+    if not items:
+        items = ('<div class="card"><p class="note">最近还没有动态。'
+                 '同步一次后，你和队友的活动概要会出现在这里。</p></div>')
+    hidden = int(r.get("hidden") or 0)
+    body = (_msg(message)
+            + sec("大家最近", '<div class="flat">' + items + '</div>')
+            + (f'<p class="note">另有 {hidden} 人关闭了共享，不出现在这里。</p>'
+               if hidden else "")
+            + '<p class="note">这里是活动概要：类型、距离、时长、爬升。'
+              '没有轨迹、没有配速、没有活动图。</p>')
+    return page("GROUP", "动态", f"{len(rows)} 条", body,
+                foot="只上传活动概要，不上传轨迹、配速和位置。",
+                back=("返回小组", f"/groups/{gid}"))
+
+
 # ---------------------------------------------------------------- 六件衫
 def _shirt_dot(color: str, pattern: str = "", cls: str = "") -> str:
     """衫的色点。`cls` 是附加类名（.sbit 里不用传，那里靠 `.sbit i` 给尺寸）。
@@ -577,43 +775,11 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     # 成员不再单开一块：榜上就是成员。「另有 N 人关闭了共享」已经跟在
     # 榜单行后面（rank_rows 里），这里不再重复一遍。
 
-    # 设置：一行一项，不再是一条注释 + 一个按钮 + 一圈边框。
-    my_alias = (g.get("me") or {}).get("alias") or ""
-    mine = (f'<form action="/__group/{gid}/alias" method="post">{_tok(token)}'
-            '<div class="setrow"><span>昵称</span>'
-            f'<input type="text" name="alias" maxlength="16" value="{esc(my_alias)}" '
-            'placeholder="组里怎么叫你" aria-label="组内昵称">'
-            '<button class="btn sm" type="submit">改</button></div></form>'
-            f'<form action="/__group/{gid}/share" method="post">{_tok(token)}'
-            '<div class="setrow"><span>共享</span>'
-            '<select name="share" aria-label="共享档位">'
-            f'<option value="summary"{" selected" if my_share == "summary" else ""}>共享里程</option>'
-            f'<option value="off"{" selected" if my_share == "off" else ""}>不共享</option>'
-            '</select>'
-            '<button class="btn sm" type="submit">存</button></div></form>'
-            f'<form action="/__group/{gid}/report" method="post">{_tok(token)}'
-            '<div class="setrow"><span>上报</span>'
-            '<span class="note" style="flex:1 1 auto;margin:0">同步时会自动上报，'
-            '这里是不想等的时候用</span>'
-            '<button class="btn sm" type="submit">立即</button></div></form>')
-
-    # 管理折叠：邀请码、换码、退出都是低频动作，默认收起。
-    admin_body = ""
-    if is_admin and g.get("invite_code"):
-        admin_body += (f'<div class="kvline"><span>邀请码</span>'
-                       f'<b>{esc(g["invite_code"])}</b></div>')
-    admin_body += '<div class="pager">'
-    if is_admin:
-        admin_body += (f'<form action="/__group/{gid}/rotate" method="post">{_tok(token)}'
-                       '<button class="btn sm" type="submit">换邀请码</button></form>')
-    if role != "owner":
-        admin_body += (f'<form action="/__group/{gid}/leave" method="post">{_tok(token)}'
-                       '<button class="btn sm" type="submit">退出小组</button></form>')
-    admin_body += '</div>'
-    if role == "owner":
-        admin_body += '<p class="note">你是组长。要先转让给别人，或者解散这个组。</p>'
-    admin_fold = ('<details class="fold"><summary>邀请码与管理'
-                  '<span class="fx">›</span></summary>' + admin_body + '</details>')
+    # 昵称 / 共享 / 上报 / 邀请码 / 退出全部搬到「小组设置」页了：
+    # 组页主体是排名和动态，把改昵称这种低频操作压在最下面，用户的原话是
+    # 「放在最下面太突兀」。这里只留一个页头齿轮。
+    _gear = ('<a class="hact" href="/groups/{0}/settings" aria-label="小组设置">'
+             '<span aria-hidden="true">⚙</span></a>').format(gid)
 
     # 建赛事也是折叠：一个月用一次的表单不该常驻占掉半屏。
     chal_fold = ""
@@ -779,6 +945,24 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
         f'<span class="qn">{esc(name)}</span></a>'
         for icon, name, href, _ in _qg) + "</div>")
 
+    # ---- 大家的动态：组页只放最近几条，全部在 /feed
+    # 只给概要（类型/距离/时长/爬升），不出图——活动图是「我的」那边的东西，
+    # 组页拿到的是别人的数据，给不出也不该给。
+    feed_rows = ""
+    try:
+        _fd = G.feed(gid, today)
+    except Exception:      # noqa: BLE001 - 老服务端没有 /feed，整块不显示
+        _fd = {}
+    if _fd.get("ok") and (_fd.get("rows") or []):
+        for a in (_fd.get("rows") or [])[:3]:
+            feed_rows += (f'<a class="frow" href="/groups/{gid}/feed?act={int(a["id"])}">'
+                          + _act_line(a, today) + "</a>")
+    feed_sec = (sec("大家的动态",
+                    '<div class="flat">' + feed_rows + '</div>'
+                    f'<div class="pager"><a class="btn sm" href="/groups/{gid}/feed">'
+                    f'看全部 {len(_fd.get("rows") or [])} 条</a></div>')
+                if feed_rows else "")
+
     # 月榜/周榜互切。服务端一直支持 range=month，只是页面以前不读这个参数，
     # 入口就被写死成关闭（`if False`）——那是死开关，不是功能。
     other = "month" if rng == "week" else "week"
@@ -796,11 +980,10 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                   '<div class="flat">' + rank_rows + '</div>',
                   more=more)
             + sec("赛事", '<div class="flat">' + ch_rows + '</div>' + chal_fold)
-            # 设置和管理都是低频：合成一块，管理再折一层
-            + sec("设置", '<div class="flat">' + mine + '</div>' + admin_fold))
+            + feed_sec)
     return page("GROUP", g.get("name") or "小组",
                 f'{int(g.get("member_count") or 0)} 人 · '
                 + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
-                body, chips,
+                body, chips, action=_gear,
                 foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
                 back=("返回小组", "/groups"))

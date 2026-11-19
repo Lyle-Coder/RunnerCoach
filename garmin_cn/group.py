@@ -192,15 +192,19 @@ def report_group(store, gid: int, today: str | None = None,
     box = Outbox(store)
     box.put(gid, payload)
     out = flush_one(store, gid, payload)
-    # 路线图是独立的可选项：失败了不影响里程上报，也不重试——
-    # 下次上报会全量重发格子，天然自愈。
-    if out.get("ok") and _map_on(store, gid):
+    # 路线图与动态都是独立的可选项：失败了不影响里程上报，也不重试——
+    # 下次上报会全量重发，天然自愈。
+    if out.get("ok"):
         try:
             from . import explore as EX
 
-            cells = EX.week_cells(store, today)
-            if cells:
-                push_cells(gid, cells)
+            if _map_on(store, gid):
+                cells = EX.week_cells(store, today)
+                if cells:
+                    push_cells(gid, cells)
+            acts = build_acts(store, today)
+            if acts:
+                push_acts(gid, acts, today)
         except Exception:      # noqa: BLE001
             pass
     return out
@@ -364,6 +368,78 @@ def map_data(gid: int, today: str | None = None) -> dict:
     """组内路线：每人的颜色 + 本周格子。"""
     q = f"?today={today}" if today else ""
     return _call("GET", f"/v1/group/{int(gid)}/map{q}")
+
+
+# ---------------------------------------------------------------- 动态
+# 只传概要。活动名称、轨迹、配速、心率一概不上——这一栏是「今天谁出门了」，
+# 不是活动详情页，组页也就不能出图。
+RIDE_TYPES = ("cycling", "road_biking", "mountain_biking", "骑")
+WALK_TYPES = ("hiking", "walking", "徒步", "步")
+
+
+def _kind(t) -> str:
+    s = str(t or "").lower()
+    if _is_run(s):
+        return "run"
+    if any(k in s for k in RIDE_TYPES) or "骑" in s:
+        return "ride"
+    if any(k in s for k in WALK_TYPES):
+        return "walk"
+    return "other"
+
+
+def build_acts(store, today: str | None = None, days: int = 14) -> list[dict]:
+    """把最近的活动压成概要。
+
+    `sid` 是活动 id 的短哈希：服务端靠它去重，但它反查不出是哪条活动，
+    也不含任何位置信息。不上传原始 activity_id，是因为那个 id 在佳明那边
+    能直接打开活动页。
+    """
+    import hashlib
+
+    day = dt.date.fromisoformat(today or dt.date.today().isoformat())
+    start = day - dt.timedelta(days=max(1, days) - 1)
+    with store.conn:
+        rows = store.conn.execute(
+            "SELECT activity_id, date, type, distance_m, duration_s, ascent"
+            " FROM activities WHERE date BETWEEN ? AND ? ORDER BY date",
+            (start.isoformat(), day.isoformat())).fetchall()
+    out = []
+    for r in rows:
+        aid = str(r["activity_id"] or "")
+        d = str(r["date"] or "")[:10]
+        if not aid or not d:
+            continue
+        out.append({
+            "sid": hashlib.sha1(aid.encode("utf-8")).hexdigest()[:16],
+            "date": d,
+            "kind": _kind(r["type"]),
+            "distance_m": int(round(float(r["distance_m"] or 0))),
+            "duration_s": int(round(float(r["duration_s"] or 0))),
+            "elevation_m": int(round(float(r["ascent"] or 0))),
+        })
+    return out
+
+
+def push_acts(gid: int, acts: list[dict], today: str | None = None) -> dict:
+    body: dict = {"acts": list(acts)}
+    if today:
+        body["today"] = today
+    return _call("POST", f"/v1/group/{int(gid)}/acts", body)
+
+
+def feed(gid: int, today: str | None = None, act: int | None = None) -> dict:
+    q = "?"
+    if today:
+        q += f"today={today}&"
+    if act:
+        q += f"act={int(act)}"
+    return _call("GET", f"/v1/group/{int(gid)}/feed{q.rstrip('&')}")
+
+
+def comment(gid: int, act: int, text: str = "", emoji: str = "") -> dict:
+    return _call("POST", f"/v1/group/{int(gid)}/comment",
+                 {"act": int(act), "text": text, "emoji": emoji})
 
 
 def set_goal(gid: int, km: float, predict: int | None = None,

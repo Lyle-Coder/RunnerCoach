@@ -235,6 +235,37 @@ def init_db() -> None:
           cell       TEXT NOT NULL,
           PRIMARY KEY(group_id, week_start, user_id, cell)
         );
+
+        -- 活动概要（组内动态瀑布流）。**只有概要**：日期、类型、距离、时长、
+        -- 爬升。没有轨迹、没有配速、没有心率、没有活动名称——组页承诺的
+        -- 「不上传轨迹和配速」在这张表上依然成立，也不出图。
+        CREATE TABLE IF NOT EXISTS group_act(
+          id          INTEGER PRIMARY KEY,
+          group_id    INTEGER NOT NULL,
+          user_id     INTEGER NOT NULL,
+          sid         TEXT NOT NULL,     -- 客户端算的短指纹，只用于去重
+          date        TEXT NOT NULL,
+          kind        TEXT NOT NULL DEFAULT 'run',
+          distance_m  INTEGER NOT NULL DEFAULT 0,
+          duration_s  INTEGER NOT NULL DEFAULT 0,
+          elevation_m INTEGER NOT NULL DEFAULT 0,
+          created_at  INTEGER NOT NULL,
+          UNIQUE(group_id, user_id, sid)
+        );
+        CREATE INDEX IF NOT EXISTS idx_gact_group ON group_act(group_id, date DESC);
+
+        -- 评论：一句话 + 一个表情。表情只收白名单里的几个，
+        -- 不然这里会变成贴图区，审核和存储都失控。
+        CREATE TABLE IF NOT EXISTS group_comment(
+          id         INTEGER PRIMARY KEY,
+          group_id   INTEGER NOT NULL,
+          act_id     INTEGER NOT NULL,
+          user_id    INTEGER NOT NULL,
+          text       TEXT NOT NULL DEFAULT '',
+          emoji      TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_gcmt_act ON group_comment(act_id, id);
         """)
         # 老库补列。SQLite 的 ADD COLUMN 支持带默认值，已有行会拿到 0；
         # 不做数据回填——0 就是「那几天还没有这个字段」，回填成别的值是编数据。
@@ -1076,6 +1107,187 @@ def api_map(me, gid: int, query: dict) -> dict:
             "cells": sum(len(p["cells"]) for p in people)}
 
 
+# ---------------------------------------------------------------- 动态
+# 概要只能是这四类。骑行、走路也进动态（它们是"今天出门了"），
+# 但里程榜仍然只算跑步——两件事的口径本来就不同。
+ACT_KINDS = ("run", "ride", "walk", "other")
+ACT_MAX = 200            # 一次最多传 200 条
+FEED_LIMIT = 40          # 瀑布流一次最多 40 条
+COMMENT_MAX = 60         # 一条评论最多 60 字
+# 表情只收白名单：这一栏是"随手拍一下队友"，放开就变成贴图区，
+# 存储和审核都会失控。前端的按钮也从这里取，两边不会分叉。
+EMOJIS = ("👍", "💪", "🔥", "😂", "👏", "🎉")
+
+
+def api_acts(me, gid: int, body: dict) -> dict:
+    """上传活动概要。只有日期/类型/距离/时长/爬升——没有轨迹、配速、心率。"""
+    uid = int(me["user_id"])
+    today = _today(body.get("today"))
+    raw = body.get("acts")
+    if not isinstance(raw, list):
+        raise GroupError(400, "acts 要是数组")
+    if len(raw) > ACT_MAX:
+        raise GroupError(400, f"一次最多 {ACT_MAX} 条")
+
+    rows = []
+    for a in raw:
+        if not isinstance(a, dict):
+            continue
+        sid = str(a.get("sid") or "").strip()[:32]
+        if not sid or not re.fullmatch(r"[0-9a-fA-F]{8,32}", sid):
+            continue
+        d = _date(a.get("date"))
+        if d > today + dt.timedelta(days=FUTURE_DAYS):
+            continue
+        kind = str(a.get("kind") or "other")
+        if kind not in ACT_KINDS:
+            kind = "other"
+        try:
+            dist = max(0, min(DAY_DIST_MAX_M, int(a.get("distance_m") or 0)))
+            dur = max(0, min(DAY_DUR_MAX_S, int(a.get("duration_s") or 0)))
+            elev = max(0, min(DAY_ELEV_MAX, int(a.get("elevation_m") or 0)))
+        except (TypeError, ValueError):
+            continue
+        # 爬升密度防刷，和日报表同一个上限
+        if dist > 0:
+            elev = min(elev, int(dist / 1000.0 * _ELEV_PER_KM_MAX))
+        rows.append((gid, uid, sid, d.isoformat(), kind, dist, dur, elev, _now()))
+
+    with db() as c:
+        m = _require_member(c, gid, uid)
+        if (m["share_level"] or "summary") != "summary":
+            raise GroupError(409, "数据共享已关闭，不上传动态")
+        if rows:
+            c.executemany("""
+                INSERT INTO group_act(group_id,user_id,sid,date,kind,distance_m,
+                                      duration_s,elevation_m,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(group_id,user_id,sid) DO UPDATE SET
+                    date=excluded.date, kind=excluded.kind,
+                    distance_m=excluded.distance_m, duration_s=excluded.duration_s,
+                    elevation_m=excluded.elevation_m
+            """, rows)
+        # 只留 30 天：这是「最近怎么样」的信息流，不是档案库
+        cutoff = (today - dt.timedelta(days=30)).isoformat()
+        c.execute("DELETE FROM group_act WHERE group_id=? AND date < ?", (gid, cutoff))
+    return {"ok": True, "saved": len(rows)}
+
+
+def _kind_name(k: str) -> str:
+    return {"run": "跑步", "ride": "骑行", "walk": "徒步", "other": "运动"}.get(k, "运动")
+
+
+def api_feed(me, gid: int, query: dict) -> dict:
+    """组内动态瀑布流：最近的活动 + 每条上最靠前的两条评论。
+
+    带 `?act=N` 时只返回那一条和它的全部评论——详情页要用，列表里每条只给
+    两条，全量塞进列表会让响应大一倍还没人看。
+    """
+    uid = int(me["user_id"])
+    only = None
+    raw_act = (query.get("act") or [""])[0]
+    if raw_act:
+        try:
+            only = int(raw_act)
+        except ValueError:
+            raise GroupError(400, "act 不合法")
+    with db() as c:
+        _group(c, gid)
+        _require_member(c, gid, uid)
+        mem = c.execute(
+            "SELECT user_id, alias, share_level FROM group_members"
+            " WHERE group_id=? AND status='active' ORDER BY joined_at, user_id",
+            (gid,)).fetchall()
+        # 只取开着共享的人：关掉共享的人也不该在动态里出现
+        keep = {int(m["user_id"]) for m in mem
+                if (m["share_level"] or "summary") == "summary"}
+        if only is not None:
+            acts = c.execute(
+                "SELECT id, user_id, date, kind, distance_m, duration_s, elevation_m"
+                " FROM group_act WHERE group_id=? AND id=?", (gid, only)).fetchall()
+        else:
+            acts = c.execute(
+                "SELECT id, user_id, date, kind, distance_m, duration_s, elevation_m"
+                " FROM group_act WHERE group_id=? ORDER BY date DESC, id DESC LIMIT ?",
+                (gid, FEED_LIMIT)).fetchall()
+        ids = [int(r["id"]) for r in acts]
+        cmts: dict[int, list] = {}
+        counts: dict[int, int] = {}
+        if ids:
+            marks = ",".join("?" * len(ids))
+            for r in c.execute(
+                    f"SELECT act_id, user_id, text, emoji, created_at FROM group_comment"
+                    f" WHERE act_id IN ({marks}) ORDER BY id", ids).fetchall():
+                a = int(r["act_id"])
+                counts[a] = counts.get(a, 0) + 1
+                # 列表里每条只留前两条；详情页（only 有值）全给
+                if only is not None or len(cmts.setdefault(a, [])) < 2:
+                    cmts.setdefault(a, []).append({
+                        "user_id": int(r["user_id"]),
+                        "text": str(r["text"] or ""),
+                        "emoji": str(r["emoji"] or "")})
+
+    color = {int(m["user_id"]): MAP_COLORS[i % len(MAP_COLORS)]
+             for i, m in enumerate(mem)}
+    alias = {int(m["user_id"]): m["alias"] for m in mem}
+    out = []
+    for r in acts:
+        u = int(r["user_id"])
+        if u not in keep:
+            continue
+        a = int(r["id"])
+        out.append({
+            "id": a, "user_id": u, "alias": alias.get(u, ""),
+            "color": color.get(u, MAP_COLORS[0]),
+            "is_me": u == uid,
+            "date": str(r["date"]),
+            "kind": str(r["kind"]), "kind_name": _kind_name(str(r["kind"])),
+            "distance_m": int(r["distance_m"] or 0),
+            "duration_s": int(r["duration_s"] or 0),
+            "elevation_m": int(r["elevation_m"] or 0),
+            "comments": counts.get(a, 0),
+            "recent": [dict(x, alias=alias.get(int(x["user_id"]), ""))
+                       for x in cmts.get(a, [])],
+        })
+    return {"ok": True, "rows": out, "emojis": list(EMOJIS),
+            "hidden": sum(1 for m in mem if (m["share_level"] or "summary") != "summary")}
+
+
+def api_comment(me, gid: int, body: dict) -> dict:
+    """给一条动态留一句话或一个表情。两样至少要有一个。"""
+    uid = int(me["user_id"])
+    try:
+        act_id = int(body.get("act"))
+    except (TypeError, ValueError):
+        raise GroupError(400, "act 不合法")
+    text = str(body.get("text") or "").strip()[:COMMENT_MAX]
+    emoji = str(body.get("emoji") or "").strip()
+    if emoji and emoji not in EMOJIS:
+        raise GroupError(400, "这个表情不在可选范围里")
+    if not text and not emoji:
+        raise GroupError(400, "说点什么，或者挑一个表情")
+    _rate_limit(f"u{uid}", "comment", 30, window=3600)
+
+    with db() as c:
+        _group(c, gid)
+        _require_member(c, gid, uid)
+        row = c.execute("SELECT user_id FROM group_act WHERE id=? AND group_id=?",
+                        (act_id, gid)).fetchone()
+        if not row:
+            raise GroupError(404, "这条动态不在了")
+        # 评论的是别人的动态，所以被评论者必须还开着共享——否则等于绕过了
+        # 他「别拿我数据做比较」的选择
+        owner = c.execute("SELECT share_level FROM group_members"
+                          " WHERE group_id=? AND user_id=?",
+                          (gid, int(row["user_id"]))).fetchone()
+        if not owner or (owner["share_level"] or "summary") != "summary":
+            raise GroupError(409, "对方关闭了共享，不能评论")
+        c.execute("INSERT INTO group_comment(group_id,act_id,user_id,text,emoji,created_at)"
+                  " VALUES(?,?,?,?,?,?)", (gid, act_id, uid, text, emoji, _now()))
+        cid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+    return {"ok": True, "id": int(cid), "text": text, "emoji": emoji}
+
+
 def api_season(me, gid: int, query: dict) -> dict:
     """本周的六件衫 + 探索徽章 + 赛季分 + 名次 + 称号 + 让分/预言的加分。
 
@@ -1549,6 +1761,12 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_mapshare(me, gid, body), 200
         if action == "cells" and method == "POST":
             return api_cells(me, gid, body), 200
+        if action == "acts" and method == "POST":
+            return api_acts(me, gid, body), 200
+        if action == "feed" and method == "GET":
+            return api_feed(me, gid, query), 200
+        if action == "comment" and method == "POST":
+            return api_comment(me, gid, body), 200
         if action == "goal" and method == "POST":
             return api_goal(me, gid, body), 200
         if action == "home" and method == "GET":
