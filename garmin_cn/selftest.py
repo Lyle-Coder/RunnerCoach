@@ -1387,10 +1387,23 @@ def run() -> int:
     # 组列表页：只有一个组时直接进详情——点「小组」最想看的是排名
     from garmin_cn import groupui as _GU
     _gsrc = inspect.getsource(_GU.groups_page)
-    assert "if len(items) == 1:" in _gsrc and "return group_page(" in _gsrc, \
-        "只有一个组时没有直接进详情页"
-    assert '<details class="fold"><summary>再加入一个' in _gsrc, \
-        "建组/加入没有折起来，会跟「我的小组」抢版面"
+    assert "if len(items) == 1 and not force_list:" in _gsrc and \
+        "return group_page(" in _gsrc, "只有一个组时没有直接进详情页"
+    # 单组直达必须能被 ?list=1 绕过，否则「加入另一个组」永远没入口
+    assert "force_list: bool = False" in _gsrc, "列表页没有强制列表的开关"
+    assert 'class="fold fold-lg" open' in _gsrc, \
+        "被引导进来时「再加入一个」还是折着的"
+    assert '<summary>再加入一个' in _gsrc, \
+        "建组/加入没有了"
+    # 唯独不能退回「永久折叠」：force_list 之外仍是折叠的
+    assert "else '<details class=\"fold\">'" in _gsrc, \
+        "底部入组表单不再折叠，会和榜单抢版面"
+    # 单组时组详情的「全部小组」必须带 list=1，否则点回去又被弹回本组
+    _gpage_src = inspect.getsource(_GU.group_page)
+    assert "/groups?list=1" in _gpage_src, \
+        "组详情的「全部小组」没带 list=1，单组用户点了会原地弹回"
+    _set_src = inspect.getsource(_GU.settings_page)
+    assert "/groups?list=1" in _set_src, "设置页没有「全部小组」入口"
 
     # 账号昵称：建组/入组的默认名字，别再让用户每组填一次
     _asrc2 = (ROOT / "garmin_cn" / "group.py").read_text(encoding="utf-8")
@@ -1541,17 +1554,30 @@ def run() -> int:
     assert "/alias" in _set and "/rotate" in _set, "设置页表单没接上接口"
     assert "/groups/1/map" in _set, "设置页没有路线共享入口"
 
-    # ---- P2：本周玩法（衫 / 目标 / 结对 / 预言）
-    # 四行必须是「标签 + 内容」两列对齐：以前是四段各写各的流式文字，
-    # 语序都不一样，看着乱。
-    assert 'class="kvrows"' in _gh, "本周四行没有用对齐表格"
-    for _k in ("衫", "目标", "结对", "预言"):
+    # ---- 核心数据卡：名次 + 分数 + 称号 + 六件衫徽章
+    # 原来「我·第N名」和「衫得主」是两条独立的长行，谁也收不住谁；
+    # 现在合进一张卡：分数在上半区，六件衫是下半区的 6 枚圆徽章。
+    assert 'class="scorecard"' in _gh, "没有核心数据卡"
+    assert 'class="sc-v"' in _gh and "分</i>" in _gh, "分数没进核心卡"
+    assert _gh.count('class="sbd') == 6, \
+        f"六件衫应该是 6 枚徽章，实际 {_gh.count('class="sbd')} 枚"
+    assert 'class="sc-shirts"' in _gh and "/shirts" in _gh, "徽章组不是进六件衫榜单的入口"
+
+    # ---- 目标：独立入口行，不再是四行表格里的一行
+    assert 'class="goalrow"' in _gh, "目标没有做成独立入口行"
+    assert 'class="gk"' in _gh and 'class="gs"' in _gh, "目标入口缺主文或副文"
+    assert "定本周目标" in _gh or "目标 30" in _gh, "目标入口没写清是定还是改"
+
+    # ---- 结对 / 预言：仍是「标签 + 内容」两列对齐
+    assert 'class="kvrows"' in _gh, "结对/预言没有用对齐表格"
+    for _k in ("结对", "预言"):
         assert f'<span class="k">{_k}</span>' in _gh, f"「{_k}」那行没有标签列"
-    assert ">30</b> km" in _gh, "本周目标没在页面上显示"
+    assert "目标 30" in _gh, "本周目标没在页面上显示"
     assert "我 30" in _gh, "结对让分没显示出来"
     assert "完不成" in _gh, "我投的预言没回显"
     assert 'name="predict"' in _gh, "没有预言选择框"
-    assert "定本周目标" in _gh, "报目标表单没折叠"
+    # 目标入口是 details：summary 那行常驻，表单点开才出现
+    assert '<details class="goalrow">' in _gh, "目标入口不是可展开的"
     # 探索徽章不占衫：board 里够 5 格才在榜上标一句，不够就不标
     assert 'class="sub">新 12 格' in _gh, "够格的探索徽章没显示在榜上"
     assert 'class="sub">新 3 格' not in _gh, "不到 5 格也标了探索徽章"
@@ -4931,13 +4957,37 @@ def run() -> int:
     # 现在只允许 8 档字号、4 档圆角；小元素（<8px 的进度条圆角）不受限。
     from garmin_cn import design as _DS
 
-    _fss = {float(x) for x in _re.findall(r"font-size:([\d.]+)px", _u.CSS)}
-    _bad_fs = sorted(x for x in _fss if int(x) not in _DS.FONT_SIZES
-                     and x not in _DS.FONT_SIZES)
-    assert not _bad_fs, f"字号超出白名单（只允许 {_DS.FONT_SIZES}）：{_bad_fs}"
-    _rds = {float(x) for x in _re.findall(r"border-radius:([\d.]+)px", _u.CSS)}
-    _bad_rd = sorted(x for x in _rds if x >= 8 and int(x) not in _DS.RADII)
-    assert not _bad_rd, f"圆角超出白名单（只允许 {_DS.RADII}）：{_bad_rd}"
+    # 必须扫**全部页面 CSS**：只查 ui.CSS 时，screen.py 的 13px、eventui 的
+    # 8/9/12px 圆角一直是漏网的（各自有一份独立 <style>）。
+    from garmin_cn import aiui as _AI3, eventui as _EV3, runsui as _RS3
+    from garmin_cn import screen as _SC3
+
+    # ui.CSS 已经拼了 BRAND_CSS + SCREEN_CSS（见 ui.py 的 CSS 定义），所以
+    # screen 不单独列；下面断言拼接关系还在，防止哪天拆开后漏检。
+    assert getattr(_SC3, "SCREEN_CSS", "") in _u.CSS, \
+        "ui.CSS 不再拼接 SCREEN_CSS 了，白名单检查需要把 screen 单列出来"
+    _pages_css = {
+        "ui": _u.CSS,
+        "aiui": getattr(_AI3, "CSS", ""),
+        "eventui": getattr(_EV3, "CSS", ""),
+        "runsui": getattr(_RS3, "CSS", "") + getattr(_RS3, "FONT_CSS", ""),
+    }
+    for _nm, _pcss in _pages_css.items():
+        if not _pcss:
+            continue
+        _fss = {float(x) for x in _re.findall(r"font-size:([\d.]+)px", _pcss)}
+        _bad_fs = sorted(x for x in _fss if int(x) not in _DS.FONT_SIZES
+                         and x not in _DS.FONT_SIZES)
+        assert not _bad_fs, \
+            f"{_nm} 字号超出白名单（只允许 {_DS.FONT_SIZES}）：{_bad_fs}"
+        _rds = {float(x) for x in _re.findall(r"border-radius:([\d.]+)px", _pcss)}
+        _bad_rd = sorted(x for x in _rds if x >= 8 and int(x) not in _DS.RADII)
+        assert not _bad_rd, \
+            f"{_nm} 圆角超出白名单（只允许 {_DS.RADII}）：{_bad_rd}"
+        _wts = {int(x) for x in _re.findall(r"font-weight:(\d{3})", _pcss)}
+        _bad_wt = sorted(x for x in _wts if x not in (400, 500, 600))
+        assert not _bad_wt, \
+            f"{_nm} 字重只能用 400/500/600（§3.2）：{_bad_wt}"
     # 最小字号：CSS 里不该再有 10px / 10.5px
     assert not _re.search(r"font-size:10(\.5)?px", _u.CSS), "还有 10px 级别的字号"
     # 背景不能用 background-attachment:fixed（滚动重绘整面）

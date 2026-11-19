@@ -49,13 +49,13 @@ _BASE = """
 /* 面板标题：15px 粗体 + 3px 品牌竖条，和 app 其它页的 .sec-head 同一套语气。
    原来是 11px 字距 1.5px 的「小标」，在手机上比正文里的数字还小，
    层级是反的。 */
-.rc-eyebrow{font-size:var(--fs-lead,15px);font-weight:700;letter-spacing:0;
+.rc-eyebrow{font-size:var(--fs-lead,15px);font-weight:600;letter-spacing:0;
   color:var(--ink,#E9F0F8);position:relative;padding-left:10px}
 .rc-eyebrow::before{content:"";position:absolute;left:0;top:50%;width:3px;
   height:14px;margin-top:-7px;border-radius:2px;background:var(--brand)}
 .rc-win{font-size:var(--fs-micro,11px);color:var(--ink-3,#7A8DA4);
   font-variant-numeric:tabular-nums;white-space:nowrap}
-.rc-num{font-variant-numeric:tabular-nums;font-weight:650;
+.rc-num{font-variant-numeric:tabular-nums;font-weight:600;
   color:var(--ink,#E8F0FB)}
 
 /* 面板：平底色 + 发丝线，和 app 其它卡片一致。
@@ -70,19 +70,19 @@ _BASE = """
 
 /* 恢复 hero：一句结论 + 一句解释在左、环在右、三格分解在下、建议胶囊收尾。
    原来是「标题条 + 环 + 三条横条分解」，结论和标题分居两块，说的是同一件事。 */
-.rc-hero{display:flex;gap:14px;align-items:center}
+.rc-hero{display:flex;gap:14px;align-items:flex-start}
 .rc-ring{flex:0 0 108px;width:108px;height:108px;display:block}
 .rc-ring.alert{filter:drop-shadow(0 0 14px rgba(242,85,90,.55))}
 .rc-hero-main{flex:1;min-width:0}
 .rc-hero-t{display:flex;align-items:center;gap:8px;font-size:var(--fs-h2,20px);
-  font-weight:700;letter-spacing:-.4px;color:var(--ink,#E9F0F8);line-height:1.3}
+  font-weight:600;letter-spacing:-.4px;color:var(--ink,#E9F0F8);line-height:1.3}
 /* 状态灯：绿=可以练 / 琥珀=降量 / 红=休息。9px 的小圆点，光晕很淡，
    只是让「结论」有个形状，不参与页面级辉光。 */
 .rc-dot{flex:0 0 9px;width:9px;height:9px;border-radius:50%}
 .rc-dot.ok{background:var(--ok,#3FD39A);box-shadow:0 0 9px rgba(63,211,154,.55)}
 .rc-dot.warn{background:var(--warn,#F5A524);box-shadow:0 0 9px rgba(245,165,36,.5)}
 .rc-dot.bad{background:var(--bad,#F2555A);box-shadow:0 0 9px rgba(242,85,90,.5)}
-.rc-hero-p{margin:6px 0 0;font-size:var(--fs-cap,12px);line-height:1.6;
+.rc-hero-p{margin:7px 0 0;font-size:var(--fs-body,14px);line-height:1.65;
   color:var(--ink-2,#A6B8CD)}
 /* 三格分解：标签 + 数值一行，进度条压在下面对齐整列。
    原来是「名称 | 横条 | 数值」三列并排，横条被挤在中间只剩几像素，
@@ -141,7 +141,7 @@ _BASE = """
 .rc-plan .when b{display:block;font-size:16px;color:var(--brand-ink,#8CC2FF);
   font-variant-numeric:tabular-nums}
 .rc-plan .what{min-width:0;flex:1}
-.rc-plan .t{font-size:16px;font-weight:650;line-height:1.35}
+.rc-plan .t{font-size:16px;font-weight:600;line-height:1.35}
 .rc-plan .d{font-size:12px;color:var(--muted,#7C8FA8);margin-top:2px;
   line-height:1.5}
 .rc-plan .go{flex:0 0 auto;font-size:12px;color:var(--brand-ink,#8CC2FF);
