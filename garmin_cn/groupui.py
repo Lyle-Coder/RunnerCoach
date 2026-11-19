@@ -1072,9 +1072,13 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     for i, x in enumerate(b.get("rows") or [], 1):
         cls = "rank me" if x.get("is_me") else "rank"
         _alias = str(x.get("alias") or "")
-        marks = _marks_of.get(_alias, "")
-        if int(x.get("explorer") or 0) >= _min_cells:
-            marks += _explore_icon("jr", "探索徽章")
+        # 衫和探索徽章都是**按周结算**的（season 只有 /season，没有月口径），
+        # 挂到月榜上会被读成「这个月的衫」——那是错的。所以月榜只排里程。
+        marks = ""
+        if rng == "week":
+            marks = _marks_of.get(_alias, "")
+            if int(x.get("explorer") or 0) >= _min_cells:
+                marks += _explore_icon("jr", "探索徽章")
         marks = f'<span class="mk">{marks}</span>' if marks else ""
         rank_rows += (f'<div class="{cls}"><span class="no">{i}</span>'
                       f'<span class="nm">{esc(_alias)}</span>{marks}'
@@ -1194,7 +1198,14 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                 _badges += _jersey(str(sh.get("color") or ""),
                                    str(sh.get("pattern") or ""), _on, "", _tip)
             # 一个人组里「第 1 名」没有信息量，直接说这是「本周成绩」。
-            _k = f'我 · 第 {_rk} 名' if _n > 1 else "本周成绩"
+            # 月榜页里这张卡还是本周的（season 只有周口径），所以要写明「本周」，
+            # 否则「我 · 第 9 名」会被读成本月名次。
+            if _n <= 1:
+                _k = "本周成绩"
+            elif rng == "month":
+                _k = f'本周 · 第 {_rk} 名'
+            else:
+                _k = f'我 · 第 {_rk} 名'
             # 口径要自己交代：这是全页最大的数字，不说清是什么分，
             # 用户只能猜「是跑量？出勤？还是综合」。满分和加分上限由服务端
             # 下发（base_max / bonus_max），不在客户端写死——权重改了这里跟着变。
@@ -1419,7 +1430,9 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     body = (msg
             + head
             + sec("月榜" if rng == "month" else "本周榜",
-                  '<div class="flat">' + rank_rows + '</div>',
+                  ('<p class="note">衫和探索徽章按周结算，月榜只排里程。</p>'
+                   if rng == "month" else "")
+                  + '<div class="flat">' + rank_rows + '</div>',
                   more=more)
             + sec("赛事", '<div class="flat">' + ch_rows + '</div>' + chal_fold)
             + feed_sec)
