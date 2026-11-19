@@ -285,6 +285,7 @@ RunnerCoach/
 | [`docs/发布流程.md`](docs/发布流程.md) | 版本规范、正式签名、打包校验、APK 分发与回滚 |
 | [`docs/iOS迁移评估.md`](docs/iOS迁移评估.md) | 迁移到苹果平台的可行性、分层映射与工作量（暂无 Mac，先做储备） |
 | [`docs/iOS-CI打包调研.md`](docs/iOS-CI打包调研.md) | iOS 打包链路：证书、TestFlight 与 GitHub Actions 的可行路径 |
+| [`docs/服务端架构方案.md`](docs/服务端架构方案.md) | 苹果端 PWA 选型、服务端容量、token 与队列策略、一套代码两个宿主（方案记录，未实施） |
 | [`docs/隐私说明.md`](docs/隐私说明.md) | 收集什么、存在哪、什么时候出网、怎么删 |
 | [`docs/0.6.0-checklist.md`](docs/0.6.0-checklist.md) | 1.0 发布清单与验收标准 |
 

@@ -424,6 +424,12 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .lgi{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--ink2)}
 .lgi i{width:9px;height:9px;border-radius:2px;flex:0 0 9px}
 .lgi b{font-weight:600;color:var(--muted)}
+/* 跨省分片：每片一个小标题 + 一张图。标题给地名和格数，
+   不然三张图排下来分不清哪张是哪儿。 */
+.shard-h{display:flex;align-items:baseline;justify-content:space-between;
+  gap:10px;padding:14px 2px 6px;font-size:12.5px;font-weight:600;color:var(--ink)}
+.shard-h:first-child{padding-top:2px}
+.shard-h i{font-style:normal;font-size:11px;font-weight:400;color:var(--faint)}
 /* setrow 的左侧标签默认会被 flex 压缩换行（「路线共／享」），有需要时钉住 */
 .nowrap{white-space:nowrap;flex:0 0 auto}
 /* 六件衫：一行一件。左色点 / 中榜名 / 右得主与成绩 / 下面一行小字写口径和前 2、3 名。

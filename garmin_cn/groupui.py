@@ -326,6 +326,8 @@ def bingo_page(token: str, gid: int, message: str = "") -> str:
 
 # ---------------------------------------------------------------- 组内路线
 MAP_W, MAP_H = 392, 300
+# 分片时用矮一点的图幅：一片一张，三片就顶两屏，太高了反而看不到全貌。
+SHARD_H = 190
 
 
 def map_page(token: str, gid: int, message: str = "") -> str:
@@ -358,16 +360,28 @@ def map_page(token: str, gid: int, message: str = "") -> str:
         all_cells.extend(p["cells"])
 
     svg = ""
+    sharded = False
     if all_cells:
-        # 取景点用格子四角，不用中心：只用中心的活，最外圈只露出一半
-        pts: list[list[float]] = []
-        for c in all_cells:
-            pts.extend([[lat, lon] for lat, lon in EX.cell_corners(c)])
-        ident = "gmap%d-%s-%s" % (
-            gid, str(r.get("from") or "")[:10],
-            hashlib.md5(",".join(sorted(all_cells)).encode()).hexdigest()[:10])
-        bm = BM.ensure(pts, MAP_W, MAP_H, ident=ident)
-        svg = _map_svg(pts, people, bm, EX, BM)
+        # 跨省的组不能用一张图：取景要装下 900 km，zoom 只到 5 级，500 m 的
+        # 格子剩不到一个像素。按地理分片，一片一张图。
+        shards = EX.cluster_cells(all_cells)
+        if len(shards) <= 1:
+            pts: list[list[float]] = []
+            for c in all_cells:
+                pts.extend([[lat, lon] for lat, lon in EX.cell_corners(c)])
+            ident = "gmap%d-%s-%s" % (
+                gid, str(r.get("from") or "")[:10],
+                hashlib.md5(",".join(sorted(all_cells)).encode()).hexdigest()[:10])
+            bm = BM.ensure(pts, MAP_W, MAP_H, ident=ident)
+            svg = _map_svg(pts, people, bm, EX, BM)
+        else:
+            # 我那片排第一：跨省的组里，先看到的应该是自己所在的城市。
+            # 稳定排序，同组内仍按格子数从多到少。
+            if mine:
+                _myset = set(mine["cells"])
+                shards.sort(key=lambda sh: 0 if _myset & set(sh) else 1)
+            svg = _shards_html(gid, r, shards, people, EX, BM, hashlib)
+            sharded = True
 
     # 图例：颜色 + 名字 + 格数。人多了会换行，不挤成一条。
     legend = ""
@@ -391,10 +405,18 @@ def map_page(token: str, gid: int, message: str = "") -> str:
                '开启后同组能看到你本周跑过哪些 500 米格子</span>'
                '<button class="btn sm primary" type="submit">开启</button></div></form>')
 
+    # 分片时 _shards_html 里每片自带卡片和图例，这里不能再套一层——
+    # 套了会在最下面多出一条对不上任何一张图的图例。
+    if not svg:
+        _map_block = ('<div class="card"><p class="note">这周还没有人共享路线。'
+                      '打开下面的开关，你的足迹会以 500 米格子的形式出现在这里。</p></div>')
+    elif sharded:
+        _map_block = svg
+    else:
+        _map_block = _map_card(svg, legend)
+
     body = (_msg(message)
-            + (_map_card(svg, legend) if svg else
-               '<div class="card"><p class="note">这周还没有人共享路线。'
-               '打开下面的开关，你的足迹会以 500 米格子的形式出现在这里。</p></div>')
+            + _map_block
             + sec("我的设置", '<div class="flat">' + _sw + '</div>')
             + '<p class="note">地图上只有 500 米见方的格子，没有轨迹线、'
               '没有配速、没有心率。关掉共享的那一刻，服务端会把这些格子删掉。</p>')
@@ -405,27 +427,70 @@ def map_page(token: str, gid: int, message: str = "") -> str:
                 back=("返回小组", f"/groups/{gid}"))
 
 
+def _shards_html(gid: int, r: dict, shards, people, EX, BM, hashlib) -> str:
+    """跨省时一片一张小地图。
+
+    片是按 0.5° 网格聚出来的，标题取该片第一个格子的逆地理编码（「西安」），
+    取不到就写「第 N 片」。每片自己的图例——不然一个组四片，图例全堆在最后
+    根本对不上哪块颜色属于哪张图。
+    """
+    out = ""
+    for idx, shard in enumerate(shards, 1):
+        sset = set(shard)
+        sub = [dict(p, cells=[c for c in p["cells"] if c in sset]) for p in people]
+        sub = [p for p in sub if p["cells"]]
+        if not sub:
+            continue
+        pts: list[list[float]] = []
+        for c in shard:
+            pts.extend([[lat, lon] for lat, lon in EX.cell_corners(c)])
+        ident = "gmaps%d-%s-%s" % (
+            gid, str(r.get("from") or "")[:10],
+            hashlib.md5(",".join(sorted(shard)).encode()).hexdigest()[:10])
+        bm = BM.ensure(pts, MAP_W, SHARD_H, ident=ident)
+        legend = "".join(
+            f'<span class="lgi"><i style="background:{esc(p["color"])}"></i>'
+            f'{esc(p["alias"])}<b>{len(p["cells"])}</b></span>' for p in sub)
+        name = _shard_name(shard, EX, BM) or f"片区 {idx}"
+        n = sum(len(p["cells"]) for p in sub)
+        out += (f'<div class="shard-h"><span>{esc(name)}</span>'
+                f'<i>{n} 格</i></div>')
+        out += _map_card(_map_svg(pts, sub, bm, EX, BM, w=MAP_W, h=SHARD_H), legend)
+    return out
+
+
+def _shard_name(shard, EX, BM) -> str:
+    """片的名字：取该片第一个格子的「省·市」，只要市名。没有 Key 时返回空串。"""
+    try:
+        lat, lon = EX.cell_center(shard[0])
+        region = BM.regeo(lat, lon)
+    except Exception:      # noqa: BLE001 - 逆地理编码失败不该让整页挂掉
+        return ""
+    return str(region).split("·")[-1] if region else ""
+
+
 def _map_card(svg: str, legend: str) -> str:
     lg = f'<div class="lgs">{legend}</div>' if legend else ""
     return ('<div class="card gmapcard">' + svg + lg + '</div>')
 
 
-def _map_svg(pts, people, bm, EX, BM) -> str:
+def _map_svg(pts, people, bm, EX, BM, w: int = MAP_W, h: int = MAP_H) -> str:
     """底图 + 每人一条彩色格子带。
 
     变换和活动图用同一套 `p' = p*s + t`（见 actcard._track_on_map 的注释）：
     底图和格子共用一个变换，才不会出现「路网在左、脚印在右」。
     """
+    W, H = w, h
     meta = (bm or {}).get("meta") or {}
-    iw, ih = int(meta.get("w") or MAP_W), int(meta.get("h") or MAP_H)
-    s = float(meta.get("s") or min(MAP_W / iw, MAP_H / ih))
+    iw, ih = int(meta.get("w") or W), int(meta.get("h") or H)
+    s = float(meta.get("s") or min(W / iw, H / ih))
 
     if bm:
         pxs = [BM.to_px(lat, lon, meta) for lat, lon in pts]
         cx = (min(x for x, _ in pxs) + max(x for x, _ in pxs)) / 2
         cy = (min(y for _, y in pxs) + max(y for _, y in pxs)) / 2
-        tx = min(0.0, max(MAP_W - iw * s, MAP_W / 2 - cx * s))
-        ty = min(0.0, max(MAP_H - ih * s, MAP_H / 2 - cy * s))
+        tx = min(0.0, max(W - iw * s, W / 2 - cx * s))
+        ty = min(0.0, max(H - ih * s, H / 2 - cy * s))
 
         def xy(lat, lon):
             x, y = BM.to_px(lat, lon, meta)
@@ -441,8 +506,8 @@ def _map_svg(pts, people, bm, EX, BM) -> str:
         dlon = (lo1 - lo0) or 0.01
 
         def xy(lat, lon):
-            return ((lon - lo0) / dlon * (MAP_W - 24) + 12,
-                    (1 - (lat - la0) / dlat) * (MAP_H - 24) + 12)
+            return ((lon - lo0) / dlon * (W - 24) + 12,
+                    (1 - (lat - la0) / dlat) * (H - 24) + 12)
 
     # 自己最后画：压在别人上面，才看得清「我这条」
     order = sorted(people, key=lambda p: bool(p.get("is_me")))
@@ -460,20 +525,22 @@ def _map_svg(pts, people, bm, EX, BM) -> str:
 
     # 底图必须压暗：高德给的是浅色图，直接铺在暗色卡片上像一张纸糊在屏幕上，
     # 而且格子的颜色会被底图抢掉。
+    # 亮度压到 .46 而不是 .58：.58 是按城市级（zoom 11 左右）的灰调底图调的，
+    # 分片之后每片 zoom 更高、是街道级配色，底子本身就是白的，.58 压不住。
     bg = (f'<image href="/basemap/{esc(bm["png"].name)}" x="0" y="0" '
           f'width="{iw}" height="{ih}" preserveAspectRatio="none" '
-          f'style="filter:brightness(.58) saturate(.66) contrast(1.05)" '
+          f'style="filter:brightness(.46) saturate(.6) contrast(1.04)" '
           f'transform="translate({tx:.2f},{ty:.2f}) scale({s:.4f})"/>' if bm else
           '<rect x="0" y="0" width="100%" height="100%" fill="#0E1621"/>')
     # 再罩一层深蓝，把底图的色温拉回到 App 的冷色调
     veil = ('<rect x="0" y="0" width="100%" height="100%" fill="#0A1424" '
-            'fill-opacity="0.30"/>')
-    credit = ('<text x="' + str(MAP_W - 8) + '" y="' + str(MAP_H - 7) +
+            'fill-opacity="0.34"/>')
+    credit = ('<text x="' + str(W - 8) + '" y="' + str(H - 7) +
               '" text-anchor="end" class="mapsrc">高德地图</text>')
-    return (f'<svg class="gmap" viewBox="0 0 {MAP_W} {MAP_H}" '
+    return (f'<svg class="gmap" viewBox="0 0 {W} {H}" '
             f'xmlns="http://www.w3.org/2000/svg" role="img" aria-label="组内本周路线">'
-            f'<defs><clipPath id="gmclip"><rect x="0" y="0" width="{MAP_W}" '
-            f'height="{MAP_H}" rx="12"/></clipPath></defs>'
+            f'<defs><clipPath id="gmclip"><rect x="0" y="0" width="{W}" '
+            f'height="{H}" rx="12"/></clipPath></defs>'
             f'<g clip-path="url(#gmclip)">{bg}{veil}{paths}{credit}</g></svg>')
 
 
