@@ -854,6 +854,24 @@ def _jersey(color: str, pattern: str = "", on: bool = True,
             'stroke-linejoin="round"/></svg>')
 
 
+def _explore_icon(cls: str = "jx", tip: str = "") -> str:
+    """探索徽章的小图标：虚线方框 + 定位点。
+
+    它不是「衫」，所以不能画衣服；字形「⌖」在 15px 上糊成一个小点，
+    也看不出「换地方跑」这件事，所以用 SVG 画。
+    """
+    extra = f" {esc(cls)}" if cls else ""
+    tt = f' title="{esc(tip)}"' if tip else ""
+    return (f'<svg class="jsh off{extra}" viewBox="1.6 1.6 20.8 20.8" '
+            f'aria-hidden="true"{tt}>'
+            '<rect x="2.2" y="2.2" width="19.6" height="19.6" rx="5.6" fill="none"'
+            ' stroke="rgba(255,255,255,.32)" stroke-width="1.3"'
+            ' stroke-dasharray="2.8 2.2"/>'
+            '<circle cx="12" cy="12" r="2" fill="currentColor"/>'
+            '<path d="M12 6v2M12 16v2M6 12h2M16 12h2" stroke="currentColor"'
+            ' stroke-width="1.4" stroke-linecap="round"/></svg>')
+
+
 def shirts_page(token: str, gid: int, message: str = "") -> str:
     """本周荣誉：六项称号，每项一张卡 + 组内完整榜。
 
@@ -942,17 +960,8 @@ def shirts_page(token: str, gid: int, message: str = "") -> str:
                      f'<span class="n">{i}</span>'
                      f'<span class="a">{esc(a)}</span>'
                      f'<span class="v">{c} 格</span></li>')
-        # 图标用 SVG 画（虚线方框 + 定位点）：字形「⌖」在 15px 上糊成一个小点，
-        # 看不出「换地方跑」这件事。
-        _jx = ('<svg class="jx" viewBox="0 0 24 24" aria-hidden="true">'
-               '<rect x="1.6" y="1.6" width="20.8" height="20.8" rx="6" fill="none"'
-               ' stroke="rgba(255,255,255,.26)" stroke-width="1.2"'
-               ' stroke-dasharray="3 2.4"/>'
-               '<circle cx="12" cy="12" r="2.1" fill="currentColor"/>'
-               '<path d="M12 5.4v2.2M12 16.4v2.2M5.4 12h2.2M16.4 12h2.2"'
-               ' stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>')
         cards += ('<details class="hon hon-x"><summary>'
-                  + _jx +
+                  + _explore_icon() +
                   '<span class="hn">探索徽章</span>'
                   f'<span class="hw">{_hw}</span>'
                   '<span class="hon-tag">额外</span>'
@@ -1035,26 +1044,40 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     cl = _h.get("challenges") or G.challenge_list(gid, today)
     total_m = (b.get("summary") or {}).get("total_distance_m") or 0
 
-    # 本周榜。「组长」跟着名字走——以前单开一个「成员」区块专门说这件事，
-    # 而成员就是榜上这些人，等于同一批名字排两遍。
-    owner_alias = next((m.get("alias") for m in (g.get("members") or [])
-                        if m.get("role") == "owner"), "")
+    # 赛季数据要**提前**拿：周榜每行要挂「穿了哪几件衫 + 有没有探索徽章」，
+    # 这些都在 season 里。取不到就整块降级，组页不能因为一个新接口挂掉。
+    try:
+        _se = _h.get("season") or G.season(gid, today)
+    except Exception:      # noqa: BLE001 - 老服务端没有 /season，降级即可
+        _se = {}
+    # 谁的衫：按名字索引（board 行里没有 user_id）。衫的 pattern 只在
+    # season.shirts 里给（圆点衫），按 id 查一次。
+    _pat_of = {str(s2.get("id") or ""): str(s2.get("pattern") or "")
+               for s2 in (_se.get("shirts") or [])}
+    _marks_of: dict[str, str] = {}
+    for _p in (_se.get("people") or []):
+        _one = ""
+        for _x in (_p.get("shirts") or []):
+            _one += _jersey(str(_x.get("color") or ""),
+                            _pat_of.get(str(_x.get("id") or ""), ""), True, "jr",
+                            f'{_x.get("name") or ""}·{_x.get("title") or ""}')
+        _marks_of[str(_p.get("alias") or "")] = _one
+    _min_cells = int(((_se.get("explore") or {}).get("min_cells")) or 5)
+
+    # 本周榜。名字后面**只挂图标**：穿了哪几件衫（衣服）+ 有没有探索徽章
+    # （虚线方框），原来的「我 / 组长 / N 天 / 新 N 格」四段小字全删了——
+    # 四段字挤在名字后面，一屏十几行读起来像注脚；徽章本来就有图形，
+    # 直接挂图形更快认。我自己那一行靠底色和品牌色区分，不用再写「我」。
     rank_rows = ""
     for i, x in enumerate(b.get("rows") or [], 1):
         cls = "rank me" if x.get("is_me") else "rank"
-        name = esc(x.get("alias"))
-        if x.get("is_me"):
-            name += '<span class="sub">我</span>'
-        if owner_alias and x.get("alias") == owner_alias and not x.get("is_me"):
-            name += '<span class="sub">组长</span>'
-        days = int(x.get("days") or 0)
-        # 探索徽章不占衫，所以没有色块可挂；在名字后面留一句「新 N 格」，
-        # 让「这周换了地方跑」这件事在榜上是看得见的。
-        _new_cells = int(x.get("explorer") or 0)
-        if _new_cells >= 5:
-            name += f'<span class="sub">新 {_new_cells} 格</span>'
+        _alias = str(x.get("alias") or "")
+        marks = _marks_of.get(_alias, "")
+        if int(x.get("explorer") or 0) >= _min_cells:
+            marks += _explore_icon("jr", "探索徽章")
+        marks = f'<span class="mk">{marks}</span>' if marks else ""
         rank_rows += (f'<div class="{cls}"><span class="no">{i}</span>'
-                      f'<span class="nm">{name}<span class="sub">{days} 天</span></span>'
+                      f'<span class="nm">{esc(_alias)}</span>{marks}'
                       f'<span class="km">{_km(x.get("distance_m"))}<i>km</i></span></div>')
     hidden = int(b.get("hidden") or 0)
     # 一个人对着排行榜跟自己比：一条数据 + 半屏空白。这不是「空位」，
@@ -1146,13 +1169,6 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
         chips = (f'<span class="chip">全组 {_km(total_m)} km '
                  + ("本月" if rng == "month" else "本周") + '</span>')
 
-    # 本周成绩条：我在组里第几、多少分、穿着哪件衫。
-    # 这是「竞赛感」最省地方的表达——一行字，不做榜单页。取不到就整块不显示，
-    # 组页不能因为一个新接口挂掉就打不开。
-    try:
-        _se = _h.get("season") or G.season(gid, today)
-    except Exception:      # noqa: BLE001 - 老服务端没有 /season，降级即可
-        _se = {}
     # ---- 核心数据卡：名次 + 分数 + 称号 / 六件衫徽章
     # 原来是两行：一行「我 · 第 2 名 63.8 分 [先锋] ●黄衫 ●绿衫」，紧接着
     # 又是一整行「黄衫·里程王 阿狗  ●绿衫·出勤王 阿狗 …」。六件衫各写一遍
