@@ -3024,7 +3024,19 @@ def run() -> int:
         "主视觉数字又加外发光了（一页只允许一处发光，且只给 hero）"
     assert ".sec-head h2::before" in _ui_src and ".row .ic{" in _ui_src, \
         "分节标记/图标底座丢了科技风样式"
-    assert "--bg:#070B12" in _ai_src, "AI 页还是浅色，和 App 不一致"
+    # token 已经统一到 design.py，源码里不再有裸色值，改看运行时 CSS
+    from garmin_cn import aiui as _AI2
+    assert "--bg:#070B12" in _AI2.CSS, "AI 页还是浅色，和 App 不一致"
+    assert "D.TOKENS" in _ai_src, "AI 页没引用 design.py 的 token（又自己写了一份色板）"
+    # 赛事页曾经整页裸色值（#4FD6A6 / rgba(79,214,166,…)），和主色板对不上。
+    # 允许保留的只有 SVG 图表里的具体色（导出时没有 CSS 变量）和 var() 的
+    # fallback —— 所以只查 CSS 声明里的裸色。
+    _ev_src = (ROOT / "garmin_cn/eventui.py").read_text(encoding="utf-8")
+    # 跳过 fill=/stroke= 的行：那是内联 SVG 图表，导出时没有 CSS 变量可用
+    _ev_css = "\n".join(l for l in _ev_src.splitlines()
+                         if "fill=" not in l and "stroke=" not in l)
+    for _bare in ("#4FD6A6", "rgba(79,214,166,", "#D6A75A"):
+        assert _bare not in _ev_css, f"赛事页又写了裸色 {_bare}，应走 token"
     assert 'theme-color" content="#070B12"' in _ui_src, "移动端主题色没换"
     assert _main.count("0xFF070B12.toInt()") >= 2 and "0xFF4DA3FF.toInt()" in _main, \
         "原生顶栏/底栏还是浅色"
@@ -3111,7 +3123,11 @@ def run() -> int:
     assert _H._week_span("2026-W45") == ("2026-11-02", "2026-11-08"), \
         "ISO 周跨度算错（ISOCALENDAR 不是周一起？）"
     _ms = [m["key"] for m in _hs["months"]]
-    _new_m, _old_m = _ms[-1], _ms[0]
+    _new_m = _ms[-1]
+    # 最早的月份往往是空的，而空月现在会被折叠掉（设计语言 §4.10），
+    # 拿它验「选中行高亮」会永远失败。挑一个有数据、又不是最新的旧月份。
+    _old_m = next((m["key"] for m in _hs["months"]
+                   if (m.get("count") or 0) and m["key"] != _new_m), _new_m)
     _days_old = len(_AA2.history_stats(
         f"{_old_m}-01", _H._month_end(_old_m)).get("days") or [])
     _pg_old = _H.history_page({"mode": ["month"], "sel": [_old_m]})
@@ -5126,8 +5142,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.5.8 → 161）。
-    assert 'versionCode = 161' in (
+    # 每次发版要同步改这里（本次 1.5.9 → 162）。
+    assert 'versionCode = 162' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。

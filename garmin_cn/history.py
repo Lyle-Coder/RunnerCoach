@@ -239,8 +239,33 @@ def _bucket_rows(items: list[dict], mode: str, kind: str, sel: str = "") -> str:
     """
     if not items:
         return '<div class="empty">这个范围里还没有活动。</div>'
+
+    # 空周期不单独占一行：12 个月里 7 个是 0 次时，列表一半是空白，
+    # 真正的月份被稀释掉（设计语言 §4.10）。单个空周期直接不渲染，
+    # 连续的空周期合并成一条虚线行，展开才看。
+    def _gap(chunk: list[dict]) -> str:
+        if not chunk:
+            return ""
+        if len(chunk) == 1:
+            return ""          # 单个空月：直接不画
+        a, b = str(chunk[0].get("key") or ""), str(chunk[-1].get("key") or "")
+        unit = {"week": "周", "month": "个月", "year": "年"}.get(mode, " 个周期")
+        inner = "".join(
+            f'<div class="gi">{_esc(str(x.get("key") or ""))}·无记录</div>'
+            for x in chunk)
+        return (f'<details class="gap"><summary>'
+                f'<span>{_esc(a)} – {_esc(b)} · {len(chunk)} {unit}无记录</span>'
+                f'<span class="gx">展开</span></summary>{inner}</details>')
+
     rows = []
+    _empty: list[dict] = []
     for b in items:
+        if not (b.get("count") or 0):
+            _empty.append(b)
+            continue
+        if _empty:
+            rows.append(_gap(_empty))
+            _empty = []
         key = str(b.get("key") or "")
         if mode == "week":
             # 行的日期用**完整 ISO 周**（周一到周日），不用活动里的 min/max：
@@ -261,6 +286,8 @@ def _bucket_rows(items: list[dict], mode: str, kind: str, sel: str = "") -> str:
         href = f"/history?{_q(mode=mode, sel=key, type=kind)}"
         rows.append(ui.row(icon, title, desc, href=href, tone="b",
                            on=bool(sel) and key == sel, nopush=True))
+    if _empty:
+        rows.append(_gap(_empty))
     return "".join(rows)
 
 
@@ -354,15 +381,18 @@ def history_page(qs: dict) -> str:
 
     # ---- 视图切换
     def mchip(label: str, m: str) -> str:
-        on = " ok" if mode == m else ""
-        return (f'<a class="chip{on}" href="/history?{_q(mode=m, type=kind)}" '
+        on = ' class="ok"' if mode == m else ""
+        return (f'<a{on} href="/history?{_q(mode=m, type=kind)}" '
                 f'data-nopush>{label}</a>')
 
-    switch = ('<div class="tags">' + mchip("活动列表", "list") +
+    # 分段控件：一条胶囊槽 + 选中块（§5 历史页、§4.5）
+    # 原来是两排散装 chip，选中态靠加个绿点，看不出「这是一组单选」。
+    switch = ('<div class="seg">' + mchip("活动列表", "list") +
               mchip("按周", "week") + mchip("按月", "month") +
               mchip("按年", "year") + '</div>')
-    switch += '<div class="tags">' + ''.join(
-        f'<a class="chip{" ok" if stats_kind == key else ""}" href="/history?{_q(mode=mode, type=key)}" data-nopush>{label}</a>'
+    switch += '<div class="seg">' + ''.join(
+        f'<a class="{"ok" if stats_kind == key else ""}" '
+        f'href="/history?{_q(mode=mode, type=key)}" data-nopush>{label}</a>'
         for key, label in (("run", "跑步"), ("bike", "骑行"), ("all", "全部运动"))) + '</div>'
 
     # ---- 分组视图
