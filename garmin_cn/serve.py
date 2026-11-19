@@ -1639,9 +1639,9 @@ class _Handler(SimpleHTTPRequestHandler):
                             if r.get("ok") and on:
                                 from . import explore as EX
 
-                                cells = EX.week_cells(_st)
-                                if cells:
-                                    G.push_cells(gid, cells)
+                                mm = EX.week_cell_meters(_st)
+                                if mm:
+                                    G.push_cells(gid, list(mm), mm)
                         finally:
                             _st.close()
                         msg = ("路线共享已打开" if on else "已关闭，格子已删除") \

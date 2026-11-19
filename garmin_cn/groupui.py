@@ -334,27 +334,66 @@ SHARD_H = 190
 SHARED_COLOR = "#F4F7FC"
 
 
-def _split_cells(people) -> tuple[dict, list[str]]:
-    """按占用人数拆格子：`solo[user_id]` 只有他一个人跑过，`shared` 是 ≥2 人。
+# 一格由谁代表：跑量第一的人，且他的占比要到这个线。达不到就是「共同」。
+# 0.65 而不是 0.5 以上随便一个数：两人各跑 900 / 800 米时，说「这块是 A 的」
+# 没有意义；差到 2 倍以上才值得标成某个人的颜色。
+OWNER_SHARE = 0.65
 
-    这个拆分是「共同」能被看见的前提——不拆的话，同一条路的格子只会显示
-    最后画的那个人的颜色，前面的人等于从图上消失了。
+
+def _cell_owners(people) -> dict[str, tuple]:
+    """每格 → (代表者 uid, 该人占比, 该格总里程)。
+
+    「代表者」由跑量决定，不是由谁最后画决定。没有跑量数据（老客户端只发
+    格子列表）时退回按人数平摊：两人各 0.5 < OWNER_SHARE，于是归为共同，
+    和之前的行为一致。
     """
-    cnt: dict[str, int] = {}
-    for p in people:
-        for c in p.get("cells") or []:
-            cnt[c] = cnt.get(c, 0) + 1
-    solo = {}
+    per: dict[str, dict[int, float]] = {}
     for p in people:
         u = p.get("user_id")
-        solo[u] = [c for c in (p.get("cells") or []) if cnt.get(c, 1) == 1]
-    shared = [c for c, n in cnt.items() if n >= 2]
-    return solo, shared
+        mm = p.get("meters") or {}
+        for c in p.get("cells") or []:
+            try:
+                m = float(mm.get(c, 0) or 0)
+            except (TypeError, ValueError):
+                m = 0.0
+            per.setdefault(c, {})[u] = m
+    out: dict[str, tuple] = {}
+    for c, d in per.items():
+        tot = sum(d.values())
+        best_u, best_m = max(d.items(), key=lambda x: x[1])
+        share = (best_m / tot) if tot > 0 else (1.0 / len(d))
+        out[c] = (best_u, share, tot)
+    return out
 
 
 def _shared_count(people) -> int:
-    """共同占用的格子数，给图例用。"""
-    return len(_split_cells(people)[1])
+    """共同格数（没有单一代表者的格子）。"""
+    return sum(1 for _, sh, _ in _cell_owners(people).values() if sh < OWNER_SHARE)
+
+
+def _weight_label(p: dict) -> str:
+    """图例上的数字：有跑量就写里程，没有（老数据）退回格数。"""
+    mm = p.get("meters") or {}
+    try:
+        km = sum(float(v or 0) for v in mm.values()) / 1000.0
+    except (TypeError, ValueError):
+        km = 0.0
+    return f"{km:.1f}km" if km > 0.05 else f'{len(p.get("cells") or [])} 格'
+
+
+def _op_of(meters: float) -> float:
+    """该格总跑量 → 填充不透明度。跑得越多越实，一眼看出「这块是热区」。
+
+    档位间距拉大（0.30 / 0.52 / 0.78）：0.42/0.60/0.80 在蓝色上几乎看不出
+    差别，而「深浅代表跑量」这件事只有对比够强才成立。
+    """
+    if meters <= 0:
+        return 0.52          # 老数据没有跑量，给个中间值
+    if meters < 800:
+        return 0.30
+    if meters < 2000:
+        return 0.52
+    return 0.78
 
 
 def map_page(token: str, gid: int, message: str = "") -> str:
@@ -414,7 +453,7 @@ def map_page(token: str, gid: int, message: str = "") -> str:
     legend = ""
     for p in people:
         legend += (f'<span class="lgi"><i style="background:{esc(p["color"])}"></i>'
-                   f'{esc(p["alias"])}<b>{len(p["cells"])}</b></span>')
+                   f'{esc(p["alias"])}<b>{_weight_label(p)}</b></span>')
     _shared_n = _shared_count(people)
     if _shared_n:
         legend += (f'<span class="lgi"><i class="sh"></i>共同<b>{_shared_n}</b></span>')
@@ -448,10 +487,10 @@ def map_page(token: str, gid: int, message: str = "") -> str:
     body = (_msg(message)
             + _map_block
             + sec("我的设置", '<div class="flat">' + _sw + '</div>')
-            + '<p class="note">地图上只有 500 米见方的格子，没有轨迹线、'
-              '没有配速、没有心率。白色是两个人及以上都跑过的地方——'
-              '图例里的格数是各人跑过的总数，含共同部分。'
-              '关掉共享的那一刻，服务端会把这些格子删掉。</p>')
+            + '<p class="note">每格的颜色归**跑得最多**的那个人，颜色越深说明'
+              '这格被跑得越多；两个人跑量接近的格子显示为白色。'
+              '地图上只有 500 米见方的格子和格内里程，没有轨迹线、没有配速、'
+              '没有心率。关掉共享的那一刻，服务端会把这些格子删掉。</p>')
 
     title = f"{len(people)} 人 · {int(r.get('cells') or 0)} 格" if people else "这周还没有路线"
     return page("GROUP", "组内路线", title, body,
@@ -482,7 +521,7 @@ def _shards_html(gid: int, r: dict, shards, people, EX, BM, hashlib) -> str:
         bm = BM.ensure(pts, MAP_W, SHARD_H, ident=ident)
         legend = "".join(
             f'<span class="lgi"><i style="background:{esc(p["color"])}"></i>'
-            f'{esc(p["alias"])}<b>{len(p["cells"])}</b></span>' for p in sub)
+            f'{esc(p["alias"])}<b>{_weight_label(p)}</b></span>' for p in sub)
         _sc = _shared_count(sub)
         if _sc:
             legend += f'<span class="lgi"><i class="sh"></i>共同<b>{_sc}</b></span>'
@@ -544,11 +583,21 @@ def _map_svg(pts, people, bm, EX, BM, w: int = MAP_W, h: int = MAP_H) -> str:
             return ((lon - lo0) / dlon * (W - 24) + 12,
                     (1 - (lat - la0) / dlat) * (H - 24) + 12)
 
-    # 同一格被两个人跑过时，不能简单让后画的覆盖先画的：那样「A 跑过的路」
-    # 会因为 B 也跑过而从图上消失，看图的人会以为 A 没跑。所以按占用人数
-    # 拆开——独占的格子用本人颜色，共同占用的格子统一画成白色压在最上层。
-    # 白色在这里不是"没颜色"，是「这几个人都跑过」这个信息本身。
-    solo, shared = _split_cells(people)
+    # 每格的归属由**跑量**决定：谁在这格里跑得最多、且占到 OWNER_SHARE 以上，
+    # 这块就归他的颜色；达不到就是「共同」（白色）。深浅再按该格总跑量走，
+    # 一眼看出哪片是热区。
+    #
+    # 为什么不能靠绘制顺序：那样后画的会把先画的盖掉，A 和 B 跑同一条路时
+    # A 等于从图上消失了。
+    owners = _cell_owners(people)
+    color_of = {p.get("user_id"): p["color"] for p in people}
+
+    # 按（颜色, 深浅档）分组，一组一条 path——否则每格一条 path，
+    # 几百个格子就是几百个元素。
+    buckets: dict[tuple, list[str]] = {}
+    for c, (u, share, tot) in owners.items():
+        key = (u if share >= OWNER_SHARE else None, round(_op_of(tot), 2))
+        buckets.setdefault(key, []).append(c)
 
     def _quad(cells) -> str:
         d = ""
@@ -557,22 +606,23 @@ def _map_svg(pts, people, bm, EX, BM, w: int = MAP_W, h: int = MAP_H) -> str:
             d += "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in quad) + " Z "
         return d
 
-    # 自己最后画：压在别人上面，才看得清「我这条」
-    order = sorted(people, key=lambda p: bool(p.get("is_me")))
+    # 共同格压在最上层：它是「两个人都跑过」这个结论，不该被任何一个单人的
+    # 颜色盖住。同类里自己的颜色放后面，画在别人上面。
+    mine_uid = next((p.get("user_id") for p in people if p.get("is_me")), None)
+
+    def _z(kv):
+        u = kv[0][0]
+        return (u is None, 0 if u == mine_uid else 1)
+
+    order = sorted(buckets.items(), key=_z)
     paths = ""
-    for p in order:
-        cells = solo.get(p.get("user_id")) or []
-        if not cells:
-            continue
-        # 描边比填充更深更实：500 m 的方块之间会有亚像素缝，靠描边补掉；
+    for (u, op), cells in order:
+        col = SHARED_COLOR if u is None else str(color_of.get(u) or SHARED_COLOR)
+        # 描边比填充更实：500 m 的方块之间会有亚像素缝，靠描边补掉；
         # 而且取景拉远时每格只有几个像素，全靠描边才看得出「这是一条带」。
-        paths += (f'<path d="{_quad(cells)}" fill="{esc(p["color"])}" fill-opacity="0.62"'
-                  f' stroke="{esc(p["color"])}" stroke-opacity="0.95"'
+        paths += (f'<path d="{_quad(cells)}" fill="{esc(col)}" fill-opacity="{op:g}"'
+                  f' stroke="{esc(col)}" stroke-opacity="0.95"'
                   f' stroke-width="0.45" stroke-linejoin="round"/>')
-    if shared:
-        paths += (f'<path d="{_quad(shared)}" fill="{SHARED_COLOR}" fill-opacity="0.72"'
-                  f' stroke="{SHARED_COLOR}" stroke-opacity="0.98"'
-                  f' stroke-width="0.6" stroke-linejoin="round"/>')
 
     # 底图必须压暗：高德给的是浅色图，直接铺在暗色卡片上像一张纸糊在屏幕上，
     # 而且格子的颜色会被底图抢掉。

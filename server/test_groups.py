@@ -668,6 +668,20 @@ def main() -> int:
                 {"cells": _cells + ["坏数据", "1:2:3", None], "today": "2026-11-18"}, a)
     check("上传格子，脏值被丢掉", st == 200 and r.get("saved") == 3, f"{st} {r}")
 
+    # 每格跑量：可选字段，带了就存，脏值截断
+    st, r = req("POST", f"/v1/group/{gid}/cells",
+                {"cells": _cells,
+                 "meters": {_cells[0]: 1240, _cells[1]: "800", _cells[2]: 999999,
+                            "乱写": 500},
+                 "today": "2026-11-18"}, a)
+    check("带跑量的格子照收", st == 200 and r.get("saved") == 3, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/map?today=2026-11-18", None, a)
+    _mt = ((r.get("people") or [{}])[0]).get("meters") or {}
+    check("跑量原样回来", int(_mt.get(_cells[0]) or 0) == 1240, str(_mt))
+    check("字符串跑量也能解析", int(_mt.get(_cells[1]) or 0) == 800, str(_mt))
+    check("超上限的跑量被截断", int(_mt.get(_cells[2]) or 0) == 50000, str(_mt))
+    check("跑量里的脏 key 被丢掉", "乱写" not in _mt, str(_mt))
+
     st, r = req("GET", f"/v1/group/{gid}/map?today=2026-11-18", None, b)
     _ppl = r.get("people") or []
     check("同组成员能看到我的格子", st == 200 and len(_ppl) == 1, f"{st} {r}")
