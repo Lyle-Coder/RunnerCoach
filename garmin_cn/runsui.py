@@ -494,7 +494,20 @@ EMPTY = {
 }
 
 
-def empty_page(kind: str = "offline", detail: str = "") -> str:
+def _back(gid: int = 0) -> tuple[str, str]:
+    """远征页的返回目标。
+
+    入口在「小组 → 组详情 → 雪线之前」（`/run?gid=N`），所以上一级是那个组，
+    不是小组列表。以前一律回 `/groups`，用户按返回就丢了当前这季跑到哪了。
+    """
+    try:
+        g = int(gid)
+    except (TypeError, ValueError):
+        g = 0
+    return ("返回小组", f"/groups/{g}") if g else ("返回", "/groups")
+
+
+def empty_page(kind: str = "offline", detail: str = "", gid: int = 0) -> str:
     """三种空态：没登录 / 没队 / 连不上。
 
     原来这地方只有一句「远征还没开始。<br>原始错误>[回到小组]」。原始错误
@@ -514,15 +527,16 @@ def empty_page(kind: str = "offline", detail: str = "") -> str:
             f'<div class="pl">{esc(e["prose"])}</div>'
             + (f'<div class="why">{why}</div>' if why else "")
             + f'<div class="cta">{cta}</div>'
-            '<a class="alt" href="/groups">回到小组</a></div>')
+            f'<a class="alt" href="{_back(gid)[1]}">回到小组</a></div>')
     return ui.page("EXPEDITION · 雪线之前", "", "", body,
                    css=FONT_CSS + CSS,
                    head_bg=f'<div id="runbg">{ridge_svg()}</div>',
-                   back=("返回", "/groups"))
+                   back=_back(gid))
 
 
 # ---------------------------------------------------------------- 页面
-def run_page(token: str, message: str = "", data: dict | None = None) -> str:
+def run_page(token: str, message: str = "", data: dict | None = None,
+             gid: int = 0) -> str:
     """远征主页。`data` 是 `/v1/group/{id}/run/state` 的返回。"""
     if not data or not data.get("ok"):
         # 兜底：调用方没说是哪种情况时，别把原始错误糊在玩家脸上
@@ -651,7 +665,7 @@ def run_page(token: str, message: str = "", data: dict | None = None) -> str:
                    chips=chips, css=FONT_CSS + CSS,
                    head_bg=f'<div id="runbg">{ridge_svg()}</div>',
                    foot="进度来自你上报的里程，不上传轨迹与位置。",
-                   back=("返回", "/groups")).replace("</body>", js + "</body>")
+                   back=_back(gid)).replace("</body>", js + "</body>")
 
 
 # ---------------------------------------------------------------- 结算
@@ -873,7 +887,7 @@ def _ending_scene(key: str) -> str:
             "</div>")
 
 
-def outcome_page(token: str, data: dict | None = None) -> str:
+def outcome_page(token: str, data: dict | None = None, gid: int = 0) -> str:
     """结算页。五个结局共用一套版式——变的是文案和画面。
 
     这一页的主角是**人**：谁走了多少、他这一段最亮的是哪一点。士气、旧日志
@@ -938,7 +952,7 @@ def outcome_page(token: str, data: dict | None = None) -> str:
             # 网页里本来也没有相册。
             '<div class="pager endbar">'
             '<a class="btn primary" href="#" data-act="runShare">保存这张图</a>'
-            '<a class="btn" href="/groups">回到小组</a></div>'
+            f'<a class="btn" href="{_back(gid)[1]}">回到小组</a></div>'
             "</div>")
 
     # 页头不放 h1：结算页的大标题是结局名，页头再来一个「这一季」
@@ -946,7 +960,7 @@ def outcome_page(token: str, data: dict | None = None) -> str:
     return ui.page("EXPEDITION · 雪线之前", "", "", body,
                    css=FONT_CSS + END_CSS + SCENE_CSS,
                    foot="进度来自你上报的里程，不上传轨迹与位置。",
-                   back=("返回", "/groups"))
+                   back=_back(gid))
 
 
 def _people_block(people: list, km: float, hidden: int) -> str:

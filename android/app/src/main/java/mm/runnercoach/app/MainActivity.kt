@@ -526,11 +526,52 @@ class MainActivity : Activity() {
                 if (uri?.getQueryParameter("from") == "today") TAB_TODAY else TAB_HISTORY)
             path.startsWith("/plan") -> goTab(TAB_TODAY)   // 训练计划属于今日
             path.startsWith("/training") -> web.loadUrl("http://127.0.0.1:$port/plan")
-            path.startsWith("/event") -> goTab(TAB_COACH)  // 赛事页属于教练（/ai 里的「备赛」）
+            // 赛事：有 slug 是详情，回列表；列表页再回教练。以前一律回教练，
+            // 和页面里那个「← 返回赛事」的按钮对不上
+            path.startsWith("/event") -> {
+                if (!uri?.getQueryParameter("slug").isNullOrEmpty())
+                    web.loadUrl("http://127.0.0.1:$port/event")
+                else
+                    goTab(TAB_COACH)
+            }
             path.startsWith("/posture") -> goTab(TAB_COACH) // 姿态评估也在教练下
             path.startsWith("/files") -> goTab(TAB_ME)     // 产物属于我的
             path.startsWith("/privacy") -> goTab(TAB_ME)   // 隐私说明也挂在我的下面
             path.startsWith("/sports") -> goTab(TAB_ME)    // 运动设置属于我的
+            // 小组的二级页要逐级上退，不能一步跳回「今日」：
+            // 足迹/六件衫/Bingo 在 /groups/{id}/xxx，上一级是组详情；
+            // 组详情上一级是组列表；动态详情上一级是动态列表。
+            // 以前这里没有 /groups 分支，落到最后那句 goTab(TAB_TODAY)，
+            // 用户在足迹页按返回直接飞回首页，等于丢了当前小组。
+            path.startsWith("/groups/") -> {
+                val seg = path.trim('/').split('/')
+                if (seg.size >= 3) {
+                    val back = if (seg[2] == "feed" && !uri?.getQueryParameter("act").isNullOrEmpty())
+                        "/groups/${seg[1]}/feed"      // 动态详情 → 动态列表
+                    else
+                        "/groups/${seg[1]}"           // 其它二级页 → 组详情
+                    web.loadUrl("http://127.0.0.1:$port$back")
+                } else {
+                    // 组详情的上一级是**组列表**，不是今日——只有组列表才是
+                    // 小组 tab 的根，从它再返回才该回今日
+                    web.loadUrl("http://127.0.0.1:$port/groups")
+                }
+            }
+            path == "/groups" -> goTab(TAB_TODAY)  // 小组列表是小组 tab 根
+            // 远征：回到发起它的那个小组
+            path.startsWith("/run") -> {
+                val gid = uri?.getQueryParameter("gid")
+                web.loadUrl("http://127.0.0.1:$port" +
+                    if (!gid.isNullOrEmpty()) "/groups/$gid" else "/groups")
+            }
+            // 账号页两个入口：我的 → 账号、小组 → 账号。回哪个取决于从哪来，
+            // 一律回「我的」会让从小组进来的用户莫名跳 tab
+            path.startsWith("/account") -> {
+                if (activeTab == TAB_GROUP)
+                    web.loadUrl("http://127.0.0.1:$port/groups")
+                else
+                    goTab(TAB_ME)
+            }
             activeTab != TAB_TODAY -> goTab(TAB_TODAY)     // 其它 tab 先回今日
             else -> finish()                         // 已在今日根页面，退出
         }
