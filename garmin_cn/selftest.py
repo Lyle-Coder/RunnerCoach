@@ -1637,7 +1637,11 @@ def run() -> int:
     # 这样六项能在一屏里看完，点哪行展哪行的完整榜
     assert _shp_html.count("<details class=\"hon\">") == 6, \
         "六项荣誉不是可折叠的 details"
-    assert _shp_html.count('class="hw"') == 6, "收起态没显示得主"
+    # 6 项称号 + 1 行探索徽章（不占称号，但必须看得见）
+    assert _shp_html.count('class="hw"') == 7, "收起态没显示得主/探索徽章"
+    assert 'class="hon hon-x"' in _shp_html, "探索徽章没有单独一行"
+    assert "探索徽章" in _shp_html and "额外" in _shp_html, \
+        "探索徽章没标出「不占称号」"
 
     # ---- 跨省的分片：一张图装不下 900 km，格子会缩成看不见的点
     from garmin_cn import basemap as _BM
