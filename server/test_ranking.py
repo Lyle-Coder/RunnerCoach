@@ -69,6 +69,24 @@ def main() -> int:
     m3 = R.metrics([day("2026-11-16", 20000)], [day("2026-11-09", 10000)])
     check("上周 10 km 参评，翻倍 = 1.0", m3["progress"] == 1.0, str(m3["progress"]))
 
+    print("\n3b. 进步用滚动 7 天（不按日历周）")
+    # 周内失真：本周只跑了 4 天 20 km，上周整周 55 km，日历周口径是 -64%
+    cal = R.metrics([day("2026-11-16", 20000)], [day("2026-11-09", 55000)])
+    check("日历周口径在周内是负的（这就是要改的原因）",
+          cal["progress"] is not None and cal["progress"] < -0.5, str(cal["progress"]))
+    # 滚动口径：最近 7 天 51.4 km，前 7 天 53.1 km → -3%
+    roll = R.metrics([day("2026-11-16", 20000)], [day("2026-11-09", 55000)],
+                     roll=(51.4, 53.1))
+    check("传了 roll 就用滚动窗口", abs(roll["progress"] + 0.032) < 0.002, str(roll["progress"]))
+    # 基数门槛同样看滚动窗口，不看日历周
+    check("前 7 天不到 10 km 不参评",
+          R.metrics([day("2026-11-16", 20000)], [], roll=(40.0, 8.0))["progress"] is None)
+    # build 也认 roll_by_user
+    _out = R.build({1: [day("2026-11-16", 20000)]},
+                   {1: [day("2026-11-09", 55000)]}, roll_by_user={1: (51.4, 53.1)})
+    _p = next(x for x in _out["people"] if x["user_id"] == 1)
+    check("build 把 roll 传给 metrics", abs(_p["progress"] + 0.032) < 0.002, str(_p["progress"]))
+
     print("\n4. 分数与权重")
     rows_by = {
         1: [day("2026-11-16", 20000, 500), day("2026-11-17", 20000, 500)],
