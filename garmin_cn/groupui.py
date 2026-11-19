@@ -328,6 +328,33 @@ def bingo_page(token: str, gid: int, message: str = "") -> str:
 MAP_W, MAP_H = 392, 300
 # 分片时用矮一点的图幅：一片一张，三片就顶两屏，太高了反而看不到全貌。
 SHARD_H = 190
+# 「共同跑过」的格子上不是任何人的颜色，而是一个独立的信息层。
+# 用白色而不是混色：蓝+绿混出来是青，看不出是两个人；白色在暗底上最亮，
+# 一眼就知道「这块是两个人都踩过」。
+SHARED_COLOR = "#F4F7FC"
+
+
+def _split_cells(people) -> tuple[dict, list[str]]:
+    """按占用人数拆格子：`solo[user_id]` 只有他一个人跑过，`shared` 是 ≥2 人。
+
+    这个拆分是「共同」能被看见的前提——不拆的话，同一条路的格子只会显示
+    最后画的那个人的颜色，前面的人等于从图上消失了。
+    """
+    cnt: dict[str, int] = {}
+    for p in people:
+        for c in p.get("cells") or []:
+            cnt[c] = cnt.get(c, 0) + 1
+    solo = {}
+    for p in people:
+        u = p.get("user_id")
+        solo[u] = [c for c in (p.get("cells") or []) if cnt.get(c, 1) == 1]
+    shared = [c for c, n in cnt.items() if n >= 2]
+    return solo, shared
+
+
+def _shared_count(people) -> int:
+    """共同占用的格子数，给图例用。"""
+    return len(_split_cells(people)[1])
 
 
 def map_page(token: str, gid: int, message: str = "") -> str:
@@ -388,6 +415,9 @@ def map_page(token: str, gid: int, message: str = "") -> str:
     for p in people:
         legend += (f'<span class="lgi"><i style="background:{esc(p["color"])}"></i>'
                    f'{esc(p["alias"])}<b>{len(p["cells"])}</b></span>')
+    _shared_n = _shared_count(people)
+    if _shared_n:
+        legend += (f'<span class="lgi"><i class="sh"></i>共同<b>{_shared_n}</b></span>')
 
     # 我自己的开关。默认关，打开前把「上传什么」讲明白。
     if mine:
@@ -419,7 +449,9 @@ def map_page(token: str, gid: int, message: str = "") -> str:
             + _map_block
             + sec("我的设置", '<div class="flat">' + _sw + '</div>')
             + '<p class="note">地图上只有 500 米见方的格子，没有轨迹线、'
-              '没有配速、没有心率。关掉共享的那一刻，服务端会把这些格子删掉。</p>')
+              '没有配速、没有心率。白色是两个人及以上都跑过的地方——'
+              '图例里的格数是各人跑过的总数，含共同部分。'
+              '关掉共享的那一刻，服务端会把这些格子删掉。</p>')
 
     title = f"{len(people)} 人 · {int(r.get('cells') or 0)} 格" if people else "这周还没有路线"
     return page("GROUP", "组内路线", title, body,
@@ -451,6 +483,9 @@ def _shards_html(gid: int, r: dict, shards, people, EX, BM, hashlib) -> str:
         legend = "".join(
             f'<span class="lgi"><i style="background:{esc(p["color"])}"></i>'
             f'{esc(p["alias"])}<b>{len(p["cells"])}</b></span>' for p in sub)
+        _sc = _shared_count(sub)
+        if _sc:
+            legend += f'<span class="lgi"><i class="sh"></i>共同<b>{_sc}</b></span>'
         name = _shard_name(shard, EX, BM) or f"片区 {idx}"
         n = sum(len(p["cells"]) for p in sub)
         out += (f'<div class="shard-h"><span>{esc(name)}</span>'
@@ -509,19 +544,35 @@ def _map_svg(pts, people, bm, EX, BM, w: int = MAP_W, h: int = MAP_H) -> str:
             return ((lon - lo0) / dlon * (W - 24) + 12,
                     (1 - (lat - la0) / dlat) * (H - 24) + 12)
 
+    # 同一格被两个人跑过时，不能简单让后画的覆盖先画的：那样「A 跑过的路」
+    # 会因为 B 也跑过而从图上消失，看图的人会以为 A 没跑。所以按占用人数
+    # 拆开——独占的格子用本人颜色，共同占用的格子统一画成白色压在最上层。
+    # 白色在这里不是"没颜色"，是「这几个人都跑过」这个信息本身。
+    solo, shared = _split_cells(people)
+
+    def _quad(cells) -> str:
+        d = ""
+        for c in cells:
+            quad = [xy(lat, lon) for lat, lon in EX.cell_corners(c)]
+            d += "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in quad) + " Z "
+        return d
+
     # 自己最后画：压在别人上面，才看得清「我这条」
     order = sorted(people, key=lambda p: bool(p.get("is_me")))
     paths = ""
     for p in order:
-        d = ""
-        for c in p["cells"]:
-            quad = [xy(lat, lon) for lat, lon in EX.cell_corners(c)]
-            d += ("M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in quad) + " Z ")
+        cells = solo.get(p.get("user_id")) or []
+        if not cells:
+            continue
         # 描边比填充更深更实：500 m 的方块之间会有亚像素缝，靠描边补掉；
         # 而且取景拉远时每格只有几个像素，全靠描边才看得出「这是一条带」。
-        paths += (f'<path d="{d}" fill="{esc(p["color"])}" fill-opacity="0.62"'
+        paths += (f'<path d="{_quad(cells)}" fill="{esc(p["color"])}" fill-opacity="0.62"'
                   f' stroke="{esc(p["color"])}" stroke-opacity="0.95"'
                   f' stroke-width="0.45" stroke-linejoin="round"/>')
+    if shared:
+        paths += (f'<path d="{_quad(shared)}" fill="{SHARED_COLOR}" fill-opacity="0.72"'
+                  f' stroke="{SHARED_COLOR}" stroke-opacity="0.98"'
+                  f' stroke-width="0.6" stroke-linejoin="round"/>')
 
     # 底图必须压暗：高德给的是浅色图，直接铺在暗色卡片上像一张纸糊在屏幕上，
     # 而且格子的颜色会被底图抢掉。

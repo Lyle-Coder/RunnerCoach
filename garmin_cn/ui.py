@@ -424,6 +424,8 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .lgi{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--ink2)}
 .lgi i{width:9px;height:9px;border-radius:2px;flex:0 0 9px}
 .lgi b{font-weight:600;color:var(--muted)}
+/* 共同跑过的格子：白色,和地图上那条白带对应 */
+.lgi i.sh{background:#F4F7FC}
 /* 跨省分片：每片一个小标题 + 一张图。标题给地名和格数，
    不然三张图排下来分不清哪张是哪儿。 */
 .shard-h{display:flex;align-items:baseline;justify-content:space-between;
