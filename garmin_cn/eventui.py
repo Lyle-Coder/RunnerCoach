@@ -28,7 +28,7 @@ CSS = """<style>
 .trk b{font-size:16px;color:var(--ink)}
 .trk span{font-size:12px;color:var(--ink-2)}
 .prof{width:100%;max-width:100%;height:96px;display:block;margin:6px 0 2px;
-  background:var(--ok-soft);border-radius:8px}
+  background:var(--ok-soft);border-radius:10px}
 .tag{font-size:11px;color:var(--ink-3);border:1px solid var(--line);
   border-radius:5px;padding:1px 5px}
 .warnbox{color:var(--warn)}
@@ -61,7 +61,7 @@ CSS = """<style>
 .grow:last-child{border-bottom:0}
 .gchk{flex:none;width:20px;height:20px;margin:1px 0 0;padding:0;border-radius:6px;
   border:1.5px solid rgba(127,138,151,.55);background:transparent;color:#070B12;
-  font-size:14px;line-height:1;font-weight:700;cursor:pointer;
+  font-size:14px;line-height:1;font-weight:600;cursor:pointer;
   display:flex;align-items:center;justify-content:center}
 .gchk.on{background:var(--ok);border-color:var(--ok);color:var(--bg)}
 .gtx{font-size:12px;line-height:1.55;color:var(--ink)}
@@ -120,7 +120,7 @@ select.fi{cursor:pointer}
 .dat{margin-left:auto;font-size:11px;color:var(--ink-2)}
 /* 删除按钮：视觉上是小字「删」，命中区给到 44×44（手指按得准），
    多出来的高度用负 margin 吃掉，行高不受影响。 */
-.dbtn{flex:none;min-width:44px;min-height:44px;padding:0;border-radius:9px;
+.dbtn{flex:none;min-width:44px;min-height:44px;padding:0;border-radius:10px;
   cursor:pointer;border:1px solid rgba(224,106,95,.35);background:transparent;
   color:var(--bad);font-size:12px;line-height:1;margin:-10px -4px -10px 0}
 .dinline{margin:0}
@@ -133,7 +133,7 @@ select.fi{cursor:pointer}
 .dfn{font-size:12px;color:var(--ink);min-width:0;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
 .dfs{font-size:11px;color:var(--ink-2);flex:none}
-.dfb{margin-left:auto;flex:none;padding:4px 12px;border-radius:8px;cursor:pointer;
+.dfb{margin-left:auto;flex:none;padding:4px 12px;border-radius:10px;cursor:pointer;
   border:1px solid var(--ok);background:var(--ok-soft);
   color:var(--ok);font-size:12px}
 /* 附件行：名字 + 预览/系统打开 + 改名折叠 */
@@ -150,7 +150,7 @@ select.fi{cursor:pointer}
 .trip{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 8px;padding:7px 0;
   border-top:1px solid var(--line)}
 .trip:first-of-type{border-top:0}
-.tk{flex:none;font-size:11px;padding:1px 7px;border-radius:99px;
+.tk{flex:none;font-size:11px;padding:1px 7px;border-radius:999px;
   border:1px solid rgba(127,138,151,.3);color:var(--ink-2);line-height:1.6}
 .tk.flight{color:#8CC2FF;border-color:rgba(140,194,255,.4)}
 .tk.train{color:var(--ok);border-color:var(--ok-soft)}
@@ -159,7 +159,7 @@ select.fi{cursor:pointer}
 .td{flex:none;font-size:11px;color:var(--ink-2);
   font-variant-numeric:tabular-nums}
 .td.warn{color:var(--warn)}
-.td.hot{color:var(--bad);font-weight:700}
+.td.hot{color:var(--bad);font-weight:600}
 .tt{flex:1 1 55%;min-width:0;font-size:12px;color:var(--ink)}
 .tt b{font-variant-numeric:tabular-nums;margin-right:4px}
 .ts{margin-left:6px;font-size:11px;color:var(--faint,var(--ink-3))}
@@ -192,7 +192,7 @@ select.fi{cursor:pointer}
 .cmapnav{margin-top:8px}
 .cmapnav a.btn{text-decoration:none;padding:0 13px;font-size:12px;min-height:40px}
 .dtimes{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px}
-.dtime{font-size:11px;padding:2px 8px;border-radius:99px;color:var(--ok);
+.dtime{font-size:11px;padding:2px 8px;border-radius:999px;color:var(--ok);
   background:var(--ok-soft);border:1px solid var(--ok)}
 .dmore{margin-top:6px}
 .dmore>summary{font-size:12px;color:var(--ink-2);cursor:pointer;
@@ -258,11 +258,11 @@ select.fi{cursor:pointer}
 .rd b.bad{color:var(--bad)}.rd b.ok{color:var(--ok)}
 .rinline{display:inline;margin:0}
 .rbar .rinline{margin-left:auto}
-.rbtn{padding:7px 16px;border-radius:9px;border:1px solid var(--ok);
+.rbtn{padding:7px 16px;border-radius:10px;border:1px solid var(--ok);
   background:var(--ok-soft);color:var(--ok);font-size:14px;font-weight:600;
   min-height:38px;cursor:pointer}
 .rbtn:active{opacity:.8}
-.rbtn2{padding:5px 11px;border-radius:8px;border:1px solid var(--line);
+.rbtn2{padding:5px 11px;border-radius:10px;border:1px solid var(--line);
   background:transparent;color:var(--ink-2);font-size:12px;cursor:pointer}
 .rlist{margin-top:2px}
 /* 左滑完成：动作层压在下面，前面板整体位移露出提示 */
@@ -281,16 +281,16 @@ select.fi{cursor:pointer}
 .rline2{font-size:12px;color:var(--ink-2);line-height:1.6;margin-top:1px}
 .rpass{font-size:12px;color:var(--ok);font-variant-numeric:tabular-nums}
 .rrow.done .rpass{color:var(--ink-2)}
-.okbar{margin:0 0 12px;padding:9px 12px;border-radius:9px;font-size:12px;
+.okbar{margin:0 0 12px;padding:9px 12px;border-radius:10px;font-size:12px;
   background:var(--ok-soft);border:1px solid var(--ok-soft);color:var(--ok)}
 .hint{font-size:12px;color:var(--ink-2);line-height:1.75;margin:0 0 10px}
-.ta{width:100%;min-height:118px;background:var(--line);border-radius:8px;
+.ta{width:100%;min-height:118px;background:var(--line);border-radius:10px;
   border:1px solid var(--line);color:var(--ink);font-size:12px;
   padding:8px 10px;line-height:1.7;resize:vertical;font-family:ui-monospace,Menlo,monospace}
 .ta:focus{outline:none;border-color:var(--ok)}
 .ev.add{justify-content:center;border-style:dashed;opacity:.85}
 .ev.add b{font-size:14px}
-.errbar{margin:0 0 12px;padding:9px 12px;border-radius:9px;font-size:12px;
+.errbar{margin:0 0 12px;padding:9px 12px;border-radius:10px;font-size:12px;
   background:var(--bad-soft);border:1px solid rgba(224,106,95,.38);color:var(--bad)}
 </style>"""
 
@@ -1765,7 +1765,7 @@ def add_parser(sub):
 _PV_CSS = (
     "<style>"
     ".dimg{display:block;width:100%;height:auto;max-height:72vh;object-fit:contain;"
-    "background:rgba(255,255,255,.03);border-radius:12px;cursor:zoom-in;"
+    "background:rgba(255,255,255,.03);border-radius:14px;cursor:zoom-in;"
     "border:1px solid var(--line)}"
     ".dimg.full{max-height:none;object-fit:fill;cursor:zoom-out}"
     ".dpre{white-space:pre-wrap;word-break:break-word;font-size:12px;"

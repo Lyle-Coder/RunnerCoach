@@ -4944,13 +4944,37 @@ def run() -> int:
     # 现在只允许 8 档字号、4 档圆角；小元素（<8px 的进度条圆角）不受限。
     from garmin_cn import design as _DS
 
-    _fss = {float(x) for x in _re.findall(r"font-size:([\d.]+)px", _u.CSS)}
-    _bad_fs = sorted(x for x in _fss if int(x) not in _DS.FONT_SIZES
-                     and x not in _DS.FONT_SIZES)
-    assert not _bad_fs, f"字号超出白名单（只允许 {_DS.FONT_SIZES}）：{_bad_fs}"
-    _rds = {float(x) for x in _re.findall(r"border-radius:([\d.]+)px", _u.CSS)}
-    _bad_rd = sorted(x for x in _rds if x >= 8 and int(x) not in _DS.RADII)
-    assert not _bad_rd, f"圆角超出白名单（只允许 {_DS.RADII}）：{_bad_rd}"
+    # 必须扫**全部页面 CSS**：只查 ui.CSS 时，screen.py 的 13px、eventui 的
+    # 8/9/12px 圆角一直是漏网的（各自有一份独立 <style>）。
+    from garmin_cn import aiui as _AI3, eventui as _EV3, runsui as _RS3
+    from garmin_cn import screen as _SC3
+
+    # ui.CSS 已经拼了 BRAND_CSS + SCREEN_CSS（见 ui.py 的 CSS 定义），所以
+    # screen 不单独列；下面断言拼接关系还在，防止哪天拆开后漏检。
+    assert getattr(_SC3, "SCREEN_CSS", "") in _u.CSS, \
+        "ui.CSS 不再拼接 SCREEN_CSS 了，白名单检查需要把 screen 单列出来"
+    _pages_css = {
+        "ui": _u.CSS,
+        "aiui": getattr(_AI3, "CSS", ""),
+        "eventui": getattr(_EV3, "CSS", ""),
+        "runsui": getattr(_RS3, "CSS", "") + getattr(_RS3, "FONT_CSS", ""),
+    }
+    for _nm, _pcss in _pages_css.items():
+        if not _pcss:
+            continue
+        _fss = {float(x) for x in _re.findall(r"font-size:([\d.]+)px", _pcss)}
+        _bad_fs = sorted(x for x in _fss if int(x) not in _DS.FONT_SIZES
+                         and x not in _DS.FONT_SIZES)
+        assert not _bad_fs, \
+            f"{_nm} 字号超出白名单（只允许 {_DS.FONT_SIZES}）：{_bad_fs}"
+        _rds = {float(x) for x in _re.findall(r"border-radius:([\d.]+)px", _pcss)}
+        _bad_rd = sorted(x for x in _rds if x >= 8 and int(x) not in _DS.RADII)
+        assert not _bad_rd, \
+            f"{_nm} 圆角超出白名单（只允许 {_DS.RADII}）：{_bad_rd}"
+        _wts = {int(x) for x in _re.findall(r"font-weight:(\d{3})", _pcss)}
+        _bad_wt = sorted(x for x in _wts if x not in (400, 500, 600))
+        assert not _bad_wt, \
+            f"{_nm} 字重只能用 400/500/600（§3.2）：{_bad_wt}"
     # 最小字号：CSS 里不该再有 10px / 10.5px
     assert not _re.search(r"font-size:10(\.5)?px", _u.CSS), "还有 10px 级别的字号"
     # 背景不能用 background-attachment:fixed（滚动重绘整面）

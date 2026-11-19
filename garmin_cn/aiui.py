@@ -49,11 +49,11 @@ body{margin:0;color:var(--ink);
 .top .sub{font-size:12px;color:var(--muted);margin-top:2px}
 .gear{width:34px;height:34px;border-radius:10px;border:1px solid var(--line);background:var(--card);
   display:flex;align-items:center;justify-content:center;font-size:16px;color:var(--ink-2);cursor:pointer}
-.tabs{display:flex;gap:6px;background:rgba(9,14,22,.9);border:1px solid rgba(96,165,250,.12);border-radius:12px;padding:4px;margin-bottom:14px}
+.tabs{display:flex;gap:6px;background:rgba(9,14,22,.9);border:1px solid rgba(96,165,250,.12);border-radius:14px;padding:4px;margin-bottom:14px}
 .tabs button{flex:1;border:0;background:transparent;color:var(--ink-2);font-size:14px;font-weight:500;
-  padding:8px 0;border-radius:9px;font-family:inherit;cursor:pointer;transition:.15s}
+  padding:8px 0;border-radius:10px;font-family:inherit;cursor:pointer;transition:.15s}
 .tabs button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.06)}
-.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;margin-bottom:12px}
 .card h3{margin:0 0 10px;font-size:12px;font-weight:600;color:var(--muted);letter-spacing:1px}
 .head{font-size:20px;font-weight:600;line-height:1.35;letter-spacing:.2px}
 .focus{font-size:14px;color:var(--ink-2);margin-top:6px}
@@ -64,11 +64,11 @@ body{margin:0;color:var(--ink);
 ul.list{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:9px}
 ul.list li{display:flex;gap:9px;font-size:14px;line-height:1.6;color:var(--ink-2)}
 ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:11px;
-  display:flex;align-items:center;justify-content:center;margin-top:2px;font-weight:700}
+  display:flex;align-items:center;justify-content:center;margin-top:2px;font-weight:600}
 .ic.yes{background:var(--green-soft);color:var(--green)}
 .ic.no{background:var(--line-2);color:var(--muted)}
 .ic.warn{background:var(--amber-soft);color:var(--amber)}
-.watch{display:flex;gap:9px;background:var(--amber-soft);border-radius:12px;padding:11px 13px;
+.watch{display:flex;gap:9px;background:var(--amber-soft);border-radius:14px;padding:11px 13px;
   font-size:14px;color:#7A5A0E;line-height:1.55}
 .why{font-size:14px;color:var(--ink-2);line-height:1.75;white-space:pre-wrap}
 .meta{font-size:11px;color:var(--faint);margin-top:12px;display:flex;justify-content:space-between;
@@ -76,7 +76,7 @@ ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:
 .btn{border:1px solid var(--line);background:var(--card);color:var(--ink-2);border-radius:10px;
   padding:8px 13px;font-size:12px;font-family:inherit;cursor:pointer;white-space:nowrap;flex:0 0 auto}
 .btn:active{background:rgba(59,130,246,.14)}
-.btn.primary{background:linear-gradient(135deg,#3B82F6,#22D3EE);border-color:transparent;color:#04121F;font-weight:650}
+.btn.primary{background:linear-gradient(135deg,#3B82F6,#22D3EE);border-color:transparent;color:#04121F;font-weight:600}
 .btn.primary:active{background:#2A6FE0}
 .btn:disabled{opacity:.5}
 .skel{height:14px;border-radius:6px;background:linear-gradient(90deg,#16202F 25%,#22304A 37%,#16202F 63%);
@@ -89,7 +89,7 @@ ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:
 .err b{display:block;margin-bottom:4px}
 .det{margin-top:8px;font-size:12px;color:var(--faint)}
 .det summary{cursor:pointer;min-height:32px;display:flex;align-items:center}
-.quote{font-size:12px;color:var(--muted);background:rgba(9,14,22,.9);border-radius:8px;padding:8px 10px;
+.quote{font-size:12px;color:var(--muted);background:rgba(9,14,22,.9);border-radius:10px;padding:8px 10px;
   margin-top:8px;white-space:pre-wrap;max-height:160px;overflow:auto}
 .kv{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:4px}
 .kv div{background:rgba(9,14,22,.9);border-radius:10px;padding:9px 8px;text-align:center}
@@ -124,13 +124,13 @@ ul.list li .ic{flex:0 0 auto;width:17px;height:17px;border-radius:50%;font-size:
 .sheet{position:fixed;inset:0;background:rgba(3,6,11,.62);display:none;z-index:40}
 .sheet.on{display:block}
 .panel{position:absolute;left:0;right:0;bottom:0;max-height:88vh;overflow:auto;background:var(--bg);
-  border-radius:20px 20px 0 0;padding:18px 16px calc(24px + env(safe-area-inset-bottom));
+  border-radius:18px 18px 0 0;padding:18px 16px calc(24px + env(safe-area-inset-bottom));
   animation:up .22s ease}
 @keyframes up{from{transform:translateY(18px);opacity:.6}to{transform:none;opacity:1}}
 .panel h2{margin:0 0 4px;font-size:16px;font-weight:600}
 .panel .hint{font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:14px}
-.seg{display:flex;gap:6px;background:rgba(9,14,22,.9);border:1px solid rgba(96,165,250,.12);border-radius:11px;padding:4px;margin-bottom:14px}
-.seg button{flex:1;border:0;background:transparent;padding:8px 0;border-radius:8px;font-size:14px;
+.seg{display:flex;gap:6px;background:rgba(9,14,22,.9);border:1px solid rgba(96,165,250,.12);border-radius:10px;padding:4px;margin-bottom:14px}
+.seg button{flex:1;border:0;background:transparent;padding:8px 0;border-radius:10px;font-size:14px;
   font-family:inherit;color:var(--ink-2);font-weight:500}
 .seg button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.06)}
 label.f{display:block;font-size:12px;color:var(--muted);margin:12px 0 5px}
@@ -142,14 +142,14 @@ input.f:focus,select.f:focus{border-color:var(--green)}
 .act{display:flex;gap:8px;margin-top:16px}
 .act .btn{flex:1;text-align:center;padding:11px 0}
 .bal{display:flex;align-items:baseline;gap:8px;background:var(--card);border:1px solid var(--line);
-  border-radius:12px;padding:12px 14px;margin-top:10px}
+  border-radius:14px;padding:12px 14px;margin-top:10px}
 .bal .n{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums}
 .bal .u{font-size:12px;color:var(--muted)}
 details.adv{margin-top:14px;border-top:1px dashed var(--line);padding-top:6px}
 details.adv summary{cursor:pointer;color:var(--muted);font-size:12px;padding:4px 0}
 details.adv[open] summary{margin-bottom:8px}
 .step{display:inline-block;min-width:18px;height:18px;line-height:18px;text-align:center;
-  border-radius:9px;background:var(--green-soft);color:var(--green);font-size:11px;margin-right:6px}
+  border-radius:10px;background:var(--green-soft);color:var(--green);font-size:11px;margin-right:6px}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,.4);
   border-top-color:#8CC2FF;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px}
 @keyframes sp{to{transform:rotate(360deg)}}
