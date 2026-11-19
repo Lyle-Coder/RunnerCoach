@@ -812,25 +812,54 @@ def feed_page(token: str, gid: int, message: str = "", act: int = 0) -> str:
                 back=("返回小组", f"/groups/{gid}"))
 
 
-# ---------------------------------------------------------------- 六件衫
-def _shirt_dot(color: str, pattern: str = "", cls: str = "") -> str:
-    """衫的色点。`cls` 是附加类名（.sbit 里不用传，那里靠 `.sbit i` 给尺寸）。
+# ---------------------------------------------------------------- 本周荣誉
+# 改名：六件衫 → 本周荣誉。衫是公路自行车的说法（领骑黄衫、爬坡圆点衫），
+# 跑步群里没几个人知道，进来只看到一排彩色圆点。称号（里程王/出勤王…）
+# 自己就说得清，颜色退成第二层标识。
+#
+# 图标也换了：六个圆点说不清是「衫」还是标签，圆点衫的波点在 26px 的圆上
+# 又和白衫糊在一起（1/6 看着像 6 件全有）。现在画一件衣服的剪影。
+_JERSEY = ("M7.6 3.6C9.4 3.6 10.4 5.6 12 5.6C13.6 5.6 14.6 3.6 16.4 3.6"
+           "L21.9 6.3L20.1 9.5L17.5 8.5L17.5 20.4L6.5 20.4L6.5 8.5"
+           "L3.9 9.5L2.1 6.3Z")
 
-    圆点衫要画波点而不是纯色：它和白衫的色号（#D8DEE9 / #F2F5FA）在暗底上
-    都是「一个白点」，调浅调深都分不出来。公路车赛里圆点衫本来就是白底红点，
-    照这个画既分得开，也不用解释。
+
+def _jersey(color: str, pattern: str = "", on: bool = True,
+            cls: str = "", tip: str = "") -> str:
+    """一件「衫」的图标。没拿到的是空心虚线衫，拿到的是实色衫。
+
+    圆点衫必须画波点：它和白衫的色号都是白，纯色画出来是两件一模一样的衣服。
     """
-    c = ("pd " + cls).strip()
-    if pattern == "dots":
-        return f'<i class="{c}" aria-hidden="true"></i>'
-    return f'<i class="{c}" style="background:{esc(color)}" aria-hidden="true"></i>'
+    c = esc(color or "#3FA76A")
+    extra = f" {esc(cls)}" if cls else ""
+    tt = f' title="{esc(tip)}"' if tip else ""
+    # viewBox 贴着衣服轮廓裁（1.6 3 20.8 18），不然 26px 的盒子里
+    # 上下各留 3px 白边，图标看着比旁边的字还小
+    if not on:
+        return (f'<svg class="jsh off{extra}" viewBox="1.6 3 20.8 18" aria-hidden="true"{tt}>'
+                f'<path d="{_JERSEY}" fill="none" stroke="rgba(255,255,255,.26)"'
+                ' stroke-width="1" stroke-dasharray="2 1.6" stroke-linejoin="round"/>'
+                '</svg>')
+    pid = "jshDots" if pattern == "dots" else ""
+    defs = ""
+    if pid:
+        defs = (f'<defs><pattern id="{pid}" width="3.4" height="3.4" '
+                'patternUnits="userSpaceOnUse"><rect width="3.4" height="3.4" '
+                'fill="#F4F7FC"/><circle cx="1.2" cy="1.2" r=".9" fill="#D9534F"/>'
+                '</pattern></defs>')
+    fill = f"url(#{pid})" if pid else c
+    return (f'<svg class="jsh{extra}" viewBox="1.6 3 20.8 18" aria-hidden="true"{tt}>'
+            f'{defs}<path d="{_JERSEY}" fill="{fill}"'
+            ' stroke="rgba(255,255,255,.18)" stroke-width=".8" '
+            'stroke-linejoin="round"/></svg>')
 
 
 def shirts_page(token: str, gid: int, message: str = "") -> str:
-    """六件衫：每件在比什么、现在谁领跑、前 3 名是谁。
+    """本周荣誉：六项称号，每项一张卡 + 组内完整榜。
 
-    单独一页，是因为组页那一行只说得出「黄衫 阿狗」。颜色和名字本身不表意，
-    不给口径和前几名，新来的人只会看到一排小圆点。
+    上一版是一行一件的窄表，前 3 名塞在一行灰字里，用户点进去看不到
+    「每项到底在比什么」「排到第几」，也看不懂「衫」这个词。这一版：
+    称号当主标、衫型图标当识别、每项一句口径、下面列完整榜（我那一行高亮）。
     """
     from . import group as G
 
@@ -838,46 +867,76 @@ def shirts_page(token: str, gid: int, message: str = "") -> str:
     se = G.season(gid, today)
     if not se.get("ok"):
         body = (_msg(message)
-                + f'<div class="card"><p class="note">{esc(se.get("error") or "打不开六件衫")}</p>'
-                f'<div class="pager"><a class="btn" href="/groups/{gid}">返回小组</a></div></div>')
-        return page("GROUP", "六件衫", "", body, back=("返回小组", f"/groups/{gid}"))
+                + f'<div class="card"><p class="note">'
+                  f'{esc(se.get("error") or "打不开本周荣誉")}</p>'
+                  f'<div class="pager"><a class="btn" href="/groups/{gid}">返回小组</a>'
+                  '</div></div>')
+        return page("GROUP", "本周荣誉", "", body, back=("返回小组", f"/groups/{gid}"))
 
-    rows = ""
+    me_uid = int((se.get("me") or {}).get("user_id") or 0)
+    cards = ""
     for sh in se.get("shirts") or []:
-        top = sh.get("top") or []
-        names = [str(w.get("alias") or "") for w in (sh.get("winners") or [])]
-        if names and top:
-            head = (f'<b>{esc("/".join(names))}</b>'
-                    f'<i>{esc(top[0].get("text") or "")}</i>')
-        elif top:
-            # 有数据但不算得主（白衫要求本周确实涨了）：说清楚为什么没发
-            head = '<span class="none">本周没人达标</span>'
-        else:
-            head = '<span class="none">本周没有数据</span>'
-        rest = ""
-        for i, t in enumerate(top[1:], 2):
-            rest += f'<span class="rest">{i} {esc(t.get("alias"))} {esc(t.get("text"))}</span>'
-        rows += ('<div class="shr">'
-                 + _shirt_dot(str(sh.get("color") or ""), str(sh.get("pattern") or ""), "dot")
-                 + f'<div class="t">{esc(sh.get("name"))} · {esc(sh.get("title"))}</div>'
-                 f'<div class="v">{head}</div>'
-                 f'<div class="h">{esc(sh.get("hint"))}'
-                 + (f'<span class="r3">{rest}</span>' if rest else "")
-                 + '</div></div>')
+        _name = str(sh.get("name") or "")
+        _title = str(sh.get("title") or "")
+        _color = str(sh.get("color") or "")
+        _field = str(sh.get("field") or "")
+        winners = [str(w.get("alias") or "") for w in (sh.get("winners") or [])]
+        # 完整榜：服务端下发 rank（全组、按该项排序）；老服务端只有 top（前 3）
+        rank = sh.get("rank") or sh.get("top") or []
 
-    body = (_msg(message)
-            + sec("本周六件衫", '<div class="shirtlist">' + rows + '</div>')
-            + '<p class="note">每人每周最多穿几件都可以。除白衫外都只算本周、只算跑步类；'
-              '白衫比的是「最近 7 天 vs 前 7 天」的自己，不看日历周——'
-              '拿本周已过的几天去比上周整周，周内谁都是负增长。'
-              '关掉共享的人不参与评衫。探索徽章（新踩 5 格）不占衫，单独发。</p>')
+        if winners:
+            _w = next((x for x in rank if x.get("alias") in winners), {})
+            win = ('<div class="hon-w"><span class="kw">得主</span>'
+                   f'<b>{esc("/".join(winners))}</b>'
+                   + (f'<span class="kv">{esc(str(_w.get("text") or ""))}</span>'
+                      if _w else "")
+                   + '</div>')
+        elif rank:
+            # 白衫要求「确实涨了」，一个没涨就不发——要说清为什么，而不是留白
+            _why = ("本周还没人比前 7 天跑得多" if _field == "progress"
+                    else "本周还没有数据")
+            win = (f'<div class="hon-w empty"><span class="kw">{_why}</span></div>')
+        else:
+            win = ('<div class="hon-w empty"><span class="kw">本周还没有数据</span></div>')
+
+        lis = ""
+        for i, x in enumerate(rank, 1):
+            _me = int(x.get("user_id") or 0) == me_uid
+            cls = "me" if _me else ("win" if winners and x.get("alias") in winners else "")
+            lis += (f'<li{" class=" + chr(34) + cls + chr(34) if cls else ""}>'
+                    f'<span class="n">{i}</span>'
+                    f'<span class="a">{esc(x.get("alias"))}</span>'
+                    f'<span class="v">{esc(str(x.get("text") or ""))}</span></li>')
+        lis = f'<ol class="hlist">{lis}</ol>' if lis else ""
+
+        cards += ('<section class="hon">'
+                  '<div class="hon-h">'
+                  + _jersey(_color, str(sh.get("pattern") or ""), True, "lg")
+                  + '<div class="hon-t">'
+                  + f'<h3>{esc(_title)}</h3>'
+                  + f'<p>{esc(sh.get("hint"))}</p></div>'
+                  + f'<span class="hon-tag" style="--c:{esc(_color)}"><i></i>'
+                  + f'{esc(_name)}</span></div>'
+                  + win + lis + '</section>')
+
+    intro = ('<p class="hintro">「衫」是公路自行车的说法：总成绩第一穿黄衫，'
+             '爬坡王穿红点衫。跑步组沿用了这套颜色——六个称号配六种颜色，'
+             '扫一眼就知道自己缺哪几件。</p>'
+             '<p class="hintro">每项只比一件事，第一名拿对应的颜色，一个人可以同时'
+             '拿几项。只算跑步类、只算本周；只有进步王例外，它比「最近 7 天 '
+             'vs 前 7 天」，不看日历周。</p>')
+
+    body = (_msg(message) + intro
+            + sec("六项称号", cards)
+            + '<p class="note">关掉共享的人不参与。探索徽章（本周新踩 5 格）'
+              '不占称号，单独发。</p>')
 
     mine = (se.get("me") or {})
-    got = [s["name"] for s in (mine.get("shirts") or [])]
-    sub = ("我穿着 " + "、".join(got)) if got else "本周还没穿上衫"
-    return page("GROUP", "六件衫", sub, body,
-                foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
-                back=("返回小组", f"/groups/{gid}"))
+    got = [str(s2.get("title") or "") for s2 in (mine.get("shirts") or [])]
+    sub = ("我拿到 " + "、".join(got)) if got else "本周还没拿到"
+    return _with_copy(page("GROUP", "本周荣誉", sub, body,
+                           foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+                           back=("返回小组", f"/groups/{gid}")))
 
 
 # ---------------------------------------------------------------- 组详情
@@ -1068,11 +1127,8 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                 _who = "/".join(str(w.get("alias") or "")
                                 for w in (sh.get("winners") or []))
                 _tip = f"{_nm}·{_tl}" + (f" {_who}" if _who else " 暂时没人")
-                _pat = " pd" if sh.get("pattern") == "dots" else ""
-                _badges += (
-                    f'<i class="sbd{_pat}{" on" if _on else ""}" '
-                    f'style="--c:{esc(sh.get("color"))}" title="{esc(_tip)}" '
-                    f'aria-label="{esc(_tip)}"></i>')
+                _badges += _jersey(str(sh.get("color") or ""),
+                                   str(sh.get("pattern") or ""), _on, "", _tip)
             # 一个人组里「第 1 名」没有信息量，直接说这是「本周成绩」。
             _k = f'我 · 第 {_rk} 名' if _n > 1 else "本周成绩"
             # 口径要自己交代：这是全页最大的数字，不说清是什么分，
@@ -1096,7 +1152,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                 f'<div class="sc-note">{esc(_note)}</div>'
                 f'<a class="sc-shirts" href="/groups/{gid}/shirts">'
                 f'<span class="sc-badges">{_badges}</span>'
-                f'<span class="sc-more">六件衫 {_got}/6 ›</span></a></section>')
+                f'<span class="sc-more">荣誉 {_got}/6 ›</span></a></section>')
     shirt_row = ""
 
     # ---- 本周玩法：目标 / 对子 / 预言
@@ -1210,7 +1266,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     # 足迹和远征是「探索」区的两行卡片。形态各不相同，页面就没有规矩。
     # 现在数据用左对齐的行、功能用图标，两类东西长得不一样，才好扫。
     # 六件衫**不在这里**：上面那张核心数据卡的徽章行本身就是它的入口
-    # （`六件衫 1/6 ›`），同一屏放两个去同一页的按钮，等于让人选「点哪个」。
+    # （`荣誉 1/6 ›`），同一屏放两个去同一页的按钮，等于让人选「点哪个」。
     # 徽章在那儿还是看得见的状态，比一个文字图标信息量大。
     #
     # 三格空着太浪费，每格补一句「这一周正在发生什么」：

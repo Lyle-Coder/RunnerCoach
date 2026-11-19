@@ -1454,7 +1454,10 @@ def run() -> int:
             "unit": "", "hint": h,
             "winners": [{"user_id": 2, "alias": "队友"}] if top else [],
             "top": ([{"user_id": 2, "alias": "队友", "text": top[0]},
-                     {"user_id": 1, "alias": "我", "text": top[1]}] if top else [])}
+                     {"user_id": 1, "alias": "我", "text": top[1]}] if top else []),
+            # 完整榜：荣誉页要全列出来，不是只给前 3
+            "rank": ([{"user_id": 2, "alias": "队友", "text": top[0]},
+                      {"user_id": 1, "alias": "我", "text": top[1]}] if top else [])}
         _GP.season = lambda gid, today=None: {
             "ok": True, "base_max": 90.0, "bonus_max": 10.0, "hidden": 0,
             "people": [
@@ -1471,17 +1474,17 @@ def run() -> int:
                    "progress": 0.05, "title": "", "shirts": []},
             "shirts": [
                 _shirt("yellow", "黄衫", "里程王", "#E8C43A", "km",
-                       "本周跑步里程", ("12.0 km", "9.0 km")),
+                       "本周跑步的总里程", ("12.0 km", "9.0 km")),
                 _shirt("green", "绿衫", "出勤王", "#3FA76A", "days",
-                       "本周有运动的天数", ("3 天", "2 天")),
+                       "本周有跑步的天数（一天练两次算一天）", ("3 天", "2 天")),
                 _shirt("polka", "圆点衫", "爬升王", "#D8DEE9", "elev",
-                       "本周累计爬升", ()),
+                       "本周累计爬升的米数", ()),
                 _shirt("white", "白衫", "进步王", "#F2F5FA", "progress",
-                       "比上周多跑了多少", ("+12%", "+5%")),
+                       "最近 7 天比之前 7 天多跑的比例", ("+12%", "+5%")),
                 _shirt("red", "红衫", "计划完成王", "#D9534F", "plan_rate",
-                       "有课的日子里完成了多少", ("100%", "50%")),
+                       "有课的日子里完成的比例", ("100%", "50%")),
                 _shirt("blue", "蓝衫", "连续王", "#4C8DF6", "streak",
-                       "本周最长连续出勤", ("3 天", "2 天"))],
+                       "本周最长连续出勤的天数", ("3 天", "2 天"))],
             "explore": {"min_cells": 5, "badges": []},
             "max": {"km": 12.0, "days": 3, "elev": 0, "streak": 3,
                     "progress": 0.12, "explorer": 0},
@@ -1559,8 +1562,8 @@ def run() -> int:
     # 现在合进一张卡：分数在上半区，六件衫是下半区的 6 枚圆徽章。
     assert 'class="scorecard"' in _gh, "没有核心数据卡"
     assert 'class="sc-v"' in _gh and "分</i>" in _gh, "分数没进核心卡"
-    assert _gh.count('class="sbd') == 6, \
-        f"六件衫应该是 6 枚徽章，实际 {_gh.count('class="sbd')} 枚"
+    assert _gh.count('class="jsh') == 6, \
+        f"荣誉徽章应该是 6 件衫，实际 {_gh.count('class="jsh')} 件"
     assert 'class="sc-shirts"' in _gh and "/shirts" in _gh, "徽章组不是进六件衫榜单的入口"
 
     # ---- 目标：独立入口行，不再是四行表格里的一行
@@ -1600,7 +1603,7 @@ def run() -> int:
     assert "function gcCopy" in _gh, "组页没挂复制邀请码的脚本"
     assert 'class="qn">六件衫</span>' not in _gh, \
         "六件衫入口重复了：徽章行已经是它的入口"
-    assert 'class="sc-shirts"' in _gh and "六件衫 " in _gh, "徽章行不再是六件衫入口"
+    assert 'class="sc-shirts"' in _gh and "荣誉 " in _gh, "徽章行不再是荣誉入口"
     assert '<div class="bgrid"' not in _gh, "Bingo 的 25 个格子被搬进组页了"
 
     # 信息顺序：点进小组第一眼要看到「我在组里第几」，然后才是玩法，
@@ -1618,15 +1621,18 @@ def run() -> int:
     # 一排小圆点，不知道黄衫是里程榜。组页那行还得能点进六件衫。
     assert "黄衫·里程王" in _gh, "衫行只写了「黄衫 阿狗」，没说是哪个榜"
     assert "红衫·计划完成王" in _gh, "长榜名（计划完成王）没显示出来"
-    assert "/shirts" in _gh and "六件衫" in _gh, "组页没有进六件衫的入口"
+    assert "/shirts" in _gh and "荣誉" in _gh, "组页没有进本周荣誉的入口"
 
     _shp_html = _shp
-    assert "本周六件衫" in _shp_html, "六件衫页没渲染出来"
+    assert "六项称号" in _shp_html, "荣誉页没渲染出来"
     for _nm in ("黄衫", "绿衫", "圆点衫", "白衫", "红衫", "蓝衫"):
         assert _nm in _shp_html, f"六件衫页缺 {_nm}"
-    assert "本周跑步里程" in _shp_html, "衫页没写口径"
-    assert "2 我 9.0 km" in _shp_html, "衫页没列第 2 名"
-    assert "本周没有数据" in _shp_html, "没数据的衫（圆点衫）没给出说明"
+    assert "本周跑步的总里程" in _shp_html, "荣誉页没写口径"
+    assert _shp_html.count('class="hon"') == 6, "荣誉页不是六张卡"
+    assert '<ol class="hlist">' in _shp_html, "荣誉页没有完整榜"
+    assert "class=\"me\"" in _shp_html or "class='me'" in _shp_html, \
+        "完整榜里没标出我自己"
+    assert "本周还没有数据" in _shp_html, "没数据的一项没给出说明"
 
     # ---- 跨省的分片：一张图装不下 900 km，格子会缩成看不见的点
     from garmin_cn import basemap as _BM
@@ -1738,10 +1744,14 @@ def run() -> int:
     assert '"pattern": "dots"' in _rk, "圆点衫没标波点图案，会和白衫撞成两个白点"
     assert 'if pattern == "dots"' in (ROOT / "garmin_cn/groupui.py").read_text(
         encoding="utf-8"), "客户端没给圆点衫画波点的分支"
-    # 选择器必须排除 .sbd：六件衫徽章也是 i.sbd.pd 这类形状，不排除的话
-    # 波点会被画到「没拿到」的空心徽章上（1/6 却显示 6 件衫全有）。
-    assert "i.pd:not(.sbd){" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
-        "没有 i.pd（排除 .sbd）的样式，圆点衫画不出波点"
+    # 衫型图标：圆点衫靠 SVG 的波点 pattern 画，不再靠 CSS 色点。
+    # 没拿到的那 5 件必须是空心虚线，否则「1/6」这个数立不住。
+    _uisrc = (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8")
+    assert ".jsh{" in _uisrc, "衫型图标没有样式"
+    _gsrc = (ROOT / "garmin_cn/groupui.py").read_text(encoding="utf-8")
+    assert "pattern id=" in _gsrc and "jshDots" in _gsrc, \
+        "圆点衫没有波点 pattern，会和白衫画成两件一模一样的衣服"
+    assert "stroke-dasharray" in _gsrc, "没拿到的衫不是空心虚线"
 
     # Bingo：25 格、中心免费、易中难各 8。这三条一变，页面上那 5×5 就歪了。
     import sys as _sys

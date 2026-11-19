@@ -56,18 +56,18 @@ ELEV_PER_KM_MAX = 200.0
 # 所以让前端画波点，而不是继续调色号——调浅调深都还是两个白点。
 SHIRTS = [
     {"id": "yellow", "name": "黄衫", "title": "里程王", "field": "km",
-     "color": "#E8C43A", "unit": "km", "hint": "本周跑步里程"},
+     "color": "#E8C43A", "unit": "km", "hint": "本周跑步的总里程"},
     {"id": "green", "name": "绿衫", "title": "出勤王", "field": "days",
-     "color": "#3FA76A", "unit": "天", "hint": "本周有运动的天数"},
+     "color": "#3FA76A", "unit": "天", "hint": "本周有跑步的天数（一天练两次算一天）"},
     {"id": "polka", "name": "圆点衫", "title": "爬升王", "field": "elev",
-     "color": "#D8DEE9", "unit": "m", "hint": "本周累计爬升",
+     "color": "#D8DEE9", "unit": "m", "hint": "本周累计爬升的米数",
      "pattern": "dots"},
     {"id": "white", "name": "白衫", "title": "进步王", "field": "progress",
-     "color": "#F2F5FA", "unit": "%", "hint": "最近 7 天比前 7 天多跑了多少"},
+     "color": "#F2F5FA", "unit": "%", "hint": "最近 7 天比之前 7 天多跑的比例"},
     {"id": "red", "name": "红衫", "title": "计划完成王", "field": "plan_rate",
-     "color": "#D9534F", "unit": "%", "hint": "有课的日子里完成了多少"},
+     "color": "#D9534F", "unit": "%", "hint": "有课的日子里完成的比例"},
     {"id": "blue", "name": "蓝衫", "title": "连续王", "field": "streak",
-     "color": "#4C8DF6", "unit": "天", "hint": "本周最长连续出勤"},
+     "color": "#4C8DF6", "unit": "天", "hint": "本周最长连续出勤的天数"},
 ]
 
 
@@ -443,12 +443,16 @@ def build(rows_by_user: dict[int, list[dict]],
         ranked = sorted(
             ((u, m.get(field)) for u, m in all_m.items() if m.get(field) is not None),
             key=lambda x: -_f(x[1]))
-        top = [{"user_id": u, "alias": aliases.get(u, ""),
-                "text": _fmt_val(field, v)}
-               for u, v in ranked[:3]]
+        full = [{"user_id": u, "alias": aliases.get(u, ""),
+                 "text": _fmt_val(field, v)}
+                for u, v in ranked]
+        top = full[:3]
         by_shirt.append({"id": s["id"], "name": s["name"], "title": s["title"],
                          "color": s["color"], "field": field,
                          "unit": s.get("unit", ""), "hint": s.get("hint", ""),
+                         # 完整榜：组最多 20 人，客户端直接全列出来，
+                         # 不用再点「看全部」——荣誉页的价值就是一次看完
+                         "rank": full,
                          # 圆点衫靠波点区分，纯色和白衫撞车
                          "pattern": s.get("pattern", ""),
                          "winners": [{"user_id": u, "alias": aliases.get(u, "")}
