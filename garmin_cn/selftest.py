@@ -1495,6 +1495,7 @@ def run() -> int:
         _shp = _GU.shirts_page("TOK", 1)
         _fdp = _GU.feed_page("TOK", 1)
         _fdo = _GU.feed_page("TOK", 1, "", 9)
+        _set = _GU.settings_page("TOK", 1)
     finally:
         _GP.detail, _GP.board, _GP.challenge_list = _gd, _gb, _gc
         _GP.week = _gw
@@ -1507,15 +1508,25 @@ def run() -> int:
     assert _gh.count('class="flat"') >= 3, "数据块没有改用无框样式"
     # 低频表单折叠：建赛事、管理
     assert "建一个赛事" in _gh and "<details" in _gh, "建赛事表单又常驻展开了"
-    assert "邀请码与管理" in _gh, "管理区没折叠起来"
+    # 昵称 / 共享 / 邀请码 / 退出全搬进「小组设置」了，组页只留一个页头齿轮。
+    # 用户原话：「放在最下面太突兀」。
+    assert 'class="hact"' in _gh and "/settings" in _gh, "组页页头没有设置入口"
+    assert ">昵称<" not in _gh, "昵称表单又回到组页正文里了"
+    assert "邀请码与管理" not in _gh, "组管理又回到组页正文里了"
     assert "<details class=\"fold\" open" not in _gh, "折叠块默认就展开了"
     # 成员不许和榜单排两遍：榜单里有名字，就不该再有「成员」区块
     assert "sec-head\"><h2>成员" not in _gh, "成员又单独占了一块（和榜单重复）"
     # 月榜入口必须是真链接，不是 `if False` 的死开关
     assert "?range=month" in _gh, "月榜入口又变成死开关了"
     # 昵称能在页面上直接改
-    assert "/alias" in _gh and "我的昵称" not in _gh, "昵称入口不在设置行里"
-    assert ">昵称<" in _gh, "设置区没有昵称那一行"
+    # 设置页本身要有这些东西，否则就是「搬走了也找不回来」
+    # 假数据里我是组长：所以看到的是「转让组长」而不是「退出小组」——
+    # 组长不能直接退，得先转让，这条口径在服务端也是这么实现的
+    for _need in (">昵称<", ">共享<", ">上报<", "邀请码", "转让组长"):
+        assert _need in _set, f"设置页缺「{_need}」"
+    assert "你是组长" in _set, "组长在设置页没看到「先转让才能退出」的提示"
+    assert "/alias" in _set and "/rotate" in _set, "设置页表单没接上接口"
+    assert "/groups/1/map" in _set, "设置页没有路线共享入口"
 
     # ---- P2：本周玩法（衫 / 目标 / 结对 / 预言）
     # 四行必须是「标签 + 内容」两列对齐：以前是四段各写各的流式文字，
