@@ -536,6 +536,57 @@ i.pd{background:var(--map-shared);
 .shr .h{grid-column:2/4;font-size:11px;color:var(--faint);line-height:1.5}
 .shr .r3{margin-left:8px}
 .shr .r3 .rest{margin-right:8px}
+/* ---- 小组页核心数据卡（名次 + 分数 + 称号 / 六件衫徽章） ----
+   参考稿的「一卡收拢核心数据」：分数是这张卡的主数，六件衫从两行文字
+   压成 6 枚 28px 圆徽章。得主信息进 title 和点击后的榜单页，不再铺在首屏。 */
+.scorecard{position:relative;background:var(--surface);
+  border:1px solid var(--line-brand);border-radius:var(--r-3);
+  padding:16px 16px 14px;margin-bottom:12px;
+  box-shadow:0 14px 34px -26px rgba(59,130,246,.55)}
+.sc-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.sc-k{display:block;font-size:var(--fs-body,14px);color:var(--ink-2)}
+.sc-v{margin-top:3px;font-size:var(--fs-dsp,32px);font-weight:600;line-height:1.05;
+  letter-spacing:-1px;color:var(--brand-ink);
+  font-variant-numeric:tabular-nums}
+.sc-v i{font-style:normal;font-size:var(--fs-title,16px);font-weight:400;
+  color:var(--ink-3);margin-left:3px;letter-spacing:0}
+.sc-shirts{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  margin-top:14px;padding-top:13px;border-top:1px solid var(--line);
+  text-decoration:none;color:inherit;min-height:44px}
+.sc-badges{display:flex;align-items:center;gap:12px}
+/* 徽章：28px 圆。没得到的压到 22% 透明度，得到的实色 + 一圈同色外环，
+   一眼看出「这周我穿着哪几件」。 */
+.sbd{width:28px;height:28px;border-radius:50%;background:var(--c);opacity:.38;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.22)}
+.sbd.on{opacity:1;box-shadow:0 0 0 2px var(--bg),0 0 0 3.5px var(--c)}
+/* 圆点衫不是纯色：白底红波点，和 §六件衫 的图标保持同一张脸 */
+.sbd.pd{background:var(--map-shared);
+  background-image:radial-gradient(var(--bad) 2px,rgba(242,85,90,0) 2.2px);
+  background-size:5px 5px;background-position:1px 1px;
+  box-shadow:inset 0 0 0 1.5px var(--bad)}
+.sbd.pd.on{box-shadow:0 0 0 2px var(--bg),0 0 0 3.5px var(--bad)}
+.sc-more{font-size:var(--fs-micro,11px);color:var(--brand-ink);white-space:nowrap}
+
+/* ---- 目标入口行 ----
+   48px、整行可点、和榜单条目同一节奏。原来它是四行表格里的一行，
+   既不像能点，也把「已跑多少」压成了灰字。 */
+.goalrow{margin-bottom:12px}
+.goalrow>summary{display:flex;align-items:center;gap:10px;min-height:48px;
+  padding:0 14px;list-style:none;cursor:pointer;
+  background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-2);color:inherit}
+.goalrow>summary::-webkit-details-marker{display:none}
+.goalrow .gk{font-size:var(--fs-lead,15px);font-weight:600;color:var(--ink);
+  white-space:nowrap}
+.goalrow .gs{font-size:var(--fs-micro,11px);color:var(--ink-3);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.goalrow .chev{margin-left:auto;color:var(--ink-3);font-size:16px;line-height:1}
+.goalrow[open]>summary{border-radius:var(--r-2) var(--r-2) 0 0;
+  background:var(--surface-2)}
+.goalrow .gbody{padding:2px 14px 12px;background:var(--surface-2);
+  border:1px solid var(--line);border-top:0;
+  border-radius:0 0 var(--r-2) var(--r-2)}
+
 /* 小组页的「衫 / 目标 / 结对 / 预言」四行。
    类名特意用 .kvrows 而不是 .wk——.wk 已经是计划页周课表的容器，
    两处同名会让周课表被套进这里的 24px 列里，变成竖排叠字。 */
@@ -561,12 +612,12 @@ i.pd{background:var(--map-shared);
 .qg{display:flex;flex-direction:column;align-items:center;gap:5px;
   padding:7px 2px 5px;border-radius:14px;text-decoration:none;min-width:0}
 .qg:active{background:var(--brand-soft)}
-.qg i{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;
+/* 入口图标：和 .row .ic 同一套（--surface-2 + 品牌色字形）。
+   原来是青→蓝渐变 + 内发光，四个方块在暗底上像四盏小灯。 */
+.qg i{width:34px;height:34px;border-radius:var(--r-1);display:flex;align-items:center;
   justify-content:center;font-size:16px;font-style:normal;
-  background:linear-gradient(160deg,var(--cyan-soft),var(--brand-soft));
-  color:var(--cyan);border:1px solid var(--line);
-  box-shadow:inset 0 0 14px rgba(34,211,238,.2)}
-.qg .qn{font-size:11px;font-weight:600;color:var(--ink2);white-space:nowrap;
+  background:var(--surface-2);color:var(--brand-ink);border:1px solid var(--line)}
+.qg .qn{font-size:12px;font-weight:600;color:var(--ink-2);white-space:nowrap;
   max-width:100%;overflow:hidden;text-overflow:ellipsis}
 /* 动态：一行一条。左色点认人，中间类型+距离，右边日期和评论数。
    没有缩略图——这一栏按设计就是概要，给不出活动图。 */
