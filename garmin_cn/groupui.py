@@ -832,7 +832,9 @@ def shirts_page(token: str, gid: int, message: str = "") -> str:
 
     body = (_msg(message)
             + sec("本周六件衫", '<div class="shirtlist">' + rows + '</div>')
-            + '<p class="note">每人每周最多穿几件都可以。每件都只算本周、只算跑步类；'
+            + '<p class="note">每人每周最多穿几件都可以。除白衫外都只算本周、只算跑步类；'
+              '白衫比的是「最近 7 天 vs 前 7 天」的自己，不看日历周——'
+              '拿本周已过的几天去比上周整周，周内谁都是负增长。'
               '关掉共享的人不参与评衫。探索徽章（新踩 5 格）不占衫，单独发。</p>')
 
     mine = (se.get("me") or {})
@@ -1160,8 +1162,10 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     # 之前这些入口散在三处：六件衫是行尾一个蓝色文字、Bingo 塞在状况行里、
     # 足迹和远征是「探索」区的两行卡片。形态各不相同，页面就没有规矩。
     # 现在数据用左对齐的行、功能用图标，两类东西长得不一样，才好扫。
+    # 六件衫**不在这里**：上面那张核心数据卡的徽章行本身就是它的入口
+    # （`六件衫 1/6 ›`），同一屏放两个去同一页的按钮，等于让人选「点哪个」。
+    # 徽章在那儿还是看得见的状态，比一个文字图标信息量大。
     _qg: list[tuple[str, str, str, str]] = [
-        ("▤", "六件衫", f"/groups/{gid}/shirts", ""),
         ("⊞", "Bingo", f"/groups/{gid}/bingo", ""),
         ("⌖", "足迹", f"/groups/{gid}/map", ""),
         ("◭", "远征", f"/run?gid={gid}", ""),
