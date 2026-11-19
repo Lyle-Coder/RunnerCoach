@@ -1038,6 +1038,22 @@ def _reading_card(limit: int = 8) -> str:
             'i=(i+1)%s.length;s[i].classList.add("on");},6000);})();</script>')
 
 
+def _rhr_sub(base, week_txt: str, src: str) -> str:
+    """静息心率卡片底下那行：「口径 · 基线 · 周变化」。
+
+    口径只在能判断出是高驰时写——佳明的「全天最低 30 分钟均值」和睡眠最低
+    本来就接近，标上去反而占地方。
+    """
+    bits = []
+    if src == "coros":
+        bits.append("睡眠期")
+    if base:
+        bits.append(f"28 天基线 {base:.0f}")
+    if week_txt:
+        bits.append(str(week_txt))
+    return " · ".join(bits)
+
+
 def home_page() -> str:
     """「今日」tab：首屏即一页式大屏（0.6.7）。
 
@@ -1157,6 +1173,11 @@ def home_page() -> str:
         _sleep_sub.append(f"近 7 天少睡 {_debt:.1f} 小时")
     _hrv = today_row.get("hrv_night")
     _rhr = today_row.get("resting_hr")
+    # 高驰的静息心率与佳明不是一个算法：高驰取睡眠期/早晨最低 HR，佳明取全天
+    # 最低 30 分钟均值。同一个人两边能差 2~5 bpm，而高驰 App 首页那个数是
+    # **醒来那一刻**的实时心率，比睡眠最低值还要高 5~10——用户拿它对会觉得
+    # 我们算错了。所以在卡片上把口径写出来，别让它变成每次都解释一遍的问题。
+    _rhr_src = str(res.get("rhr_src") or "")
     # 「今天没同步」时 derive 会用库里最后一天顶上（见 metrics.derive）。
     # 把真实数据日期写进卡片标签，别再笼统写「昨夜」让人拿旧值去对 App。
     _data_date = str(res.get("data_date") or day)[:10]
@@ -1185,7 +1206,7 @@ def home_page() -> str:
                      f"28 天基线 {hrv_base:.0f} · {_wk('hrv')}" if hrv_base else _wk("hrv"),
                      _spark((series.get("hrv") or [])[-14:], h=22)),
         SC.body_cell(f"静息心率 · {_dd}", f"{_rhr:.0f}" if _rhr else None, "bpm",
-                     f"28 天基线 {rhr_base:.0f} · {_wk('rhr')}" if rhr_base else _wk("rhr"),
+                     _rhr_sub(rhr_base, _wk("rhr"), _rhr_src),
                      _spark((series.get("rhr") or [])[-14:], h=22)),
         # 体重刻意给完整一行：不再 nowrap + ellipsis 把「较…」切掉。
         SC.body_cell("体重 · 近 7 天", f"{_w:.2f}" if _w else None, "kg",
