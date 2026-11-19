@@ -233,6 +233,8 @@ def init_db() -> None:
           week_start TEXT NOT NULL,
           user_id    INTEGER NOT NULL,
           cell       TEXT NOT NULL,
+          -- 这格里跑了多少米。0 表示老客户端只发了「跑过」没发跑量
+          meters     INTEGER NOT NULL DEFAULT 0,
           PRIMARY KEY(group_id, week_start, user_id, cell)
         );
 
@@ -280,6 +282,11 @@ def init_db() -> None:
         mcols = {r["name"] for r in c.execute("PRAGMA table_info(group_members)")}
         if "map_share" not in mcols:
             c.execute("ALTER TABLE group_members ADD COLUMN map_share INTEGER"
+                      " NOT NULL DEFAULT 0")
+        # 1.5.8 起格子带跑量：地图要用它决定「这块主要是谁跑的」和颜色深浅
+        ccols = {r["name"] for r in c.execute("PRAGMA table_info(group_cell)")}
+        if "meters" not in ccols:
+            c.execute("ALTER TABLE group_cell ADD COLUMN meters INTEGER"
                       " NOT NULL DEFAULT 0")
 
 
@@ -1009,6 +1016,9 @@ MAP_COLORS = ["#5EA0FF", "#3FA76A", "#E8C43A", "#F2555A", "#B98CF6",
               "#22D3EE", "#F5A524", "#FF7AB6", "#7DD3A0", "#C0C8D8"]
 # 一周 100 km 大概 200–300 格，600 是给「跑了两个马拉松 + 通勤」留的余量。
 MAX_CELLS = 600
+# 单格跑量上限。500 m 见方的一格，跑 50 km 已经是操场刷 100 圈的量级了，
+# 超过这个数只可能是脏数据——截断而不是拒收，免得一条坏数据废掉整批。
+CELL_M_MAX = 50000
 CELL_RE = re.compile(r"^-?\d{1,6}:-?\d{1,6}$")
 
 
@@ -1042,6 +1052,20 @@ def api_cells(me, gid: int, body: dict) -> dict:
         raise GroupError(400, "cells 要是数组")
     if len(raw) > MAX_CELLS:
         raise GroupError(400, f"一次最多 {MAX_CELLS} 格")
+    # 跑量是可选字段：老客户端（≤1.5.7）只发格子列表，那边 meters 就是 0，
+    # 服务端照收，地图退化成「跑过/没跑过」的样子，不会报错。
+    wraw = body.get("meters")
+    weights: dict[str, int] = {}
+    if isinstance(wraw, dict):
+        for k, v in wraw.items():
+            kk = str(k)
+            if not CELL_RE.match(kk):
+                continue
+            try:
+                weights[kk] = max(0, min(CELL_M_MAX, int(float(v))))
+            except (TypeError, ValueError):
+                continue
+
     cells: list[str] = []
     for x in raw:
         s = str(x)
@@ -1057,9 +1081,9 @@ def api_cells(me, gid: int, body: dict) -> dict:
         c.execute("DELETE FROM group_cell WHERE group_id=? AND week_start=? AND user_id=?",
                   (gid, wf.isoformat(), uid))
         c.executemany(
-            "INSERT OR IGNORE INTO group_cell(group_id,week_start,user_id,cell)"
-            " VALUES(?,?,?,?)",
-            [(gid, wf.isoformat(), uid, k) for k in cells])
+            "INSERT OR IGNORE INTO group_cell(group_id,week_start,user_id,cell,meters)"
+            " VALUES(?,?,?,?,?)",
+            [(gid, wf.isoformat(), uid, k, int(weights.get(k, 0))) for k in cells])
         # 只留最近 4 周：地图只看本周，旧格子留着没有用处，只是风险。
         cutoff = (wf - dt.timedelta(days=28)).isoformat()
         c.execute("DELETE FROM group_cell WHERE group_id=? AND week_start < ?",
@@ -1080,12 +1104,16 @@ def api_map(me, gid: int, query: dict) -> dict:
             " WHERE group_id=? AND status='active' ORDER BY joined_at, user_id",
             (gid,)).fetchall()
         rows = c.execute(
-            "SELECT user_id, cell FROM group_cell WHERE group_id=? AND week_start=?"
-            " ORDER BY user_id", (gid, wf.isoformat())).fetchall()
+            "SELECT user_id, cell, meters FROM group_cell"
+            " WHERE group_id=? AND week_start=? ORDER BY user_id",
+            (gid, wf.isoformat())).fetchall()
 
     by: dict[int, list[str]] = {}
+    bym: dict[int, dict[str, int]] = {}
     for r in rows:
-        by.setdefault(int(r["user_id"]), []).append(str(r["cell"]))
+        u = int(r["user_id"])
+        by.setdefault(u, []).append(str(r["cell"]))
+        bym.setdefault(u, {})[str(r["cell"])] = int(r["meters"] or 0)
 
     people = []
     for i, m in enumerate(mem):
@@ -1100,7 +1128,10 @@ def api_map(me, gid: int, query: dict) -> dict:
             continue
         people.append({"user_id": u, "alias": m["alias"],
                        "color": MAP_COLORS[i % len(MAP_COLORS)],
-                       "cells": cells, "is_me": u == uid})
+                       "cells": cells,
+                       # 每格跑量（米），和 cells 一一对应；老客户端不发就是全 0
+                       "meters": bym.get(u) or {},
+                       "is_me": u == uid})
     return {"ok": True, "from": wf.isoformat(), "to": wt.isoformat(),
             "people": people,
             "hidden": sum(1 for m in mem if not m["map_share"]),

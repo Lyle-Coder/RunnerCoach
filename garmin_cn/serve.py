@@ -1407,8 +1407,8 @@ class _Handler(SimpleHTTPRequestHandler):
         # 不是一条停在最后一幕、还在催他跑步的路线。
         if (st.get("season") or {}).get("ended"):
             return runsui.outcome_page(getattr(self.server, "group_token", ""),
-                                       G.run_outcome(gid))
-        return runsui.run_page(getattr(self.server, "group_token", ""), msg, st)
+                                       G.run_outcome(gid), gid)
+        return runsui.run_page(getattr(self.server, "group_token", ""), msg, st, gid)
 
     def _run_post(self, u) -> None:
         """远征的写接口。和小组页同一套「本机 + 页面令牌 + 303 回跳」。"""
@@ -1639,9 +1639,9 @@ class _Handler(SimpleHTTPRequestHandler):
                             if r.get("ok") and on:
                                 from . import explore as EX
 
-                                cells = EX.week_cells(_st)
-                                if cells:
-                                    G.push_cells(gid, cells)
+                                mm = EX.week_cell_meters(_st)
+                                if mm:
+                                    G.push_cells(gid, list(mm), mm)
                         finally:
                             _st.close()
                         msg = ("路线共享已打开" if on else "已关闭，格子已删除") \
