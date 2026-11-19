@@ -166,16 +166,32 @@ class Store:
     def upsert_daily(self, row: dict, merge: bool = False) -> None:
         """`merge=True` 只更新非 None 的列（高驰/佳明双源共用 daily 表时，
         一边缺的字段不能把另一边写过的值抹成 NULL）。Garmin 全量同步仍走
-        默认的整行覆盖，保证同源重拉时删掉的字段也会被清掉。"""
+        默认的整行覆盖，保证同源重拉时删掉的字段也会被清掉。
+
+        **高驰优先**：如果这天已经写过高驰的数据（raw 里带 rhr），佳明的整行
+        覆盖会降级成「只填空值」。原因是两条同步链路语义不同——高驰走 merge、
+        佳明走整行覆盖，谁后跑谁说了算；用户先同步高驰再同步佳明时，静息心率
+        会被佳明的值顶掉，看起来像「用错了数据源」。既然高驰是这位用户的主
+        设备，就以它为准。
+        """
         data = {k: row.get(k) for k in DAILY_COLS}
         if isinstance(data.get("raw"), (dict, list)):
             data["raw"] = json.dumps(data["raw"], ensure_ascii=False)
+        fill_only = False
+        if not merge and self._day_from_coros(str(data.get("date") or "")):
+            # 已有高驰数据：只补它没给的列，**不覆盖**它给过的
+            merge = fill_only = True
         if merge:
             cols = [c for c in DAILY_COLS if data.get(c) is not None]
             if not cols:
                 return
             cols = list(dict.fromkeys(["date"] + cols))
-            sets = [f"{c}=COALESCE(excluded.{c}, {c})" for c in cols if c != "date"]
+            if fill_only:
+                # COALESCE 顺序反过来才是「现有值优先」：
+                # COALESCE(当前, 新来) —— 有值就留着，空的才填。
+                sets = [f"{c}=COALESCE({c}, excluded.{c})" for c in cols if c != "date"]
+            else:
+                sets = [f"{c}=COALESCE(excluded.{c}, {c})" for c in cols if c != "date"]
             ph = ",".join("?" * len(cols))
             self.conn.execute(
                 f"INSERT INTO daily ({','.join(cols)}) VALUES ({ph}) "
@@ -194,6 +210,18 @@ class Store:
         )
         self.conn.commit()
 
+    def _day_from_coros(self, day: str) -> bool:
+        """这一天在库里是不是高驰写的（高驰的 raw 里必然有 rhr 键）。"""
+        if not day:
+            return False
+        try:
+            cur = self.conn.execute(
+                "SELECT raw FROM daily WHERE date=?", (day,)).fetchone()
+        except Exception:      # noqa: BLE001 - 老库没这张表时不该让同步挂掉
+            return False
+        if not cur:
+            return False
+        return '"rhr"' in str(cur["raw"] or "")
     def upsert_activity(self, row: dict) -> None:
         data = {k: row.get(k) for k in ACT_COLS}
         data["activity_id"] = str(data["activity_id"])
