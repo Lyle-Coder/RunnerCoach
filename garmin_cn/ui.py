@@ -237,8 +237,11 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
   border:1px solid var(--line);background:rgba(15,22,34,.72);color:var(--ink2);
   border-radius:999px;padding:0 16px;min-height:44px;font-size:14px;
   font-family:inherit;cursor:pointer}
-.btn.primary{background:linear-gradient(135deg,#3B82F6,#22D3EE);border-color:transparent;
-  color:#04121F;font-weight:650;box-shadow:0 8px 22px -10px rgba(59,130,246,.85)}
+/* 主按钮：品牌实色 + 白字（§4.6）。
+   原来是蓝→青渐变 + 深色字 + 蓝影，一屏几个就变成一片青光；
+   现在只靠实色和字重区分层级，一屏最多一个。 */
+.btn.primary{background:var(--brand);border-color:transparent;
+  color:var(--ink-inv);font-weight:600}
 .btn:active{opacity:.85}
 .empty{padding:20px 4px;font-size:14px;color:var(--muted);line-height:1.8}
 .link-act{display:inline-flex;align-items:center;min-height:44px;
@@ -265,15 +268,23 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .plan-hero .n{font-size:12px;color:var(--muted);margin-top:10px}
 .plan-hero .n + .n{margin-top:4px}
 .wk{display:flex;flex-direction:column;gap:7px}
-.wrow{display:flex;align-items:center;gap:11px;
-  background:linear-gradient(180deg,rgba(19,28,43,.88),rgba(14,21,33,.92));
-  border:1px solid var(--line);border-radius:14px;padding:11px 13px;box-shadow:var(--shadow)}
-.wrow .wd{flex:0 0 40px;font-size:12px;color:var(--muted)}
-.wrow .wb{flex:1;min-width:0;font-size:14px;font-weight:600;line-height:1.45}
+/* 周课表行：56px 日期列 + 内容 + 状态贴右。
+   日期列原来是 40px，「周二」两字加日期就装不下，中文被逐字折行、和卡片
+   重叠——设计语言 §4.8 记的就是这个 bug。56px 刚好放得下「周四」+「11/20」。 */
+.wrow{display:grid;grid-template-columns:56px minmax(0,1fr) auto;
+  align-items:center;column-gap:12px;
+  background:var(--surface);
+  border-radius:var(--r-2);padding:11px 13px;border:1px solid var(--line)}
+.wrow .wd{display:flex;flex-direction:column;gap:1px;white-space:nowrap;
+  font-size:14px;font-weight:600;color:var(--ink);line-height:1.3}
+.wrow .wd i{font-style:normal;font-size:11px;font-weight:400;color:var(--ink-3)}
+.wrow .wb{min-width:0;font-size:16px;font-weight:600;line-height:1.4}
 .wrow .wb em{display:block;font-style:normal;font-size:12px;color:var(--muted);
   font-weight:400;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.wrow.today{background:linear-gradient(90deg,rgba(59,130,246,.18),rgba(59,130,246,.04));
-  border-color:rgba(96,165,250,.34);box-shadow:0 0 24px -12px rgba(59,130,246,.9)}
+/* 今天这一行：左侧 3px 品牌条 + 抬升面。
+   原来是整行蓝渐变 + 蓝色外发光，成了页面里第二处发光（§2 P1 一页一处）。 */
+.wrow.today{background:var(--surface-2);border-color:var(--line-brand);
+  box-shadow:inset 3px 0 0 var(--brand)}
 .wrow.today .wd{color:var(--brand-ink)}
 .wrow .now{flex:0 0 auto;font-size:11px;color:#04121F;font-weight:700;
   background:linear-gradient(135deg,#3B82F6,#22D3EE);
@@ -358,6 +369,26 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .fold>summary .fx{margin-left:auto;color:var(--muted);transition:transform .15s}
 .fold[open]>summary .fx{transform:rotate(90deg)}
 /* 设置项一行一个：左边名字、右边控件，没有外框，只靠间距分组 */
+/* 分段控件：一条胶囊槽 + 选中块。一屏里两组（粒度 / 运动类型）用同一形态，
+   比两排散装 chip 更容易看出「这是单选」。 */
+.seg{display:flex;gap:3px;background:var(--surface-2);border-radius:var(--r-pill);
+  padding:3px;margin-bottom:8px}
+.seg a{flex:1 1 0;min-height:44px;display:flex;align-items:center;
+  justify-content:center;border-radius:var(--r-pill);text-decoration:none;
+  font-size:12px;color:var(--ink-2);white-space:nowrap;padding:0 6px}
+.seg a.ok{background:var(--surface-3);color:var(--ink);font-weight:600}
+/* 连续空周期合并行：虚线边一眼看出「这里没有数据但可以展开」，
+   实线会和真实数据行混在一起。 */
+.gap{margin:0 0 8px}
+.gap>summary{display:flex;align-items:center;justify-content:space-between;
+  gap:10px;min-height:44px;padding:0 13px;list-style:none;cursor:pointer;
+  border:1px dashed var(--line);border-radius:var(--r-2);
+  font-size:12px;color:var(--ink-3)}
+.gap>summary::-webkit-details-marker{display:none}
+.gap[open]>summary{border-style:solid;color:var(--ink-2)}
+.gap .gx{font-size:11px;color:var(--ink-3)}
+.gap[open] .gx{opacity:0}
+.gap .gi{padding:6px 13px;font-size:11px;color:var(--ink-3)}
 .setrow{display:flex;align-items:center;gap:10px;min-height:44px;
   border-bottom:1px solid var(--line2)}
 .setrow:last-of-type{border-bottom:0}
@@ -1590,7 +1621,11 @@ def plan_page(qs: dict | None = None) -> str:
             tag = '<span class="extra">计划外</span>'
         else:
             tag = ""
-        rows += f'<div class="{cls}"><span class="wd">{esc(d["dow"])}</span>{wb}{tag}</div>'
+        # 日期列「周四 / 11/20」两行：只写周几时，一眼看不出是哪一天
+        _dd = str(d.get("date") or "")[5:].replace("-", "/")
+        rows += (f'<div class="{cls}"><span class="wd">{esc(d["dow"])}'
+                 + (f'<i>{esc(_dd)}</i>' if _dd else "")
+                 + f'</span>{wb}{tag}</div>')
 
     src_label = "佳明日历" if r.get("source") == "calendar" else (r.get("name") or "教练计划")
     info = ('<div class="card">'
@@ -1832,16 +1867,21 @@ def plan_draft_page(token: str, message: str = "", draft: dict | None = None) ->
     for w in d.get("week") or []:
         its = w.get("items") or []
         if not its:
-            rows += (f'<div class="wrow rest"><span class="wd">{esc(w.get("dow"))}</span>'
-                     '<span class="wb">休息</span></div>')
+            # 日期列「周四 / 11-20」两行；只写周几看不出是哪天
+            _rd = str(w.get("date") or "")[5:].replace("-", "/")
+            rows += (f'<div class="wrow rest"><span class="wd">{esc(w.get("dow"))}'
+                     + (f"<i>{esc(_rd)}</i>" if _rd else "")
+                     + '</span><span class="wb">休息</span></div>')
             continue
         it = its[0]
         meta = " · ".join(x for x in (
             f'{it.get("km") or 0:g} km' if it.get("km") else "",
             f'{it.get("minutes")}′' if it.get("minutes") else "",
             it.get("detail") or "") if x)
-        rows += (f'<div class="wrow dwk"><span class="wd">{esc(w.get("dow"))}</span>'
-                 f'<span class="wb">{esc(it.get("name") or "训练")}'
+        _wd = str(w.get("date") or "")[5:].replace("-", "/")
+        rows += (f'<div class="wrow dwk"><span class="wd">{esc(w.get("dow"))}'
+                 + (f"<i>{esc(_wd)}</i>" if _wd else "")
+                 + f'</span><span class="wb">{esc(it.get("name") or "训练")}'
                  f'<em>{esc(meta)}</em></span></div>')
 
     reasons = "".join(
