@@ -18,20 +18,20 @@ App 里 WebView 已经加载着 `http://127.0.0.1:<port>/`，同源就能 POST�
 """
 from __future__ import annotations
 
+from . import design as D
+
 import datetime as dt
 import html as _h
 import json
 
-CSS = """
+CSS = D.TOKENS + D.ALIASES + """
 :root{
-  /* 与 ui.py 同一套深空 token：AI 页也走蓝青辉光，不在深色 App 里留一块白 */
-  --bg:#070B12; --card:#0F1622; --line:rgba(96,165,250,.16); --line-2:rgba(96,165,250,.09);
-  --ink:#E8F0FB; --ink-2:#B7C7DD; --muted:#7C8FA8; --faint:#4E6076;
-  --green:#3B82F6; --green-soft:rgba(59,130,246,.14);
-  --amber:#F5A524; --amber-soft:rgba(245,165,36,.14);
-  --red:#F2555A; --red-soft:rgba(242,85,90,.14);
-  --blue:#5EA0FF; --blue-soft:rgba(94,160,255,.14);
-  --cyan:#22D3EE;
+  /* 教练页曾经自带一份色板，和 ui.py 各写各的——已经漂过一次：
+     这里的 --faint 是 #4E6076，比主色板暗两档，副标题在教练页明显更糊。
+     现在统一引用 design.py，只留这几个历史别名。 */
+  --card:var(--surface);
+  --line-2:var(--line);
+  --green:var(--brand); --green-soft:var(--brand-soft);
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;color:var(--ink);
