@@ -100,7 +100,14 @@ def account_page(token: str, message: str = "", account: str = "",
 
 
 # ---------------------------------------------------------------- 组列表
-def groups_page(token: str, message: str = "") -> str:
+def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
+    """小组列表。
+
+    `force_list=True`（URL 带 `?list=1`）时**不做单组直达**。单组直达是为了
+    「点小组最想看排名」，但它把列表页整个跳过了——只加了一个组的用户
+    永远看不到「再加入一个 / 建组」的入口，从组详情点「全部小组」也会
+    立刻被弹回同一个组，看起来像按钮没反应。
+    """
     from . import account as AC, group as G
 
     st = AC.state()
@@ -132,7 +139,7 @@ def groups_page(token: str, message: str = "") -> str:
     items = r.get("groups") or []
     # 只有一个组就直接进详情：点「小组」最想看的是排名，而不是一行组名。
     # 组多了才需要「先选哪个」这一步，那时列表本身就有意义。
-    if len(items) == 1:
+    if len(items) == 1 and not force_list:
         try:
             return group_page(token, int(items[0]["id"]))
         except Exception:      # noqa: BLE001 - 详情页挂了也要能回到列表
@@ -186,7 +193,11 @@ def groups_page(token: str, message: str = "") -> str:
         # 别让它和「我的小组」抢版面。
         body = (msg
                 + sec("我的小组", '<div class="card">' + rows + '</div>')
-                + '<details class="fold"><summary>再加入一个，或者自己建一个'
+                # force_list 时默认展开：用户是从「加入另一个组」点进来的，
+                # 再折一次等于告诉他「这里没有」。
+                + ('<details class="fold fold-lg" open>' if force_list
+                   else '<details class="fold">')
+                + '<summary>再加入一个，或者自己建一个'
                   '<span class="fx">›</span></summary>'
                   + '<div class="flat">' + join_form + create_form + '</div></details>')
     else:
@@ -270,6 +281,13 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
             '<span>路线共享</span>'
             '<span class="note" style="flex:1 1 auto;margin:0">'
             '在足迹地图里开关</span><span class="chev">›</span></a>')
+    # 加入别的组 / 新建一个：只有 1 个组的人，`/groups` 会直接被他自己的组
+    # 接管，所以列表页那个入口永远看不到。这里给一条明确的路。
+    # 带 list=1 强制出列表，并且表单是展开的。
+    grp += ('<a class="setrow" href="/groups?list=1">'
+            '<span>全部小组</span>'
+            '<span class="note" style="flex:1 1 auto;margin:0">'
+            '加入别的组，或者新建一个</span><span class="chev">›</span></a>')
 
     body = (_msg(message)
             + sec("我的", '<div class="flat">' + mine + '</div>')
@@ -846,7 +864,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
         err = d.get("error") or "打不开这个组"
         body = (msg + f'<div class="card"><p class="note">{esc(err)}</p>'
                 '<div class="pager"><a class="btn" href="/groups">返回小组列表</a></div></div>')
-        return page("GROUP", "训练小组", "", body, back=("全部小组", "/groups"))
+        return page("GROUP", "训练小组", "", body, back=("全部小组", "/groups?list=1"))
 
     g = d["group"]
     role = g.get("role") or "member"
@@ -966,41 +984,44 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
         _se = _h.get("season") or G.season(gid, today)
     except Exception:      # noqa: BLE001 - 老服务端没有 /season，降级即可
         _se = {}
-    score_line = ""
-    shirt_row = ""
+    # ---- 核心数据卡：名次 + 分数 + 称号 / 六件衫徽章
+    # 原来是两行：一行「我 · 第 2 名 63.8 分 [先锋] ●黄衫 ●绿衫」，紧接着
+    # 又是一整行「黄衫·里程王 阿狗  ●绿衫·出勤王 阿狗 …」。六件衫各写一遍
+    # 榜名和得主，两行都在抢注意力，而且都没有容器收着。
+    # 现在：分数进卡的上半区，六件衫收成 6 枚 28px 圆徽章放下半区，
+    # 得主信息进 title 和点击后的榜单页。
+    score_card = ""
     if _se.get("ok") and (_se.get("people") or []):
         _me = _se.get("me") or {}
-
-        def _bits(shirts):
-            return "".join(
-                f'<span class="sbit">'
-                + _shirt_dot(str(x.get("color") or ""), str(x.get("pattern") or ""))
-                + f'{esc(x.get("name"))}</span>'
-                for x in (shirts or []))
-
+        _mine_names = {str(x.get("name") or "") for x in (_me.get("shirts") or [])}
         if _me:
+            _rk = int(_me.get("rank") or 0)
+            _sc = float(_me.get("score") or 0)
             _tt = str(_me.get("title") or "")
-            score_line = (
-                '<div class="sline">'
-                f'<span class="rk">我 · 第 {int(_me.get("rank") or 0)} 名</span>'
-                f'<b>{float(_me.get("score") or 0):g}<i>分</i></b>'
-                + (f'<span class="tt">{esc(_tt)}</span>' if _tt else "")
-                + _bits(_me.get("shirts"))
-                + "</div>")
-        win = []
-        for sh in _se.get("shirts") or []:
-            names = [str(w.get("alias") or "") for w in (sh.get("winners") or [])]
-            if names:
-                # 带上榜名：只写「黄衫 阿狗」的话，没看过规则的人不知道那是里程榜
-                win.append(f'<span class="sbit"><i style="background:'
-                           f'{esc(sh.get("color"))}"></i>{esc(sh.get("name"))}·'
-                           f'{esc(sh.get("title"))} {esc("/".join(names))}</span>')
-        if win:
-            # 衫得主不单独占一行，跟着下面「目标/结对/预言」一起进左对齐的表，
-            # 标签写「衫」。六件全有得主时这行会折两行，但左边永远对齐。
-            shirt_row = "".join(win)
-    if not score_line:
-        score_line = ""
+            _badges = ""
+            for sh in (_se.get("shirts") or []):
+                _on = str(sh.get("name") or "") in _mine_names
+                _nm = str(sh.get("name") or "")
+                _tl = str(sh.get("title") or "")
+                _who = "/".join(str(w.get("alias") or "")
+                                for w in (sh.get("winners") or []))
+                _tip = f"{_nm}·{_tl}" + (f" {_who}" if _who else " 暂时没人")
+                _pat = " pd" if sh.get("pattern") == "dots" else ""
+                _badges += (
+                    f'<i class="sbd{_pat}{" on" if _on else ""}" '
+                    f'style="--c:{esc(sh.get("color"))}" title="{esc(_tip)}" '
+                    f'aria-label="{esc(_tip)}"></i>')
+            score_card = (
+                f'<section class="scorecard">'
+                f'<div class="sc-top"><div class="sc-l">'
+                f'<span class="sc-k">我 · 第 {_rk} 名</span>'
+                f'<div class="sc-v">{_sc:g}<i>分</i></div></div>'
+                + (f'<span class="pill warn">{esc(_tt)}</span>' if _tt else "")
+                + '</div>'
+                f'<a class="sc-shirts" href="/groups/{gid}/shirts">'
+                f'<span class="sc-badges">{_badges}</span>'
+                f'<span class="sc-more">六件衫 ›</span></a></section>')
+    shirt_row = ""
 
     # ---- 本周玩法：目标 / 对子 / 预言
     # 一行放结论，改目标这种每周一次的动作折起来。榜单是每天看的，
@@ -1032,16 +1053,17 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
         _goal_km = _g.get("km")
         _suggest = float(_g.get("suggest") or 0)
 
-        # 标签列固定 30px，内容占满剩下的宽度
+        # 目标单独成一行入口（48pt）：它是每周一次的动作，混在四行表格里
+        # 既不像「可点」，也把「已跑多少」这种每天看的信息压成了灰字。
         if _goal_km:
             _hit = _done_km >= float(_goal_km)
-            rows.append(("目标", f'<b>{float(_goal_km):g}</b> km'
-                                 f'<s>已跑 {_done_km:.1f}</s>'
-                                 + ('<b class="hit">达成</b>' if _hit else "")))
+            _gsub = (f'已跑 {_done_km:.1f} / {float(_goal_km):g} km'
+                     + (" · 达成" if _hit else ""))
         elif _suggest:
-            rows.append(("目标", f'还没定 · 建议 <b>{_suggest:g}</b> km'))
+            _gsub = f'还没定 · 建议 {_suggest:g} km'
         else:
-            rows.append(("目标", "还没定"))
+            _gsub = "还没定"
+        _gtxt = f'目标 {float(_goal_km):g} km' if _goal_km else "定本周目标"
 
         _pair = next((p for p in (_wk.get("pairs") or [])
                       if _me_uid in (p["small"]["user_id"], p["big"]["user_id"])), None)
@@ -1073,9 +1095,13 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                       f'{esc(t["alias"])}</option>')
         _val = f'{float(_goal_km):g}' if _goal_km else (
             f'{_suggest:g}' if _suggest else "")
-        week_form = ('<details class="fold"><summary>定本周目标'
-                     + ("（可改）" if _goal_km else "")
-                     + '<span class="fx">›</span></summary>'
+        # 入口行：左「目标 30 km」+ 右副文「已跑 12.3 / 30 km」，点开才是表单。
+        # 48px 高、整行可点，和下面榜单条目同一节奏。
+        week_form = ('<details class="goalrow"><summary>'
+                     f'<span class="gk">{esc(_gtxt)}</span>'
+                     f'<span class="gs">{esc(_gsub)}</span>'
+                     '<span class="chev">›</span></summary>'
+                     '<div class="gbody">'
                      f'<form action="/__group/{gid}/goal" method="post">{_tok(token)}'
                      '<div class="setrow"><span>目标 km</span>'
                      f'<input type="number" name="km" min="1" max="1000" step="0.5" '
@@ -1085,7 +1111,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                      '<div class="pager"><button class="btn sm primary" type="submit">保存'
                      '</button></div></form>'
                      '<p class="note">目标用于结对让分和预言结算；填低一点也没关系，'
-                     '达成比好看重要。</p></details>')
+                     '达成比好看重要。</p></div></details>')
 
     # 「衫」那行内容是流式的（六件全有得主会折两行），要允许换行；
     # 其它行是单行结论，用省略号截断。
@@ -1140,7 +1166,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     # 顺序是刻意的——点「小组」第一眼要看到「我在组里第几」，然后才是这一周的
     # 玩法。P2 加了两块之后榜单被挤到第三屏，这条就破了，所以玩法块必须并进
     # 头部，而不是自己占一个 section。
-    head = score_line + week_line + quick + week_form
+    head = score_card + quick + week_form + week_line
 
     body = (msg
             + head
@@ -1154,4 +1180,4 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                 + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
                 body, chips, action=_gear,
                 foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
-                back=("全部小组", "/groups"))
+                back=("全部小组", "/groups?list=1"))

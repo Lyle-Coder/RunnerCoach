@@ -524,7 +524,9 @@ def manual_laps(laps: list[dict] | None, lap_m: float | None = None) -> bool:
     return km_like < len(laps) * 0.6
 
 
-CLIMB_REP_M = 8.0        # 单圈爬升 ≥ 8 m 才算「爬升组」
+CLIMB_REP_M = 8.0        # 绝对下限：低于这个的起伏不算爬升组
+CLIMB_REL = 0.4          # 相对判定：至少要达到「最大爬升圈」的 40%
+CLIMB_TAIL_M = 600.0     # 末段恢复圈的里程上限（避免把冷身 1 km 当成组间休息）
 CLIMB_MIN_SETS = 3       # 至少 3 组才认，两组的爬坡可能只是起伏
 
 
@@ -546,16 +548,28 @@ def climb_work_rest(segs: list[dict]) -> tuple[list[dict], list[dict]] | None:
     gains = [s.get("ele_gain") for s in segs]
     if not any(g is not None for g in gains):
         return None
-    idx = [i for i, s in enumerate(segs) if (s.get("ele_gain") or 0) >= CLIMB_REP_M]
+    # 阈值不能写死：下楼圈的气压噪声能到 8 m，正好等于旧阈值时会被当成
+    # 「第 5 组爬升」（2026-11-19 实测：4 趟 12 层，下楼圈 gain=8.0 被误判）。
+    # 改成相对判定——真正的爬升圈通常是下楼圈的 5–10 倍。
+    top = max((s.get("ele_gain") or 0) for s in segs)
+    thr = max(CLIMB_REP_M, top * CLIMB_REL)
+    idx = [i for i, s in enumerate(segs) if (s.get("ele_gain") or 0) >= thr]
     if len(idx) < CLIMB_MIN_SETS:
         return None
     # 只取「第一个爬升圈 ~ 最后一个爬升圈」之间：首尾是热身跑到场地、冷身跑回去，
     # 爬升很小，混进「恢复」会把 5 km 慢跑当成组间休息，汇总直接失真
     # （实测 10 圈 / 5.2 km 被算成恢复）。
     i0, i1 = idx[0], idx[-1]
+    # 末尾那一段下楼也是组间恢复，要收进来：最后一趟上楼之后就是下课，
+    # 但它紧接着的短圈（< 600 m）属于这组间歇的一部分，漏掉会少算一次恢复。
+    if i1 + 1 < len(segs):
+        nxt = segs[i1 + 1]
+        if ((nxt.get("ele_gain") or 0) < thr
+                and (nxt.get("dist_m") or 0) < CLIMB_TAIL_M):
+            i1 += 1
     core = segs[i0:i1 + 1]
-    work = [s for s in core if (s.get("ele_gain") or 0) >= CLIMB_REP_M]
-    rest = [s for s in core if (s.get("ele_gain") or 0) < CLIMB_REP_M]
+    work = [s for s in core if (s.get("ele_gain") or 0) >= thr]
+    rest = [s for s in core if (s.get("ele_gain") or 0) < thr]
     if not rest:
         return None
     rest_ids = {id(s) for s in rest}

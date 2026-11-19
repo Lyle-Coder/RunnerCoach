@@ -19,6 +19,8 @@ TOKENS = """
   --bg:#070B12; --surface:#0D141F; --surface-2:#111B29; --surface-3:#16233A;
   /* 发丝线：**白色透明，不用蓝**。蓝色描边会让整页像线框图 */
   --line:rgba(255,255,255,.065); --line-brand:rgba(96,165,250,.22);
+  /* 比 --line 再实一档的白：开关槽、输入框底这类「需要摸得到」的控件 */
+  --line-strong:rgba(255,255,255,.12);
   /* 文字：3 级。ink-3 也要过 4.5:1，暗屏下才读得清 */
   --ink:#E9F0F8; --ink-2:#A6B8CD; --ink-3:#7A8DA4; --ink-inv:#F2F7FF;
   /* 品牌 / 语义：主色只做关键动作、当前选中、数据强调，不做大面积背景 */
@@ -28,6 +30,9 @@ TOKENS = """
   --warn:#F5A524; --warn-soft:rgba(245,165,36,.10);
   --bad:#F2555A;  --bad-soft:rgba(242,85,90,.10);
   --blue:#5EA0FF; --blue-soft:rgba(94,160,255,.14);
+  /* 地图专用：多人共同跑过的格子（白）与波点衫的底色。
+     这两个不是界面色，是「图上的数据」，所以单列，别和 --surface 混用。 */
+  --map-shared:#F4F7FC;
   /* 字阶：8 档，一档一职责，相邻至少差 2px */
   --fs-dsp:32px; --fs-h1:24px; --fs-h2:20px; --fs-title:16px;
   --fs-lead:15px; --fs-body:14px; --fs-cap:12px; --fs-micro:11px;

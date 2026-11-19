@@ -50,7 +50,7 @@ CSS = """
 
 /* ---------- 状态条：士气 / 补给 / 行程 ---------- */
 .rbar{display:flex;align-items:center;gap:10px;padding:10px 13px;margin-top:16px;
-  border-radius:12px;background:rgba(15,22,34,.82);border:1px solid var(--line2)}
+  border-radius:14px;background:rgba(15,22,34,.82);border:1px solid var(--line2)}
 .rbar .it{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--ink2)}
 .rbar .it b{font-weight:600;font-variant-numeric:tabular-nums}
 .rbar .sep{width:1px;height:14px;background:var(--line);flex:0 0 auto}
@@ -78,7 +78,7 @@ CSS = """
 .route .gap{height:3px;border-radius:2px;background:var(--line2);overflow:hidden;margin-top:1px}
 .route .gap i{display:block;height:100%;border-radius:2px;
   background:linear-gradient(90deg,#3B82F6,#22D3EE)}
-.route .rm{font-size:10.5px;color:var(--faint);margin-top:7px}
+.route .rm{font-size:11px;color:var(--faint);margin-top:7px}
 
 /* ---------- 事件卡 ----------
    数据卡是「面板」，叙事卡是「纸条」：圆角更小、边更暗、左侧一道类型色。 */
@@ -98,11 +98,11 @@ CSS = """
 .ecard.relic .tag{background:rgba(201,139,75,.18);color:#DCA269}
 .ecard.done{opacity:.9}
 .ecard .in{padding:14px 15px 14px 18px}
-.ecard .tag{display:inline-block;font-size:10.5px;line-height:1.5;padding:1px 7px;
+.ecard .tag{display:inline-block;font-size:11px;line-height:1.5;padding:1px 7px;
   border-radius:4px;letter-spacing:.4px;background:rgba(94,160,255,.12);color:var(--brand-ink)}
 .ecard.fork .tag{background:rgba(201,139,75,.15);color:#DCA269}
 .ecard.trial .tag{background:rgba(34,211,238,.13);color:#5EE7F5}
-.ecard .when{margin-left:6px;font-size:10.5px;color:var(--faint)}
+.ecard .when{margin-left:6px;font-size:11px;color:var(--faint)}
 .ecard h3{margin:7px 0 0;font-size:15.5px;font-weight:600;line-height:1.4}
 .ecard.fork h3{font-size:16.5px}
 /* 衬线正文：故事用宋，数据用黑。行高放到 1.85——宋体笔画细，挤在一起读不动 */
@@ -111,7 +111,7 @@ CSS = """
   text-align:justify;text-justify:inter-ideograph}
 /* 选完之后的结论更暗、更短：是「回望」不是「继续」 */
 .ecard .res{margin:8px 0 0;font-family:"RC Serif",Georgia,"Songti SC",serif;
-  font-size:13px;line-height:1.72;color:var(--muted)}
+  font-size:14px;line-height:1.72;color:var(--muted)}
 .ecard .gain{margin-top:9px;display:flex;align-items:center;gap:6px;
   font-size:11.5px;color:#DCA269}
 
@@ -122,23 +122,23 @@ CSS = """
 .opt.on{background:rgba(59,130,246,.09);border-color:rgba(96,165,250,.28)}
 .opt:active{opacity:.72}
 .opt .tx{flex:1 1 auto;min-width:0}
-.opt .tx b{display:block;font-size:13.5px;font-weight:600;color:var(--ink)}
+.opt .tx b{display:block;font-size:14px;font-weight:600;color:var(--ink)}
 .opt .tx span{display:block;font-size:11.5px;color:var(--muted);margin-top:2px}
 .opt .ar{flex:0 0 auto;color:var(--faint);font-size:14px;line-height:1}
 /* 带天数成本的选项把代价标出来——「等一晚」的重点就是那一天 */
-.opt .cost{flex:0 0 auto;font-size:10.5px;color:var(--amber);
+.opt .cost{flex:0 0 auto;font-size:11px;color:var(--amber);
   padding:1px 6px;border-radius:4px;background:var(--amber-soft)}
 
 /* 试炼：两个按钮等宽。跑完了 / 没跑成都得报——不报不等于没跑 */
 .tbtns{display:flex;gap:8px;margin-top:11px}
 .tbtns button{flex:1 1 0;min-height:46px;border-radius:10px;font-family:inherit;
-  font-size:13px;cursor:pointer;border:1px solid var(--line2);
+  font-size:14px;cursor:pointer;border:1px solid var(--line2);
   background:rgba(19,28,43,.7);color:var(--ink2)}
 .tbtns button.ok{background:linear-gradient(135deg,#3B82F6,#22D3EE);
   border-color:transparent;color:#04121F;font-weight:600}
 .tbtns button:active{opacity:.75}
 .treq{display:flex;align-items:center;gap:7px;margin-top:9px;padding:8px 11px;
-  border-radius:8px;background:rgba(34,211,238,.07);
+  border-radius:10px;background:rgba(34,211,238,.07);
   border:1px solid rgba(34,211,238,.14);font-size:12px;color:#9FD9E4}
 /* 核验说明：一句话而已，但要放在按钮上面——点完才解释就成了借口 */
 .thint{margin-top:7px;font-size:11px;line-height:1.55;color:var(--faint)}
@@ -149,24 +149,24 @@ CSS = """
 .lev.failed{color:#F58C90}
 
 /* ---------- 受困 ---------- */
-.stuck{margin-top:14px;padding:13px 14px;border-radius:12px;
+.stuck{margin-top:14px;padding:13px 14px;border-radius:14px;
   background:rgba(242,85,90,.08);border:1px solid rgba(242,85,90,.26)}
-.stuck .t{font-size:13.5px;font-weight:600;color:#F58C90}
+.stuck .t{font-size:14px;font-weight:600;color:#F58C90}
 .stuck .d{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.6}
 .stuck button{margin-top:10px;margin-right:8px;min-height:44px;padding:0 16px;
   border-radius:999px;border:1px solid rgba(242,85,90,.34);
   background:rgba(242,85,90,.12);color:#F58C90;font-family:inherit;
-  font-size:13px;cursor:pointer}
+  font-size:14px;cursor:pointer}
 .stuck button:active{opacity:.72}
 
-.empty{text-align:center;padding:40px 16px;color:var(--muted);font-size:13px}
+.empty{text-align:center;padding:40px 16px;color:var(--muted);font-size:14px}
 .empty a{display:inline-block;margin-top:14px}
 
 /* ---------- 空态 ----------
    三种「打不开」要分开说：没登录、没队、连不上。混成一句「远征还没开始，
    xxx」的话，玩家不知道该去点哪儿——三种情况要办的事完全不同。 */
 .emp{padding:44px 6px 0;text-align:center}
-.emp h2{margin:0;font-size:22px;font-weight:650;letter-spacing:-.2px;
+.emp h2{margin:0;font-size:24px;font-weight:600;letter-spacing:-.2px;
   line-height:1.35;color:var(--ink)}
 .emp .pl{max-width:302px;margin:13px auto 0;text-align:left;
   font-family:"RC Serif",Georgia,"Songti SC",serif;font-size:14px;
@@ -190,7 +190,7 @@ SCENE_CSS = """
 /* 圆角 + 细边：这张图会被当成"图"，不是一条通栏色带。分享卡外面还有一层
    `.scene` 的更宽圆角，套着也不冲突。 */
 .escene{position:relative;width:100%;padding-top:35.48%;overflow:hidden;
-  border-radius:12px;border:1px solid rgba(120,150,190,.14)}
+  border-radius:14px;border:1px solid rgba(120,150,190,.14)}
 .escene .plate{position:absolute;left:0;top:0;width:100%;height:100%;
   object-fit:cover;display:block}
 .escene .prints{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
@@ -584,10 +584,10 @@ def run_page(token: str, message: str = "", data: dict | None = None,
     pct = max(0.0, min(100.0, frac * 100))
     left = st_target - st_team
     route = (f'<div class="route"><div class="rh">'
-             f'<span style="font-size:11.5px;font-weight:700;letter-spacing:1.4px;'
+             f'<span style="font-size:11.5px;font-weight:600;letter-spacing:1.4px;'
              f'color:var(--muted)">这一路</span>'
              f'<span style="font-size:11.5px;color:var(--muted)">这一段 '
-             f'<b style="color:var(--ink);font-size:13px">{st_team:g}</b>'
+             f'<b style="color:var(--ink);font-size:14px">{st_team:g}</b>'
              f' / {st_target:g} 格</span></div>'
              f'{route_svg(stops, act, frac)}'
              f'<div class="gap"><i style="width:{pct:.1f}%"></i></div>'
@@ -1025,8 +1025,8 @@ def _meta_line(morale: int, relics: int, members: int) -> str:
 END_CSS = """
 .endwrap{padding:6px 0 4px;text-align:center}
 .endsvg{width:100%;height:auto;display:block;margin:0 auto}
-.endk{margin-top:14px;font-size:10.5px;font-weight:700;letter-spacing:2px;color:var(--cyan)}
-.endh{margin:8px 0 0;font-size:26px;font-weight:650;letter-spacing:-.3px;line-height:1.3}
+.endk{margin-top:14px;font-size:11px;font-weight:600;letter-spacing:2px;color:var(--cyan)}
+.endh{margin:8px 0 0;font-size:26px;font-weight:600;letter-spacing:-.3px;line-height:1.3}
 .endl{margin-top:7px;font-size:12.5px;color:var(--muted)}
 /* 结局正文：整页最重的一段字，所以给它最宽的行距和最慢的颜色 */
 .endt{margin:17px auto 0;max-width:330px;text-align:left;
@@ -1036,7 +1036,7 @@ END_CSS = """
   text-align:left}
 .psh{display:flex;align-items:baseline;justify-content:space-between;gap:10px;
   margin-bottom:4px}
-.psh span{font-size:12px;font-weight:700;letter-spacing:1px;color:var(--ink2)}
+.psh span{font-size:12px;font-weight:600;letter-spacing:1px;color:var(--ink2)}
 .psh b{font-size:15px;font-weight:600;color:var(--ink);
   font-variant-numeric:tabular-nums;letter-spacing:-.2px}
 .psh b i{font-style:normal;font-size:10px;color:var(--faint);margin-left:2px}
@@ -1047,7 +1047,7 @@ END_CSS = """
 .ppl{padding:10px 0;border-bottom:1px solid var(--line2)}
 .ppl:last-of-type{border-bottom:0}
 .ppl .pr{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
-.ppl .pn{font-size:13.5px;font-weight:600;color:var(--ink2);
+.ppl .pn{font-size:14px;font-weight:600;color:var(--ink2);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ppl .pk{font-size:16px;font-weight:600;color:var(--ink);white-space:nowrap;
   font-variant-numeric:tabular-nums;letter-spacing:-.2px}
@@ -1056,7 +1056,7 @@ END_CSS = """
 .ppl .pk em{font-style:normal;font-size:12px;font-weight:400;color:var(--faint)}
 /* 我：名字换色 + 一个小标签。整行反白太重，结算页不需要一个「当前选中」 */
 .ppl.me .pn{color:var(--cyan)}
-.pme{margin-left:6px;font-size:9.5px;font-weight:700;color:#062028;
+.pme{margin-left:6px;font-size:9.5px;font-weight:600;color:#062028;
   background:var(--cyan);border-radius:4px;padding:1px 4px;vertical-align:1px}
 /* 最后没走出来：琥珀，不是红色。他不是失败，是还留在上面 */
 .pst{margin-left:6px;font-size:9.5px;font-weight:400;color:var(--faint)}
@@ -1065,15 +1065,15 @@ END_CSS = """
    而不是把整行撑出屏幕 */
 .ppl .ps{display:flex;align-items:center;flex-wrap:wrap;gap:4px 7px;
   margin-top:3px;min-height:15px}
-.ppl .pbg{font-size:10.5px;color:#F5C26B;background:rgba(245,165,36,.09);
-  border:1px solid rgba(245,165,36,.2);border-radius:99px;padding:1px 7px;
+.ppl .pbg{font-size:11px;color:#F5C26B;background:rgba(245,165,36,.09);
+  border:1px solid rgba(245,165,36,.2);border-radius:999px;padding:1px 7px;
   white-space:nowrap}
-.ppl .pd{font-size:10.5px;color:var(--faint);
+.ppl .pd{font-size:11px;color:var(--faint);
   font-variant-numeric:tabular-nums}
 .endacts{margin-top:22px;text-align:left}
 .ash{display:flex;align-items:baseline;justify-content:space-between;
-  padding-bottom:6px;font-size:10.5px;letter-spacing:1px;color:var(--faint)}
-.ash span:first-child{color:var(--muted);font-weight:700}
+  padding-bottom:6px;font-size:11px;letter-spacing:1px;color:var(--faint)}
+.ash span:first-child{color:var(--muted);font-weight:600}
 /* 局内数值压到页脚一行：能看见，但不是重点 */
 .pmeta{margin-top:16px;font-size:11px;color:var(--faint);
   letter-spacing:.3px;font-variant-numeric:tabular-nums}
@@ -1084,11 +1084,11 @@ END_CSS = """
   align-items:center;padding:9px 0;border-bottom:1px solid var(--line2);
   font-size:12px;color:var(--muted)}
 .arow:last-child{border-bottom:0}
-.arow .an{font-size:10.5px;color:var(--faint)}
+.arow .an{font-size:11px;color:var(--faint)}
 .arow .at{color:var(--ink2)}
 .arow .av{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink2)}
-.arow .av i{font-style:normal;color:var(--faint);font-size:10.5px}
-.arow .am{text-align:right;font-size:10.5px;color:var(--faint)}
+.arow .av i{font-style:normal;color:var(--faint);font-size:11px}
+.arow .am{text-align:right;font-size:11px;color:var(--faint)}
 .arow.ok .am{color:#5EE7F5}
 .arow.miss .at{color:var(--faint)}
 .arow.miss .av{color:var(--faint)}
