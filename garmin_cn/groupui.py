@@ -884,20 +884,20 @@ def shirts_page(token: str, gid: int, message: str = "") -> str:
         # 完整榜：服务端下发 rank（全组、按该项排序）；老服务端只有 top（前 3）
         rank = sh.get("rank") or sh.get("top") or []
 
+        # 收起态只显示得主：一个人名 + 成绩，最多三人并列（再多就省略）
         if winners:
             _w = next((x for x in rank if x.get("alias") in winners), {})
-            win = ('<div class="hon-w"><span class="kw">得主</span>'
-                   f'<b>{esc("/".join(winners))}</b>'
-                   + (f'<span class="kv">{esc(str(_w.get("text") or ""))}</span>'
-                      if _w else "")
-                   + '</div>')
+            _who = "/".join(winners[:3]) + ("…" if len(winners) > 3 else "")
+            _val = str((_w or {}).get("text") or "")
+            win = (f'<span class="hw"><b>{esc(_who)}</b>'
+                   + (f' · {esc(_val)}' if _val else "") + '</span>')
         elif rank:
             # 白衫要求「确实涨了」，一个没涨就不发——要说清为什么，而不是留白
-            _why = ("本周还没人比前 7 天跑得多" if _field == "progress"
-                    else "本周还没有数据")
-            win = (f'<div class="hon-w empty"><span class="kw">{_why}</span></div>')
+            _why = ("还没人比前 7 天跑得多" if _field == "progress"
+                    else "还没有数据")
+            win = f'<span class="hw">{_why}</span>'
         else:
-            win = ('<div class="hon-w empty"><span class="kw">本周还没有数据</span></div>')
+            win = '<span class="hw">还没有数据</span>'
 
         lis = ""
         for i, x in enumerate(rank, 1):
@@ -909,25 +909,29 @@ def shirts_page(token: str, gid: int, message: str = "") -> str:
                     f'<span class="v">{esc(str(x.get("text") or ""))}</span></li>')
         lis = f'<ol class="hlist">{lis}</ol>' if lis else ""
 
-        cards += ('<section class="hon">'
-                  '<div class="hon-h">'
+        cards += ('<details class="hon">'
+                  '<summary>'
                   + _jersey(_color, str(sh.get("pattern") or ""), True, "lg")
-                  + '<div class="hon-t">'
-                  + f'<h3>{esc(_title)}</h3>'
-                  + f'<p>{esc(sh.get("hint"))}</p></div>'
+                  + f'<span class="hn">{esc(_title)}</span>'
+                  + win
                   + f'<span class="hon-tag" style="--c:{esc(_color)}"><i></i>'
-                  + f'{esc(_name)}</span></div>'
-                  + win + lis + '</section>')
+                  + f'{esc(_name)}</span>'
+                  + '<span class="chev">›</span></summary>'
+                  + f'<div class="hbody"><p class="hint">{esc(sh.get("hint"))}</p>'
+                  + lis + '</div></details>')
 
-    intro = ('<p class="hintro">「衫」是公路自行车的说法：总成绩第一穿黄衫，'
-             '爬坡王穿红点衫。跑步组沿用了这套颜色——六个称号配六种颜色，'
-             '扫一眼就知道自己缺哪几件。</p>'
-             '<p class="hintro">每项只比一件事，第一名拿对应的颜色，一个人可以同时'
+    # 规则放前面（一屏之内只留最有用的两行），「衫」的来历折到最下面，
+    # 想看的人点一下就有——它是谈资，不是每次进来都要读一遍的东西。
+    intro = ('<p class="hintro">六项各比一件事，第一名拿对应的颜色，一个人可以同时'
              '拿几项。只算跑步类、只算本周；只有进步王例外，它比「最近 7 天 '
-             'vs 前 7 天」，不看日历周。</p>')
+             'vs 前 7 天」。</p>')
 
     body = (_msg(message) + intro
-            + sec("六项称号", cards)
+            + sec("六项称号", '<div class="honbox">' + cards + '</div>')
+            + '<details class="hwhy"><summary>为什么叫「衫」？</summary>'
+              '<p class="hintro">这个叫法借自公路自行车：总成绩第一穿黄衫，'
+              '爬坡王穿红点衫。跑步组沿用这套颜色——六个称号配六种颜色，'
+              '扫一眼就知道自己缺哪几件。</p></details>'
             + '<p class="note">关掉共享的人不参与。探索徽章（本周新踩 5 格）'
               '不占称号，单独发。</p>')
 
