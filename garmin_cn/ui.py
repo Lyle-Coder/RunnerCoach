@@ -386,6 +386,11 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .fold>summary::-webkit-details-marker{display:none}
 .fold>summary .fx{margin-left:auto;color:var(--muted);transition:transform .15s}
 .fold[open]>summary .fx{transform:rotate(90deg)}
+/* 展开态的「再加一个 / 建一个」是个入口标题，不是「更多」小尾巴：
+   提到正文档、改用正文色，并给下面卡片留出呼吸。 */
+.fold-lg>summary{font-size:var(--fs-body,14px);font-weight:600;color:var(--ink);
+  padding-bottom:8px}
+.fold-lg>summary .fx{color:var(--ink-3)}
 /* 设置项一行一个：左边名字、右边控件，没有外框，只靠间距分组 */
 /* 分段控件：一条胶囊槽 + 选中块。一屏里两组（粒度 / 运动类型）用同一形态，
    比两排散装 chip 更容易看出「这是单选」。 */

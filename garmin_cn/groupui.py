@@ -100,7 +100,14 @@ def account_page(token: str, message: str = "", account: str = "",
 
 
 # ---------------------------------------------------------------- 组列表
-def groups_page(token: str, message: str = "") -> str:
+def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
+    """小组列表。
+
+    `force_list=True`（URL 带 `?list=1`）时**不做单组直达**。单组直达是为了
+    「点小组最想看排名」，但它把列表页整个跳过了——只加了一个组的用户
+    永远看不到「再加入一个 / 建组」的入口，从组详情点「全部小组」也会
+    立刻被弹回同一个组，看起来像按钮没反应。
+    """
     from . import account as AC, group as G
 
     st = AC.state()
@@ -132,7 +139,7 @@ def groups_page(token: str, message: str = "") -> str:
     items = r.get("groups") or []
     # 只有一个组就直接进详情：点「小组」最想看的是排名，而不是一行组名。
     # 组多了才需要「先选哪个」这一步，那时列表本身就有意义。
-    if len(items) == 1:
+    if len(items) == 1 and not force_list:
         try:
             return group_page(token, int(items[0]["id"]))
         except Exception:      # noqa: BLE001 - 详情页挂了也要能回到列表
@@ -186,7 +193,11 @@ def groups_page(token: str, message: str = "") -> str:
         # 别让它和「我的小组」抢版面。
         body = (msg
                 + sec("我的小组", '<div class="card">' + rows + '</div>')
-                + '<details class="fold"><summary>再加入一个，或者自己建一个'
+                # force_list 时默认展开：用户是从「加入另一个组」点进来的，
+                # 再折一次等于告诉他「这里没有」。
+                + ('<details class="fold fold-lg" open>' if force_list
+                   else '<details class="fold">')
+                + '<summary>再加入一个，或者自己建一个'
                   '<span class="fx">›</span></summary>'
                   + '<div class="flat">' + join_form + create_form + '</div></details>')
     else:
@@ -270,6 +281,13 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
             '<span>路线共享</span>'
             '<span class="note" style="flex:1 1 auto;margin:0">'
             '在足迹地图里开关</span><span class="chev">›</span></a>')
+    # 加入别的组 / 新建一个：只有 1 个组的人，`/groups` 会直接被他自己的组
+    # 接管，所以列表页那个入口永远看不到。这里给一条明确的路。
+    # 带 list=1 强制出列表，并且表单是展开的。
+    grp += ('<a class="setrow" href="/groups?list=1">'
+            '<span>全部小组</span>'
+            '<span class="note" style="flex:1 1 auto;margin:0">'
+            '加入别的组，或者新建一个</span><span class="chev">›</span></a>')
 
     body = (_msg(message)
             + sec("我的", '<div class="flat">' + mine + '</div>')
@@ -846,7 +864,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
         err = d.get("error") or "打不开这个组"
         body = (msg + f'<div class="card"><p class="note">{esc(err)}</p>'
                 '<div class="pager"><a class="btn" href="/groups">返回小组列表</a></div></div>')
-        return page("GROUP", "训练小组", "", body, back=("全部小组", "/groups"))
+        return page("GROUP", "训练小组", "", body, back=("全部小组", "/groups?list=1"))
 
     g = d["group"]
     role = g.get("role") or "member"
@@ -1154,4 +1172,4 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                 + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
                 body, chips, action=_gear,
                 foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
-                back=("全部小组", "/groups"))
+                back=("全部小组", "/groups?list=1"))
