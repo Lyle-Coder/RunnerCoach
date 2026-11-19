@@ -639,7 +639,9 @@ i.pd:not(.sbd){background:var(--map-shared);
 /* 功能入口：4 列并列小图标。数据用行、功能用图标，两类东西形态不同才好扫。
    不加卡片边框——加了就是四张大卡片，占掉一行多的高度；这里要的是「一排
    应用图标」，主体应该是图标本身。 */
-.qgrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;
+/* 三列：六件衫从这个入口里去掉了（核心数据卡的徽章行就是它），
+   四个入口剩三个，还按四列排会在右边留一个空洞。 */
+.qgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;
   padding:4px 0 12px}
 .qg{display:flex;flex-direction:column;align-items:center;gap:5px;
   padding:7px 2px 5px;border-radius:14px;text-decoration:none;min-width:0}

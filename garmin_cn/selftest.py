@@ -1581,10 +1581,15 @@ def run() -> int:
     # 探索徽章不占衫：board 里够 5 格才在榜上标一句，不够就不标
     assert 'class="sub">新 12 格' in _gh, "够格的探索徽章没显示在榜上"
     assert 'class="sub">新 3 格' not in _gh, "不到 5 格也标了探索徽章"
-    # 功能入口：一排并列的图标，不再散在各处
+    # 功能入口：一排并列的图标，不再散在各处。
+    # 「六件衫」不在这一排——核心数据卡的徽章行（六件衫 N/6 ›）就是它的入口，
+    # 同一屏两个去同页的按钮属于重复。这里顺带守着「不要再加回来」。
     assert 'class="qgrid"' in _gh, "功能入口没有做成并列图标"
-    for _ic in ("六件衫", "Bingo", "足迹", "远征"):
+    for _ic in ("Bingo", "足迹", "远征"):
         assert f'class="qn">{_ic}</span>' in _gh, f"图标网格缺 {_ic}"
+    assert 'class="qn">六件衫</span>' not in _gh, \
+        "六件衫入口重复了：徽章行已经是它的入口"
+    assert 'class="sc-shirts"' in _gh and "六件衫 " in _gh, "徽章行不再是六件衫入口"
     assert '<div class="bgrid"' not in _gh, "Bingo 的 25 个格子被搬进组页了"
 
     # 信息顺序：点进小组第一眼要看到「我在组里第几」，然后才是玩法，
