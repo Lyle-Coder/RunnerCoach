@@ -1587,6 +1587,17 @@ def run() -> int:
     assert 'class="qgrid"' in _gh, "功能入口没有做成并列图标"
     for _ic in ("Bingo", "足迹", "远征"):
         assert f'class="qn">{_ic}</span>' in _gh, f"图标网格缺 {_ic}"
+    # 三格都要带一个数（icon 变大之后光有名字太空）；Bingo/远征有分母还要带条
+    assert _gh.count('class="qv"') == 3, "三格里没有都放数值"
+    # Bingo 一定有分母（0/25 也算），远征在 mock 里拿不到 run_state，会退化成
+    # 没有条的那一版——所以这里只守 Bingo 这条，别把断言写成 >= 2。
+    assert _gh.count('class="qb"') >= 1, "Bingo 格子没有进度条"
+    assert 'class="qi"' in _gh, "入口图标还是旧的 <i>，放大后的 .qi 没生效"
+    # 目标行在图标之后：首屏顺序是 卡片 → 三格 → 目标
+    assert (_gh.find('class="qgrid"') < _gh.find('class="goalrow"')), \
+        "目标行跑到功能图标上面去了"
+    # 邀请码复制：脚本必须在页面里，否则按钮点了没反应
+    assert "function gcCopy" in _gh, "组页没挂复制邀请码的脚本"
     assert 'class="qn">六件衫</span>' not in _gh, \
         "六件衫入口重复了：徽章行已经是它的入口"
     assert 'class="sc-shirts"' in _gh and "六件衫 " in _gh, "徽章行不再是六件衫入口"

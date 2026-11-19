@@ -15,6 +15,35 @@ import datetime as dt
 from .ui import esc, page, sec
 
 
+# 复制邀请码：**不能走 Kotlin 桥**（Bridge 里没有剪贴板动作，加一个就得重打 APK），
+# 所以用 WebView 认的老办法：造一个隐藏 textarea + execCommand('copy')，
+# 它必须在用户手势里同步执行，所以直接挂在 onclick 上，不做异步。
+# navigator.clipboard 只有 https/localhost 才是安全上下文，file:// 下多半没有，只作兜底。
+_COPY_JS = """<script>
+function gcCopy(btn, txt){
+  var t = document.createElement('textarea');
+  t.value = txt; t.setAttribute('readonly', '');
+  t.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+  document.body.appendChild(t);
+  t.select(); t.setSelectionRange(0, txt.length);
+  var ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(t);
+  if (!ok && navigator.clipboard) { navigator.clipboard.writeText(txt); ok = true; }
+  var old = btn.getAttribute('data-t') || btn.textContent;
+  btn.setAttribute('data-t', old);
+  btn.textContent = ok ? '已复制' : '请长按选中';
+  btn.disabled = true;
+  setTimeout(function(){ btn.textContent = old; btn.disabled = false; }, 1400);
+}
+</script>"""
+
+
+def _with_copy(html: str) -> str:
+    """给页面挂上 gcCopy。脚本贴在 </body> 前，只挂用得着的页面。"""
+    return html.replace("</body>", _COPY_JS + "</body>", 1)
+
+
 def _msg(message: str) -> str:
     if not message:
         return ""
@@ -254,8 +283,13 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
 
     grp = ""
     if is_admin and g.get("invite_code"):
+        _code = esc(g["invite_code"])
+        # 「复制」放前面、「换一个」放后面：发码是高频动作，换码一年一次。
+        # 换码是 POST 表单（会作废旧码），所以它仍然得留在 form 里。
         grp += (f'<div class="setrow"><span>邀请码</span>'
-                f'<b style="letter-spacing:1.2px;font-size:13px">{esc(g["invite_code"])}</b>'
+                f'<b style="letter-spacing:1.2px;font-size:13px">{_code}</b>'
+                '<button class="btn sm" type="button" '
+                f'onclick="gcCopy(this,\'{_code}\')">复制</button>'
                 f'<form action="/__group/{gid}/rotate" method="post">{_tok(token)}'
                 '<button class="btn sm" type="submit">换一个</button></form></div>')
     # 转让：只有组长能转，而且是可逆的（转回来就行），所以放在普通设置里，
@@ -294,11 +328,12 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
             + sec("组", '<div class="flat">' + grp + '</div>')
             + '<p class="note">组里只收每日里程合计和活动概要；轨迹、配速、'
               '位置都不上传。关掉共享之后，这些数据在组内立刻不可见。</p>')
-    return page("GROUP", "小组设置",
-                f'{esc(g.get("name"))} · '
-                + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
-                body, foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
-                back=("返回小组", f"/groups/{gid}"))
+    return _with_copy(page(
+        "GROUP", "小组设置",
+        f'{esc(g.get("name"))} · '
+        + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
+        body, foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+        back=("返回小组", f"/groups/{gid}")))
 
 
 # ---------------------------------------------------------------- Bingo
@@ -917,11 +952,23 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     hidden = int(b.get("hidden") or 0)
     # 一个人对着排行榜跟自己比：一条数据 + 半屏空白。这不是「空位」，
     # 是页面没告诉用户下一步干什么。直接换成一句状态 + 一个邀请入口。
+    # 一个人组：榜单照常渲染（自己那一行也有信息量——里程、天数），
+    # 只是在后面补一段「把码发出去」。原来直接把榜整块换成空态，
+    # 用户一进来看不到「本周榜」只剩一句提示，观感像页面坏了。
     if _n <= 1:
-        rank_rows = ('<p class="note">本周还没有队友上榜。把邀请码发给他们，'
-                     '下次上报就会出现在这里。</p>'
-                     f'<div class="pager"><a class="btn sm primary" '
-                     f'href="/groups/{gid}/settings">邀请队友</a></div>')
+        _code = str(g.get("invite_code") or "")
+        if _code:
+            rank_rows += ('<p class="note">本周还没有队友上榜。把邀请码发出去，'
+                          '他们加入并上报后就会排在这里。</p>'
+                          '<div class="invrow">'
+                          f'<span class="iv">{esc(_code)}</span>'
+                          '<button class="btn sm" type="button" '
+                          f'onclick="gcCopy(this,\'{esc(_code)}\')">复制邀请码</button>'
+                          '</div>')
+        else:
+            rank_rows += ('<p class="note">本周还没有队友上榜。</p>'
+                          f'<div class="pager"><a class="btn sm primary" '
+                          f'href="/groups/{gid}/settings">邀请队友</a></div>')
     elif not rank_rows:
         rank_rows = '<p class="note">本周还没有人上报。打开 App 才会同步，不跑后台任务。</p>'
     if hidden:
@@ -1165,17 +1212,56 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     # 六件衫**不在这里**：上面那张核心数据卡的徽章行本身就是它的入口
     # （`六件衫 1/6 ›`），同一屏放两个去同一页的按钮，等于让人选「点哪个」。
     # 徽章在那儿还是看得见的状态，比一个文字图标信息量大。
-    _qg: list[tuple[str, str, str, str]] = [
-        ("⊞", "Bingo", f"/groups/{gid}/bingo", ""),
-        ("⌖", "足迹", f"/groups/{gid}/map", ""),
-        ("◭", "远征", f"/run?gid={gid}", ""),
+    #
+    # 三格空着太浪费，每格补一句「这一周正在发生什么」：
+    # Bingo 点了几格、足迹新踩几格、远征走到本段第几格。
+    # 都不多要接口：Bingo 在 /home 的 week 里，足迹在 season 的 me.explorer，
+    # 只有远征要单独问一次 run_state（失败就退化成纯图标，不影响整页）。
+    _bg = (_wk.get("bingo") or {}) if isinstance(_wk, dict) else {}
+    _bd, _bt = int(_bg.get("done") or 0), int(_bg.get("total") or 25)
+    _bl = int(_bg.get("lines") or 0)
+    # 足迹用**全组**本周新踩的格子数：一个人这周常跑老路线，自己的数经常是 0，
+    # 「0 格」看着像坏了。组内合计才是这个入口（组足迹地图）真正在讲的事。
+    _ex = sum(int(x.get("explorer") or 0) for x in (_se.get("people") or []))
+    _rs = {}
+    try:
+        _rs = G.run_state(gid, today) or {}
+    except Exception:      # noqa: BLE001 - 远征挂了不该让组页打不开
+        _rs = {}
+    _rse = _rs.get("season") or {}
+    _rpg = _rs.get("progress") or {}
+    _act = int(_rse.get("act") or 0)
+    _st = float(_rpg.get("stage_team") or 0)
+    _stt = float(_rpg.get("stage_target") or 0)
+
+    def _tile(icon: str, name: str, href: str, val: str, sub: str,
+              frac: float | None = None) -> str:
+        # 没有分母的格子（足迹）不画条：画一条没有意义的条比不画更糟。
+        # 但它要加 .nobar 让内容垂直居中，否则三格里只有它顶在上面、底下空一块。
+        bar = (""
+               if frac is None else
+               f'<span class="qb"><i style="width:{max(0.0, min(100.0, frac * 100)):.0f}%">'
+               '</i></span>')
+        cls = "qg nobar" if frac is None else "qg"
+        return (f'<a class="{cls}" href="{href}"><i class="qi" aria-hidden="true">{icon}</i>'
+                f'<span class="qn">{esc(name)}</span>'
+                f'<span class="qv">{esc(val)}</span>'
+                f'<span class="qs">{esc(sub)}</span>{bar}</a>')
+
+    _tiles = [
+        _tile("⊞", "Bingo", f"/groups/{gid}/bingo",
+              f"{_bd}/{_bt}", f"{_bl} 条线", _bd / _bt if _bt else None),
+        _tile("⌖", "足迹", f"/groups/{gid}/map", f"{_ex} 格", "全组本周新踩"),
+        # 远征的主数用「第几幕」而不是「6.3/2.4 格」：刚开赛时本段目标很小
+        # （2.4 格），一跑就超过，比分式显示成 6.3/2.4 像是算错了。
+        # 进度条按 min(1, 走/目标) 封顶，超了就满格。
+        (_tile("◭", "远征", f"/run?gid={gid}",
+               f"第 {_act} 幕", f"本段 {_st:g} 格", min(1.0, _st / _stt))
+         if _stt > 0 else
+         _tile("◭", "远征", f"/run?gid={gid}", f"第 {_act} 幕" if _act else "去看看",
+               "本周远征")),
     ]
-    # 只留图标 + 名字，不挂进度数字：挂上去以后「Bingo 12/25·1线」比别的项长出
-    # 一截，四格宽度一样但视觉上不齐，反而更乱。进度点进去看。
-    quick = ('<div class="qgrid">' + "".join(
-        f'<a class="qg" href="{href}"><i aria-hidden="true">{icon}</i>'
-        f'<span class="qn">{esc(name)}</span></a>'
-        for icon, name, href, _ in _qg) + "</div>")
+    quick = '<div class="qgrid">' + "".join(_tiles) + "</div>"
 
     # ---- 大家的动态：组页只放最近几条，全部在 /feed
     # 只给概要（类型/距离/时长/爬升），不出图——活动图是「我的」那边的东西，
@@ -1204,9 +1290,11 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     # 顺序是刻意的——点「小组」第一眼要看到「我在组里第几」，然后才是这一周的
     # 玩法。P2 加了两块之后榜单被挤到第三屏，这条就破了，所以玩法块必须并进
     # 头部，而不是自己占一个 section。
-    # 目标行提到四个图标之前：它是这一周唯一要「做一个决定」的事，
-    # 图标只是去别处的入口，优先级低于它。
-    head = score_card + week_form + quick + week_line
+    # 顺序：卡片 → 三个入口 → 目标 → 结对/预言。
+    # 目标行原来在这排图标上面，试了一版之后放回来：目标是一行“输入”，
+    # 夹在卡片和图标之间会把首屏切成「数据 / 表单 / 入口」三段，
+    # 三个入口连成一条反而更像一组功能。
+    head = score_card + quick + week_form + week_line
 
     body = (msg
             + head
@@ -1215,9 +1303,10 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                   more=more)
             + sec("赛事", '<div class="flat">' + ch_rows + '</div>' + chal_fold)
             + feed_sec)
-    return page("GROUP", g.get("name") or "小组",
-                f'{int(g.get("member_count") or 0)} 人 · '
-                + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
-                body, chips, action=_gear,
-                foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
-                back=("全部小组", "/groups?list=1"))
+    return _with_copy(page(
+        "GROUP", g.get("name") or "小组",
+        f'{int(g.get("member_count") or 0)} 人 · '
+        + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
+        body, chips, action=_gear,
+        foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+        back=("全部小组", "/groups?list=1")))
