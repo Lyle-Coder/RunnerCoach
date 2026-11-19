@@ -1363,6 +1363,15 @@ def api_season(me, gid: int, query: dict) -> dict:
     this_w: dict[int, list[dict]] = {u: [] for u in keep}
     prev_w: dict[int, list[dict]] = {u: [] for u in keep}
     weeks: dict[int, set] = {u: set() for u in keep}
+    # 进步（白衫 + 赛季分里的 15 分）用**滚动 7 天对 7 天**，不按日历周：
+    # 窗口终点是今天，不是周日。本周四拿 4 天的里程去比上周整周 7 天，
+    # 分母永远是 7，全组都显示 -60% 上下（线上实测 -62%），白衫就废了。
+    r_end = min(today, wt)
+    n = ranking.PROGRESS_WINDOW_DAYS
+    r_a0 = r_end - dt.timedelta(days=n - 1)          # 最近 7 天
+    r_b1 = r_a0 - dt.timedelta(days=1)
+    r_b0 = r_b1 - dt.timedelta(days=n - 1)           # 再往前 7 天
+    roll_km: dict[int, list[float]] = {u: [0.0, 0.0] for u in keep}
     for r in rows:
         u = int(r["user_id"])
         if u not in keep:
@@ -1377,6 +1386,14 @@ def api_season(me, gid: int, query: dict) -> dict:
             this_w[u].append(dict(r))
         elif pf.isoformat() <= d <= pt.isoformat():
             prev_w[u].append(dict(r))
+        try:
+            d0 = dt.date.fromisoformat(d[:10])
+        except ValueError:
+            continue
+        if r_a0 <= d0 <= r_end:
+            roll_km[u][0] += float(r["distance_m"] or 0) / 1000.0
+        elif r_b0 <= d0 <= r_b1:
+            roll_km[u][1] += float(r["distance_m"] or 0) / 1000.0
 
     # 实际里程按本周已上报的算。预言里「没上报」就是 0 km，会被判没完成——
     # 这是服务端唯一的态度：只信上报。
@@ -1387,7 +1404,8 @@ def api_season(me, gid: int, query: dict) -> dict:
 
     out = ranking.build(this_w, prev_w,
                         {u: len(weeks[u]) for u in keep}, aliases,
-                        bonus=pres["bonus"])
+                        bonus=pres["bonus"],
+                        roll_by_user={u: (v[0], v[1]) for u, v in roll_km.items()})
     out["ok"] = True
     out["from"] = wf.isoformat()
     out["to"] = wt.isoformat()

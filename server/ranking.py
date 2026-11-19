@@ -34,9 +34,15 @@ BONUS_MAX = 10.0
 # 不排名、不占衫——跑步的人不该因为住在路网密的老城就吃亏。
 EXPLORE_MIN_CELLS = 5
 
-# 白衫的参与门槛：上周不到 10 km 不参评。上周跑了 1 km、这周跑 5 km
-# 是 400% 的进步，但那是刚开始跑，不该把练了一整年的人挤掉。
+# 白衫的参与门槛：基数（前 7 天 / 上周）不到 10 km 不参评。基数只有 1 km、
+# 现在跑 5 km 是 400% 的进步，那是刚开始跑，不该把练了一整年的人挤掉。
 PROGRESS_MIN_PREV_KM = 10.0
+
+# 进步的对照窗口：滚动 7 天对 7 天，**不按日历周**。
+# 为什么改：拿「本周至今」比「上周整周」，周一只过了 1 天、周四过了 4 天，
+# 分母永远是 7 天，全组都显示 -40% ~ -85%（实测线上 -62%），白衫基本发不出去，
+# 15 分的进步项也恒为 0。改成两个等长窗口之后，任何一天算出来都可比。
+PROGRESS_WINDOW_DAYS = 7
 
 # 单次爬升与爬升密度上限（防刷）。日报表是日汇总，没有单次数据，
 # 所以按「爬升 / 里程 ≤ 200 m/km」在入口处截断，比事后抓作弊省事。
@@ -57,7 +63,7 @@ SHIRTS = [
      "color": "#D8DEE9", "unit": "m", "hint": "本周累计爬升",
      "pattern": "dots"},
     {"id": "white", "name": "白衫", "title": "进步王", "field": "progress",
-     "color": "#F2F5FA", "unit": "%", "hint": "比上周多跑了多少"},
+     "color": "#F2F5FA", "unit": "%", "hint": "最近 7 天比前 7 天多跑了多少"},
     {"id": "red", "name": "红衫", "title": "计划完成王", "field": "plan_rate",
      "color": "#D9534F", "unit": "%", "hint": "有课的日子里完成了多少"},
     {"id": "blue", "name": "蓝衫", "title": "连续王", "field": "streak",
@@ -119,8 +125,13 @@ def streak_days(rows: list[dict]) -> int:
     return best
 
 
-def metrics(rows: list[dict], prev_rows: list[dict]) -> dict:
-    """一周的原始指标。rows / prev_rows 都是按日期升序的日报表。"""
+def metrics(rows: list[dict], prev_rows: list[dict],
+            roll: tuple[float, float] | None = None) -> dict:
+    """一周的原始指标。rows / prev_rows 都是按日期升序的日报表。
+
+    `roll = (最近 7 天 km, 前 7 天 km)` 专门给「进步」用：不传时退回
+    「本周 vs 上周」，但那个口径在周内是失真的（见 PROGRESS_WINDOW_DAYS）。
+    """
     km = sum(_f(r.get("distance_m")) for r in rows) / 1000.0
     elev = sum(_f(r.get("elevation_m")) for r in rows)
     days = sum(1 for r in rows if int(_f(r.get("acts"))) > 0)
@@ -132,9 +143,13 @@ def metrics(rows: list[dict], prev_rows: list[dict]) -> dict:
     prev_km = sum(_f(r.get("distance_m")) for r in prev_rows) / 1000.0
     # 进步：上周不到门槛就 None（不参评），而不是 0（等于垫底）。
     # 这两种在页面上差很多：前者没份，后者是「你很烂」。
+    if roll is None:
+        cur_km, base_km = km, prev_km
+    else:
+        cur_km, base_km = float(roll[0]), float(roll[1])
     progress = None
-    if prev_km >= PROGRESS_MIN_PREV_KM:
-        progress = round((km - prev_km) / prev_km, 4)
+    if base_km >= PROGRESS_MIN_PREV_KM:
+        progress = round((cur_km - base_km) / base_km, 4)
     return {
         "km": round(km, 1),
         "elev": int(round(elev)),
@@ -374,7 +389,8 @@ def build(rows_by_user: dict[int, list[dict]],
           prev_by_user: dict[int, list[dict]],
           weeks_by_user: dict[int, int] | None = None,
           aliases: dict[int, str] | None = None,
-          bonus: dict[int, float] | None = None) -> dict:
+          bonus: dict[int, float] | None = None,
+          roll_by_user: dict[int, tuple[float, float]] | None = None) -> dict:
     """把一周的原始日报表算成「每人一行 + 衫 + 名次 + 探索徽章」。
 
     `rows_by_user` 的 key 是 user_id，值是这一周的日报表；`prev_by_user`
@@ -387,8 +403,10 @@ def build(rows_by_user: dict[int, list[dict]],
     weeks_by_user = weeks_by_user or {}
     bonus = bonus or {}
     all_m: dict[int, dict] = {}
+    roll_by_user = roll_by_user or {}
     for uid, rows in rows_by_user.items():
-        all_m[uid] = metrics(rows, prev_by_user.get(uid) or [])
+        all_m[uid] = metrics(rows, prev_by_user.get(uid) or [],
+                             roll=roll_by_user.get(uid))
 
     maxes = _maxes(list(all_m.values()))
     shirt_win = shirts(all_m)
