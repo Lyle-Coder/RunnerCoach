@@ -638,6 +638,15 @@ def main() -> int:
     st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, c3)
     check("非成员看不了动态（403）", st == 403, f"{st} {r}")
 
+    # 转让组长：设置页那个下拉用到的接口
+    st, r = req("POST", f"/v1/group/{gid}/transfer", {"user_id": _uid_b}, a)
+    check("组长可以转让", st == 200, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}", None, b)
+    check("转让后对方变成组长",
+          (r.get("group") or {}).get("role") == "owner", f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/transfer", {"user_id": _uid_a}, b)
+    check("再转回来", st == 200, f"{st} {r}")
+
     # ---------------- 组内路线图
     print("\n11c. 组内路线图（只传格子，不传轨迹）")
     st, r = req("GET", f"/v1/group/{gid}/map?today=2026-11-18", None, a)

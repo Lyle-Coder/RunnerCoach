@@ -235,6 +235,15 @@ def main() -> int:
     _p3.write_text(_sh, encoding="utf-8")
     print(f"{_p3}  {len(_sh)} 字节")
 
+    _st2 = GU.settings_page("TOK", GID)
+    for prefix, sub in (("/content/", "garmin_cn/content"),):
+        _st2 = _st2.replace(f'"{prefix}', f'"{ (ROOT / sub).as_uri()}/')
+    _st2 = _st2.replace("</body>", '<style>html{background:#05080d}'
+                                   'body{width:420px;margin:0;padding:0 14px}</style></body>')
+    _p4 = OUT / "settings.html"
+    _p4.write_text(_st2, encoding="utf-8")
+    print(f"{_p4}  {len(_st2)} 字节")
+
     for _name, _html in (("feed", GU.feed_page("TOK", GID)),
                          ("feedone", GU.feed_page("TOK", GID, "", 3))):
         for prefix, sub in (("/content/", "garmin_cn/content"),):
