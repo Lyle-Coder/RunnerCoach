@@ -640,19 +640,38 @@ i.pd:not(.sbd){background:var(--map-shared);
    不加卡片边框——加了就是四张大卡片，占掉一行多的高度；这里要的是「一排
    应用图标」，主体应该是图标本身。 */
 /* 三列：六件衫从这个入口里去掉了（核心数据卡的徽章行就是它），
-   四个入口剩三个，还按四列排会在右边留一个空洞。 */
-.qgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;
+   四个入口剩三个，还按四列排会在右边留一个空洞。
+   三列之后每格有 110px 宽，光放一个 34px 图标太空——所以每格升级成
+   「图标 + 名字 + 一个数 + 一条进度」，它才有资格占掉这一屏的高度。 */
+.qgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;
   padding:4px 0 12px}
-.qg{display:flex;flex-direction:column;align-items:center;gap:5px;
-  padding:7px 2px 5px;border-radius:14px;text-decoration:none;min-width:0}
-.qg:active{background:var(--brand-soft)}
+.qg{display:flex;flex-direction:column;align-items:center;gap:4px;
+  padding:12px 6px 10px;border-radius:var(--r-2);text-decoration:none;min-width:0;
+  min-height:118px;background:var(--surface);border:1px solid var(--line)}
+.qg:active{background:var(--surface-2)}
+/* 没有进度条的格子：内容垂直居中，不然三格里只有它顶在上面、底下空一块 */
+.qg.nobar{justify-content:center}
 /* 入口图标：和 .row .ic 同一套（--surface-2 + 品牌色字形）。
    原来是青→蓝渐变 + 内发光，四个方块在暗底上像四盏小灯。 */
-.qg i{width:34px;height:34px;border-radius:var(--r-1);display:flex;align-items:center;
-  justify-content:center;font-size:16px;font-style:normal;
+.qg .qi{width:40px;height:40px;border-radius:var(--r-2);display:flex;align-items:center;
+  justify-content:center;font-size:20px;font-style:normal;
   background:var(--surface-2);color:var(--brand-ink);border:1px solid var(--line)}
 .qg .qn{font-size:12px;font-weight:600;color:var(--ink-2);white-space:nowrap;
   max-width:100%;overflow:hidden;text-overflow:ellipsis}
+/* 数值和说明：一格只说一件事（Bingo 12/25 · 1 线 / 足迹 23 格 / 远征 128/240）。
+   数值 15 而不是 14——它比标签高一档，扫一眼先看到数。 */
+.qg .qv{margin-top:2px;font-size:var(--fs-lead,15px);font-weight:600;color:var(--ink);
+  line-height:1.1;font-variant-numeric:tabular-nums;white-space:nowrap}
+.qg .qs{font-size:var(--fs-micro,11px);color:var(--ink-3);white-space:nowrap}
+/* 进度条：只在「有分母」的格子里出现（Bingo / 远征）。它比再写一行字便宜，
+   而且三个格子高度靠 min-height 对齐，有没有条都不影响。 */
+.qg .qb{width:100%;height:3px;border-radius:2px;background:var(--line);
+  margin-top:auto;overflow:hidden}
+.qg .qb>i{display:block;height:100%;background:var(--brand);border-radius:2px}
+/* 邀请码 + 复制：空榜那一块要能直接把码发出去，不用先钻进设置页 */
+.invrow{display:flex;align-items:center;gap:10px;margin-top:10px}
+.invrow .iv{font-size:var(--fs-lead,15px);font-weight:600;letter-spacing:1.6px;
+  color:var(--ink);font-variant-numeric:tabular-nums}
 /* 动态：一行一条。左色点认人，中间类型+距离，右边日期和评论数。
    没有缩略图——这一栏按设计就是概要，给不出活动图。 */
 .frow{display:grid;grid-template-columns:8px minmax(0,auto) minmax(0,1fr) auto auto;
