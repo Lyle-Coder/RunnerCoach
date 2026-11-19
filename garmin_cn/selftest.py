@@ -1364,6 +1364,16 @@ def run() -> int:
 
     # 简洁模式要连「小组」tab 一起藏。GONE 而不是删 view：tabRoots / tabIcons
     # 是按 TAB_* 索引取的，删了会全线错位。
+    # 返回键必须逐级上退，不能一步跳回「今日」——足迹页按返回飞回首页
+    # 是用户报的问题，根因就是 nativeBack 里缺 /groups 分支
+    assert 'path.startsWith("/groups/")' in _kt5, \
+        "返回键没有处理小组二级页，会直接跳回今日"
+    _nb = _kt5.split("private fun nativeBack()")[1].split("private fun isTabRoot")[0]
+    assert "/groups/${seg[1]}/feed" in _nb, "动态详情的上一级不是动态列表"
+    assert '"/groups/${seg[1]}"' in _nb, "小组二级页的上一级不是组详情"
+    assert "/groups" in _nb and "loadUrl" in _nb, "组详情的上一级不是组列表"
+    assert 'path.startsWith("/run")' in _nb, "远征页没有回到它所属的小组"
+
     assert "private fun applySimpleTabs()" in _kt5 and "View.GONE" in _kt5, \
         "简洁模式没有隐藏小组 tab 的逻辑"
     assert 'apiCall("simple_state")' in _kt5, \

@@ -845,8 +845,8 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     if not d.get("ok"):
         err = d.get("error") or "打不开这个组"
         body = (msg + f'<div class="card"><p class="note">{esc(err)}</p>'
-                '<div class="pager"><a class="btn" href="/groups">返回小组</a></div></div>')
-        return page("GROUP", "训练小组", "", body, back=("返回小组", "/groups"))
+                '<div class="pager"><a class="btn" href="/groups">返回小组列表</a></div></div>')
+        return page("GROUP", "训练小组", "", body, back=("全部小组", "/groups"))
 
     g = d["group"]
     role = g.get("role") or "member"
@@ -1154,4 +1154,4 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                 + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
                 body, chips, action=_gear,
                 foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
-                back=("返回小组", "/groups"))
+                back=("全部小组", "/groups"))
