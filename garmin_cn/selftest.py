@@ -1554,17 +1554,30 @@ def run() -> int:
     assert "/alias" in _set and "/rotate" in _set, "设置页表单没接上接口"
     assert "/groups/1/map" in _set, "设置页没有路线共享入口"
 
-    # ---- P2：本周玩法（衫 / 目标 / 结对 / 预言）
-    # 四行必须是「标签 + 内容」两列对齐：以前是四段各写各的流式文字，
-    # 语序都不一样，看着乱。
-    assert 'class="kvrows"' in _gh, "本周四行没有用对齐表格"
-    for _k in ("衫", "目标", "结对", "预言"):
+    # ---- 核心数据卡：名次 + 分数 + 称号 + 六件衫徽章
+    # 原来「我·第N名」和「衫得主」是两条独立的长行，谁也收不住谁；
+    # 现在合进一张卡：分数在上半区，六件衫是下半区的 6 枚圆徽章。
+    assert 'class="scorecard"' in _gh, "没有核心数据卡"
+    assert 'class="sc-v"' in _gh and "分</i>" in _gh, "分数没进核心卡"
+    assert _gh.count('class="sbd') == 6, \
+        f"六件衫应该是 6 枚徽章，实际 {_gh.count('class="sbd')} 枚"
+    assert 'class="sc-shirts"' in _gh and "/shirts" in _gh, "徽章组不是进六件衫榜单的入口"
+
+    # ---- 目标：独立入口行，不再是四行表格里的一行
+    assert 'class="goalrow"' in _gh, "目标没有做成独立入口行"
+    assert 'class="gk"' in _gh and 'class="gs"' in _gh, "目标入口缺主文或副文"
+    assert "定本周目标" in _gh or "目标 30" in _gh, "目标入口没写清是定还是改"
+
+    # ---- 结对 / 预言：仍是「标签 + 内容」两列对齐
+    assert 'class="kvrows"' in _gh, "结对/预言没有用对齐表格"
+    for _k in ("结对", "预言"):
         assert f'<span class="k">{_k}</span>' in _gh, f"「{_k}」那行没有标签列"
-    assert ">30</b> km" in _gh, "本周目标没在页面上显示"
+    assert "目标 30" in _gh, "本周目标没在页面上显示"
     assert "我 30" in _gh, "结对让分没显示出来"
     assert "完不成" in _gh, "我投的预言没回显"
     assert 'name="predict"' in _gh, "没有预言选择框"
-    assert "定本周目标" in _gh, "报目标表单没折叠"
+    # 目标入口是 details：summary 那行常驻，表单点开才出现
+    assert '<details class="goalrow">' in _gh, "目标入口不是可展开的"
     # 探索徽章不占衫：board 里够 5 格才在榜上标一句，不够就不标
     assert 'class="sub">新 12 格' in _gh, "够格的探索徽章没显示在榜上"
     assert 'class="sub">新 3 格' not in _gh, "不到 5 格也标了探索徽章"
