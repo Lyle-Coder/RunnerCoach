@@ -1350,6 +1350,17 @@ def run() -> int:
 
     # 底部导航：小组必须是一个 tab，且排在教练后面（第 3 位）。
     # 用户明确否掉了「顶栏右上角一枚胶囊」——那个位置既不像入口也不像按钮。
+    # 静息心率口径：高驰取睡眠期最低，空白处要标出来，不然每个高驰用户
+    # 都会拿高驰 App 首页那个「醒来时」的值来问一遍
+    from garmin_cn import ui as _UI
+
+    assert "睡眠期" in _UI._rhr_sub(50, "", "coros"), "高驰来源没标「睡眠期」"
+    assert "睡眠期" not in _UI._rhr_sub(50, "", "garmin"), \
+        "佳明来源不该标「睡眠期」（它取全天最低 30 分钟）"
+    assert "28 天基线 50" in _UI._rhr_sub(50, "", ""), "基线没拼进去"
+    _coros_src = (ROOT / "garmin_cn/coros.py").read_text(encoding="utf-8")
+    assert "数值字段" in _coros_src, "诊断没 dump dayDetail 的数值字段"
+
     _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert 'arrayOf("今日", "教练", "小组", "历史", "我的")' in _kt5, \
         "底部导航没有把「小组」放进去"
