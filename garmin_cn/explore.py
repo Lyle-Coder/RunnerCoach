@@ -215,6 +215,68 @@ def week_cells(store, today: str | None = None, min_m: float = 1000.0) -> list[s
     return out
 
 
+def cluster_cells(cells: list[str], step: float = 0.5) -> list[list[str]]:
+    """把格子按 0.5° 网格（约 55 km）聚成几片，格子多的片排前面。
+
+    为什么必须分片：跨省的组塞进一张图时，取景要装下 900 km，zoom 只能给到
+    5 级——392 px 宽覆盖一千公里，500 m 的格子剩零点几个像素，图上什么都
+    看不见。分片之后每片各自按城市级取景，格子才画得出来。
+
+    用网格 + 连通域而不是按距离两两比：600 个格子两两算是 36 万次，而按
+    0.5° 分桶再做 8 邻域合并是 O(n)，效果一样——同城的人本来就在相邻桶里。
+    """
+    if not cells:
+        return []
+    buckets: dict[tuple[int, int], list[str]] = {}
+    for c in cells:
+        try:
+            lat, lon = cell_center(c)
+        except (AttributeError, ValueError):
+            continue
+        buckets.setdefault((int(lat // step), int(lon // step)), []).append(c)
+    if not buckets:
+        return []
+
+    parent = {k: k for k in buckets}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i, j in list(buckets):
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                nb = (i + di, j + dj)
+                if nb in parent:
+                    ra, rb = find((i, j)), find(nb)
+                    if ra != rb:
+                        parent[rb] = ra
+
+    groups: dict[tuple[int, int], list[str]] = {}
+    for k, v in buckets.items():
+        groups.setdefault(find(k), []).extend(v)
+    return sorted(groups.values(), key=len, reverse=True)
+
+
+def span_km(cells: list[str]) -> float:
+    """这批格子在地理上跨了多少公里（对角线）。用来判断要不要分片。"""
+    pts = []
+    for c in cells:
+        try:
+            pts.append(cell_center(c))
+        except (AttributeError, ValueError):
+            continue
+    if len(pts) < 2:
+        return 0.0
+    lats = [p[0] for p in pts]
+    lons = [p[1] for p in pts]
+    dy = (max(lats) - min(lats)) * 111.0
+    dx = (max(lons) - min(lons)) * 111.0 * math.cos(math.radians(sum(lats) / len(lats)))
+    return math.hypot(dx, dy)
+
+
 def total_cells(store) -> int:
     """账本里一共有多少格。只用于诊断，不上报。"""
     with store.conn:

@@ -1573,6 +1573,40 @@ def run() -> int:
     assert "2 我 9.0 km" in _shp_html, "衫页没列第 2 名"
     assert "本周没有数据" in _shp_html, "没数据的衫（圆点衫）没给出说明"
 
+    # ---- 跨省的分片：一张图装不下 900 km，格子会缩成看不见的点
+    from garmin_cn import basemap as _BM
+    from garmin_cn import explore as _EX
+
+    _xa = ["7597:24229", "7599:24231"]
+    _hb = ["25435:35172", "25437:35174"]
+    assert len(_EX.cluster_cells(_xa + _hb)) == 2, "跨省的格子没有被分成两片"
+    assert len(_EX.cluster_cells(_xa + ["7598:24230"])) == 1, "同城的格子被拆成多片"
+    assert _EX.span_km(_xa + _hb) > 500, "跨省跨度算错了"
+    assert _EX.span_km(_xa) < 50, "同城跨度算错了"
+
+    _bme = _BM.ensure
+    _gmd = _GP.map_data
+    try:
+        _BM.ensure = lambda *a, **k: None       # 不联网，走无底图回退路径
+        _GP.map_data = lambda gid, today=None: {
+            "ok": True, "from": "2026-11-16", "to": "2026-11-22", "hidden": 0,
+            "cells": 4,
+            "people": [
+                {"user_id": 1, "alias": "我", "color": "#5EA0FF",
+                 "cells": _xa, "is_me": True},
+                {"user_id": 2, "alias": "远方的人", "color": "#3FA76A",
+                 "cells": _hb, "is_me": False}]}
+        _mh = _GU.map_page("TOK", 1)
+    finally:
+        _BM.ensure = _bme
+        _GP.map_data = _gmd
+
+    assert _mh.count('class="shard-h"') == 2, "跨省没有分片成两张图"
+    assert _mh.count('class="card gmapcard"') == 2, "分片的卡片数不对"
+    # 每片一条图例；多出来的那条就是修复前那个「对不上任何一张图」的全局图例
+    assert _mh.count('class="lgi"') == 2, \
+        f"图例数不对（{_mh.count('class="lgi"')} 条），可能又套了一层全局图例"
+
     # 动态：组页只给最近几条 + 入口；详情页有表情按钮和留言框
     assert "大家的动态" in _gh and f"/groups/1/feed" in _gh, "组页没有动态区"
     assert 'class="frow"' in _gh, "组页动态没有按行渲染"
