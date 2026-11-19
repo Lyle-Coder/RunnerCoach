@@ -572,6 +572,9 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
   font-weight:600;color:var(--ink-2);background:var(--surface-2);
   border:1px solid var(--line)}
 .hon-tag i{width:6px;height:6px;border-radius:50%;background:var(--c)}
+/* 探索徽章那行不是衫：图标是「虚线方框 + 定位点」，和六件衫区分开。
+   边框画在 SVG 里（虚线描边），不是 CSS border——这样和衣服图标同尺寸对齐。 */
+.hon .jx{width:30px;height:30px;flex:0 0 auto;color:var(--brand-ink)}
 /* 完整榜：人少，全部列出来。每行 32px，比自己那行用品牌色标出来 */
 .hlist{list-style:none;margin:2px 0 0;padding:0}
 .hlist li{display:flex;align-items:center;gap:9px;min-height:32px;

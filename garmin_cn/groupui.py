@@ -920,11 +920,53 @@ def shirts_page(token: str, gid: int, message: str = "") -> str:
                   + f'<div class="hbody"><p class="hint">{esc(sh.get("hint"))}</p>'
                   + lis + '</div></details>')
 
+    # ---- 探索徽章：不占称号，但**必须看得见**。
+    # 服务端一直在下发 `explore.badges`（谁够 5 格），客户端以前只在榜单行
+    # 后面缀一句「新 N 格」，荣誉页正文里根本没提——脚注写着「单独发」，
+    # 却没有任何地方显示谁拿到了。现在补一行，和六项用同一套折叠行。
+    _ex = se.get("explore") or {}
+    _min_cells = int(_ex.get("min_cells") or 5)
+    _ex_rows = sorted(
+        ((int(p2.get("user_id") or 0), str(p2.get("alias") or ""),
+          int(p2.get("explorer") or 0)) for p2 in (se.get("people") or [])),
+        key=lambda x: -x[2])
+    _hit = [r for r in _ex_rows if r[2] >= _min_cells]
+    if _ex_rows:
+        _top_cells = _ex_rows[0][2]
+        _hw = (f'{len(_hit)} 人 · 最多 {_top_cells} 格' if _hit
+               else f'还没人够 {_min_cells} 格')
+        _lis = ""
+        for i, (u, a, c) in enumerate(_ex_rows, 1):
+            cls = "me" if u == me_uid else ("win" if c >= _min_cells else "")
+            _lis += (f'<li{" class=" + chr(34) + cls + chr(34) if cls else ""}>'
+                     f'<span class="n">{i}</span>'
+                     f'<span class="a">{esc(a)}</span>'
+                     f'<span class="v">{c} 格</span></li>')
+        # 图标用 SVG 画（虚线方框 + 定位点）：字形「⌖」在 15px 上糊成一个小点，
+        # 看不出「换地方跑」这件事。
+        _jx = ('<svg class="jx" viewBox="0 0 24 24" aria-hidden="true">'
+               '<rect x="1.6" y="1.6" width="20.8" height="20.8" rx="6" fill="none"'
+               ' stroke="rgba(255,255,255,.26)" stroke-width="1.2"'
+               ' stroke-dasharray="3 2.4"/>'
+               '<circle cx="12" cy="12" r="2.1" fill="currentColor"/>'
+               '<path d="M12 5.4v2.2M12 16.4v2.2M5.4 12h2.2M16.4 12h2.2"'
+               ' stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>')
+        cards += ('<details class="hon hon-x"><summary>'
+                  + _jx +
+                  '<span class="hn">探索徽章</span>'
+                  f'<span class="hw">{_hw}</span>'
+                  '<span class="hon-tag">额外</span>'
+                  '<span class="chev">›</span></summary>'
+                  f'<div class="hbody"><p class="hint">本周新踩 {_min_cells} 个 '
+                  '500 米的格子就算达标，不占称号。跑步路线换得多才有。</p>'
+                  f'<ol class="hlist">{_lis}</ol></div></details>')
+
     # 规则放前面（一屏之内只留最有用的两行），「衫」的来历折到最下面，
     # 想看的人点一下就有——它是谈资，不是每次进来都要读一遍的东西。
-    intro = ('<p class="hintro">六项各比一件事，第一名拿对应的颜色，一个人可以同时'
-             '拿几项。只算跑步类、只算本周；只有进步王例外，它比「最近 7 天 '
-             'vs 前 7 天」。</p>')
+    # 首屏只有两行：一屏要装下六项称号 + 探索徽章，说明文字越长越挤。
+    # 「进步王为什么例外」放进那一项的展开态（hint 里已经写了口径）。
+    intro = ('<p class="hintro">六项各比一件事，第一名拿对应颜色，可以同时拿几项。'
+             '只算跑步类、只算本周。</p>')
 
     body = (_msg(message) + intro
             + sec("六项称号", '<div class="honbox">' + cards + '</div>')
@@ -932,11 +974,13 @@ def shirts_page(token: str, gid: int, message: str = "") -> str:
               '<p class="hintro">这个叫法借自公路自行车：总成绩第一穿黄衫，'
               '爬坡王穿红点衫。跑步组沿用这套颜色——六个称号配六种颜色，'
               '扫一眼就知道自己缺哪几件。</p></details>'
-            + '<p class="note">关掉共享的人不参与。探索徽章（本周新踩 5 格）'
-              '不占称号，单独发。</p>')
+            + '<p class="note">关掉共享的人不参与。探索徽章不占称号，'
+              '单独列在最后一行。</p>')
 
     mine = (se.get("me") or {})
     got = [str(s2.get("title") or "") for s2 in (mine.get("shirts") or [])]
+    if int(mine.get("explorer") or 0) >= _min_cells:
+        got.append("探索徽章")
     sub = ("我拿到 " + "、".join(got)) if got else "本周还没拿到"
     return _with_copy(page("GROUP", "本周荣誉", sub, body,
                            foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
