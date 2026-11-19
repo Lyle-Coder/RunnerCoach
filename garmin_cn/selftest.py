@@ -1722,8 +1722,10 @@ def run() -> int:
     assert '"pattern": "dots"' in _rk, "圆点衫没标波点图案，会和白衫撞成两个白点"
     assert 'if pattern == "dots"' in (ROOT / "garmin_cn/groupui.py").read_text(
         encoding="utf-8"), "客户端没给圆点衫画波点的分支"
-    assert "i.pd{" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
-        "没有 i.pd 的样式，圆点衫画不出波点"
+    # 选择器必须排除 .sbd：六件衫徽章也是 i.sbd.pd 这类形状，不排除的话
+    # 波点会被画到「没拿到」的空心徽章上（1/6 却显示 6 件衫全有）。
+    assert "i.pd:not(.sbd){" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
+        "没有 i.pd（排除 .sbd）的样式，圆点衫画不出波点"
 
     # Bingo：25 格、中心免费、易中难各 8。这三条一变，页面上那 5×5 就歪了。
     import sys as _sys
