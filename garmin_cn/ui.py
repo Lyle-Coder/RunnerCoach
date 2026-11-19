@@ -50,10 +50,11 @@ a{color:var(--brand-ink);text-decoration:none}
   min-height:44px;padding:0 2px;
   font-size:12px;color:var(--brand-ink);text-decoration:none}
 .back:active{opacity:.6}
-/* 页头只用一道渐隐的蓝线收尾，比整条实线更像仪表面板 */
-.page-head{padding:20px 0 15px;margin-bottom:4px;position:relative;
-  background:linear-gradient(90deg,rgba(59,130,246,.60),rgba(34,211,238,.12) 46%,transparent)
-    bottom / 100% 1px no-repeat}
+/* 页头不再画收尾横线。
+   原来用一道「蓝→青→透明」的 1px 渐变线给仪表盘收边，但页头下面紧跟着
+   就是卡片：卡片自己有发丝线边框，再叠一条蓝渐变线，两条线相距 19px，
+   看着像一条没对齐的分隔符。而且那条是蓝色的，和发丝线不是一套语言。 */
+.page-head{padding:20px 0 15px;margin-bottom:4px;position:relative}
 .page-head.after-back{padding-top:14px}
 /* 页头不再挂右上角动作按钮：0.6.13 起一图流归到「我的」页的低频动作里。
    page() 的 action 参数仍留给二级页，首页不再传它。 */
@@ -91,6 +92,10 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
 .pill.bad{color:var(--bad);background:var(--bad-soft);border-color:rgba(242,85,90,.28)}
 /* 虚线灰：计划外、跳过这类「有这件事但不算计划内」的状态 */
 .pill.mute{color:var(--ink-3);background:transparent;border:1px dashed rgba(148,163,184,.38)}
+/* 中性胶囊：既不是状态也不是动作，只是「几个并列的选项」（今日建议、
+   筛选条件）。用灰边灰字，别和表示状态的彩色胶囊抢注意力。 */
+.pill.ghost{color:var(--ink-2);background:rgba(255,255,255,.025);
+  border-color:rgba(255,255,255,.09)}
 /* 实心品牌色：只给「今天」这种唯一的当前项，一屏最多一个 */
 .pill.brand{color:var(--ink-inv);background:var(--brand);border-color:transparent}
 .sec{margin-top:24px}
@@ -1221,7 +1226,7 @@ def home_page() -> str:
         if _t and len(_t) <= 8 and _t not in _pills:
             _pills.append(_t)
     advice = ('<div class="rc-advice"><b>今日建议</b>' + "".join(
-        f'<span class="pill run">{esc(x)}</span>' for x in _pills[:3]) + "</div>")
+        f'<span class="pill ghost">{esc(x)}</span>' for x in _pills[:3]) + "</div>")
     hero = (f'<section class="rc-panel rc-hero-panel">'
             f'<div class="rc-hero"><div class="rc-hero-main">'
             f'<div class="rc-hero-t"><i class="rc-dot {_tone}"></i>'
