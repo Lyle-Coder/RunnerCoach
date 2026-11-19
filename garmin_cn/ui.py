@@ -367,11 +367,18 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .rank:last-child{border-bottom:0}
 .rank .no{flex:0 0 22px;font-size:12px;color:var(--muted);
   font-variant-numeric:tabular-nums}
-.rank .nm{flex:1 1 auto;min-width:0;font-size:14px;color:var(--ink2);
+/* 名字不再吃掉全部剩余宽度：flex 让名字紧贴图标，里程用 margin-left:auto 顶到右边。
+   之前 .nm 是 1 1 auto，图标被推到最右侧，看着像「名字和徽章各在一头」。 */
+.rank .nm{flex:0 1 auto;min-width:0;font-size:14px;color:var(--ink2);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rank .sub{font-size:11px;color:var(--muted);margin-left:5px}
-.rank .km{flex:0 0 auto;font-size:14px;font-weight:600;color:var(--ink);
-  font-variant-numeric:tabular-nums}
+/* 名字后面的标记位：只放图形（衫 + 探索徽章），不放文字。
+   单独一层是为了不参与 .nm 的省略号——名字太长时截名字，图标不能被截掉。 */
+.rank .mk{flex:0 0 auto;display:flex;align-items:center;gap:3px}
+/* 15px：比名字的字号略大一点，才能在 14px 的字旁边看出是件衣服 */
+.rank .jr{width:15px;height:15px}
+.rank .km{flex:0 0 auto;margin-left:auto;font-size:14px;font-weight:600;
+  color:var(--ink);font-variant-numeric:tabular-nums}
 /* 单位不省：「42.3」单独一行是跑量还是配速、是公里还是英里，全靠猜。
    数字用 600，单位退成 11px 的 --ink-3——单位是注解，不是数据。 */
 .rank .km i{font-style:normal;font-size:var(--fs-micro,11px);font-weight:400;

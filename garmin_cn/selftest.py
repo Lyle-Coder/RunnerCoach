@@ -1562,8 +1562,12 @@ def run() -> int:
     # 现在合进一张卡：分数在上半区，六件衫是下半区的 6 枚圆徽章。
     assert 'class="scorecard"' in _gh, "没有核心数据卡"
     assert 'class="sc-v"' in _gh and "分</i>" in _gh, "分数没进核心卡"
-    assert _gh.count('class="jsh') == 6, \
-        f"荣誉徽章应该是 6 件衫，实际 {_gh.count('class="jsh')} 件"
+    # 只数核心卡里那 6 件：周榜行现在也挂小号衫图标，全页数会数多
+    _i_sc = _gh.find('class="sc-badges"')
+    _j_sc = _gh.find("</a></section>", _i_sc)
+    _sc_block = _gh[_i_sc:_j_sc] if _i_sc >= 0 and _j_sc > _i_sc else ""
+    assert _sc_block.count('class="jsh') == 6, \
+        f"荣誉徽章应该是 6 件衫，实际 {_sc_block.count('class="jsh')} 件"
     assert 'class="sc-shirts"' in _gh and "/shirts" in _gh, "徽章组不是进六件衫榜单的入口"
 
     # ---- 目标：独立入口行，不再是四行表格里的一行
@@ -1581,9 +1585,10 @@ def run() -> int:
     assert 'name="predict"' in _gh, "没有预言选择框"
     # 目标入口是 details：summary 那行常驻，表单点开才出现
     assert '<details class="goalrow">' in _gh, "目标入口不是可展开的"
-    # 探索徽章不占衫：board 里够 5 格才在榜上标一句，不够就不标
-    assert 'class="sub">新 12 格' in _gh, "够格的探索徽章没显示在榜上"
-    assert 'class="sub">新 3 格' not in _gh, "不到 5 格也标了探索徽章"
+    # 探索徽章不占衫：board 里够 5 格才在名字后面挂一枚虚线方框图标。
+    # 夹具里队友 12 格、我 3 格，所以只该有 1 枚。
+    assert _gh.count('title="探索徽章"') == 1, \
+        f"榜上的探索徽章图标数量不对：{_gh.count('title="探索徽章"')}"
     # 功能入口：一排并列的图标，不再散在各处。
     # 「六件衫」不在这一排——核心数据卡的徽章行（六件衫 N/6 ›）就是它的入口，
     # 同一屏两个去同页的按钮属于重复。这里顺带守着「不要再加回来」。
@@ -1617,6 +1622,11 @@ def run() -> int:
     assert _gh.find('class="qgrid"') < _i_rank, "功能图标被排到榜单后面了"
     assert "/map" in _gh and "足迹" in _gh, "组页没有组内足迹入口"
 
+    # 周榜名字后面只挂图形：衫 + 探索徽章。四段小字（我/组长/N 天/新 N 格）
+    # 全删了——一屏十几行时它就是注脚，而且徽章本来就有形状。
+    assert 'class="mk"' in _gh, "周榜名字后面没有挂徽章图标"
+    for _bad in ('class="sub">我', 'class="sub">组长', 'class="sub">新', ' 天</span>'):
+        assert _bad not in _gh, f"周榜还在名字后面写「{_bad}」"
     # 颜色点不能只有颜色：每一件都要写出「衫名·榜名」，否则新来的人只看到
     # 一排小圆点，不知道黄衫是里程榜。组页那行还得能点进六件衫。
     assert "黄衫·里程王" in _gh, "衫行只写了「黄衫 阿狗」，没说是哪个榜"
