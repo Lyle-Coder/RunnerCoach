@@ -1544,7 +1544,7 @@ def run() -> int:
     # ---- P2：本周玩法（衫 / 目标 / 结对 / 预言）
     # 四行必须是「标签 + 内容」两列对齐：以前是四段各写各的流式文字，
     # 语序都不一样，看着乱。
-    assert 'class="wk"' in _gh, "本周四行没有用对齐表格"
+    assert 'class="kvrows"' in _gh, "本周四行没有用对齐表格"
     for _k in ("衫", "目标", "结对", "预言"):
         assert f'<span class="k">{_k}</span>' in _gh, f"「{_k}」那行没有标签列"
     assert ">30</b> km" in _gh, "本周目标没在页面上显示"
@@ -3009,15 +3009,19 @@ def run() -> int:
     _ai_src = Path(_AI.__file__).read_text(encoding="utf-8")
     _man = (ROOT / "android/app/src/main/AndroidManifest.xml") \
         .read_text(encoding="utf-8")
-    assert "--bg:#070B12" in _ui_src and "--brand:#3B82F6" in _ui_src, \
+    # token 搬进 design.py 了，断言改看运行时拼出来的 CSS（源码里已经没有裸值）
+    from garmin_cn import ui as _UIX
+    _css = _UIX.CSS
+    assert "--bg:#070B12" in _css and "--brand:#3B82F6" in _css, \
         "页面主色不是深空蓝，科技风主题丢了"
-    assert "--cyan:#22D3EE" in _ui_src and "radial-gradient(900px 520px" in _ui_src, \
+    assert "--cyan:#22D3EE" in _css and "radial-gradient(900px 520px" in _ui_src, \
         "缺青色高光或背景径向渐变"
-    assert ".card.brand" in _ui_src and "box-shadow:var(--glow)" in _ui_src, \
-        "品牌卡没有辉光"
-    assert "-webkit-text-fill-color:transparent" in _ui_src and \
-        "filter:drop-shadow(0 0 16px" in _ui_src, \
-        "大数字没有渐变/辉光"
+    assert ".card.brand" in _ui_src, "品牌卡样式没了"
+    # 设计语言 §3.1.6 / §7：禁止渐变文字，大数字用实色 + 负字距
+    assert "-webkit-text-fill-color:transparent" not in _ui_src, \
+        "大数字又用回渐变文字了（docs/设计语言.md §3.1 规则 6 禁止）"
+    assert "drop-shadow(0 0 16px" not in _ui_src, \
+        "主视觉数字又加外发光了（一页只允许一处发光，且只给 hero）"
     assert ".sec-head h2::before" in _ui_src and ".row .ic{" in _ui_src, \
         "分节标记/图标底座丢了科技风样式"
     assert "--bg:#070B12" in _ai_src, "AI 页还是浅色，和 App 不一致"
@@ -4897,11 +4901,27 @@ def run() -> int:
         return (max(a, b) + 0.05) / (min(a, b) + 0.05)
 
     import re as _re
-    _root = _re.search(r":root\{(.+?)\}", _u.CSS, _re.S).group(1)
+    # token 拆成了两块 :root（核心 + 旧名别名），要合并后一起找，
+    # 只取第一块的话别名里的值会漏掉
+    _root = "".join(_re.findall(r":root\{([^}]+)\}", _u.CSS))
     _tok = dict(_re.findall(r"--([a-z0-9-]+)\s*:\s*(#[0-9A-Fa-f]{6})", _root))
-    assert _contrast(_tok["faint"], _tok["surface"]) >= 4.5, \
-        f"辅助色对比度仍不足 AA：{_contrast(_tok['faint'], _tok['surface']):.2f}"
-    assert _contrast(_tok["muted"], _tok["surface"]) >= 4.5, "次要色对比度不足 AA"
+    assert _contrast(_tok["ink-3"], _tok["surface"]) >= 4.5, \
+        f"辅助色对比度仍不足 AA：{_contrast(_tok['ink-3'], _tok['surface']):.2f}"
+    assert _contrast(_tok["ink-2"], _tok["surface"]) >= 4.5, "次要色对比度不足 AA"
+
+
+    # ---- 设计语言 §7：字号与圆角白名单
+    # 以前 ui.py 里 18 档字号、11 档圆角，相邻两档肉眼分不出，层级只能靠猜。
+    # 现在只允许 8 档字号、4 档圆角；小元素（<8px 的进度条圆角）不受限。
+    from garmin_cn import design as _DS
+
+    _fss = {float(x) for x in _re.findall(r"font-size:([\d.]+)px", _u.CSS)}
+    _bad_fs = sorted(x for x in _fss if int(x) not in _DS.FONT_SIZES
+                     and x not in _DS.FONT_SIZES)
+    assert not _bad_fs, f"字号超出白名单（只允许 {_DS.FONT_SIZES}）：{_bad_fs}"
+    _rds = {float(x) for x in _re.findall(r"border-radius:([\d.]+)px", _u.CSS)}
+    _bad_rd = sorted(x for x in _rds if x >= 8 and int(x) not in _DS.RADII)
+    assert not _bad_rd, f"圆角超出白名单（只允许 {_DS.RADII}）：{_bad_rd}"
     # 最小字号：CSS 里不该再有 10px / 10.5px
     assert not _re.search(r"font-size:10(\.5)?px", _u.CSS), "还有 10px 级别的字号"
     # 背景不能用 background-attachment:fixed（滚动重绘整面）
@@ -5270,8 +5290,8 @@ def run() -> int:
     assert ".rc-week .rc-days{flex:1" in _tiny_css, \
         "极矮横屏的柱子没有跟着面板长高"
     _land_load = _land_css.split(".rc-load{")[-1].split("}")[0]
-    assert "border-radius:12px" in _land_load and \
-        "background:rgba(9,14,22,.42)" in _land_load, \
+    assert "border-radius:var(--r-2,14px)" in _land_load and \
+        "background:var(--surface-2,#111B29)" in _land_load, \
         "横屏负荷带没有做成和其余四块一致的卡片"
 
     # ---- 1.0.2：高驰睡眠走官方 MCP（OAuth），并有 App 内授权入口 ---------

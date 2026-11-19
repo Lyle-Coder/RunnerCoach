@@ -41,7 +41,7 @@ from html import escape as _e
 _BASE = """
 /* ---- 首屏专用作用域：只影响今日 tab ------------------------------ */
 .rc-page .page-head.rc-compact{padding:10px 0 7px;margin-bottom:2px}
-.rc-page .page-head.rc-compact h1{font-size:19px;margin:4px 0 0}
+.rc-page .page-head.rc-compact h1{font-size:20px;margin:4px 0 0}
 .rc-page .page-head.rc-compact .meta{margin-top:6px}
 .rc-screen{display:flex;flex-direction:column;gap:10px}
 
@@ -54,7 +54,7 @@ _BASE = """
   color:var(--ink,#E8F0FB)}
 
 /* 面板：一层渐进 + 一道顶沿高光，不再有三层背景 */
-.rc-panel{position:relative;overflow:hidden;border-radius:16px;padding:11px 12px;
+.rc-panel{position:relative;overflow:hidden;border-radius:var(--r-3,18px);padding:11px 12px;
   background:linear-gradient(168deg,rgba(20,31,48,.92),rgba(11,18,29,.96));
   border:1px solid var(--line,rgba(96,165,250,.16))}
 .rc-panel::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
@@ -71,9 +71,9 @@ _BASE = """
   border:1px solid rgba(96,165,250,.30);position:relative;overflow:hidden}
 .rc-verdict::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
   background:linear-gradient(90deg,rgba(96,165,250,.7),transparent);pointer-events:none}
-.rc-verdict .v{font-size:18px;font-weight:700;letter-spacing:-.3px;
+.rc-verdict .v{font-size:20px;font-weight:700;letter-spacing:-.3px;
   color:var(--brand-ink,#8CC2FF);min-width:0}
-.rc-verdict .m{font-size:11.5px;color:var(--faint,#7689A2);white-space:nowrap;
+.rc-verdict .m{font-size:12px;color:var(--faint,#7689A2);white-space:nowrap;
   font-variant-numeric:tabular-nums}
 
 /* 恢复 hero ≈176：环 108（r45 / 描边 9）+ 3 条分解 + 1 句可执行建议 */
@@ -84,14 +84,14 @@ _BASE = """
   justify-content:space-between;gap:8px}
 .rc-parts{display:flex;flex-direction:column;gap:5px}
 .rc-part{display:grid;grid-template-columns:60px 1fr 26px;gap:6px;align-items:center}
-.rc-part .n{font-size:11.5px;color:var(--muted,#7C8FA8);white-space:nowrap}
+.rc-part .n{font-size:12px;color:var(--muted,#7C8FA8);white-space:nowrap}
 .rc-part .b{height:3px;border-radius:999px;background:rgba(255,255,255,.09);
   overflow:hidden;min-width:0}
 .rc-part .b i{display:block;height:100%;border-radius:999px;
   background:linear-gradient(90deg,var(--brand,#3B82F6),var(--cyan,#22D3EE))}
-.rc-part .v{font-size:11.5px;text-align:right;color:var(--ink2,#B7C7DD);
+.rc-part .v{font-size:12px;text-align:right;color:var(--ink2,#B7C7DD);
   font-variant-numeric:tabular-nums}
-.rc-advice{font-size:12.5px;color:var(--ink2,#B7C7DD);line-height:1.5}
+.rc-advice{font-size:12px;color:var(--ink2,#B7C7DD);line-height:1.5}
 .rc-advice b{color:var(--ink,#E8F0FB);font-weight:650}
 
 /* 负荷带 60：三个数并列，**不是三张卡** */
@@ -104,16 +104,19 @@ _BASE = """
 .rc-load .item:first-child{padding-left:2px}
 .rc-load .item:last-child{border-right:0}
 .rc-load .k{font-size:11px;color:var(--muted,#7C8FA8)}
-.rc-load .v{font-size:19px;margin-top:1px;line-height:1.25}
+.rc-load .v{font-size:20px;margin-top:1px;line-height:1.25}
 .rc-load .w{font-size:11px;color:var(--faint,#7689A2)}
 
 /* 身体面板 172：2×2，每格 数值 17 + 变化 + 22 高 sparkline */
 .rc-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.rc-cell{border-radius:12px;padding:7px 10px 6px;min-width:0;
-  background:rgba(9,14,22,.42);border:1px solid var(--line2,rgba(96,165,250,.09))}
+/* 身体数据 2×2：--surface-2 底、**无边框**。
+   原来是「半透明底 + 1px 蓝边」套在大卡里，正是设计语言 §4.3 禁止的
+   「卡里套卡」——两层描边叠在一起，边缘会显脏。 */
+.rc-cell{border-radius:var(--r-2,14px);padding:7px 10px 6px;min-width:0;
+  background:var(--surface-2,#111B29)}
 .rc-cell .k{font-size:11px;color:var(--muted,#7C8FA8)}
-.rc-cell .v{font-size:17px;margin-top:2px;line-height:1.25}
-.rc-cell .v small{font-size:11.5px;font-weight:500;margin-left:3px;
+.rc-cell .v{font-size:16px;margin-top:2px;line-height:1.25}
+.rc-cell .v small{font-size:12px;font-weight:500;margin-left:3px;
   color:var(--muted,#7C8FA8)}
 /* 刻意不写 nowrap/ellipsis：体重「7 日 -0.3 kg」被截成「较…」是噪音 */
 .rc-cell .sub{font-size:11px;color:var(--faint,#7689A2);line-height:1.45;
@@ -122,15 +125,15 @@ _BASE = """
 
 /* 计划一条 72：只放「下一次」 */
 .rc-plan{display:flex;align-items:center;gap:12px;min-height:60px}
-.rc-plan .when{flex:0 0 58px;font-size:11.5px;color:var(--muted,#7C8FA8);
+.rc-plan .when{flex:0 0 58px;font-size:12px;color:var(--muted,#7C8FA8);
   line-height:1.4}
-.rc-plan .when b{display:block;font-size:17px;color:var(--brand-ink,#8CC2FF);
+.rc-plan .when b{display:block;font-size:16px;color:var(--brand-ink,#8CC2FF);
   font-variant-numeric:tabular-nums}
 .rc-plan .what{min-width:0;flex:1}
-.rc-plan .t{font-size:17px;font-weight:650;line-height:1.35}
-.rc-plan .d{font-size:11.5px;color:var(--muted,#7C8FA8);margin-top:2px;
+.rc-plan .t{font-size:16px;font-weight:650;line-height:1.35}
+.rc-plan .d{font-size:12px;color:var(--muted,#7C8FA8);margin-top:2px;
   line-height:1.5}
-.rc-plan .go{flex:0 0 auto;font-size:11.5px;color:var(--brand-ink,#8CC2FF);
+.rc-plan .go{flex:0 0 auto;font-size:12px;color:var(--brand-ink,#8CC2FF);
   display:inline-flex;align-items:center;min-height:44px;padding:0 2px}
 
 /* 最近 7 天 ≈300：一个大数 + 7 根柱 + 3 条样本 */
@@ -140,7 +143,7 @@ _BASE = """
 .rc-up-d{flex:none;min-width:42px;font-size:11px;color:var(--muted,#8A93A6);
   font-variant-numeric:tabular-nums}
 .rc-up-d.hot{color:#F5A524;font-weight:700}
-.rc-up-t{flex:1;min-width:0;font-size:12.5px;color:var(--ink,#E8F0FB);
+.rc-up-t{flex:1;min-width:0;font-size:12px;color:var(--ink,#E8F0FB);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rc-up-e{margin-left:6px;color:var(--faint,#7689A2);font-size:11px}
 /* 视觉上只是个 15px 的铃铛，但命中区必须 44×44（手指按不准），
@@ -153,13 +156,13 @@ _BASE = """
 .rc-rd{margin-top:2px}
 .rc-rd .rdi{display:none}
 .rc-rd .rdi.on{display:block}
-.rc-rd .rdt{margin:0;font-size:13px;line-height:1.6;color:var(--ink,#E8F0FB)}
-.rc-rd .rds{margin:5px 0 0;font-size:11.5px;color:var(--faint,#7689A2)}
+.rc-rd .rdt{margin:0;font-size:14px;line-height:1.6;color:var(--ink,#E8F0FB)}
+.rc-rd .rds{margin:5px 0 0;font-size:12px;color:var(--faint,#7689A2)}
 .rc-week-hd{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
-.rc-week-hd .big-num{font-size:26px;line-height:1.15}
-.rc-week-hd .big-num small{font-size:12.5px;font-weight:500;margin-left:4px;
+.rc-week-hd .big-num{font-size:24px;line-height:1.15}
+.rc-week-hd .big-num small{font-size:12px;font-weight:500;margin-left:4px;
   color:var(--muted,#7C8FA8)}
-.rc-week-hd .side{font-size:11.5px;color:var(--faint,#7689A2);text-align:right;
+.rc-week-hd .side{font-size:12px;color:var(--faint,#7689A2);text-align:right;
   line-height:1.6}
 .rc-days{display:flex;gap:7px;align-items:flex-end;margin-top:10px;height:106px}
 .rc-day{flex:1;min-width:32px;height:100%;min-height:44px;
@@ -183,9 +186,9 @@ _BASE = """
   border-bottom:1px solid var(--line2,rgba(96,165,250,.09));
   text-decoration:none;color:inherit}
 .rc-sample:last-child{border-bottom:0}
-.rc-sample .t{font-size:12.5px;font-weight:600;min-width:0;overflow:hidden;
+.rc-sample .t{font-size:12px;font-weight:600;min-width:0;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
-.rc-sample .d{font-size:11.5px;color:var(--muted,#7C8FA8);margin-left:auto;
+.rc-sample .d{font-size:12px;color:var(--muted,#7C8FA8);margin-left:auto;
   white-space:nowrap;font-variant-numeric:tabular-nums}
 
 /* 宽屏铺开完全交给 @media，不再有横屏按钮：倾斜手机时系统已有
@@ -205,7 +208,7 @@ _BASE = """
 _BIG = """
 {p}.rc-page{max-width:none;padding:0 16px 0}
 {p}.rc-page .page-head{padding:8px 0 8px;margin-bottom:6px}
-{p}.rc-page .page-head h1{font-size:19px;margin:3px 0 0}
+{p}.rc-page .page-head h1{font-size:20px;margin:3px 0 0}
 {p}.rc-page .page-head .meta{margin-top:6px}
 /* 1280×800 要把页脚也收进一屏：这里只压页脚留白，不动面板高度 */
 {p}.rc-page .foot{margin-top:8px;padding-top:6px}
@@ -231,7 +234,7 @@ _BIG = """
 /* 负荷带在竖屏是一条裸带，大屏里补上面板外壳；三个数仍并列，只是
    CTL 是这块的唯一主数，另两个降为 L2。 */
 {p}.rc-load{width:100%;align-items:start;align-content:center;overflow:auto;
-  border:1px solid var(--line,rgba(96,165,250,.16));border-radius:16px;
+  border:1px solid var(--line);border-radius:var(--r-3,18px);
   padding:10px 12px;
   background:linear-gradient(168deg,rgba(20,31,48,.92),rgba(11,18,29,.96))}
 {p}.rc-load .item{padding:0 10px}
@@ -273,7 +276,7 @@ _LAND = """
 .rc-plan-panel{grid-area:p}
 .rc-week-panel{grid-area:w}
 .rc-body-panel{grid-area:b}
-.rc-panel{padding:6px 9px;border-radius:12px;overflow:hidden;
+.rc-panel{padding:6px 9px;border-radius:var(--r-2,14px);overflow:hidden;
   display:flex;flex-direction:column}
 .rc-panel-hd{margin:0 0 4px}
 .rc-hero{gap:8px}
@@ -286,8 +289,8 @@ _LAND = """
    三列各 ~55px 时标签换行把面板撑破。 */
 .rc-load{min-height:0;padding:2px 8px;align-content:center;overflow:hidden;
   grid-template-columns:1fr;grid-template-rows:repeat(3,auto);gap:2px;
-  border:1px solid var(--line,rgba(96,165,250,.16));border-radius:12px;
-  background:rgba(9,14,22,.42)}
+  border-radius:var(--r-2,14px);
+  background:var(--surface-2,#111B29)}
 .rc-load .item{display:flex;align-items:baseline;gap:8px;padding:2px 0;
   border-right:0;border-bottom:1px solid var(--line2,rgba(96,165,250,.09))}
 .rc-load .item:last-child{border-bottom:0}
@@ -299,7 +302,7 @@ _LAND = """
    格子里必然折行，横屏先收起，数值与单位保持完整。 */
 .rc-body{flex:1;min-height:0;align-content:center;gap:5px;
   grid-template-columns:repeat(4,minmax(0,1fr))}
-.rc-cell{padding:3px 6px;border-radius:9px}
+.rc-cell{padding:3px 6px;border-radius:var(--r-1,10px)}
 .rc-cell .v{font-size:14px;margin-top:0}
 .rc-cell .sub,.rc-cell .spark{display:none}
 .rc-week-hd .side{display:none}
@@ -309,7 +312,7 @@ _LAND = """
 /* 0 值日给一根浅底短柱，别再留一个没有任何说明的孤立小点。 */
 .rc-day.zero .dot{display:none}
 .rc-day.zero .bar{min-height:4px;background:rgba(96,165,250,.22)}
-.rc-week-hd .big-num{font-size:19px}
+.rc-week-hd .big-num{font-size:20px}
 .rc-samples{display:none}
 .rc-plan{flex:1;min-height:0;gap:8px}
 .rc-plan .when{flex:0 0 46px}
@@ -342,7 +345,7 @@ _LAND = """
 .rc-parts{flex:1;justify-content:space-around}
 .rc-load{gap:0;padding:2px 6px;align-content:center}
 .rc-load .item{padding:0;border-bottom:0}
-.rc-load .v{font-size:13px}
+.rc-load .v{font-size:14px}
 .rc-load .k,.rc-load .w{font-size:11px}
 /* 身体回到 2×2：每格约 150px 宽，指标名完整不截断，两行正好填满面板。 */
 .rc-body{flex:1;min-height:0;gap:4px;

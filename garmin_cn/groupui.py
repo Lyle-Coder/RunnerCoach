@@ -1089,7 +1089,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
 
     # 「衫」那行内容是流式的（六件全有得主会折两行），要允许换行；
     # 其它行是单行结论，用省略号截断。
-    week_line = ('<div class="wk">'
+    week_line = ('<div class="kvrows">'
                  + "".join(
                      f'<span class="k">{k}</span>'
                      f'<span class="v{" wrap" if k == "衫" else ""}">{v}</span>'
