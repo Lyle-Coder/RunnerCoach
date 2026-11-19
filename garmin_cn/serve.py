@@ -188,7 +188,10 @@ class _Handler(SimpleHTTPRequestHandler):
                 return self._html(groupui.account_page(
                     tok, msg, (q.get("account") or [""])[0], (q.get("code") or [""])[0]))
             if u.path.rstrip("/") in ("/groups", "/groups.html"):
-                return self._html(groupui.groups_page(tok, msg))
+                # ?list=1 强制显示列表：只有一个组时默认会直达组详情，
+                # 那样「再加入一个 / 建组」的入口就永远看不到。
+                _force = (q.get("list") or [""])[0] == "1"
+                return self._html(groupui.groups_page(tok, msg, _force))
             seg = u.path.rstrip("/").split("/")[2:]
             if len(seg) == 2 and seg[0].isdigit() and seg[1] == "bingo":
                 return self._html(groupui.bingo_page(tok, int(seg[0]), msg))

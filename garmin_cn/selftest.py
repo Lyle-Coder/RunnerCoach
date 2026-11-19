@@ -1387,10 +1387,23 @@ def run() -> int:
     # 组列表页：只有一个组时直接进详情——点「小组」最想看的是排名
     from garmin_cn import groupui as _GU
     _gsrc = inspect.getsource(_GU.groups_page)
-    assert "if len(items) == 1:" in _gsrc and "return group_page(" in _gsrc, \
-        "只有一个组时没有直接进详情页"
-    assert '<details class="fold"><summary>再加入一个' in _gsrc, \
-        "建组/加入没有折起来，会跟「我的小组」抢版面"
+    assert "if len(items) == 1 and not force_list:" in _gsrc and \
+        "return group_page(" in _gsrc, "只有一个组时没有直接进详情页"
+    # 单组直达必须能被 ?list=1 绕过，否则「加入另一个组」永远没入口
+    assert "force_list: bool = False" in _gsrc, "列表页没有强制列表的开关"
+    assert 'class="fold fold-lg" open' in _gsrc, \
+        "被引导进来时「再加入一个」还是折着的"
+    assert '<summary>再加入一个' in _gsrc, \
+        "建组/加入没有了"
+    # 唯独不能退回「永久折叠」：force_list 之外仍是折叠的
+    assert "else '<details class=\"fold\">'" in _gsrc, \
+        "底部入组表单不再折叠，会和榜单抢版面"
+    # 单组时组详情的「全部小组」必须带 list=1，否则点回去又被弹回本组
+    _gpage_src = inspect.getsource(_GU.group_page)
+    assert "/groups?list=1" in _gpage_src, \
+        "组详情的「全部小组」没带 list=1，单组用户点了会原地弹回"
+    _set_src = inspect.getsource(_GU.settings_page)
+    assert "/groups?list=1" in _set_src, "设置页没有「全部小组」入口"
 
     # 账号昵称：建组/入组的默认名字，别再让用户每组填一次
     _asrc2 = (ROOT / "garmin_cn" / "group.py").read_text(encoding="utf-8")
