@@ -59,6 +59,51 @@ def cell_of(lat: float, lon: float) -> str:
     return f"{int(math.floor(lat / d))}:{int(math.floor(lon / d))}"
 
 
+def cells_meters(track) -> dict[str, float]:
+    """轨迹 → 每格累计里程（米）。
+
+    和 `cells_of_track` 的区别是它只回答「跑没跑过」，这里回答「跑了多少」。
+    做法是逐段累加：每一小段的长度记到该段中点所在的格子上。为什么不按
+    端点落格再除以二——端点属于哪格是不确定的（一半概率算到邻格），
+    而 500 m 的格子比常见的采样间隔（5–10 m）大两个数量级，段中点落格
+    不会跨格错位。
+    """
+    out: dict[str, float] = {}
+
+    def _ok(p) -> bool:
+        try:
+            lat, lon = float(p[0]), float(p[1])
+        except (TypeError, ValueError, IndexError):
+            return False
+        return not (lat == 0 and lon == 0) and -90 <= lat <= 90 and -180 <= lon <= 180
+
+    pts = [p for p in (track or []) if _ok(p)]
+    if len(pts) < 2:
+        # 只有一个点也算一次「到过」，给个 0 里程，别让它在图上消失
+        if pts:
+            try:
+                out[cell_of(float(pts[0][0]), float(pts[0][1]))] = 0.0
+            except (TypeError, ValueError, IndexError):
+                pass
+        return out
+
+    for a, b in zip(pts, pts[1:]):
+        try:
+            la1, lo1 = float(a[0]), float(a[1])
+            la2, lo2 = float(b[0]), float(b[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        # 等距圆柱近似：500 m 尺度上，cos 用两点平均纬度就够了
+        dy = (la2 - la1) * M_PER_DEG
+        dx = (lo2 - lo1) * M_PER_DEG * math.cos(math.radians((la1 + la2) / 2))
+        seg = math.hypot(dx, dy)
+        if seg <= 0 or seg > 2000:      # 2 km 以上的「一段」基本都是脏点跳变
+            continue
+        k = cell_of((la1 + la2) / 2, (lo1 + lo2) / 2)
+        out[k] = out.get(k, 0.0) + seg
+    return out
+
+
 def cells_of_track(track) -> list[str]:
     """轨迹 → 去重后的格子列表（保持出现顺序，方便调试）。
 
@@ -180,12 +225,12 @@ def cell_corners(cell: str) -> list[tuple[float, float]]:
     return [(y0, x0), (y0, x0 + d), (y0 + d, x0 + d), (y0 + d, x0)]
 
 
-def week_cells(store, today: str | None = None, min_m: float = 1000.0) -> list[str]:
-    """本周**跑过**的格子（不是「新增」）。
+def week_cell_meters(store, today: str | None = None,
+                     min_m: float = 1000.0) -> dict[str, float]:
+    """本周每格的累计里程（米）。地图的深浅和「谁跑得多」都靠它。
 
-    和探索徽章的区别：徽章只数第一次踩到的格，地图要的是「这周我的脚印覆盖了
-    哪一片」，所以老路也算。门槛降到 1 km——地图上 1 km 的绕圈也是一条线，
-    而徽章那边要 3 km 才值得记一笔。
+    口径：本周、跑步类、≥1 km。骑行不算——一条 60 km 的骑行会在地图上
+    铺满半座城，把队友的脚印盖掉；探索徽章那边则要求 3 km 才记一笔。
     """
     day = dt.date.fromisoformat(today or dt.date.today().isoformat())
     start = (day - dt.timedelta(days=day.weekday())).isoformat()
@@ -197,21 +242,16 @@ def week_cells(store, today: str | None = None, min_m: float = 1000.0) -> list[s
              WHERE a.date BETWEEN ? AND ? AND a.distance_m >= ?
              ORDER BY a.date
         """, (start, day.isoformat(), min_m)).fetchall()
-    seen: set[str] = set()
-    out: list[str] = []
+    out: dict[str, float] = {}
     for r in rows:
-        # 骑行也算「跑过哪片」吗？不算——这里和里程榜同口径，只认跑步类，
-        # 否则一条 60 km 的骑行会在地图上铺满半座城，把队友的脚印盖掉。
         if not is_run(r["type"]):
             continue
         try:
             payload = json.loads(r["payload"] or "{}")
         except (TypeError, ValueError):
             payload = {}
-        for k in cells_of_track(payload.get("track") or []):
-            if k not in seen:
-                seen.add(k)
-                out.append(k)
+        for k, v in cells_meters(payload.get("track") or []).items():
+            out[k] = out.get(k, 0.0) + v
     return out
 
 

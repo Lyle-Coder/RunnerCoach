@@ -1606,12 +1606,27 @@ def run() -> int:
            "cells": ["1:1", "1:2", "1:3"], "is_me": True}
     _p2 = {"user_id": 2, "alias": "队友", "color": "#3FA76A",
            "cells": ["1:2", "1:3", "1:4"], "is_me": False}
-    _solo, _shr = _GU._split_cells([_p1, _p2])
-    assert _solo[1] == ["1:1"], f"我独有的格子算错了：{_solo[1]}"
-    assert _solo[2] == ["1:4"], f"队友独有的格子算错了：{_solo[2]}"
-    assert sorted(_shr) == ["1:2", "1:3"], f"共同格子算错了：{_shr}"
+    # 没有跑量数据时（老客户端）：两人平摊 0.5 < 0.65，重叠格算「共同」
+    _own = _GU._cell_owners([_p1, _p2])
+    assert _own["1:1"][0] == 1 and _own["1:1"][1] == 1.0, f"独占格算错：{_own['1:1']}"
+    assert _own["1:2"][1] < _GU.OWNER_SHARE, f"平摊时重叠格不该归某个人：{_own['1:2']}"
     assert _GU._shared_count([_p1, _p2]) == 2
     assert _GU._shared_count([_p1]) == 0, "一个人不该有「共同」格子"
+
+    # 有跑量时：谁跑得多归谁，差距不到 2 倍仍算共同
+    _q1 = {"user_id": 1, "alias": "我", "color": "#5EA0FF", "cells": ["2:2"],
+           "meters": {"2:2": 3000}, "is_me": True}
+    _q2 = {"user_id": 2, "alias": "队友", "color": "#3FA76A", "cells": ["2:2"],
+           "meters": {"2:2": 500}, "is_me": False}
+    _o2 = _GU._cell_owners([_q1, _q2])["2:2"]
+    assert _o2[0] == 1 and _o2[1] > _GU.OWNER_SHARE, f"跑量多的没拿到归属：{_o2}"
+    assert _o2[2] == 3500, f"该格总里程算错：{_o2[2]}"
+    _q2["meters"]["2:2"] = 2400
+    _o3 = _GU._cell_owners([_q1, _q2])["2:2"]
+    assert _o3[1] < _GU.OWNER_SHARE, "只差 1.25 倍就归给某个人了，应当算共同"
+    # 深浅：跑得越多越实
+    assert (_GU._op_of(300) < _GU._op_of(1200) < _GU._op_of(9000)), \
+        "格子深浅没随跑量递增"
 
     _bme2 = _BM.ensure
     _gmd2 = _GP.map_data

@@ -199,9 +199,9 @@ def report_group(store, gid: int, today: str | None = None,
             from . import explore as EX
 
             if _map_on(store, gid):
-                cells = EX.week_cells(store, today)
-                if cells:
-                    push_cells(gid, cells)
+                mm = EX.week_cell_meters(store, today)
+                if mm:
+                    push_cells(gid, list(mm), mm, today)
             acts = build_acts(store, today)
             if acts:
                 push_acts(gid, acts, today)
@@ -356,9 +356,16 @@ def set_mapshare(gid: int, on: bool, store=None, today: str | None = None) -> di
     return r
 
 
-def push_cells(gid: int, cells: list[str], today: str | None = None) -> dict:
-    """把本周跑过的格子发上去（全量覆盖）。"""
+def push_cells(gid: int, cells: list[str], meters: dict | None = None,
+               today: str | None = None) -> dict:
+    """把本周跑过的格子发上去（全量覆盖）。
+
+    `meters` 是每格的累计里程：地图用它决定「这块主要是谁跑的」和颜色深浅。
+    不带也能发（服务端存 0），只是地图会退化成「跑过/没跑过」。
+    """
     body: dict = {"cells": list(cells)}
+    if meters:
+        body["meters"] = {str(k): int(round(float(v))) for k, v in meters.items()}
     if today:
         body["today"] = today
     return _call("POST", f"/v1/group/{int(gid)}/cells", body)
