@@ -530,42 +530,51 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .shard-h i{font-style:normal;font-size:11px;font-weight:400;color:var(--faint)}
 /* setrow 的左侧标签默认会被 flex 压缩换行（「路线共／享」），有需要时钉住 */
 .nowrap{white-space:nowrap;flex:0 0 auto}
-/* ---- 本周荣誉：一项称号一张卡 ----
-   原来是一行一件的窄表：左色点、中榜名、右得主，前 3 名塞在一行灰字里。
-   问题是「黄衫」这个词本身没人懂，色点也看不出是件衫，点进来还是看不出
-   每项在比什么。现在称号当主标、衫型图标当识别、每项下面列组内完整榜
-   （组最多 20 人，全列出来只比翻页快）。 */
+/* ---- 本周荣誉：六项收成一张卡里的六行，点哪行展哪行 ----
+   目标是「一屏看完六项」。所以收起态只留一行：衫型图标 + 称号 + 得主 + 颜色，
+   口径和完整榜都折在展开态里。六张独立卡片收起来也有 6 圈边框和 5 个 8px 间距，
+   光边距就占掉小半屏，所以并进一个容器、用分隔线分。 */
 .jsh{width:28px;height:28px;display:block;flex:0 0 auto}
-.jsh.lg{width:34px;height:34px}
-.hintro{margin:0 0 4px;font-size:var(--fs-cap,12px);color:var(--ink-3);
-  line-height:1.65}
-.hintro + .hintro{margin-top:6px}
-.hon{background:var(--surface);border:1px solid var(--line);
-  border-radius:var(--r-3);padding:14px 14px 6px;margin-bottom:10px}
-.hon-h{display:flex;align-items:center;gap:10px}
-.hon-t{flex:1 1 auto;min-width:0}
-.hon-t h3{margin:0;font-size:var(--fs-title,16px);font-weight:600;color:var(--ink)}
-.hon-t p{margin:2px 0 0;font-size:var(--fs-cap,12px);color:var(--ink-3);
+.jsh.lg{width:30px;height:30px}
+.hintro{margin:0 0 10px;font-size:var(--fs-cap,12px);color:var(--ink-3);
+  line-height:1.6}
+.hintro + .hintro{margin-top:4px}
+/* 「为什么叫衫」折在页尾：谈资，不该占首屏 */
+.hwhy{margin:12px 0 2px;font-size:var(--fs-cap,12px)}
+.hwhy>summary{display:flex;align-items:center;min-height:44px;cursor:pointer;
+  color:var(--brand-ink);list-style:none}
+.hwhy>summary::-webkit-details-marker{display:none}
+.hwhy .hintro{margin:0 0 4px}
+.honbox{background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-3);padding:0 14px;margin-bottom:10px}
+.hon{border-top:1px solid var(--line2)}
+.hon:first-child{border-top:0}
+/* 收起态一行：56px 高，和榜单行同节奏 */
+.hon>summary{list-style:none;display:flex;align-items:center;gap:9px;
+  min-height:56px;padding:5px 0;cursor:pointer}
+.hon>summary::-webkit-details-marker{display:none}
+.hon>summary:active{opacity:.72}
+.hon .hn{flex:0 0 auto;font-size:var(--fs-body,14px);font-weight:600;color:var(--ink);
+  white-space:nowrap}
+/* 得主：一行放不下就省略号；没得主时说原因，不能空着 */
+.hon .hw{flex:1 1 auto;min-width:0;font-size:var(--fs-cap,12px);color:var(--ink-3);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-/* 颜色标签：称号是主标，颜色退成第二层——不点进来也知道「这是黄衫那一项」 */
-.hon-tag{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;height:24px;
-  padding:0 9px;border-radius:var(--r-pill);font-size:var(--fs-micro,11px);
+.hon .hw b{font-weight:600;color:var(--ink-2)}
+.hon .chev{flex:0 0 auto;color:var(--ink-3);font-size:15px;line-height:1;
+  transition:transform .16s}
+.hon[open] .chev{transform:rotate(90deg)}
+.hon .hbody{padding:0 0 10px 39px}
+.hon .hint{margin:0 0 2px;font-size:var(--fs-cap,12px);color:var(--ink-3);
+  line-height:1.5}
+/* 颜色标签：称号是主标，颜色退成第二层——收起态也能看出「这是黄衫那一项」 */
+.hon-tag{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;height:22px;
+  padding:0 8px;border-radius:var(--r-pill);font-size:var(--fs-micro,11px);
   font-weight:600;color:var(--ink-2);background:var(--surface-2);
   border:1px solid var(--line)}
-.hon-tag i{width:7px;height:7px;border-radius:50%;background:var(--c)}
-/* 得主行：一条就够了，不要「第 1 名 大熊 56.8 km」占一行、下面再从第 1 名重列 */
-.hon-w{display:flex;align-items:center;gap:8px;margin-top:11px;padding:8px 11px;
-  border-radius:var(--r-1);background:var(--brand-soft);font-size:var(--fs-body,14px);
-  color:var(--ink-2)}
-.hon-w .kw{font-size:var(--fs-micro,11px);font-weight:600;color:var(--brand-ink)}
-.hon-w b{font-weight:600;color:var(--ink)}
-.hon-w .kv{margin-left:auto;font-size:var(--fs-cap,12px);color:var(--ink-3);
-  font-variant-numeric:tabular-nums}
-.hon-w.empty{background:transparent;border:1px dashed var(--line)}
-.hon-w.empty .kw{color:var(--muted)}
-/* 完整榜：人少，全部列出来。每行 34px，比自己那行用品牌色标出来 */
-.hlist{list-style:none;margin:6px 0 4px;padding:0}
-.hlist li{display:flex;align-items:center;gap:9px;min-height:34px;
+.hon-tag i{width:6px;height:6px;border-radius:50%;background:var(--c)}
+/* 完整榜：人少，全部列出来。每行 32px，比自己那行用品牌色标出来 */
+.hlist{list-style:none;margin:2px 0 0;padding:0}
+.hlist li{display:flex;align-items:center;gap:9px;min-height:32px;
   font-size:var(--fs-body,14px);color:var(--ink2);border-top:1px solid var(--line2)}
 .hlist li:first-child{border-top:0}
 .hlist .n{flex:0 0 18px;font-size:var(--fs-micro,11px);color:var(--muted);
