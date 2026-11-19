@@ -65,11 +65,11 @@ a{color:var(--brand-ink);text-decoration:none}
 .hact{position:absolute;right:0;top:12px;width:44px;height:44px;border-radius:14px;
   display:flex;align-items:center;justify-content:center;font-size:16px;
   color:var(--ink2);text-decoration:none;border:1px solid var(--line);
-  background:rgba(255,255,255,.025)}
-.hact:active{background:rgba(59,130,246,.14);border-color:rgba(96,165,250,.34)}
-.kicker{font-size:11px;font-weight:700;letter-spacing:2px;color:var(--cyan);
+  background:var(--surface-2)}
+.hact:active{background:var(--brand-soft);border-color:var(--line-brand)}
+.kicker{font-size:11px;font-weight:600;letter-spacing:2px;color:var(--cyan);
   text-shadow:0 0 12px rgba(34,211,238,.45)}
-.page-head h1{margin:6px 0 4px;font-size:var(--fs-dsp,32px);font-weight:700;
+.page-head h1{margin:6px 0 4px;font-size:var(--fs-dsp,32px);font-weight:600;
   letter-spacing:-1px;line-height:1.2}
 .lede{margin:0;font-size:14px;color:var(--muted)}
 .meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
@@ -78,7 +78,7 @@ a{color:var(--brand-ink);text-decoration:none}
 .chip.ok{background:var(--brand-soft);border-color:rgba(59,130,246,.34);color:var(--brand-ink)}
 a.chip{min-height:44px;padding:0 14px;justify-content:center}
 .chip b{font-weight:600;color:var(--ink)}
-.chip.warn{background:var(--amber-soft);border-color:rgba(245,165,36,.32);color:#F5C26B}
+.chip.warn{background:var(--amber-soft);border-color:var(--warn);color:var(--warn)}
 /* 状态胶囊：形状统一，只换色调。
    以前每处各写一套（绿的、蓝的、橙的、虚线的），同一屏里能出现三种圆角
    和三个字号，看着像不同人做的。现在只许用这一个组件 + 五种色调。 */
@@ -87,22 +87,22 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
   font-weight:600;white-space:nowrap;border:1px solid transparent;
   font-variant-numeric:tabular-nums}
 .pill.ok{color:var(--ok);background:var(--ok-soft);border-color:rgba(63,211,154,.28)}
-.pill.run{color:var(--brand-ink);background:var(--brand-soft);border-color:rgba(96,165,250,.28)}
+.pill.run{color:var(--brand-ink);background:var(--brand-soft);border-color:var(--line-brand)}
 .pill.warn{color:var(--warn);background:var(--warn-soft);border-color:rgba(245,165,36,.28)}
 .pill.bad{color:var(--bad);background:var(--bad-soft);border-color:rgba(242,85,90,.28)}
 /* 虚线灰：计划外、跳过这类「有这件事但不算计划内」的状态 */
 .pill.mute{color:var(--ink-3);background:transparent;border:1px dashed rgba(148,163,184,.38)}
 /* 中性胶囊：既不是状态也不是动作，只是「几个并列的选项」（今日建议、
    筛选条件）。用灰边灰字，别和表示状态的彩色胶囊抢注意力。 */
-.pill.ghost{color:var(--ink-2);background:rgba(255,255,255,.025);
-  border-color:rgba(255,255,255,.09)}
+.pill.ghost{color:var(--ink-2);background:var(--surface-2);
+  border-color:var(--line)}
 /* 实心品牌色：只给「今天」这种唯一的当前项，一屏最多一个 */
 .pill.brand{color:var(--ink-inv);background:var(--brand);border-color:transparent}
 .sec{margin-top:24px}
 .sec-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px}
 /* 区块标题从 12px 字距 1.4px 的小标改成 16px 粗体：小标那套是「杂志目录」
    的做法，在手机上字太小、层级反而低于正文里的数字。 */
-.sec-head h2{margin:0;font-size:var(--fs-title,16px);font-weight:700;letter-spacing:0;
+.sec-head h2{margin:0;font-size:var(--fs-title,16px);font-weight:600;letter-spacing:0;
   color:var(--ink);position:relative;padding-left:11px}
 /* 竖条：纯品牌色、16px 高。原来用青→蓝渐变 + 青色外发光，一屏六七个
    区块就有六七个发光点，hero 的焦点被稀释掉了。 */
@@ -119,11 +119,11 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
 .mm .i{background:rgba(9,14,22,.52);border:1px solid var(--line2);
   border-radius:10px;padding:8px 10px;min-width:0}
 .mm .n{font-size:11px;color:var(--muted);letter-spacing:.3px}
-.mm .v{font-size:14px;font-weight:650;margin-top:1px;
+.mm .v{font-size:14px;font-weight:600;margin-top:1px;
   font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mm .d{font-size:11px;color:var(--faint);margin-top:1px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.mm .b{height:3px;border-radius:999px;background:rgba(255,255,255,.07);
+.mm .b{height:3px;border-radius:999px;background:var(--line);
   overflow:hidden;margin-top:6px}
 .mm .b i{display:block;height:100%;border-radius:999px;
   background:linear-gradient(90deg,var(--brand),var(--cyan))}
@@ -132,7 +132,7 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
 .vital{background:var(--surface-2);border-radius:var(--r-2);padding:12px 13px 10px;
   min-width:0}
 .vital .k{font-size:11px;letter-spacing:.6px;color:var(--muted)}
-.vital .num{font-size:24px;font-weight:700;line-height:1.15;margin-top:3px;
+.vital .num{font-size:24px;font-weight:600;line-height:1.15;margin-top:3px;
   letter-spacing:-.6px;font-variant-numeric:tabular-nums;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .vital .num small{font-size:12px;font-weight:500;letter-spacing:0;
@@ -145,20 +145,19 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
   overflow:hidden}
 .vital .spark{margin-top:6px;display:block}
 .vital .none{font-size:12px;color:var(--faint);margin-top:8px}
-.card{background:linear-gradient(180deg,rgba(19,28,43,.92),rgba(14,21,33,.95));
+/* 普通卡片：--surface 平底 + 1px 发丝线（§4.3）。
+   原来是 180° 深蓝渐变 + 顶沿一道蓝色高光：全站三十多张卡各有一道高光，
+   叠在一起就是「满屏科技感」的来源，而参考稿的卡是平的。 */
+.card{background:var(--surface);
   border:1px solid var(--line);border-radius:var(--r);padding:16px;
   box-shadow:var(--shadow);position:relative;overflow:hidden}
-/* 卡片顶沿一道高光：深色背景上不做这个，卡片会糊成一片 */
-.card::after{content:"";position:absolute;left:0;right:0;top:0;height:1px;
-  background:linear-gradient(90deg,transparent,rgba(96,165,250,.48),transparent);
-  opacity:.75;pointer-events:none}
 .card.flat{background:transparent;border-style:dashed;box-shadow:none}
 .card.flat::after{display:none}
 .card.brand{background:
   radial-gradient(340px 190px at 84% -10%, rgba(59,130,246,.32), transparent 70%),
   linear-gradient(180deg,rgba(20,32,52,.96),rgba(12,19,31,.96));
-  border-color:rgba(96,165,250,.30);box-shadow:var(--glow)}
-.card h3{margin:0 0 10px;font-size:12px;font-weight:700;letter-spacing:1.2px;color:var(--muted)}
+  border-color:var(--line-brand);box-shadow:var(--glow)}
+.card h3{margin:0 0 10px;font-size:12px;font-weight:600;letter-spacing:1.2px;color:var(--muted)}
 .hero{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap}
 /* 主视觉数字：实色 + 负字距。
    原来走「白→蓝」渐变 + 投影辉光，被设计语言 §3.1 规则 6 明确禁掉——
@@ -170,38 +169,34 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
   margin-left:6px;-webkit-text-fill-color:var(--muted);filter:none}
 .hero-side{text-align:right;font-size:12px;color:var(--muted)}
 .hero-side b{display:block;font-size:15px;color:var(--ink)}
-.bar{height:6px;border-radius:999px;background:rgba(96,165,250,.12);overflow:hidden;margin-top:14px}
+.bar{height:6px;border-radius:999px;background:var(--brand-soft);overflow:hidden;margin-top:14px}
 .bar i{display:block;height:100%;border-radius:999px;
   background:linear-gradient(90deg,var(--cyan),var(--brand));
   box-shadow:0 0 14px rgba(59,130,246,.75)}
 .lab{font-size:12px;color:var(--muted);letter-spacing:.2px}
-.val{font-size:20px;font-weight:650;line-height:1.2;margin-top:4px;
+.val{font-size:20px;font-weight:600;line-height:1.2;margin-top:4px;
   font-variant-numeric:tabular-nums;color:var(--ink);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .val.sm{font-size:20px}
 .note{font-size:12px;color:var(--faint);margin-top:3px}
 .row{display:flex;align-items:center;gap:12px;
-  background:linear-gradient(180deg,rgba(19,28,43,.88),rgba(14,21,33,.92));
+  background:var(--surface);
   border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px;
   color:inherit;cursor:pointer;box-shadow:var(--shadow)}
-.row:active{background:rgba(59,130,246,.10);border-color:rgba(96,165,250,.34)}
+.row:active{background:var(--brand-soft);border-color:var(--line-brand)}
 /* 当前选中的周期行：左侧一道蓝条 + 蓝底。滚动列表里要一眼看出
    「现在这张柱状图讲的是哪个月」，否则点完还是一排一模一样的行。 */
-.row.on{background:linear-gradient(180deg,rgba(59,130,246,.20),rgba(34,211,238,.07));
-  border-color:rgba(96,165,250,.52);
-  box-shadow:inset 3px 0 0 #3B82F6, 0 12px 30px -22px rgba(59,130,246,.9)}
-.row.on .t{color:#DCEBFF}
-.row.on .go{color:#8CC2FF}
-/* 图标底座：蓝青渐变 + 内发光，是整页「科技感」的主要来源 */
-.row .ic{flex:0 0 auto;width:36px;height:36px;border-radius:10px;display:flex;
+.row.on{background:var(--surface-2);border-color:var(--line-brand);
+  box-shadow:inset 2px 0 0 var(--brand)}
+.row.on .t{color:var(--ink)}
+.row.on .go{color:var(--brand-ink)}
+/* 图标底座：--surface-2 + 品牌色字形（§4.7）。
+   原来是蓝青渐变 + 内发光，一屏十几行就是十几块霓虹方块。 */
+.row .ic{flex:0 0 auto;width:34px;height:34px;border-radius:var(--r-1);display:flex;
   align-items:center;justify-content:center;font-size:15px;font-weight:600;
-  background:linear-gradient(160deg,rgba(59,130,246,.26),rgba(34,211,238,.10));
-  color:#9CCBFF;border:1px solid rgba(96,165,250,.24);
-  box-shadow:inset 0 0 12px rgba(59,130,246,.20)}
-.row .ic.b{background:linear-gradient(160deg,rgba(94,160,255,.28),rgba(59,130,246,.10));
-  color:#A8CDFF;border-color:rgba(94,160,255,.30)}
-.row .ic.a{background:linear-gradient(160deg,rgba(245,165,36,.24),rgba(245,165,36,.08));
-  color:#F5C26B;border-color:rgba(245,165,36,.28)}
+  background:var(--surface-2);color:var(--brand-ink);border:1px solid var(--line)}
+.row .ic.b{color:var(--brand-ink)}
+.row .ic.a{color:var(--warn)}
 .row .tx{min-width:0;flex:1}
 /* 标题最多两行：活动名是「日期 时间 · 名称」拼出来的，长一点就被截成
    省略号，看不出是哪次。参数行本来就会换行，不用 nowrap。 */
@@ -217,11 +212,11 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
 .row .sw{position:relative;flex:0 0 auto;margin-left:auto;width:44px;height:44px;
   cursor:pointer}
 .row .sw::before{content:"";position:absolute;left:3px;top:11px;width:38px;height:22px;
-  border-radius:10px;background:rgba(148,163,184,.26);transition:background .18s}
+  border-radius:10px;background:var(--line-strong);transition:background .18s}
 .row .sw i{position:absolute;left:5px;top:13px;width:18px;height:18px;border-radius:50%;
-  background:#E8EEF7;transition:transform .18s,background .18s}
-.row .sw.on::before{background:rgba(79,214,166,.85)}
-.row .sw.on i{transform:translateX(16px);background:#06121C}
+  background:var(--ink-inv);transition:transform .18s,background .18s}
+.row .sw.on::before{background:var(--ok)}
+.row .sw.on i{transform:translateX(16px);background:var(--bg)}
 .acts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 /* 「我的」页 2 列网格：图标在左，标题 + 一行说明在右，整卡固定 68px，
    与账号行（67px）同一节奏。旧版是竖排「图标 / 标题 / 最多两行说明」，
@@ -230,23 +225,21 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
 .act{display:grid;grid-template-columns:28px minmax(0,1fr);
   grid-template-rows:auto auto;column-gap:9px;row-gap:2px;
   align-content:center;box-sizing:border-box;height:68px;padding:8px 10px;
-  background:linear-gradient(180deg,rgba(19,28,43,.88),rgba(14,21,33,.92));
+  background:var(--surface);
   border:1px solid var(--line);border-radius:var(--r);color:inherit;
   cursor:pointer;box-shadow:var(--shadow);min-width:0}
-.act:active{background:rgba(59,130,246,.10);border-color:rgba(96,165,250,.34)}
+.act:active{background:var(--brand-soft);border-color:var(--line-brand)}
 .act .ai{grid-row:1/3;align-self:center;width:28px;height:28px;border-radius:10px;
   display:flex;align-items:center;justify-content:center;font-size:14px;
-  background:linear-gradient(160deg,rgba(34,211,238,.22),rgba(59,130,246,.12));
-  color:#8FE7F5;border:1px solid rgba(34,211,238,.24);
-  box-shadow:inset 0 0 12px rgba(34,211,238,.18)}
+  background:var(--surface-2);
+  color:var(--brand-ink);border:1px solid var(--line)}
 .act .at,.act .ad{min-width:0;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
 .act .at{font-size:14px;font-weight:600;line-height:1.25;color:var(--ink)}
 .act .ad{display:block;font-size:11px;line-height:1.35;color:var(--muted)}
 /* 只读卡片（如「AI 模型服务」）：不暗示可点，也就不该有按下态 */
 .act.flat{cursor:default}
-.act.flat:active{background:linear-gradient(180deg,rgba(19,28,43,.88),rgba(14,21,33,.92));
-  border-color:var(--line)}
+.act.flat:active{background:var(--surface);border-color:var(--line)}
 /* 只收紧「我的」页的节奏，别的 tab 留白一概不动 */
 .me .sec{margin-top:16px}
 .me .sec-head{margin-bottom:8px}
@@ -275,22 +268,22 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
 form.filters{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
 form.filters label{display:inline-flex;gap:5px;align-items:center;font-size:12px;color:var(--muted)}
 input,select{font-family:inherit;font-size:12px;color:var(--ink);
-  background:rgba(9,14,22,.9);border:1px solid var(--line);border-radius:10px;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:10px;
   padding:7px 9px;max-width:100%}
-input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
-  box-shadow:0 0 0 3px rgba(59,130,246,.16)}
+input:focus,select:focus{outline:none;border-color:var(--brand);
+  box-shadow:0 0 0 3px var(--brand-soft)}
 .pager{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
 .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 /* 训练计划：今日课表 + 本周 7 天 */
 .plan-hero{background:var(--surface);
   border:1px solid var(--line);border-radius:var(--r-3);
   padding:16px 18px;position:relative;overflow:hidden}
-.plan-hero .t{font-size:var(--fs-h1,24px);font-weight:700;line-height:1.3;
+.plan-hero .t{font-size:var(--fs-h1,24px);font-weight:600;line-height:1.3;
   letter-spacing:-.6px}
 /* 本周完成的 6 段小条：比「2/6 次」更容易一眼看出还剩几次 */
 .wseg{display:flex;gap:4px;align-items:center;margin-top:12px}
 .wseg i{flex:0 0 auto;width:26px;height:6px;border-radius:999px;
-  background:rgba(255,255,255,.10)}
+  background:var(--line-strong)}
 .wseg i.on{background:var(--brand)}
 .plan-hero .d{font-size:14px;color:var(--ink2);margin-top:6px;line-height:1.7}
 .plan-hero .n{font-size:12px;color:var(--muted);margin-top:10px}
@@ -307,7 +300,7 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .wrow .wd{display:flex;flex-direction:column;gap:1px;white-space:nowrap;
   align-self:stretch;justify-content:center;padding-right:9px;
   box-shadow:inset -1px 0 0 var(--line);
-  font-size:15px;font-weight:700;color:var(--ink);line-height:1.25}
+  font-size:15px;font-weight:600;color:var(--ink);line-height:1.25}
 .wrow .wd i{font-style:normal;font-size:11px;font-weight:400;color:var(--ink-3)}
 .wrow .wb{min-width:0;font-size:16px;font-weight:600;line-height:1.4}
 .wrow .wb em{display:block;font-style:normal;font-size:12px;color:var(--muted);
@@ -315,7 +308,7 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 /* 今天这一行：整行描品牌色边 + 抬升面。
    原来是「左侧 3px 条」——一条竖线在整行里太弱，扫一眼分不出哪行是今天。 */
 .wrow.today{background:var(--surface-2);border-color:var(--line-brand);
-  box-shadow:0 0 0 1px rgba(96,165,250,.16)}
+  box-shadow:0 0 0 1px var(--line-brand)}
 .wrow.today .wd{color:var(--brand-ink);box-shadow:inset -1px 0 0 rgba(96,165,250,.22)}
 .wrow.rest .wb{color:var(--muted);font-weight:400}
 /* 草稿页要看清「为什么这么排」和每节课的说明，不能像周视图那样省略号截断 */
@@ -327,7 +320,7 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .wrow.dwk .wb em{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.5}
 .override{display:flex;align-items:center;gap:6px;font-size:12px;
   color:var(--muted);margin-top:10px;line-height:1.5}
-.override input{width:16px;height:16px;accent-color:#3B82F6}
+.override input{width:16px;height:16px;accent-color:var(--brand)}
 /* 表单里的开关：纯 CSS，状态由 input:checked 驱动，提交时跟着表单走。
    和「我的」页那个 .sw 不一样——那个走 data-act 调原生，这个必须能被 submit。 */
 .tsw{position:relative;display:inline-block;width:46px;height:26px;
@@ -335,12 +328,12 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .tsw input{position:absolute;inset:0;width:100%;height:100%;margin:0;
   opacity:0;cursor:pointer;z-index:1}
 .tsw i{position:absolute;inset:0;border-radius:999px;
-  background:rgba(255,255,255,.13);transition:background .16s;pointer-events:none}
+  background:var(--line-strong);transition:background .16s;pointer-events:none}
 .tsw i::after{content:"";position:absolute;left:3px;top:3px;width:20px;height:20px;
-  border-radius:50%;background:#7C8A98;
+  border-radius:50%;background:var(--ink-3);
   transition:transform .16s,background .16s}
-.tsw input:checked + i{background:rgba(79,214,166,.85)}
-.tsw input:checked + i::after{transform:translateX(20px);background:#06121C}
+.tsw input:checked + i{background:var(--ok)}
+.tsw input:checked + i::after{transform:translateX(20px);background:var(--bg)}
 .tsw input:focus-visible + i{box-shadow:0 0 0 3px rgba(59,130,246,.3)}
 .kvline{display:flex;justify-content:space-between;gap:12px;font-size:12px;
   color:var(--ink2);padding:7px 0;border-bottom:1px solid var(--line2)}
@@ -366,14 +359,14 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .rank .sub{font-size:11px;color:var(--muted);margin-left:5px}
 .rank .km{flex:0 0 auto;font-size:14px;font-weight:600;color:var(--ink);
   font-variant-numeric:tabular-nums}
-.rank.me{background:rgba(59,130,246,.08);border-radius:10px;margin:0 -8px;padding:9px 8px}
+.rank.me{background:var(--brand-soft);border-radius:10px;margin:0 -8px;padding:9px 8px}
 .chal{padding:10px 0;border-bottom:1px solid var(--line2)}
 .chal:last-child{border-bottom:0}
 .chal .t{font-size:14px;font-weight:600;color:var(--ink)}
 .chal .m{font-size:11px;color:var(--muted);margin-top:3px}
 .bar{height:5px;border-radius:3px;background:var(--line2);margin-top:7px;overflow:hidden}
-.bar i{display:block;height:100%;background:#3B82F6;border-radius:3px}
-.bar.done i{background:#1D9E75}
+.bar i{display:block;height:100%;background:var(--brand);border-radius:3px}
+.bar.done i{background:var(--ok)}
 /* 无框区块：组页里除了「远征」那张入口，其余数据块都直接铺在页面上。
    每条卡都有 1px 边框 + 圆角 + 内阴影，六个区块叠起来就是一堵墙；
    数据本身有分隔线，不需要再给它们各发一个盒子。 */
@@ -414,7 +407,7 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
   border-radius:var(--r-3);padding:14px 0;margin:2px 0 0}
 .ovc{padding:0 12px;min-width:0}
 .ovc+.ovc{border-left:1px solid var(--line)}
-.ovc .v{font-size:var(--fs-h1,24px);font-weight:700;letter-spacing:-.8px;
+.ovc .v{font-size:var(--fs-h1,24px);font-weight:600;letter-spacing:-.8px;
   color:var(--ink);font-variant-numeric:tabular-nums;white-space:nowrap}
 .ovc .v small{font-size:var(--fs-micro,11px);font-weight:500;letter-spacing:0;
   color:var(--ink-3);margin-left:3px}
@@ -428,16 +421,16 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
   border-radius:var(--r-2);background:var(--surface);border:1px solid var(--line);
   text-decoration:none;color:inherit}
 .prow.on{background:var(--surface-2);border-color:var(--line-brand);
-  box-shadow:0 0 0 1px rgba(96,165,250,.16)}
+  box-shadow:0 0 0 1px var(--line-brand)}
 .pm{display:flex;flex-direction:column;gap:3px;white-space:nowrap;
-  font-size:var(--fs-lead,15px);font-weight:700;color:var(--ink);
+  font-size:var(--fs-lead,15px);font-weight:600;color:var(--ink);
   font-variant-numeric:tabular-nums}
 .pm i{font-style:normal;font-size:var(--fs-micro,11px);font-weight:400;color:var(--ink-3)}
 .pm i.now{color:var(--brand-ink)}
 .pd{min-width:0;font-size:var(--fs-cap,12px);color:var(--ink-2);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pb{display:block;height:4px;margin-top:7px;border-radius:999px;
-  background:rgba(255,255,255,.08);overflow:hidden}
+  background:var(--line);overflow:hidden}
 .pb i{display:block;height:100%;border-radius:999px;background:var(--brand)}
 .prow .go{font-size:16px;color:var(--ink-3);line-height:1}
 .prow.on .go{color:var(--brand-ink)}
@@ -480,8 +473,8 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
   font-variant-numeric:tabular-nums;letter-spacing:-.4px;line-height:1}
 .sline b i{font-style:normal;font-size:11px;font-weight:400;
   color:var(--faint);margin-left:2px}
-.sline .tt{font-size:11px;color:#F5C26B;background:rgba(245,165,36,.09);
-  border:1px solid rgba(245,165,36,.22);border-radius:999px;padding:1px 7px}
+.sline .tt{font-size:11px;color:var(--warn);background:var(--warn-soft);
+  border:1px solid var(--warn-soft);border-radius:999px;padding:1px 7px}
 /* 衫：一个小色块 + 名字。六件同时出现也不会挤，因为字号压到 10.5 */
 .sbit{display:inline-flex;align-items:center;gap:5px;font-size:11px;
   color:var(--muted);white-space:nowrap}
@@ -509,7 +502,7 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .lgi i{width:9px;height:9px;border-radius:2px;flex:0 0 9px}
 .lgi b{font-weight:600;color:var(--muted)}
 /* 共同跑过的格子：白色,和地图上那条白带对应 */
-.lgi i.sh{background:#F4F7FC}
+.lgi i.sh{background:var(--map-shared)}
 /* 跨省分片：每片一个小标题 + 一张图。标题给地名和格数，
    不然三张图排下来分不清哪张是哪儿。 */
 .shard-h{display:flex;align-items:baseline;justify-content:space-between;
@@ -531,7 +524,7 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
    只画波点不够——9px 的点上 1px 的红点被抗锯齿冲淡成粉色，远看仍是一个白点。
    加红边不是为了好看，是为了在 9px 这个尺寸上还能一眼和白衫分开：
    白衫是「纯白 + 白边」，圆点衫是「白心 + 红边」。 */
-i.pd{background:#F7F9FC;
+i.pd{background:var(--map-shared);
   background-image:radial-gradient(#C6342E 1.15px, rgba(198,52,46,0) 1.3px);
   background-size:2.9px 2.9px;background-position:.55px .55px;
   box-shadow:0 0 0 1.4px #D9534F}
@@ -567,11 +560,11 @@ i.pd{background:#F7F9FC;
   padding:4px 0 10px}
 .qg{display:flex;flex-direction:column;align-items:center;gap:5px;
   padding:7px 2px 5px;border-radius:14px;text-decoration:none;min-width:0}
-.qg:active{background:rgba(59,130,246,.10)}
+.qg:active{background:var(--brand-soft)}
 .qg i{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;
   justify-content:center;font-size:16px;font-style:normal;
-  background:linear-gradient(160deg,rgba(34,211,238,.24),rgba(59,130,246,.13));
-  color:#9BEDF9;border:1px solid rgba(34,211,238,.26);
+  background:linear-gradient(160deg,var(--cyan-soft),var(--brand-soft));
+  color:var(--cyan);border:1px solid var(--line);
   box-shadow:inset 0 0 14px rgba(34,211,238,.2)}
 .qg .qn{font-size:11px;font-weight:600;color:var(--ink2);white-space:nowrap;
   max-width:100%;overflow:hidden;text-overflow:ellipsis}
@@ -593,7 +586,7 @@ i.pd{background:#F7F9FC;
 .eform{margin:0}
 .ebtn{font-size:20px;line-height:1;padding:7px 10px;border-radius:10px;
   border:1px solid var(--line2);background:rgba(255,255,255,.02);cursor:pointer}
-.ebtn:active{background:rgba(59,130,246,.14);border-color:rgba(96,165,250,.34)}
+.ebtn:active{background:var(--brand-soft);border-color:var(--line-brand)}
 .cm{display:flex;align-items:baseline;gap:7px;padding:7px 0;
   border-bottom:1px solid var(--line2);font-size:12px;color:var(--ink2)}
 .cm:last-child{border-bottom:0}
@@ -618,14 +611,14 @@ i.pd{background:#F7F9FC;
 .prow .p2 .unit{flex:0 0 auto;font-size:12px;color:var(--muted)}
 .prow .pinfo{font-size:12px;color:var(--muted);margin-top:6px}
 .prow.past{opacity:.5}
-.prow.cur{background:rgba(59,130,246,.08);border-radius:14px;
+.prow.cur{background:var(--brand-soft);border-radius:14px;
   margin:0 -10px;padding:10px}
 /* 整块可点的计划条：点击面积从「一个小链接」扩到整张卡。
    里面的排版全交给 .rc-plan 的 flex，这里只负责别把链接样式漏进去。 */
 a.rc-plan-link{color:inherit;text-decoration:none;cursor:pointer;
   -webkit-tap-highlight-color:transparent;transition:border-color .16s}
 a.rc-plan-link:active{transform:scale(.997)}
-a.rc-plan-link:focus-visible{outline:2px solid rgba(96,165,250,.6);outline-offset:2px}
+a.rc-plan-link:focus-visible{outline:2px solid var(--line-brand);outline-offset:2px}
 a.rc-plan-link .chev{flex:0 0 auto;font-size:20px;line-height:1;color:var(--muted);
   opacity:.65;margin-left:2px}
 /* 表单里的数字输入统一收窄：默认宽度会把卡片撑破（手机上尤其明显） */
@@ -633,7 +626,7 @@ a.rc-plan-link .chev{flex:0 0 auto;font-size:20px;line-height:1;color:var(--mute
 .kvline input[type=number]{width:88px;min-width:88px;padding:5px 6px;
   font-size:12px;text-align:center}
 .kvline input[type=checkbox]{width:20px;height:20px;min-width:0;
-  accent-color:#3B82F6}
+  accent-color:var(--brand)}
 @media(max-width:380px){
   /* 只有普通 .grid 退成单列；.acts 是 68px 的紧凑卡，360 宽下两列仍放得下，
      退成单列会让「我的」页凭空多出 4 行、又变回长列表。 */
@@ -655,20 +648,20 @@ table{display:block;overflow-x:auto;white-space:nowrap}
    以前用 -14px 抵消 .wrap 的内边距，结果在 body 上反而多出 14px，
    整页能横向拖动一小截。 */
 #gc-nav{margin:0 0 16px;padding:9px 14px;position:sticky;top:0;z-index:99;
-  background:rgba(7,11,18,.96);border-bottom:1px solid rgba(96,165,250,.18);
+  background:var(--bg);border-bottom:1px solid var(--line-brand);
   display:flex;gap:7px;align-items:center;flex-wrap:wrap;
   font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
 #gc-nav a,#gc-nav span,#gc-nav button{font-size:12px;text-decoration:none;padding:5px 10px;
-  border-radius:999px;background:rgba(19,28,43,.9);border:1px solid rgba(96,165,250,.18);
-  color:#E8F0FB;font-family:inherit;cursor:pointer;white-space:nowrap}
-#gc-nav a.back{border:0;background:none;color:#8CC2FF;font-weight:600;padding-left:0}
-#gc-nav button{background:rgba(59,130,246,.16);border-color:rgba(96,165,250,.32);
-  color:#8CC2FF;font-weight:600}
+  border-radius:999px;background:var(--surface);border:1px solid var(--line-brand);
+  color:var(--ink);font-family:inherit;cursor:pointer;white-space:nowrap}
+#gc-nav a.back{border:0;background:none;color:var(--brand-ink);font-weight:600;padding-left:0}
+#gc-nav button{background:var(--brand-soft);border-color:var(--line-brand);
+  color:var(--brand-ink);font-weight:600}
 #gc-nav span.off{opacity:.38}
-#gc-nav input{font-size:12px;padding:5px 7px;border:1px solid rgba(96,165,250,.20);
-  border-radius:10px;background:rgba(9,14,22,.9);color:#E8F0FB;font-family:inherit}
+#gc-nav input{font-size:12px;padding:5px 7px;border:1px solid var(--line-brand);
+  border-radius:10px;background:var(--surface-2);color:var(--ink);font-family:inherit}
 #gc-nav form{display:inline-flex;gap:5px;align-items:center;margin:0}
-#gc-nav .tag{margin-left:auto;border:0;background:none;color:#7C8FA8}
+#gc-nav .tag{margin-left:auto;border:0;background:none;color:var(--ink-3)}
 """
 
 # AI 页自带完整 CSS，只统一外框、卡片层次与标题节奏，不动它内部的交互。
@@ -676,11 +669,11 @@ AI_FIX = """
 .wrap{max-width:820px;padding:0 14px calc(30px + env(safe-area-inset-bottom))}
 .top{padding-top:16px;margin-bottom:12px}
 .top h1{font-size:20px}
-.card{border-radius:18px;border-color:rgba(96,165,250,.16);
+.card{border-radius:18px;border-color:var(--line-brand);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.035),
     0 14px 34px -22px rgba(0,0,0,.9)}
 /* tabs 槽底比页面再深一点，选中项才浮得起来 */
-.tabs{background:rgba(9,14,22,.9);border:1px solid rgba(96,165,250,.12)}
+.tabs{background:var(--surface-2);border:1px solid var(--line-brand)}
 """ + BR.BRAND_CSS + """
 /* AI 页自带 CSS，用 h1 的角标伪元素补上同一枚品牌图标，不改它的 DOM。 */
 .top>div:first-child h1{display:flex;align-items:center;gap:9px}
@@ -688,7 +681,7 @@ AI_FIX = """
   border-radius:10px;
   background:url("__RC_MARK_URI__") center/80% no-repeat,
     linear-gradient(155deg,#16273D,#091320);
-  border:1px solid rgba(96,165,250,.36);
+  border:1px solid var(--line-brand);
   box-shadow:0 0 16px -5px rgba(59,130,246,.9)}
 """.replace("__RC_MARK_URI__", BR.mark_uri(26))
 
@@ -1017,8 +1010,8 @@ def _spark(pairs, *, w: int = 120, h: int = 30, pad: int = 2) -> str:
     return (f'<svg class="spark" viewBox="0 0 {w} {h}" width="100%" height="{h}" '
             f'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">'
             f'<defs><linearGradient id="{gid}" x1="0" y1="0" x2="0" y2="1">'
-            f'<stop offset="0" stop-color="#3B82F6" stop-opacity=".42"/>'
-            f'<stop offset="1" stop-color="#3B82F6" stop-opacity="0"/>'
+            f'<stop offset="0" stop-color="var(--brand)" stop-opacity=".42"/>'
+            f'<stop offset="1" stop-color="var(--brand)" stop-opacity="0"/>'
             f'</linearGradient></defs>'
             f'<polygon points="{area}" fill="url(#{gid})"/>'
             f'<polyline points="{line}" fill="none" stroke="#5EA0FF" '
@@ -2407,9 +2400,9 @@ def files_page(root: Path) -> str:
 <style>
 .row.pick{{cursor:pointer;gap:10px}}
 .row.pick .ck{{display:none;width:18px;height:18px;flex:0 0 auto;margin:0;
-  accent-color:#3B82F6}}
+  accent-color:var(--brand)}}
 /* 管理态：左侧让出勾选框，箭头变淡（仍可点开文件） */
-body.manage .row.pick{{cursor:default;background:rgba(59,130,246,.05)}}
+body.manage .row.pick{{cursor:default;background:var(--brand-soft)}}
 body.manage .row.pick .ck{{display:block}}
 body.manage .row.pick .go{{opacity:.35}}
 .row.pick .go{{text-decoration:none;font-size:20px;line-height:1;color:var(--muted);
@@ -2422,9 +2415,9 @@ body.manage .row.pick .go{{opacity:.35}}
 .pickbar.on{{display:flex}}
 .manage-btn{{font-size:12px;padding:5px 12px;line-height:1.2}}
 .pickbar .n{{flex:1;font-size:12px;color:var(--ink2);min-width:0}}
-.btn.danger{{border-color:rgba(242,85,90,.45);color:#FF9AA0}}
-.btn.danger.armed{{background:rgba(242,85,90,.92);color:#1A0708;border-color:transparent;
-  font-weight:650}}
+.btn.danger{{border-color:var(--bad-soft);color:var(--bad)}}
+.btn.danger.armed{{background:var(--bad);color:var(--bg);border-color:transparent;
+  font-weight:600}}
 body.has-pick{{padding-bottom:74px}}
 </style>
 <div class="pickbar" id="pickbar">
@@ -2535,10 +2528,10 @@ body.has-pick{{padding-bottom:74px}}
   function box_html(j){
     return '<div class="card" style="margin-bottom:10px">' +
       '<div class="lab">正在生成 · ' + j.name + '</div>' +
-      '<div style="height:8px;border-radius:999px;background:rgba(96,165,250,.16);' +
+      '<div style="height:8px;border-radius:999px;background:var(--line-brand);' +
       'overflow:hidden;margin-top:10px">' +
       '<i style="display:block;height:100%;width:' + j.pct + '%;' +
-      'background:linear-gradient(90deg,#22D3EE,#3B82F6);transition:width .4s"></i></div>' +
+      'background:linear-gradient(90deg,var(--cyan),var(--brand));transition:width .4s"></i></div>' +
       '<div class="note" style="margin-top:8px">' + j.stage + ' ' + j.pct +
       '% · 可以先切走，生成完这里会自动出现</div></div>';
   }
