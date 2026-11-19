@@ -1387,14 +1387,23 @@ def run() -> int:
     # 组列表页：只有一个组时直接进详情——点「小组」最想看的是排名
     from garmin_cn import groupui as _GU
     _gsrc = inspect.getsource(_GU.groups_page)
-    assert "if len(items) == 1 and not force_list:" in _gsrc and \
-        "return group_page(" in _gsrc, "只有一个组时没有直接进详情页"
+    # 单组直达：但带了 message 就不能直达——建组/加入失败是 303 回跳
+    # `/groups?msg=…`，一进列表就被弹进组详情，那句错误提示永远没人看见
+    assert "if len(items) == 1 and not force_list and not message:" in _gsrc and \
+        "return group_page(" in _gsrc, "只有一个组时没有直接进详情页（或没给 message 留口子）"
     # 单组直达必须能被 ?list=1 绕过，否则「加入另一个组」永远没入口
     assert "force_list: bool = False" in _gsrc, "列表页没有强制列表的开关"
     assert 'class="fold fold-lg" open' in _gsrc, \
         "被引导进来时「再加入一个」还是折着的"
     assert '<summary>再加入一个' in _gsrc, \
         "建组/加入没有了"
+    # 建组有两个服务端硬限制（一人只能当 1 个组的组长 / 最多 3 个组），
+    # 命中时不能还摆一个注定 409 的表单
+    assert "owner_g =" in _gsrc and "你已经当着「" in _gsrc, \
+        "已经是组长时还摆着建组表单"
+    _ssrc = inspect.getsource(_GU.settings_page)
+    assert "/archive" in _ssrc and "解散这个组" in _ssrc, \
+        "组长没有解散入口——既建不了新组也解散不掉旧组，是个死结"
     # 唯独不能退回「永久折叠」：force_list 之外仍是折叠的
     assert "else '<details class=\"fold\">'" in _gsrc, \
         "底部入组表单不再折叠，会和榜单抢版面"

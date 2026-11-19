@@ -460,8 +460,12 @@ def api_create(me, body: dict) -> dict:
         # 加入朋友的组不该妨碍自己建组，而一个人同时负责两个组确实不现实。
         if c.execute("SELECT 1 FROM groups WHERE owner_id=? AND archived=0", (uid,)).fetchone():
             raise GroupError(409, "你已经是一个组的组长，先解散或转让再建新组")
-        n = c.execute("SELECT COUNT(*) FROM group_members WHERE user_id=? AND status='active'",
-                      (uid,)).fetchone()[0]
+        # 只数「还没解散」的组成员身份：解散过的组仍留着历史行，
+        # 算进来的话「解散了却还是进不了新组」——这条曾经把组长逼进死结。
+        n = c.execute(
+            "SELECT COUNT(*) FROM group_members m JOIN groups g ON g.id=m.group_id"
+            " WHERE m.user_id=? AND m.status='active' AND g.archived=0",
+            (uid,)).fetchone()[0]
         if n >= MAX_GROUPS_PER_USER:
             raise GroupError(409, f"最多同时加入 {MAX_GROUPS_PER_USER} 个组")
 

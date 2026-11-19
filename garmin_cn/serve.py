@@ -1580,11 +1580,15 @@ class _Handler(SimpleHTTPRequestHandler):
                     if r.get("ok"):
                         return self._see_other(f"/groups/{r['group']['id']}")
                     msg = r.get("error") or "建组失败"
+                    # 失败回列表页并强制出列表：否则只有 1 个组的人会被
+                    # 「单组直达」弹回组详情，错误提示连同表单一起消失
+                    back = "/groups?list=1"
                 elif second == "join":
                     r = G.join(values.get("code"), values.get("alias"))
                     if r.get("ok"):
                         return self._see_other(f"/groups/{r['group']['id']}")
                     msg = r.get("error") or "加入失败"
+                    back = "/groups?list=1"
                 else:
                     gid = as_int(second)
                     if not gid:
@@ -1606,6 +1610,16 @@ class _Handler(SimpleHTTPRequestHandler):
                         msg = (f'昵称已改成「{r.get("alias")}」' if r.get("changed")
                                else "昵称没变") if r.get("ok") \
                             else (r.get("error") or "改名失败")
+                        back = f"/groups/{gid}/settings"
+                    elif act == "archive":
+                        # 解散是不可逆的：表单里必须勾「确认」，服务端也要求 confirm=1
+                        if (values.get("confirm") or "") != "1":
+                            raise ValueError("解散要先勾确认")
+                        r = G.archive(gid)
+                        if r.get("ok"):
+                            return self._see_other(
+                                "/groups?list=1&msg=" + quote("已解散这个组"))
+                        msg = r.get("error") or "解散失败"
                         back = f"/groups/{gid}/settings"
                     elif act == "transfer":
                         r = G.transfer(gid, as_int(values.get("uid")))
