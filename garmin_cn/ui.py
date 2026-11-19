@@ -68,24 +68,43 @@ a{color:var(--brand-ink);text-decoration:none}
 .hact:active{background:rgba(59,130,246,.14);border-color:rgba(96,165,250,.34)}
 .kicker{font-size:11px;font-weight:700;letter-spacing:2px;color:var(--cyan);
   text-shadow:0 0 12px rgba(34,211,238,.45)}
-.page-head h1{margin:6px 0 4px;font-size:24px;font-weight:650;letter-spacing:-.5px;line-height:1.3}
+.page-head h1{margin:6px 0 4px;font-size:var(--fs-dsp,32px);font-weight:700;
+  letter-spacing:-1px;line-height:1.2}
 .lede{margin:0;font-size:14px;color:var(--muted)}
 .meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
 .chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:3px 9px;
   border-radius:999px;background:rgba(15,22,34,.72);border:1px solid var(--line);color:var(--ink2)}
 .chip.ok{background:var(--brand-soft);border-color:rgba(59,130,246,.34);color:var(--brand-ink)}
 a.chip{min-height:44px;padding:0 14px;justify-content:center}
+.chip b{font-weight:600;color:var(--ink)}
 .chip.warn{background:var(--amber-soft);border-color:rgba(245,165,36,.32);color:#F5C26B}
+/* 状态胶囊：形状统一，只换色调。
+   以前每处各写一套（绿的、蓝的、橙的、虚线的），同一屏里能出现三种圆角
+   和三个字号，看着像不同人做的。现在只许用这一个组件 + 五种色调。 */
+.pill{display:inline-flex;align-items:center;justify-content:center;height:26px;
+  padding:0 10px;border-radius:var(--r-pill);font-size:var(--fs-micro,11px);
+  font-weight:600;white-space:nowrap;border:1px solid transparent;
+  font-variant-numeric:tabular-nums}
+.pill.ok{color:var(--ok);background:var(--ok-soft);border-color:rgba(63,211,154,.28)}
+.pill.run{color:var(--brand-ink);background:var(--brand-soft);border-color:rgba(96,165,250,.28)}
+.pill.warn{color:var(--warn);background:var(--warn-soft);border-color:rgba(245,165,36,.28)}
+.pill.bad{color:var(--bad);background:var(--bad-soft);border-color:rgba(242,85,90,.28)}
+/* 虚线灰：计划外、跳过这类「有这件事但不算计划内」的状态 */
+.pill.mute{color:var(--ink-3);background:transparent;border:1px dashed rgba(148,163,184,.38)}
+/* 实心品牌色：只给「今天」这种唯一的当前项，一屏最多一个 */
+.pill.brand{color:var(--ink-inv);background:var(--brand);border-color:transparent}
 .sec{margin-top:24px}
 .sec-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px}
-.sec-head h2{margin:0;font-size:12px;font-weight:700;letter-spacing:1.4px;
-  color:var(--muted);position:relative;padding-left:12px}
-.sec-head h2::before{content:"";position:absolute;left:0;top:50%;width:3px;height:12px;
-  margin-top:-6px;border-radius:2px;
-  background:linear-gradient(180deg,var(--cyan),var(--brand));
-  box-shadow:0 0 10px rgba(34,211,238,.7)}
-.sec-head .more{font-size:12px;color:var(--brand-ink);display:inline-flex;
-  align-items:center;min-height:44px;padding:0 2px}
+/* 区块标题从 12px 字距 1.4px 的小标改成 16px 粗体：小标那套是「杂志目录」
+   的做法，在手机上字太小、层级反而低于正文里的数字。 */
+.sec-head h2{margin:0;font-size:var(--fs-title,16px);font-weight:700;letter-spacing:0;
+  color:var(--ink);position:relative;padding-left:11px}
+/* 竖条：纯品牌色、16px 高。原来用青→蓝渐变 + 青色外发光，一屏六七个
+   区块就有六七个发光点，hero 的焦点被稀释掉了。 */
+.sec-head h2::before{content:"";position:absolute;left:0;top:50%;width:3px;height:16px;
+  margin-top:-8px;border-radius:2px;background:var(--brand)}
+.sec-head .more{font-size:var(--fs-body,14px);color:var(--brand-ink);
+  display:inline-flex;align-items:center;min-height:44px;padding:0 2px}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}
 .grid.one{grid-template-columns:1fr}
@@ -258,47 +277,41 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .pager{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
 .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 /* 训练计划：今日课表 + 本周 7 天 */
-.plan-hero{background:linear-gradient(180deg,rgba(19,28,43,.92),rgba(14,21,33,.95));
-  border:1px solid var(--line);border-radius:var(--r);
-  padding:18px;box-shadow:var(--shadow);position:relative;overflow:hidden}
-.plan-hero::after{content:"";position:absolute;left:0;right:0;top:0;height:1px;
-  background:linear-gradient(90deg,transparent,rgba(96,165,250,.48),transparent);opacity:.75}
-.plan-hero .t{font-size:20px;font-weight:650;line-height:1.35;letter-spacing:-.2px}
+.plan-hero{background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-3);
+  padding:16px 18px;position:relative;overflow:hidden}
+.plan-hero .t{font-size:var(--fs-h1,24px);font-weight:700;line-height:1.3;
+  letter-spacing:-.6px}
+/* 本周完成的 6 段小条：比「2/6 次」更容易一眼看出还剩几次 */
+.wseg{display:flex;gap:4px;align-items:center;margin-top:12px}
+.wseg i{flex:0 0 auto;width:26px;height:6px;border-radius:999px;
+  background:rgba(255,255,255,.10)}
+.wseg i.on{background:var(--brand)}
 .plan-hero .d{font-size:14px;color:var(--ink2);margin-top:6px;line-height:1.7}
 .plan-hero .n{font-size:12px;color:var(--muted);margin-top:10px}
 .plan-hero .n + .n{margin-top:4px}
 .wk{display:flex;flex-direction:column;gap:7px}
-/* 周课表行：56px 日期列 + 内容 + 状态贴右。
+/* 周课表行：日期列 | 内容 | 状态贴右。
    日期列原来是 40px，「周二」两字加日期就装不下，中文被逐字折行、和卡片
-   重叠——设计语言 §4.8 记的就是这个 bug。56px 刚好放得下「周四」+「11/20」。 */
+   重叠——设计语言 §4.8 记的就是这个 bug。现在 56px + 一道竖发丝线，
+   日期和课名分开，眼睛不用猜「周四」是日期还是课名的一部分。 */
 .wrow{display:grid;grid-template-columns:56px minmax(0,1fr) auto;
   align-items:center;column-gap:12px;
   background:var(--surface);
   border-radius:var(--r-2);padding:11px 13px;border:1px solid var(--line)}
 .wrow .wd{display:flex;flex-direction:column;gap:1px;white-space:nowrap;
-  font-size:14px;font-weight:600;color:var(--ink);line-height:1.3}
+  align-self:stretch;justify-content:center;padding-right:9px;
+  box-shadow:inset -1px 0 0 var(--line);
+  font-size:15px;font-weight:700;color:var(--ink);line-height:1.25}
 .wrow .wd i{font-style:normal;font-size:11px;font-weight:400;color:var(--ink-3)}
 .wrow .wb{min-width:0;font-size:16px;font-weight:600;line-height:1.4}
 .wrow .wb em{display:block;font-style:normal;font-size:12px;color:var(--muted);
   font-weight:400;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-/* 今天这一行：左侧 3px 品牌条 + 抬升面。
-   原来是整行蓝渐变 + 蓝色外发光，成了页面里第二处发光（§2 P1 一页一处）。 */
+/* 今天这一行：整行描品牌色边 + 抬升面。
+   原来是「左侧 3px 条」——一条竖线在整行里太弱，扫一眼分不出哪行是今天。 */
 .wrow.today{background:var(--surface-2);border-color:var(--line-brand);
-  box-shadow:inset 3px 0 0 var(--brand)}
-.wrow.today .wd{color:var(--brand-ink)}
-.wrow .now{flex:0 0 auto;font-size:11px;color:#04121F;font-weight:700;
-  background:linear-gradient(135deg,#3B82F6,#22D3EE);
-  border-radius:999px;padding:2px 8px;box-shadow:0 0 12px -2px rgba(59,130,246,.8)}
-.wrow .done{flex:0 0 auto;font-size:11px;color:var(--brand-ink);
-  background:rgba(59,130,246,.12);border:1px solid rgba(96,165,250,.26);
-  border-radius:999px;padding:2px 8px}
-/* 计划了但没做：虚线灰标签，比「已完成」弱一档，但不至于被藏起来 */
-.wrow .miss{flex:0 0 auto;font-size:11px;color:var(--muted);background:transparent;
-  border:1px dashed var(--line);border-radius:999px;padding:2px 8px}
-/* 没排课但练过了：琥珀色，说清「这不是计划内的完成」 */
-.wrow .extra{flex:0 0 auto;font-size:11px;color:var(--amber);
-  background:rgba(245,165,36,.10);border:1px solid rgba(245,165,36,.28);
-  border-radius:999px;padding:2px 8px}
+  box-shadow:0 0 0 1px rgba(96,165,250,.16)}
+.wrow.today .wd{color:var(--brand-ink);box-shadow:inset -1px 0 0 rgba(96,165,250,.22)}
 .wrow.rest .wb{color:var(--muted);font-weight:400}
 /* 草稿页要看清「为什么这么排」和每节课的说明，不能像周视图那样省略号截断 */
 .whyrow{display:flex;gap:8px;font-size:12px;color:var(--ink2);
@@ -371,12 +384,53 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 /* 设置项一行一个：左边名字、右边控件，没有外框，只靠间距分组 */
 /* 分段控件：一条胶囊槽 + 选中块。一屏里两组（粒度 / 运动类型）用同一形态，
    比两排散装 chip 更容易看出「这是单选」。 */
+/* 分段控件：一条胶囊槽 + 选中块。
+   宽度跟内容走（max-content），不铺满整行——铺满时四五个选项被拉得一样宽，
+   看着像导航栏，反而看不出「这是一组单选」。 */
 .seg{display:flex;gap:3px;background:var(--surface-2);border-radius:var(--r-pill);
-  padding:3px;margin-bottom:8px}
-.seg a{flex:1 1 0;min-height:44px;display:flex;align-items:center;
+  padding:3px;margin-bottom:8px;width:max-content;max-width:100%}
+.seg a{flex:0 1 auto;min-height:44px;display:flex;align-items:center;
   justify-content:center;border-radius:var(--r-pill);text-decoration:none;
-  font-size:12px;color:var(--ink-2);white-space:nowrap;padding:0 6px}
-.seg a.ok{background:var(--surface-3);color:var(--ink);font-weight:600}
+  font-size:var(--fs-cap,12px);color:var(--ink-2);white-space:nowrap;padding:0 14px;
+  border:1px solid transparent}
+/* 选中块用品牌色描边 + 淡底：和 `.pill.run` 同一套语义，用户不用重新学 */
+.seg a.ok{background:var(--brand-soft);border-color:var(--line-brand);
+  color:var(--ink);font-weight:600}
+/* 历史概览：三个数在一张卡里，用竖线切成三格。
+   三张独立小卡会把「本月 / 本年 / 累计」读成三个并列指标，其实是一句
+   递进的话；一格一竖线才是同一件事的三个时间尺度。 */
+.ovrow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+  background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-3);padding:14px 0;margin:2px 0 0}
+.ovc{padding:0 12px;min-width:0}
+.ovc+.ovc{border-left:1px solid var(--line)}
+.ovc .v{font-size:var(--fs-h1,24px);font-weight:700;letter-spacing:-.8px;
+  color:var(--ink);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ovc .v small{font-size:var(--fs-micro,11px);font-weight:500;letter-spacing:0;
+  color:var(--ink-3);margin-left:3px}
+.ovc .k{margin-top:2px;font-size:var(--fs-micro,11px);color:var(--ink-3);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 周期行：左列「周期 + 状态」/ 中列「数据 + 横条」/ 右侧箭头。
+   原来一行里塞「图标 + 月份·中文月 + 次数·里程·小时」，中文月和数字挤在
+   一起，一列读下来完全没有对齐的边。 */
+.prow{display:grid;grid-template-columns:auto minmax(0,1fr) 12px;
+  align-items:center;column-gap:14px;margin-bottom:8px;padding:11px 13px;
+  border-radius:var(--r-2);background:var(--surface);border:1px solid var(--line);
+  text-decoration:none;color:inherit}
+.prow.on{background:var(--surface-2);border-color:var(--line-brand);
+  box-shadow:0 0 0 1px rgba(96,165,250,.16)}
+.pm{display:flex;flex-direction:column;gap:3px;white-space:nowrap;
+  font-size:var(--fs-lead,15px);font-weight:700;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+.pm i{font-style:normal;font-size:var(--fs-micro,11px);font-weight:400;color:var(--ink-3)}
+.pm i.now{color:var(--brand-ink)}
+.pd{min-width:0;font-size:var(--fs-cap,12px);color:var(--ink-2);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pb{display:block;height:4px;margin-top:7px;border-radius:999px;
+  background:rgba(255,255,255,.08);overflow:hidden}
+.pb i{display:block;height:100%;border-radius:999px;background:var(--brand)}
+.prow .go{font-size:16px;color:var(--ink-3);line-height:1}
+.prow.on .go{color:var(--brand-ink)}
 /* 连续空周期合并行：虚线边一眼看出「这里没有数据但可以展开」，
    实线会和真实数据行混在一起。 */
 .gap{margin:0 0 8px}
@@ -482,11 +536,12 @@ i.pd{background:#F7F9FC;
 /* 小组页的「衫 / 目标 / 结对 / 预言」四行。
    类名特意用 .kvrows 而不是 .wk——.wk 已经是计划页周课表的容器，
    两处同名会让周课表被套进这里的 24px 列里，变成竖排叠字。 */
-.kvrows .k{color:var(--ink-3)}
-   原来的 flex 换行里三项语序各不相同（目标…已跑…达成 / 结对…我/他…逆袭），
-   读起来像三句不相干的话。对齐成两列，扫一眼就知道哪行是什么。 */
+/* 两列：标签列固定 24px，内容列自适应。原来那版把三项塞进 flex 换行，
+   每项语序还不一样（目标…已跑…达成 / 结对…我/他…逆袭），读起来像三句
+   不相干的话。 */
 .kvrows{display:grid;grid-template-columns:24px minmax(0,1fr);gap:4px 8px;
   padding:2px 0 8px;font-size:11px;color:var(--ink2);line-height:1.5}
+.kvrows .k{color:var(--ink-3)}
 
 .kvrows .v{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kvrows .v.wrap{white-space:normal;overflow:visible;display:flex;flex-wrap:wrap;
@@ -768,8 +823,14 @@ def _more(more) -> str:
 
 
 def chip(text: str, tone: str = "") -> str:
+    """页头的一个信息胶囊。
+
+    文字里第一个数字/日期自动加粗：胶囊里真正要读的是「297」「11-19」，
+    标签只是说明它是什么。原来整条一样灰，扫一眼分不出哪个是数。
+    """
     cls = f"chip {tone}" if tone else "chip"
-    return f'<span class="{cls}">{esc(text)}</span>'
+    body = re.sub(r"(\d[\d\-/:.]*)", r"<b>\1</b>", esc(text), count=1)
+    return f'<span class="{cls}">{body}</span>'
 
 
 def _today_load_txt(load: dict, day: str) -> str:
@@ -995,22 +1056,40 @@ def _upcoming_html(days: int = 30, limit: int = 3) -> str:
             on = False
         d = r.get("days") or 0
         is_bk = bool(r.get("booking"))
-        if is_bk:
-            when = ("今天该订" if d == 0 else
-                    (f"该订 T-{d}" if d > 0 else f"预订过期 {-d} 天"))
-        else:
-            when = "今天" if d == 0 else ("明天" if d == 1 else f"T-{d}")
-        hot = " hot" if (d <= 2 or is_bk) else ""
         # 预订待办只给日期：截止日当天 09:00 是我们自己定的提醒时刻，
         # 显示成「01/25 09:00」会被误读成航班/入住的时刻
         hh = "" if (is_bk or r["at"][11:16] == "00:00") else r["at"][11:16]
         stamp = r["at"][5:10].replace("-", "/") + (f" {hh}" if hh else "")
         label = r.get("label") or "时间点"
+        event = str(r.get("event") or "")
+
+        # 标题：赛事 · 动作。原来把「预订过期 7 天」放最前面当主语，读的人要
+        # 先看到状态才知道是哪场比赛，语序和实际关心顺序是反的。
+        title = f"{event} · {label}" if event and label else (event or label)
+
+        if is_bk:
+            if d < 0:
+                sub = f"{stamp} · 已过期 {-d} 天，尽快处理"
+                pill, tone = f"逾期 {-d} 天", "warn"
+            elif d == 0:
+                sub = f"{stamp} · 今天该订"
+                pill, tone = "今天该订", "warn"
+            else:
+                sub = f"{stamp} · 提前 {d} 天订"
+                pill, tone = f"剩 {d} 天", "run"
+        else:
+            phrase = "就是今天" if d == 0 else ("明天" if d == 1 else f"{d} 天后")
+            sub = f"{stamp} · {phrase}"
+            if d == 0:
+                pill, tone = "今天", "brand"
+            else:
+                pill, tone = f"{d} 天后", ("warn" if d <= 2 else "run")
+
         out.append(
             '<div class="rc-up">'
-            f'<span class="rc-up-d{hot}">{esc(when)}</span>'
-            f'<span class="rc-up-t"><b>{esc(stamp)}</b> {esc(label)}'
-            f'<span class="rc-up-e">{esc(r.get("event") or "")}</span></span>'
+            f'<div class="rc-up-t"><div class="tt">{esc(title)}</div>'
+            f'<div class="ss">{esc(sub)}</div></div>'
+            f'<div class="rc-up-r"><span class="pill {tone}">{esc(pill)}</span>'
             '<form method="post" action="/__event/remind" style="margin:0">'
             f'<input type="hidden" name="slug" value="{esc(slug)}">'
             f'<input type="hidden" name="at" value="{esc(r["at"])}">'
@@ -1018,7 +1097,7 @@ def _upcoming_html(days: int = 30, limit: int = 3) -> str:
             f'<input type="hidden" name="on" value="{"0" if on else "1"}">'
             f'<button class="rc-bell{" on" if on else ""}" type="submit" '
             f'aria-label="{"取消提醒" if on else "设为提醒"}">'
-            f'{"🔔" if on else "🔕"}</button></form></div>')
+            f'{"🔔" if on else "🔕"}</button></form></div></div>')
     return ('<section class="rc-panel rc-up-panel">'
             '<div class="rc-panel-hd"><span class="rc-eyebrow">赛事提醒</span></div>'
             + "".join(out) + "</section>")
@@ -1111,47 +1190,60 @@ def home_page() -> str:
         d0 = dt.date.today()
         week_cn = ""
 
-    # ---- L1 结论条 44：一句话判断 + 窗口标签（28 天基线） ------------------
+    # ---- L1 结论：并进 hero 当标题 -----------------------------------------
+    # 原来页首还有一条独立的「结论条」，和 hero 说的是同一句话，等于把
+    # 同一个结论写两遍；参考稿是「一句结论 + 一段解释 + 环」同处一卡。
     delta = _baseline_delta(hist, score)
     if delta is None:
-        meta = "记录不足，暂无 28 天基准"
+        meta = "记录不足，还没有 28 天基准"
     else:
-        meta = f"比近 28 天基准 {'+' if delta >= 0 else '−'}{abs(delta)}"
-    verdict = (f'<section class="rc-verdict"><span class="v">'
-               f'{esc(_verdict(score))}</span><span class="m">{esc(meta)}</span>'
-               f'</section>')
+        meta = f"比近 28 天基准{'低' if delta < 0 else '高'} {abs(delta)}"
 
-    # ---- 恢复 hero ≈176：环 108 + 3 条分解 + 1 句可执行建议 ---------------
+    # ---- 恢复 hero ≈176：一句结论 + 一句解释 + 环 + 3 条分解 + 建议 ---
     # 常态不发光；只有 <50 / >90 的异常日才点亮，辉光才有意义。
     alert = score is not None and (float(score) < 50 or float(score) > 90)
-    flag_txt = str((flags[0].get("text") if flags else "") or "")
-    # 只留逗号后面的动作短语：「近 7 天睡眠缺口 11.0 小时，优先补觉」
-    # 整句塞进 hero 会折两行、还把焦点从环上抢走。
-    if "，" in flag_txt:
-        flag_txt = flag_txt.split("，", 1)[1]
-    if len(flag_txt) > 12:
-        flag_txt = flag_txt[:12] + "…"
-    advice = (f'<div class="rc-advice"><b>今日建议</b> {esc(_session(res))}'
-              + (f' · {esc(flag_txt)}' if flag_txt else "") + "</div>")
+    try:
+        _sc0 = float(score) if score is not None else None
+    except (TypeError, ValueError):
+        _sc0 = None
+    _tone = ("bad" if (_sc0 is not None and _sc0 < 50)
+             else "warn" if (_sc0 is not None and _sc0 < 70) else "ok")
+    para = (f"恢复度 {_sc0:.0f}，{meta}。" if _sc0 is not None else meta + "。")
+
+    # 建议从一整句改成几个胶囊：一句话里塞「St24×2 · 优先补觉」时，
+    # 谁都会把它当成一段说明文读过去，而不是三个可执行的动作。
+    _pills: list[str] = [_session(res)]
+    for _f in flags:
+        _t = str(_f.get("text") or "")
+        if "，" in _t:
+            _t = _t.split("，", 1)[1]
+        _t = _t.strip("。 ")
+        if _t and len(_t) <= 8 and _t not in _pills:
+            _pills.append(_t)
+    advice = ('<div class="rc-advice"><b>今日建议</b>' + "".join(
+        f'<span class="pill run">{esc(x)}</span>' for x in _pills[:3]) + "</div>")
     hero = (f'<section class="rc-panel rc-hero-panel">'
-            f'<div class="rc-panel-hd"><span class="rc-eyebrow">今日恢复度</span>'
-            f'<span class="rc-win">与近 28 天基准对比</span></div>'
-            f'<div class="rc-hero">{SC.ring_svg(score, alert=alert)}'
-            f'<div class="rc-hero-side"><div class="rc-parts">'
-            f'{SC.part_rows(rd.get("parts") or [], 3)}</div>{advice}</div>'
-            f'</div></section>')
+            f'<div class="rc-hero"><div class="rc-hero-main">'
+            f'<div class="rc-hero-t"><i class="rc-dot {_tone}"></i>'
+            f'{esc(_verdict(score))}</div>'
+            f'<p class="rc-hero-p">{esc(para)}</p></div>'
+            f'{SC.ring_svg(score, alert=alert)}</div>'
+            f'<div class="rc-parts">{SC.part_rows(rd.get("parts") or [], 3)}</div>'
+            f'{advice}</section>')
 
     # ---- 负荷带 60：三个数并列，不是三张卡；每个数都带窗口 ----------------
     acute, ctl, tsb = load.get("acute_7d"), load.get("ctl"), load.get("tsb")
     items = (
         ("7 天负荷", f"{acute:.0f}" if isinstance(acute, (int, float)) else "—",
-         "按心率估算（TRIMP）"),
+         "心率估算 TRIMP"),
         ("长期负荷", f"{ctl:.1f}" if isinstance(ctl, (int, float)) else "—",
          "42 天均值"),
         ("训练状态", f"{tsb:+.1f}" if isinstance(tsb, (int, float)) else "—",
-         "长期与短期负荷之差"),
+         "长期减短期"),
     )
-    load_html = ('<section class="rc-load rc-load-panel">' + "".join(
+    load_html = ('<section class="rc-load rc-load-panel">'
+                 '<div class="rc-load-hd"><span class="rc-eyebrow">训练负荷</span>'
+                 '<span class="rc-win">近 7 天 / 42 天</span></div>' + "".join(
         f'<div class="item"><div class="k">{esc(k)}</div>'
         f'<div class="v rc-num">{esc(v)}</div><div class="w">{esc(w)}</div></div>'
         for k, v, w in items)
@@ -1310,10 +1402,14 @@ def home_page() -> str:
         # 手表会把课名写进活动名（「西安市 - W2 周二 10km@E」）：这里也要洗一遍，
         # 否则首页最近活动会露出「W2」这种内部周标签。
         shown = _plan_name(name)
+        _ld = a.get("training_load") or a.get("load")
+        load_txt = f"负荷 {int(_ld)}" if _ld else ""
         samples += (f'<div class="rc-sample" data-aid="{esc(aid)}" role="button" '
                     f'tabindex="0" aria-label="{esc(shown)}">'
-                    f'<span class="t">{esc(shown)}</span>'
-                    f'<span class="d">{esc(_act_metric(a))}</span></div>')
+                    f'<i class="ico">{_act_icon(str(a.get("type") or ""))}</i>'
+                    f'<div class="m"><div class="t">{esc(shown)}</div>'
+                    f'<div class="d">{esc(_act_metric(a, want_load=False))}</div></div>'
+                    f'<div class="r">{esc(load_txt)}</div></div>')
     if not samples:
         samples = ('<div class="rc-sample"><span class="t">最近 7 天还没有活动记录。'
                    '如果设备上有记录，可以下拉同步。</span></div>')
@@ -1327,7 +1423,7 @@ def home_page() -> str:
                  f'<div class="rc-days">{SC.week_bars(pairs, day)}</div>'
                  f'<div class="rc-samples">{samples}</div></div></section>')
 
-    body_html_all = ('<div class="rc-screen">' + verdict + hero + load_html
+    body_html_all = ('<div class="rc-screen">' + hero + load_html
                      + body_html + plan_html + _upcoming_html()
                      + week_html + _reading_card() + '</div>')
     # 只留两个数据胶囊：宽屏自动铺成大屏，不再需要第三个按钮。
@@ -1415,9 +1511,13 @@ def _mask_email(v) -> str:
     return f"{keep}***@{domain}"
 
 
-def _act_metric(a: dict) -> str:
+def _act_metric(a: dict, want_load: bool = True) -> str:
     """活动行的一行摘要。按类型给不同指标 —— 力量课写「0.00 km · 配速 —」
-    会被读成「跑了 0 公里」，明明是没跑。"""
+    会被读成「跑了 0 公里」，明明是没跑。
+
+    `want_load=False` 时不带「负荷 N」：负荷挪到行尾单独一列，
+    和参考稿「左边数据、右边负荷」的分栏一致。
+    """
     dist = float(a.get("distance_m") or 0) / 1000.0
     dur = float(a.get("duration_s") or 0) / 60.0
     from .sports import metric_text
@@ -1436,10 +1536,55 @@ def _act_metric(a: dict) -> str:
             bits.append(f"{dist:.2f} km")
         if dur >= 1:
             bits.append(f"{dur:.0f} 分钟")
-    te = a.get("training_load") or a.get("load")
-    if te:
-        bits.append(f"负荷 {int(te)}")
+        te = a.get("training_load") or a.get("load")
+        if te and want_load:
+            bits.append(f"负荷 {int(te)}")
     return " · ".join(bits) or "已记录"
+
+
+# 活动类型 → 行首的小图标。用内联 SVG 而不是 emoji：emoji 在 WebView 里
+# 是彩色位图，一列下来五颜六色，和「只有数据和状态着色」的规矩打架。
+_ACT_ICONS = {
+    "run": ('<circle cx="9.6" cy="3.6" r="1.5"/>'
+            '<path d="M9.2 5.6L7.4 8.8"/>'
+            '<path d="M7.4 8.8L5.4 12.4"/><path d="M7.4 8.8L10 12.2"/>'
+            '<path d="M5.8 6.6l3.6 1.2"/>'),
+    "bike": ('<circle cx="3.9" cy="11.2" r="2.5"/><circle cx="12.1" cy="11.2" r="2.5"/>'
+             '<path d="M3.9 11.2l2.4-5.4h3.1l2.7 5.4"/><path d="M6.3 5.8l1.8 5.4"/>'),
+    "strength": ('<path d="M4.3 6v4"/><path d="M5.9 4.9v6.2"/><path d="M10.1 4.9v6.2"/>'
+                 '<path d="M11.7 6v4"/><path d="M5.9 8h4.2"/>'),
+    "swim": ('<path d="M2.2 10.4c1.4-1.5 2.8-1.5 4.2 0s2.8 1.5 4.2 0 2.8-1.5 4.2 0"/>'
+             '<path d="M2.2 13.2c1.4-1.5 2.8-1.5 4.2 0s2.8 1.5 4.2 0 2.8-1.5 4.2 0"/>'
+             '<circle cx="10.6" cy="4.4" r="1.3"/>'),
+    "walk": ('<path d="M8.6 5.6l-1 3.4 1.8 1.6"/>'
+             '<path d="M7.6 9l-1.2 3.4"/><path d="M9.4 10.6l1.2 2.4"/>'
+             '<circle cx="8.8" cy="3.4" r="1.4"/>'),
+}
+
+
+def _act_icon(kind: str) -> str:
+    """按活动类型取行首图标。未知类型给一个中性圆点，不留空白方块。"""
+    k = str(kind or "").lower()
+    if "bik" in k or "cycl" in k:
+        key = "bike"
+    elif "swim" in k:
+        key = "swim"
+    elif "strength" in k or "weight" in k or "gym" in k:
+        key = "strength"
+    elif "walk" in k or "hik" in k:
+        key = "walk"
+    elif "run" in k:
+        key = "run"
+    else:
+        key = ""
+    if not key:
+        return ('<svg viewBox="0 0 16 16" width="16" height="16" fill="none" '
+                'stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+                '<circle cx="8" cy="8" r="4.2"/></svg>')
+    return ('<svg viewBox="0 0 16 16" width="16" height="16" fill="none" '
+            'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" '
+            'stroke-linejoin="round" aria-hidden="true">'
+            + _ACT_ICONS[key] + "</svg>")
 
 
 def _plan_name(name) -> str:
@@ -1519,9 +1664,19 @@ def _today_plan_card(pl: dict) -> str:
             more += "".join(
                 f'<div class="n">另练了：{esc(_plan_name(a.get("name")))} · {esc(_plan_meta(a))}</div>'
                 for a in acts[:2])
+        # 本周完成度：一排小段（参考稿的做法）。超过 12 次就不画，
+        # 十几段挤在 380px 里每段只剩几像素，反而看不出完成了几次。
+        _wt = int(pl.get("week_planned") or 0)
+        _wd = int(pl.get("week_done") or 0)
+        wseg = ""
+        if 0 < _wt <= 12:
+            wseg = ('<div class="wseg" aria-label="本周已完成 '
+                    f'{_wd} / {_wt} 次">' + "".join(
+                        f'<i class="{"on" if i < _wd else ""}"></i>'
+                        for i in range(_wt)) + "</div>")
         return (f'<div class="plan-hero"><div class="t">{esc(_plan_name(it.get("name")))}</div>'
                 + (f'<div class="d">{esc(it.get("detail"))}</div>' if it.get("detail") else "")
-                + f'<div class="n">{esc(_plan_meta(it))}</div>{badge}{more}{local_tag}</div>')
+                + f'<div class="n">{esc(_plan_meta(it))}</div>{wseg}{badge}{more}{local_tag}</div>')
 
     nxt = pl.get("next_date")
     if nxt:
@@ -1609,20 +1764,25 @@ def plan_page(qs: dict | None = None) -> str:
                   f'{esc(_plan_meta(a))}{esc(_more)}</em></span>')
         else:
             wb = '<span class="wb">休息</span>'
+        _dd = str(d.get("date") or "")[5:].replace("-", "/")
+        _is_future = str(d.get("date") or "") > str(today_iso or "")
         if is_today:
-            tag = '<span class="now">今天</span>'
+            tag = '<span class="pill brand">今天</span>'
         elif d.get("done"):
-            tag = '<span class="done">已完成</span>'
+            tag = '<span class="pill ok">已完成</span>'
         elif d.get("missed"):
             # 计划了但没做：以前这种日子被直接标成「已完成」藏起来了
-            tag = '<span class="miss">未完成</span>'
+            tag = '<span class="pill bad">未完成</span>'
         elif d.get("extra"):
             # 没排课但练过：不叫「完成」，只如实说这是计划外的
-            tag = '<span class="extra">计划外</span>'
+            tag = '<span class="pill mute">计划外</span>'
+        elif its and _is_future:
+            # 还没到的课：说清「等着你」，否则一片空白分不出是没排还是没做
+            tag = '<span class="pill run">待完成</span>'
         else:
             tag = ""
-        # 日期列「周四 / 11/20」两行：只写周几时，一眼看不出是哪一天
-        _dd = str(d.get("date") or "")[5:].replace("-", "/")
+        # 日期列「周四 / 11-20」两行 + 一道竖向发丝线：只写周几时一眼看不出
+        # 是哪天，而日期和课名之间没有分隔时，两列会读成一句话。
         rows += (f'<div class="{cls}"><span class="wd">{esc(d["dow"])}'
                  + (f'<i>{esc(_dd)}</i>' if _dd else "")
                  + f'</span>{wb}{tag}</div>')

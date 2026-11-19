@@ -46,59 +46,70 @@ _BASE = """
 .rc-screen{display:flex;flex-direction:column;gap:10px}
 
 /* 四级层级：L1 26 / L2 19 / L3 11.5–12.5 / L4 11，窗口标签必须贴着数字 */
-.rc-eyebrow{font-size:11px;font-weight:700;letter-spacing:1.5px;
-  color:var(--muted,#7C8FA8)}
-.rc-win{font-size:11px;color:var(--faint,#7689A2);
+/* 面板标题：15px 粗体 + 3px 品牌竖条，和 app 其它页的 .sec-head 同一套语气。
+   原来是 11px 字距 1.5px 的「小标」，在手机上比正文里的数字还小，
+   层级是反的。 */
+.rc-eyebrow{font-size:var(--fs-lead,15px);font-weight:700;letter-spacing:0;
+  color:var(--ink,#E9F0F8);position:relative;padding-left:10px}
+.rc-eyebrow::before{content:"";position:absolute;left:0;top:50%;width:3px;
+  height:14px;margin-top:-7px;border-radius:2px;background:var(--brand)}
+.rc-win{font-size:var(--fs-micro,11px);color:var(--ink-3,#7A8DA4);
   font-variant-numeric:tabular-nums;white-space:nowrap}
 .rc-num{font-variant-numeric:tabular-nums;font-weight:650;
   color:var(--ink,#E8F0FB)}
 
-/* 面板：一层渐进 + 一道顶沿高光，不再有三层背景 */
-.rc-panel{position:relative;overflow:hidden;border-radius:var(--r-3,18px);padding:11px 12px;
-  background:linear-gradient(168deg,rgba(20,31,48,.92),rgba(11,18,29,.96));
-  border:1px solid var(--line,rgba(96,165,250,.16))}
-.rc-panel::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
-  background:linear-gradient(90deg,transparent,rgba(96,165,250,.50),transparent);
-  pointer-events:none}
+/* 面板：平底色 + 发丝线，和 app 其它卡片一致。
+   原来叠了两层：168° 渐进底 + 顶部一道蓝色高光，一屏六块就是六道高光，
+   卡片边缘看着发脏。 */
+.rc-panel{position:relative;overflow:hidden;border-radius:var(--r-3,18px);padding:12px;
+  background:var(--surface,#0D141F);
+  border:1px solid var(--line,rgba(255,255,255,.065))}
 .rc-panel>*{position:relative;z-index:1}
 .rc-panel-hd{display:flex;align-items:baseline;justify-content:space-between;
   gap:8px;margin:0 0 8px}
 
-/* L1 结论条 44：把原先藏在 hero 右侧的答案提到第一行 */
-.rc-verdict{display:flex;align-items:center;justify-content:space-between;gap:10px;
-  min-height:38px;padding:6px 12px;border-radius:14px;
-  background:linear-gradient(100deg,rgba(59,130,246,.24),rgba(34,211,238,.07) 62%,transparent);
-  border:1px solid rgba(96,165,250,.30);position:relative;overflow:hidden}
-.rc-verdict::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
-  background:linear-gradient(90deg,rgba(96,165,250,.7),transparent);pointer-events:none}
-.rc-verdict .v{font-size:20px;font-weight:700;letter-spacing:-.3px;
-  color:var(--brand-ink,#8CC2FF);min-width:0}
-.rc-verdict .m{font-size:12px;color:var(--faint,#7689A2);white-space:nowrap;
-  font-variant-numeric:tabular-nums}
-
-/* 恢复 hero ≈176：环 108（r45 / 描边 9）+ 3 条分解 + 1 句可执行建议 */
-.rc-hero{display:flex;gap:14px;align-items:stretch}
+/* 恢复 hero：一句结论 + 一句解释在左、环在右、三格分解在下、建议胶囊收尾。
+   原来是「标题条 + 环 + 三条横条分解」，结论和标题分居两块，说的是同一件事。 */
+.rc-hero{display:flex;gap:14px;align-items:center}
 .rc-ring{flex:0 0 108px;width:108px;height:108px;display:block}
 .rc-ring.alert{filter:drop-shadow(0 0 14px rgba(242,85,90,.55))}
-.rc-hero-side{flex:1;min-width:0;display:flex;flex-direction:column;
-  justify-content:space-between;gap:8px}
-.rc-parts{display:flex;flex-direction:column;gap:5px}
-.rc-part{display:grid;grid-template-columns:60px 1fr 26px;gap:6px;align-items:center}
-.rc-part .n{font-size:12px;color:var(--muted,#7C8FA8);white-space:nowrap}
-.rc-part .b{height:3px;border-radius:999px;background:rgba(255,255,255,.09);
+.rc-hero-main{flex:1;min-width:0}
+.rc-hero-t{display:flex;align-items:center;gap:8px;font-size:var(--fs-h2,20px);
+  font-weight:700;letter-spacing:-.4px;color:var(--ink,#E9F0F8);line-height:1.3}
+/* 状态灯：绿=可以练 / 琥珀=降量 / 红=休息。9px 的小圆点，光晕很淡，
+   只是让「结论」有个形状，不参与页面级辉光。 */
+.rc-dot{flex:0 0 9px;width:9px;height:9px;border-radius:50%}
+.rc-dot.ok{background:var(--ok,#3FD39A);box-shadow:0 0 9px rgba(63,211,154,.55)}
+.rc-dot.warn{background:var(--warn,#F5A524);box-shadow:0 0 9px rgba(245,165,36,.5)}
+.rc-dot.bad{background:var(--bad,#F2555A);box-shadow:0 0 9px rgba(242,85,90,.5)}
+.rc-hero-p{margin:6px 0 0;font-size:var(--fs-cap,12px);line-height:1.6;
+  color:var(--ink-2,#A6B8CD)}
+/* 三格分解：标签 + 数值一行，进度条压在下面对齐整列。
+   原来是「名称 | 横条 | 数值」三列并排，横条被挤在中间只剩几像素，
+   看不出比例，也没法和上面的大数字对齐。 */
+.rc-parts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;
+  margin-top:11px;padding-top:10px;border-top:1px solid var(--line,rgba(255,255,255,.065))}
+.rc-part{display:grid;grid-template-columns:minmax(0,1fr) auto;
+  grid-template-areas:"n v" "b b";gap:5px 6px;align-items:center;min-width:0}
+.rc-part .n{grid-area:n;font-size:var(--fs-micro,11px);color:var(--ink-3,#7A8DA4);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rc-part .b{grid-area:b;height:3px;border-radius:999px;background:rgba(255,255,255,.09);
   overflow:hidden;min-width:0}
 .rc-part .b i{display:block;height:100%;border-radius:999px;
-  background:linear-gradient(90deg,var(--brand,#3B82F6),var(--cyan,#22D3EE))}
-.rc-part .v{font-size:12px;text-align:right;color:var(--ink2,#B7C7DD);
-  font-variant-numeric:tabular-nums}
-.rc-advice{font-size:12px;color:var(--ink2,#B7C7DD);line-height:1.5}
-.rc-advice b{color:var(--ink,#E8F0FB);font-weight:650}
+  background:linear-gradient(90deg,var(--brand,#3B82F6),var(--brand-ink,#9CC6FF))}
+.rc-part .v{grid-area:v;font-size:var(--fs-body,14px);font-weight:600;text-align:right;
+  color:var(--ink,#E9F0F8);font-variant-numeric:tabular-nums}
+.rc-advice{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:10px;
+  font-size:var(--fs-micro,11px);color:var(--ink-2,#A6B8CD)}
+.rc-advice b{color:var(--ink,#E9F0F8);font-weight:600;margin-right:2px}
 
 /* 负荷带 60：三个数并列，**不是三张卡** */
 .rc-load{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
   min-height:52px;padding:4px 0;
   border-top:1px solid var(--line2,rgba(96,165,250,.09));
   border-bottom:1px solid var(--line2,rgba(96,165,250,.09))}
+.rc-load-hd{grid-column:1/-1;display:flex;align-items:baseline;
+  justify-content:space-between;gap:8px;padding:0 2px 2px}
 .rc-load .item{padding:0 12px;border-right:1px solid var(--line2,rgba(96,165,250,.09));
   min-width:0}
 .rc-load .item:first-child{padding-left:2px}
@@ -137,15 +148,18 @@ _BASE = """
   display:inline-flex;align-items:center;min-height:44px;padding:0 2px}
 
 /* 最近 7 天 ≈300：一个大数 + 7 根柱 + 3 条样本 */
-.rc-up{display:flex;align-items:center;gap:8px;padding:6px 2px;
-  border-top:1px solid rgba(148,163,184,.14)}
+/* 赛事提醒：标题 + 副文在左，状态胶囊在右。
+   原来是「橙色状态 + 日期 + 动作 + 赛事名」四段挤一行，先看到「预订过期
+   7 天」才知道是哪场比赛，语序和真正关心的顺序是反的。 */
+.rc-up{display:flex;align-items:center;gap:10px;padding:9px 2px;
+  border-top:1px solid var(--line,rgba(255,255,255,.065))}
 .rc-up:first-of-type{border-top:0}
-.rc-up-d{flex:none;min-width:42px;font-size:11px;color:var(--muted,#8A93A6);
-  font-variant-numeric:tabular-nums}
-.rc-up-d.hot{color:#F5A524;font-weight:700}
-.rc-up-t{flex:1;min-width:0;font-size:12px;color:var(--ink,#E8F0FB);
+.rc-up-t{flex:1;min-width:0}
+.rc-up-t .tt{font-size:var(--fs-body,14px);font-weight:600;color:var(--ink,#E9F0F8);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.rc-up-e{margin-left:6px;color:var(--faint,#7689A2);font-size:11px}
+.rc-up-t .ss{margin-top:2px;font-size:var(--fs-micro,11px);color:var(--ink-3,#7A8DA4);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rc-up-r{flex:none;display:flex;align-items:center;gap:2px}
 /* 视觉上只是个 15px 的铃铛，但命中区必须 44×44（手指按不准），
    用负 margin 把多出来的高度吃掉，行高不受影响。 */
 .rc-bell{background:none;border:0;width:44px;height:44px;padding:0;
@@ -169,27 +183,37 @@ _BASE = """
   display:flex;flex-direction:column;justify-content:flex-end;align-items:center;
   gap:4px;text-decoration:none;color:var(--faint,#7689A2)}
 .rc-day .bar{width:100%;max-width:44px;border-radius:6px 6px 3px 3px;
-  background:linear-gradient(180deg,rgba(59,130,246,.58),rgba(34,211,238,.20));
-  min-height:0}
+  background:#1B3352;min-height:0}
 /* 零值只留一个基线点，绝不画 6px 假柱（沿用 history._month_bars 的修法） */
 .rc-day.zero .bar{height:0!important}
 .rc-day .dot{width:4px;height:4px;border-radius:50%;
   background:var(--faint,#7689A2);opacity:.6;margin-bottom:2px}
-.rc-day.on .bar{background:linear-gradient(180deg,#3B82F6,#22D3EE);
-  box-shadow:0 0 18px -6px rgba(59,130,246,.9)}
+/* 只有今天那根是亮蓝：七根同色时看不出「哪天是今天」 */
+.rc-day.on .bar{background:var(--brand,#3B82F6);
+  box-shadow:0 0 16px -5px rgba(59,130,246,.9)}
 .rc-day .lbl{font-size:11px;line-height:1.2}
 .rc-day.on .lbl{color:var(--brand-ink,#8CC2FF)}
 .rc-samples{margin-top:8px;border-top:1px solid var(--line2,rgba(96,165,250,.09))}
 /* CTL/ATL 双线只在宽屏出现：竖屏首屏不占高度，大屏负荷面板才有图可读 */
 .rc-load-chart{display:none}
-.rc-sample{display:flex;align-items:center;gap:10px;min-height:44px;
+/* 活动行：图标块 + 标题/摘要 + 右侧负荷。
+   原来是一行文字里塞「名称 · 距离 · 配速 · 负荷」，一列读下来每个字都在
+   变宽变窄；现在三列固定，眼睛只用横着扫一次。 */
+.rc-sample{display:grid;grid-template-columns:34px minmax(0,1fr) auto;
+  align-items:center;column-gap:10px;min-height:44px;padding:6px 0;
   border-bottom:1px solid var(--line2,rgba(96,165,250,.09));
   text-decoration:none;color:inherit}
 .rc-sample:last-child{border-bottom:0}
-.rc-sample .t{font-size:12px;font-weight:600;min-width:0;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap}
-.rc-sample .d{font-size:12px;color:var(--muted,#7C8FA8);margin-left:auto;
-  white-space:nowrap;font-variant-numeric:tabular-nums}
+.rc-sample .ico{width:34px;height:34px;border-radius:var(--r-1,10px);
+  display:flex;align-items:center;justify-content:center;
+  background:var(--surface-2,#111B29);color:var(--brand-ink,#9CC6FF)}
+.rc-sample .m{min-width:0}
+.rc-sample .t{font-size:var(--fs-body,14px);font-weight:600;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink,#E9F0F8)}
+.rc-sample .d{font-size:var(--fs-micro,11px);color:var(--ink-3,#7A8DA4);margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rc-sample .r{font-size:var(--fs-micro,11px);color:var(--ink-3,#7A8DA4);
+  white-space:nowrap;font-variant-numeric:tabular-nums;text-align:right}
 
 /* 宽屏铺开完全交给 @media，不再有横屏按钮：倾斜手机时系统已有
    旋转入口，再来一个 App 按钮既重复又会触发额外的系统旋转提示。 */
@@ -198,7 +222,8 @@ _BASE = """
 @media(max-width:380px){
   .rc-hero{gap:10px}
   .rc-ring{flex-basis:96px;width:96px;height:96px}
-  .rc-part{grid-template-columns:52px 1fr 24px}
+  .rc-parts{gap:8px}
+  .rc-part .n{font-size:var(--fs-micro,11px)}
   .rc-load .item{padding:0 8px}
 }
 """
@@ -214,12 +239,10 @@ _BIG = """
 {p}.rc-page .foot{margin-top:8px;padding-top:6px}
 {p}.rc-screen{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));
   grid-template-areas:
-    "v v v v v v v v v v v v"
     "h h h h l l l l b b b b"
     "w w w w w w w w p p p p";
-  grid-template-rows:38px minmax(240px,1fr) minmax(312px,1fr);
+  grid-template-rows:minmax(258px,1fr) minmax(312px,1fr);
   gap:12px;height:calc(100vh - 160px);min-height:560px}
-{p}.rc-verdict{grid-area:v}
 {p}.rc-hero-panel{grid-area:h}
 {p}.rc-load{grid-area:l}
 {p}.rc-body-panel{grid-area:b}
@@ -263,14 +286,11 @@ _LAND = """
 .rc-page .foot{margin-top:3px;padding-top:2px;line-height:1.4}
 .rc-screen{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));
   grid-template-areas:
-    "v v v v v v v v v v v v"
     "h h h h l l l l p p p p"
     "w w w w w w b b b b b b";
-  grid-template-rows:30px minmax(0,1fr) minmax(0,1fr);
+  grid-template-rows:minmax(0,1fr) minmax(0,1fr);
   gap:8px;min-height:0;height:calc(100vh - 92px);
   height:calc(100dvh - 92px)}
-.rc-verdict{grid-area:v;min-height:0;padding:2px 10px}
-.rc-verdict .v{font-size:14px}
 .rc-hero-panel{grid-area:h}
 .rc-load{grid-area:l}
 .rc-plan-panel{grid-area:p}
@@ -281,10 +301,12 @@ _LAND = """
 .rc-panel-hd{margin:0 0 4px}
 .rc-hero{gap:8px}
 .rc-ring{flex:0 0 68px;width:68px;height:68px}
-.rc-hero-side{gap:4px}
-.rc-parts{gap:3px}
-.rc-part{grid-template-columns:46px 1fr 22px;gap:4px}
+.rc-parts{gap:6px 8px;margin-top:6px;padding-top:6px}
+.rc-part{gap:3px 4px}
+.rc-part .n,.rc-part .v{font-size:var(--fs-micro,11px)}
 .rc-advice{display:none}
+/* 横屏一屏放不下标题：负荷带那行文字收掉，只留三个数 */
+.rc-load-hd{display:none}
 /* 负荷带在窄横屏里改竖排三行、每行的窗口标签跟在数值后面，避免
    三列各 ~55px 时标签换行把面板撑破。 */
 .rc-load{min-height:0;padding:2px 8px;align-content:center;overflow:hidden;
@@ -332,17 +354,17 @@ _LAND = """
 .rc-page .page-head.rc-compact h1{font-size:12px}
 .rc-page .page-head.rc-compact .meta{display:none}
 .rc-page .foot{display:none}
-.rc-screen{grid-template-rows:22px minmax(0,1fr) minmax(0,1fr);gap:5px;
+.rc-screen{grid-template-rows:minmax(0,1fr) minmax(0,1fr);gap:5px;
   height:calc(100vh - 30px);height:calc(100dvh - 30px)}
-.rc-verdict{padding:1px 8px}
-.rc-verdict .v{font-size:12px}
 /* 内容 flex:1 后自动吃满面板高度，不再上半截满、下半截空。 */
 .rc-panel{padding:3px 7px;display:flex;flex-direction:column}
 .rc-panel-hd{display:flex;margin:0 0 3px;line-height:1.1;flex:none}
 .rc-panel-hd .rc-win{display:none}
 .rc-ring{flex:0 0 52px;width:52px;height:52px}
 .rc-hero{flex:1;min-height:0;gap:10px;align-items:center}
-.rc-parts{flex:1;justify-content:space-around}
+.rc-parts{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;
+  margin-top:0;padding-top:4px;align-content:center}
+.rc-advice{display:none}
 .rc-load{gap:0;padding:2px 6px;align-content:center}
 .rc-load .item{padding:0;border-bottom:0}
 .rc-load .v{font-size:14px}
@@ -474,12 +496,12 @@ def load_chart(ctl, atl, *, w: int = 360, h: int = 96) -> str:
         'stroke="rgba(96,165,250,.16)" stroke-width="1"/>'
         f'<polyline points="{poly(a)}" fill="none" stroke="#5EA0FF" '
         'stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
-        f'<polyline points="{poly(b)}" fill="none" stroke="#22D3EE" '
+        f'<polyline points="{poly(b)}" fill="none" stroke="#8CC2FF" '
         'stroke-width="2" stroke-linejoin="round" stroke-linecap="round" '
         'opacity=".75"/>'
         '</svg><div class="lg">'
         '<span><i style="background:#5EA0FF"></i>CTL · 42 天指数均线</span>'
-        '<span><i style="background:#22D3EE"></i>ATL · 近 7 天疲劳</span>'
+        '<span><i style="background:#8CC2FF"></i>ATL · 近 7 天疲劳</span>'
         '</div>')
 
 
