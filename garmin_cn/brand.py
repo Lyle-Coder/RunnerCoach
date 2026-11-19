@@ -198,10 +198,13 @@ _CSS_TMPL = """
 .rc-surface{position:relative;z-index:1}
 .brandline{display:flex;align-items:center;gap:9px}
 .brandline .kicker{letter-spacing:1.6px}
-.card.brand::before,.plan-hero::before{content:"";position:absolute;
+.card.brand::before{content:"";position:absolute;
   right:-24px;top:-40px;width:116px;height:116px;pointer-events:none;
   background:url("__RC_MARK_URI__") center/contain no-repeat;
   opacity:.05;filter:drop-shadow(0 0 20px rgba(59,130,246,.45))}
+/* 「今日课表」那张卡不再压品牌水印：它上面是今天唯一要执行的动作，
+   右上角浮一个 5% 的图形只会被当成脏点。品牌水印留给「我的」页的
+   品牌卡（.card.brand）。 */
 """
 BRAND_CSS = _CSS_TMPL.replace("__RC_MARK_URI__", mark_uri(116))
 

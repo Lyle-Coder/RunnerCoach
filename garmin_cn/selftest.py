@@ -637,9 +637,9 @@ def run() -> int:
     shutil.rmtree(_snapdir, ignore_errors=True)
     # 页面必须能把「未完成」标出来，也不能再把「已练」写成「今天休息」
     _ui_plan_src = Path(U.__file__).read_text(encoding="utf-8")
-    assert 'class="miss">未完成' in _ui_plan_src, "周视图没有「未完成」标签"
+    assert '>未完成</span>' in _ui_plan_src, "周视图没有「未完成」标签"
     assert "今天已完成" in _ui_plan_src, "今日卡片没有「今天已完成」分支"
-    assert "今天练过" in _ui_plan_src and 'class="extra">计划外' in _ui_plan_src, \
+    assert "今天练过" in _ui_plan_src and '>计划外</span>' in _ui_plan_src, \
         "没有把「练过」和「完成课表」分开，也没有计划外标签"
     assert "本周完成" in _ui_plan_src, "计划页没有统计本周完成情况"
     # 计划接口读缓存时也要按本地库重算：同步之后「今天练没练」会变
@@ -3138,7 +3138,7 @@ def run() -> int:
                   _chart_svg(_pg_old).count("<circle "))
     assert _spots_old == _days_old, \
         f"选中历史月份后柱状图不是那个月的天数：{_spots_old} vs {_days_old}"
-    assert 'class="row on"' in _pg_old and f"sel={_old_m}" in _pg_old, \
+    assert 'class="prow on"' in _pg_old and f"sel={_old_m}" in _pg_old, \
         "选中的周期行没有高亮"
     # 非法/过期的 sel 要回落到最新一期，不能空图或报错
     _pg_bad = _H.history_page({"mode": ["month"], "sel": ["1999-01"]})
@@ -3176,9 +3176,9 @@ def run() -> int:
     _hb = _H._month_bars([{"key": "2026-09", "label": "9月", "km": 5.0},
                           {"key": "2026-10", "label": "10月", "km": 9.0}],
                          hot="2026-09")
-    assert _hb.count('opacity="1"') == 1 and _hb.count('opacity="0.52"') == 1, \
+    assert _hb.count('opacity="1"') == 1 and _hb.count('opacity="0.44"') == 1, \
         "柱状图高亮不是「唯一一根实色」"
-    assert _hb.index('opacity="1"') < _hb.index('opacity="0.52"'), \
+    assert _hb.index('opacity="1"') < _hb.index('opacity="0.44"'), \
         "柱状图的高亮仍是「最后一根」而不是 hot 指定的那一根"
     # 月分组行要带真实时长（以前恒为 0.0 小时）
     assert any(float(m.get("dur_h") or 0) > 0 for m in _AA2.history_stats()["months"]), \
@@ -5070,10 +5070,11 @@ def run() -> int:
     _h_dom = _h.split("<main>")[1]
     assert '<div class="rc-screen">' in _h and 'class="app rc-page"' in _h, \
         "首屏没套上专属作用域"
-    assert _h.find('<section class="rc-verdict"') < _h.find(
-        '<section class="rc-panel rc-hero-panel"'), "结论条没提到第一行"
-    for _seg in ('<section class="rc-verdict"', "rc-hero-panel",
-                 '<section class="rc-load', "rc-body-panel",
+    # 结论并进了 hero：原来页首一条结论条 + hero 里再说一遍，同一个结论写两遍
+    assert 'class="rc-verdict"' not in _h, "独立结论条又回来了（和 hero 重复）"
+    assert 'class="rc-hero-t"' in _h and 'class="rc-dot' in _h, \
+        "hero 里没有「状态灯 + 结论」那一行"
+    for _seg in ("rc-hero-panel", '<section class="rc-load', "rc-body-panel",
                  "rc-plan-panel", "rc-week-panel"):
         assert _seg in _h, f"首屏缺段：{_seg}"
     assert 'class="sec"' not in _h and 'class="more"' not in _h, \
@@ -5142,8 +5143,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.5.9 → 162）。
-    assert 'versionCode = 162' in (
+    # 每次发版要同步改这里（本次 1.5.10 → 163）。
+    assert 'versionCode = 163' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。
@@ -5198,8 +5199,7 @@ def run() -> int:
     assert ">明天<" not in _h_lag, "最后同步日又被当成今天了"
 
     # 胶囊压薄：只减纵向留白，44px 可点目标一条都不动。
-    for _sel, _needle in ((".rc-panel{", "padding:11px 12px"),
-                          (".rc-verdict{", "min-height:38px"),
+    for _sel, _needle in ((".rc-panel{", "padding:12px"),
                           (".rc-cell{", "padding:7px 10px 6px"),
                           (".rc-plan{", "min-height:60px")):
         assert _needle in _base_css.split(_sel)[1].split("}")[0], \
