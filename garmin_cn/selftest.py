@@ -1601,6 +1601,34 @@ def run() -> int:
         _BM.ensure = _bme
         _GP.map_data = _gmd
 
+    # ---- 同一格多人跑过：不能让后画的把人吃掉，也不能混成第三种颜色
+    _p1 = {"user_id": 1, "alias": "我", "color": "#5EA0FF",
+           "cells": ["1:1", "1:2", "1:3"], "is_me": True}
+    _p2 = {"user_id": 2, "alias": "队友", "color": "#3FA76A",
+           "cells": ["1:2", "1:3", "1:4"], "is_me": False}
+    _solo, _shr = _GU._split_cells([_p1, _p2])
+    assert _solo[1] == ["1:1"], f"我独有的格子算错了：{_solo[1]}"
+    assert _solo[2] == ["1:4"], f"队友独有的格子算错了：{_solo[2]}"
+    assert sorted(_shr) == ["1:2", "1:3"], f"共同格子算错了：{_shr}"
+    assert _GU._shared_count([_p1, _p2]) == 2
+    assert _GU._shared_count([_p1]) == 0, "一个人不该有「共同」格子"
+
+    _bme2 = _BM.ensure
+    _gmd2 = _GP.map_data
+    try:
+        _BM.ensure = lambda *a, **k: None
+        _GP.map_data = lambda gid, today=None: {
+            "ok": True, "from": "2026-11-16", "to": "2026-11-22",
+            "hidden": 0, "cells": 4, "people": [_p1, _p2]}
+        _mh2 = _GU.map_page("TOK", 1)
+    finally:
+        _BM.ensure = _bme2
+        _GP.map_data = _gmd2
+    # 共同格必须单独成一个白色图层，否则后画的人会把先画的覆盖掉
+    assert f'fill="{_GU.SHARED_COLOR}"' in _mh2, "没有共同格子的白色图层"
+    assert '<i class="sh"></i>共同' in _mh2, "图例里没有共同色块"
+    assert _mh2.count("M ") >= 3, "三个图层（我 / 队友 / 共同）应该各自成 path"
+
     assert _mh.count('class="shard-h"') == 2, "跨省没有分片成两张图"
     assert _mh.count('class="card gmapcard"') == 2, "分片的卡片数不对"
     # 每片一条图例；多出来的那条就是修复前那个「对不上任何一张图」的全局图例
