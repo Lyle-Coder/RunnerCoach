@@ -1350,6 +1350,9 @@ def run() -> int:
 
     # 底部导航：小组必须是一个 tab，且排在教练后面（第 3 位）。
     # 用户明确否掉了「顶栏右上角一枚胶囊」——那个位置既不像入口也不像按钮。
+    _coros_src = (ROOT / "garmin_cn/coros.py").read_text(encoding="utf-8")
+    assert "数值字段" in _coros_src, "诊断没 dump dayDetail 的数值字段"
+
     _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert 'arrayOf("今日", "教练", "小组", "历史", "我的")' in _kt5, \
         "底部导航没有把「小组」放进去"
@@ -1361,6 +1364,16 @@ def run() -> int:
 
     # 简洁模式要连「小组」tab 一起藏。GONE 而不是删 view：tabRoots / tabIcons
     # 是按 TAB_* 索引取的，删了会全线错位。
+    # 返回键必须逐级上退，不能一步跳回「今日」——足迹页按返回飞回首页
+    # 是用户报的问题，根因就是 nativeBack 里缺 /groups 分支
+    assert 'path.startsWith("/groups/")' in _kt5, \
+        "返回键没有处理小组二级页，会直接跳回今日"
+    _nb = _kt5.split("private fun nativeBack()")[1].split("private fun isTabRoot")[0]
+    assert "/groups/${seg[1]}/feed" in _nb, "动态详情的上一级不是动态列表"
+    assert '"/groups/${seg[1]}"' in _nb, "小组二级页的上一级不是组详情"
+    assert "/groups" in _nb and "loadUrl" in _nb, "组详情的上一级不是组列表"
+    assert 'path.startsWith("/run")' in _nb, "远征页没有回到它所属的小组"
+
     assert "private fun applySimpleTabs()" in _kt5 and "View.GONE" in _kt5, \
         "简洁模式没有隐藏小组 tab 的逻辑"
     assert 'apiCall("simple_state")' in _kt5, \
@@ -1531,7 +1544,7 @@ def run() -> int:
     # ---- P2：本周玩法（衫 / 目标 / 结对 / 预言）
     # 四行必须是「标签 + 内容」两列对齐：以前是四段各写各的流式文字，
     # 语序都不一样，看着乱。
-    assert 'class="wk"' in _gh, "本周四行没有用对齐表格"
+    assert 'class="kvrows"' in _gh, "本周四行没有用对齐表格"
     for _k in ("衫", "目标", "结对", "预言"):
         assert f'<span class="k">{_k}</span>' in _gh, f"「{_k}」那行没有标签列"
     assert ">30</b> km" in _gh, "本周目标没在页面上显示"
@@ -1572,6 +1585,83 @@ def run() -> int:
     assert "本周跑步里程" in _shp_html, "衫页没写口径"
     assert "2 我 9.0 km" in _shp_html, "衫页没列第 2 名"
     assert "本周没有数据" in _shp_html, "没数据的衫（圆点衫）没给出说明"
+
+    # ---- 跨省的分片：一张图装不下 900 km，格子会缩成看不见的点
+    from garmin_cn import basemap as _BM
+    from garmin_cn import explore as _EX
+
+    _xa = ["7597:24229", "7599:24231"]
+    _hb = ["25435:35172", "25437:35174"]
+    assert len(_EX.cluster_cells(_xa + _hb)) == 2, "跨省的格子没有被分成两片"
+    assert len(_EX.cluster_cells(_xa + ["7598:24230"])) == 1, "同城的格子被拆成多片"
+    assert _EX.span_km(_xa + _hb) > 500, "跨省跨度算错了"
+    assert _EX.span_km(_xa) < 50, "同城跨度算错了"
+
+    _bme = _BM.ensure
+    _gmd = _GP.map_data
+    try:
+        _BM.ensure = lambda *a, **k: None       # 不联网，走无底图回退路径
+        _GP.map_data = lambda gid, today=None: {
+            "ok": True, "from": "2026-11-16", "to": "2026-11-22", "hidden": 0,
+            "cells": 4,
+            "people": [
+                {"user_id": 1, "alias": "我", "color": "#5EA0FF",
+                 "cells": _xa, "is_me": True},
+                {"user_id": 2, "alias": "远方的人", "color": "#3FA76A",
+                 "cells": _hb, "is_me": False}]}
+        _mh = _GU.map_page("TOK", 1)
+    finally:
+        _BM.ensure = _bme
+        _GP.map_data = _gmd
+
+    # ---- 同一格多人跑过：不能让后画的把人吃掉，也不能混成第三种颜色
+    _p1 = {"user_id": 1, "alias": "我", "color": "#5EA0FF",
+           "cells": ["1:1", "1:2", "1:3"], "is_me": True}
+    _p2 = {"user_id": 2, "alias": "队友", "color": "#3FA76A",
+           "cells": ["1:2", "1:3", "1:4"], "is_me": False}
+    # 没有跑量数据时（老客户端）：两人平摊 0.5 < 0.65，重叠格算「共同」
+    _own = _GU._cell_owners([_p1, _p2])
+    assert _own["1:1"][0] == 1 and _own["1:1"][1] == 1.0, f"独占格算错：{_own['1:1']}"
+    assert _own["1:2"][1] < _GU.OWNER_SHARE, f"平摊时重叠格不该归某个人：{_own['1:2']}"
+    assert _GU._shared_count([_p1, _p2]) == 2
+    assert _GU._shared_count([_p1]) == 0, "一个人不该有「共同」格子"
+
+    # 有跑量时：谁跑得多归谁，差距不到 2 倍仍算共同
+    _q1 = {"user_id": 1, "alias": "我", "color": "#5EA0FF", "cells": ["2:2"],
+           "meters": {"2:2": 3000}, "is_me": True}
+    _q2 = {"user_id": 2, "alias": "队友", "color": "#3FA76A", "cells": ["2:2"],
+           "meters": {"2:2": 500}, "is_me": False}
+    _o2 = _GU._cell_owners([_q1, _q2])["2:2"]
+    assert _o2[0] == 1 and _o2[1] > _GU.OWNER_SHARE, f"跑量多的没拿到归属：{_o2}"
+    assert _o2[2] == 3500, f"该格总里程算错：{_o2[2]}"
+    _q2["meters"]["2:2"] = 2400
+    _o3 = _GU._cell_owners([_q1, _q2])["2:2"]
+    assert _o3[1] < _GU.OWNER_SHARE, "只差 1.25 倍就归给某个人了，应当算共同"
+    # 深浅：跑得越多越实
+    assert (_GU._op_of(300) < _GU._op_of(1200) < _GU._op_of(9000)), \
+        "格子深浅没随跑量递增"
+
+    _bme2 = _BM.ensure
+    _gmd2 = _GP.map_data
+    try:
+        _BM.ensure = lambda *a, **k: None
+        _GP.map_data = lambda gid, today=None: {
+            "ok": True, "from": "2026-11-16", "to": "2026-11-22",
+            "hidden": 0, "cells": 4, "people": [_p1, _p2]}
+        _mh2 = _GU.map_page("TOK", 1)
+    finally:
+        _BM.ensure = _bme2
+        _GP.map_data = _gmd2
+    # 共同格必须单独成一个白色图层，否则后画的人会把先画的覆盖掉
+    assert f'fill="{_GU.SHARED_COLOR}"' in _mh2, "没有共同格子的白色图层"
+    assert '<i class="sh"></i>共同' in _mh2, "图例里没有共同色块"
+    assert _mh2.count("M ") >= 3, "三个图层（我 / 队友 / 共同）应该各自成 path"
+
+    assert _mh.count('class="shard-h"') == 2, "跨省没有分片成两张图"
+    assert _mh.count('class="card gmapcard"') == 2, "分片的卡片数不对"
+    # 每片一条图例；多出来的那条就是修复前那个「对不上任何一张图」的全局图例
+    assert _mh.count('class="lgi"') == 2, \
+        f"图例数不对（{_mh.count('class="lgi"')} 条），可能又套了一层全局图例"
 
     # 动态：组页只给最近几条 + 入口；详情页有表情按钮和留言框
     assert "大家的动态" in _gh and f"/groups/1/feed" in _gh, "组页没有动态区"
@@ -2919,15 +3009,19 @@ def run() -> int:
     _ai_src = Path(_AI.__file__).read_text(encoding="utf-8")
     _man = (ROOT / "android/app/src/main/AndroidManifest.xml") \
         .read_text(encoding="utf-8")
-    assert "--bg:#070B12" in _ui_src and "--brand:#3B82F6" in _ui_src, \
+    # token 搬进 design.py 了，断言改看运行时拼出来的 CSS（源码里已经没有裸值）
+    from garmin_cn import ui as _UIX
+    _css = _UIX.CSS
+    assert "--bg:#070B12" in _css and "--brand:#3B82F6" in _css, \
         "页面主色不是深空蓝，科技风主题丢了"
-    assert "--cyan:#22D3EE" in _ui_src and "radial-gradient(900px 520px" in _ui_src, \
+    assert "--cyan:#22D3EE" in _css and "radial-gradient(900px 520px" in _ui_src, \
         "缺青色高光或背景径向渐变"
-    assert ".card.brand" in _ui_src and "box-shadow:var(--glow)" in _ui_src, \
-        "品牌卡没有辉光"
-    assert "-webkit-text-fill-color:transparent" in _ui_src and \
-        "filter:drop-shadow(0 0 16px" in _ui_src, \
-        "大数字没有渐变/辉光"
+    assert ".card.brand" in _ui_src, "品牌卡样式没了"
+    # 设计语言 §3.1.6 / §7：禁止渐变文字，大数字用实色 + 负字距
+    assert "-webkit-text-fill-color:transparent" not in _ui_src, \
+        "大数字又用回渐变文字了（docs/设计语言.md §3.1 规则 6 禁止）"
+    assert "drop-shadow(0 0 16px" not in _ui_src, \
+        "主视觉数字又加外发光了（一页只允许一处发光，且只给 hero）"
     assert ".sec-head h2::before" in _ui_src and ".row .ic{" in _ui_src, \
         "分节标记/图标底座丢了科技风样式"
     assert "--bg:#070B12" in _ai_src, "AI 页还是浅色，和 App 不一致"
@@ -4807,11 +4901,27 @@ def run() -> int:
         return (max(a, b) + 0.05) / (min(a, b) + 0.05)
 
     import re as _re
-    _root = _re.search(r":root\{(.+?)\}", _u.CSS, _re.S).group(1)
+    # token 拆成了两块 :root（核心 + 旧名别名），要合并后一起找，
+    # 只取第一块的话别名里的值会漏掉
+    _root = "".join(_re.findall(r":root\{([^}]+)\}", _u.CSS))
     _tok = dict(_re.findall(r"--([a-z0-9-]+)\s*:\s*(#[0-9A-Fa-f]{6})", _root))
-    assert _contrast(_tok["faint"], _tok["surface"]) >= 4.5, \
-        f"辅助色对比度仍不足 AA：{_contrast(_tok['faint'], _tok['surface']):.2f}"
-    assert _contrast(_tok["muted"], _tok["surface"]) >= 4.5, "次要色对比度不足 AA"
+    assert _contrast(_tok["ink-3"], _tok["surface"]) >= 4.5, \
+        f"辅助色对比度仍不足 AA：{_contrast(_tok['ink-3'], _tok['surface']):.2f}"
+    assert _contrast(_tok["ink-2"], _tok["surface"]) >= 4.5, "次要色对比度不足 AA"
+
+
+    # ---- 设计语言 §7：字号与圆角白名单
+    # 以前 ui.py 里 18 档字号、11 档圆角，相邻两档肉眼分不出，层级只能靠猜。
+    # 现在只允许 8 档字号、4 档圆角；小元素（<8px 的进度条圆角）不受限。
+    from garmin_cn import design as _DS
+
+    _fss = {float(x) for x in _re.findall(r"font-size:([\d.]+)px", _u.CSS)}
+    _bad_fs = sorted(x for x in _fss if int(x) not in _DS.FONT_SIZES
+                     and x not in _DS.FONT_SIZES)
+    assert not _bad_fs, f"字号超出白名单（只允许 {_DS.FONT_SIZES}）：{_bad_fs}"
+    _rds = {float(x) for x in _re.findall(r"border-radius:([\d.]+)px", _u.CSS)}
+    _bad_rd = sorted(x for x in _rds if x >= 8 and int(x) not in _DS.RADII)
+    assert not _bad_rd, f"圆角超出白名单（只允许 {_DS.RADII}）：{_bad_rd}"
     # 最小字号：CSS 里不该再有 10px / 10.5px
     assert not _re.search(r"font-size:10(\.5)?px", _u.CSS), "还有 10px 级别的字号"
     # 背景不能用 background-attachment:fixed（滚动重绘整面）
@@ -5016,8 +5126,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.5.7 → 160）。
-    assert 'versionCode = 160' in (
+    # 每次发版要同步改这里（本次 1.5.8 → 161）。
+    assert 'versionCode = 161' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。
@@ -5180,8 +5290,8 @@ def run() -> int:
     assert ".rc-week .rc-days{flex:1" in _tiny_css, \
         "极矮横屏的柱子没有跟着面板长高"
     _land_load = _land_css.split(".rc-load{")[-1].split("}")[0]
-    assert "border-radius:12px" in _land_load and \
-        "background:rgba(9,14,22,.42)" in _land_load, \
+    assert "border-radius:var(--r-2,14px)" in _land_load and \
+        "background:var(--surface-2,#111B29)" in _land_load, \
         "横屏负荷带没有做成和其余四块一致的卡片"
 
     # ---- 1.0.2：高驰睡眠走官方 MCP（OAuth），并有 App 内授权入口 ---------
@@ -5652,6 +5762,39 @@ def run() -> int:
     try:
         _s3.conn.close()
         _sdb.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    # ---- 高驰优先：同一天两边都有数据时，佳明不能把高驰的值顶掉
+    # 两条同步链路语义不同（高驰 merge、佳明整行覆盖），谁后跑谁说了算。
+    # 用户先同步高驰再同步佳明时静息心率会变成佳明的数，看起来像用错了源。
+    import json as _json3
+
+    _pdb = Path(tempfile.mkdtemp()) / "prefer.db"
+    _ps = _Store3(_pdb)
+    _pd = dt.date.today().isoformat()
+    _ps.upsert_daily({"date": _pd, "resting_hr": 47, "sleep_total_min": 273,
+                      "raw": _json3.dumps({"happenDay": "20261119", "rhr": 47})},
+                     merge=True)
+    _ps.upsert_daily({"date": _pd, "resting_hr": 52, "sleep_total_min": 300,
+                      "steps": 8000,
+                      "raw": _json3.dumps({"restingHeartRate": 52})})
+    _pr = _ps.conn.execute("SELECT resting_hr, sleep_total_min, steps FROM daily"
+                           " WHERE date=?", (_pd,)).fetchone()
+    assert _pr["resting_hr"] == 47, \
+        f"佳明把高驰的静息心率顶掉了：{_pr['resting_hr']}"
+    assert _pr["sleep_total_min"] == 273, "佳明覆盖了高驰已有的睡眠时长"
+    assert _pr["steps"] == 8000, "佳明独有的字段没补进来（高驰没给 steps）"
+    # 只有佳明的日子仍然整行覆盖，同源重拉能清掉字段
+    _pd2 = (dt.date.today() - dt.timedelta(days=2)).isoformat()
+    _ps.upsert_daily({"date": _pd2, "resting_hr": 50, "steps": 3000})
+    _ps.upsert_daily({"date": _pd2, "resting_hr": 55, "steps": 5000})
+    _pr2 = _ps.conn.execute("SELECT resting_hr FROM daily WHERE date=?",
+                            (_pd2,)).fetchone()
+    assert _pr2["resting_hr"] == 55, "纯佳明的日子不再整行覆盖了"
+    try:
+        _ps.conn.close()
+        _pdb.unlink(missing_ok=True)
     except OSError:
         pass
 

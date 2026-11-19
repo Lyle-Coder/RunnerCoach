@@ -189,7 +189,7 @@ _CSS_TMPL = """
   filter:drop-shadow(0 0 44px rgba(59,130,246,.7))}
 .rc-wm>svg{display:block;width:100%;height:100%}
 .rc-foot{display:inline-flex;align-items:center;gap:7px;vertical-align:middle}
-.rc-foot .rc-badge{width:22px;height:22px;border-radius:8px;
+.rc-foot .rc-badge{width:22px;height:22px;border-radius:var(--r-1,10px);
   box-shadow:0 0 10px -3px rgba(59,130,246,.8)}
 .rc-foot .rc-badge>svg{width:82%;height:82%}
 .foot .rc-foot{margin-right:8px;color:#8CC2FF;font-weight:600}
@@ -231,7 +231,7 @@ body{display:flex;align-items:center;justify-content:center;overflow:hidden;
 .stack{position:relative;display:flex;flex-direction:column;align-items:center;gap:22px;
   animation:rise .72s cubic-bezier(.2,.9,.3,1.25) both}
 @keyframes rise{from{opacity:0;transform:translateY(18px) scale(.9)}to{opacity:1;transform:none}}
-.tile{width:132px;height:132px;border-radius:34px;display:flex;align-items:center;
+.tile{width:132px;height:132px;border-radius:var(--r-3,18px);display:flex;align-items:center;
   justify-content:center;position:relative;overflow:hidden;
   background:radial-gradient(120% 120% at 18% 0%,rgba(96,165,250,.32),transparent 62%),
     linear-gradient(155deg,#16273D,#091320 72%);

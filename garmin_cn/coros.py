@@ -470,13 +470,23 @@ class CorosCloud:
         # 就能判断「App 52 / 这里 45」是服务端口径不同、日期错位，还是我们取错。
         try:
             from . import diag as _dg
-            _dg.log_exc("coros.rhr", "dayDetail 最近: " + " | ".join(
-                f"{r['date']}:rhr={r['resting_hr']}" for r in rows[-3:]))
+            # 留 7 天而不是 3 天：用户拿「高驰 App 说 56、这里 47」来问时，
+            # 要他对着 App 的趋势图逐日核，三天不够看出是不是每天固定差。
+            _dg.log_exc("coros.rhr", "dayDetail 最近 7 天: " + " | ".join(
+                f"{r['date']}:rhr={r['resting_hr']}" for r in rows[-7:]))
             if day_list:
+                # 只 dump 心率相关的键：万一服务端还有 restingHr / minHr 这类
+                # 我们没取的字段，这一行能直接看出来，不用再猜。
                 hr_keys = {k: v for k, v in day_list[-1].items()
                            if "hr" in str(k).lower() or "heart" in str(k).lower()}
                 _dg.log_exc("coros.rhr", "HR 字段: "
                             + json.dumps(hr_keys, ensure_ascii=False)[:400])
+                # 数值字段全给（去掉长数组）：静息心率如果被藏在某个没名字的
+                # 字段里，靠这一行能对上「56」这个数
+                nums = {k: v for k, v in day_list[-1].items()
+                        if isinstance(v, (int, float))}
+                _dg.log_exc("coros.rhr", "数值字段: "
+                            + json.dumps(nums, ensure_ascii=False)[:600])
                 # 「恢复程度」不在已知文档里，键名只能靠真机返回确认：
                 # 把最近一天的字段名整体留一行，缺数据时一眼能看出叫什么。
                 _dg.log_exc("coros.rhr", "dayDetail 键名: "
