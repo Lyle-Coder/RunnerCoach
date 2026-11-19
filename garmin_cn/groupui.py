@@ -168,7 +168,10 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
     items = r.get("groups") or []
     # 只有一个组就直接进详情：点「小组」最想看的是排名，而不是一行组名。
     # 组多了才需要「先选哪个」这一步，那时列表本身就有意义。
-    if len(items) == 1 and not force_list:
+    # **带了 message 就不能直达**：建组/加入失败是 303 回跳 `/groups?msg=…`，
+    # 一进列表就被弹到组详情，那句错误提示永远没人看见——
+    # 「点了建组没反应、也建不出来」就是这么来的。
+    if len(items) == 1 and not force_list and not message:
         try:
             return group_page(token, int(items[0]["id"]))
         except Exception:      # noqa: BLE001 - 详情页挂了也要能回到列表
@@ -199,8 +202,8 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
                  'autocapitalize="characters" autocomplete="off"></b></div>'
                  '<div class="kvline"><span>我的昵称</span><b>'
                  '<input type="text" name="alias" maxlength="16" placeholder="榜上显示的名字"></b></div>'
-                 '</div>'
-                 '<div class="pager"><button class="btn" type="submit">加入</button></div></form>')
+                 '<div class="pager"><button class="btn" type="submit">加入</button></div>'
+                 '</div></form>')
     create_form = (f'<form action="/__group/create" method="post">{_tok(token)}'
                    '<div class="card">'
                    '<div class="kvline"><span>组名</span><b>'
@@ -212,9 +215,26 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
                    'value="20"></b></div>'
                    '<div class="kvline"><span>我的昵称</span><b>'
                    '<input type="text" name="alias" maxlength="16" placeholder="榜上显示的名字"></b></div>'
-                   '</div>'
                    '<div class="pager"><button class="btn primary" type="submit">建组</button></div>'
-                   '</form>')
+                   '</div></form>')
+
+    # 建组的两个硬限制（服务端）：一个人同时只能当**一个**组的组长；
+    # 最多同时加入 3 个组。命中任一条还摆着表单，用户填完只会拿到 409，
+    # 而且（改之前）连那句 409 都看不见。这里直接把表单换成原因 + 出口。
+    owner_g = next((g for g in items if (g.get("role") or "") == "owner"), None)
+    blocked = ""
+    if owner_g:
+        blocked = (
+            '<div class="card flat"><p class="note">你已经当着「'
+            f'{esc(owner_g.get("name"))}」的组长，一个人同时只能当一个组的组长。'
+            '想建新组，先去那个组的设置里解散或转让。</p>'
+            f'<div class="pager"><a class="btn sm" '
+            f'href="/groups/{int(owner_g["id"])}/settings">去处理</a></div></div>')
+    elif len(items) >= 3:
+        blocked = ('<div class="card flat"><p class="note">'
+                   '已经在 3 个组里，最多同时加入 3 个。</p></div>')
+    if blocked:
+        create_form = blocked
 
     chips = "".join([f'<span class="chip">{len(items)} 个组</span>']) if items else ""
     if items:
@@ -226,8 +246,9 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
                 # 再折一次等于告诉他「这里没有」。
                 + ('<details class="fold fold-lg" open>' if force_list
                    else '<details class="fold">')
-                + '<summary>再加入一个，或者自己建一个'
-                  '<span class="fx">›</span></summary>'
+                + ('<summary>再加入一个组' if blocked
+                   else '<summary>再加入一个，或者自己建一个')
+                + '<span class="fx">›</span></summary>'
                   + '<div class="flat">' + join_form + create_form + '</div></details>')
     else:
         # 一个组都没有：这两个表单就是这一页的全部意义，平铺出来
@@ -310,7 +331,20 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
                 '退出后我在这个组的记录会删掉</span>'
                 '<button class="btn sm" type="submit">退出小组</button></div></form>')
     else:
-        grp += ('<p class="note">你是组长：先把组长转给别人，才能退出这个组。</p>')
+        # 组长不能直接退出，但**必须能解散**：一个人同时只能当 1 个组的组长，
+        # 建新组时服务端会 409。没有解散入口的话，「建不了新组」就成了死结。
+        grp += ('<p class="note">你是组长：先把组长转给别人才能退出，'
+                '或者直接解散这个组。</p>'
+                f'<details class="fold"><summary>解散这个组'
+                '<span class="fx">›</span></summary>'
+                '<div class="foldbody">'
+                '<p class="note">解散后这个组、榜和赛事都不再出现，成员也看不到；'
+                '这个动作不能撤销。</p>'
+                f'<form action="/__group/{gid}/archive" method="post">{_tok(token)}'
+                '<label class="ckline"><input type="checkbox" name="confirm"'
+                ' value="1"> 我知道解散不能撤销</label>'
+                '<div class="pager"><button class="btn sm danger" type="submit">'
+                '解散</button></div></form></div></details>')
     grp += (f'<a class="setrow" href="/groups/{gid}/map">'
             '<span>路线共享</span>'
             '<span class="note" style="flex:1 1 auto;margin:0">'

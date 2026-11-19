@@ -272,6 +272,10 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
    现在只靠实色和字重区分层级，一屏最多一个。 */
 .btn.primary{background:var(--brand);border-color:transparent;
   color:var(--ink-inv);font-weight:600}
+/* 危险按钮（解散组这类不可逆动作）：红描边 + 红字，不填实色——
+   填实色会让人以为「这已经按下去了」。全局一份，别在页面里各写一套。 */
+.btn.danger{border-color:rgba(242,85,90,.42);color:var(--bad)}
+.btn.danger:active{background:var(--bad-soft)}
 .btn:active{opacity:.85}
 .empty{padding:20px 4px;font-size:14px;color:var(--muted);line-height:1.8}
 .link-act{display:inline-flex;align-items:center;min-height:44px;
@@ -405,6 +409,13 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .fold>summary::-webkit-details-marker{display:none}
 .fold>summary .fx{margin-left:auto;color:var(--muted);transition:transform .15s}
 .fold[open]>summary .fx{transform:rotate(90deg)}
+/* 折叠块里的正文（不给的话表单会贴着分隔线，还没有左右留白） */
+.foldbody{padding:2px 0 10px}
+/* 不可逆动作前的确认勾选：44 高、整行可点 */
+.ckline{display:flex;align-items:center;gap:9px;min-height:44px;
+  font-size:var(--fs-cap,12px);color:var(--ink-2);cursor:pointer}
+.ckline input{width:18px;height:18px;margin:0;flex:0 0 auto;
+  accent-color:var(--brand)}
 /* 展开态的「再加一个 / 建一个」是个入口标题，不是「更多」小尾巴：
    提到正文档、改用正文色，并给下面卡片留出呼吸。 */
 .fold-lg>summary{font-size:var(--fs-body,14px);font-weight:600;color:var(--ink);
@@ -480,9 +491,13 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .setrow>span{font-size:12px;color:var(--muted)}
 .setrow>span:first-child{flex:0 0 52px;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
-.setrow input,.setrow select{flex:1 1 auto;min-width:0}
+.setrow input,.setrow select{flex:1 1 auto;min-width:0;min-height:44px}
+/* 组页的表单输入：32px 是浏览器默认，手机上又细又难点。统一 44。 */
+.kvline input,.kvline select{min-height:44px;min-width:0}
 .setrow>.btn,.setrow>button{flex:0 0 auto}
-.btn.sm{min-height:34px;padding:0 12px;font-size:12px;border-radius:10px}
+/* 小号只缩字号和内边距，**不缩触控高度**：34px 的按钮在手机上一半按不中，
+   体检（tools/audit_ui.py，阈值 40）也是这么判的。 */
+.btn.sm{min-height:44px;padding:0 12px;font-size:12px;border-radius:10px}
 /* 「我的」页三个数字一行说完：它们是一句话的三个分句，不需要各发一张卡 */
 .minirow{display:flex;flex-wrap:wrap;gap:4px 16px;padding:2px 0;
   font-size:12px;color:var(--muted)}

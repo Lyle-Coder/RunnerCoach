@@ -65,7 +65,8 @@ function audit() {
     }
   }
   // 可点元素：链接/按钮/带 data-act 的容器/表单控件
-  var sel = 'a[href],button,[data-act],[onclick],input,select,label.row.pick';
+  // 复选框/单选的命中区是它外面那个 44px 的 label，不按控件本身量
+  var sel = 'a[href],button,[data-act],[onclick],input:not([type=checkbox]):not([type=radio]),select,label.row.pick';
   var nodes = d.querySelectorAll(sel);
   for (var i = 0; i < nodes.length; i++) {
     var e = nodes[i];
@@ -142,6 +143,68 @@ def render_pages(tmp: Path) -> dict[str, Path]:
     out["plan"].write_text(ui.plan_page({}), encoding="utf-8")
     out["me"] = tmp / "me.html"
     out["me"].write_text(ui.me_page(), encoding="utf-8")
+    out.update(_group_pages(tmp))
+    return out
+
+
+def _group_pages(tmp: Path) -> dict[str, Path]:
+    """小组四页：列表 / 详情 / 本周荣誉 / 设置。
+
+    这四个页面一直在体检范围外，所以「小组」是全站唯一没被自动量过的地方。
+    夹具直接借 `tools/preview_groupui.py` 的那一套（它本来就为截图准备过），
+    只把联网的 group 函数换掉；页面按真实宽度渲染，不套 420px 的预览包装。
+    """
+    from garmin_cn import group as G
+    from garmin_cn import groupui as GU
+
+    try:
+        import preview_groupui as P
+    except Exception:      # noqa: BLE001 - 没有夹具就跳过，别让整次体检失败
+        return {}
+
+    saved = {k: getattr(G, k, None) for k in
+             ("home", "detail", "board", "season", "week", "challenge_list",
+              "feed", "run_state", "groups")}
+    detail = P.DETAIL
+    season = P.SEASON
+    # 列表页要显「多组」的样子：拿同一份夹具复制成 3 个组，名字区分开
+    glist = []
+    for i, (nm, role) in enumerate((("周末拉练队", "owner"), ("公司跑团", "member"),
+                                    ("小区夜跑", "member"))):
+        glist.append({"id": i + 1, "name": nm, "role": role, "member_count": 4,
+                      "week": {"rank": i + 1, "total": 4, "km": 38.1 - i * 6}})
+
+    out: dict[str, Path] = {}
+    try:
+        G.home = lambda gid, rng="week", today=None: {
+            "ok": True, "detail": detail, "board": P.BOARD,
+            "challenges": P.CHALLENGES, "season": season, "week": P.WEEK}
+        G.detail = lambda gid: detail
+        G.board = lambda gid, rng="week", today=None: P.BOARD
+        G.season = lambda gid, today=None: season
+        G.week = lambda gid, today=None: P.WEEK
+        G.challenge_list = lambda gid, today=None: P.CHALLENGES
+        G.feed = lambda gid, today=None, act=None: P.FEED
+        G.run_state = lambda gid, today=None: {}
+        G.groups = lambda: {"ok": True, "groups": glist}
+
+        pages = {
+            "小组列表": GU.groups_page("TOK", force_list=True),
+            "小组详情": GU.group_page("TOK", 1),
+            "本周荣誉": GU.shirts_page("TOK", 1),
+            "小组设置": GU.settings_page("TOK", 1),
+        }
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                setattr(G, k, v)
+
+    content = (ROOT / "garmin_cn" / "content").as_uri()
+    for name, html in pages.items():
+        html = html.replace('"/content/', '"' + content + "/")
+        p2 = tmp / f"group-{len(out)}.html"
+        p2.write_text(html, encoding="utf-8")
+        out[name] = p2
     return out
 
 
