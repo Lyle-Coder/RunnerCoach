@@ -70,6 +70,13 @@ a{color:var(--brand-ink);text-decoration:none}
    page() 的 action 参数仍留给二级页，首页不再传它。 */
 /* 有右上角动作时给标题和副标题留出位置，长标题不会钻到按钮底下 */
 .page-head.with-act h1,.page-head.with-act .lede{padding-right:92px}
+/* 页头右上角的单动作按钮（组页那个齿轮）。44px 是触控目标的下限，
+   不能只看图标 18px 就把它做小。 */
+.hact{position:absolute;right:0;top:12px;width:44px;height:44px;border-radius:12px;
+  display:flex;align-items:center;justify-content:center;font-size:17px;
+  color:var(--ink2);text-decoration:none;border:1px solid var(--line);
+  background:rgba(255,255,255,.025)}
+.hact:active{background:rgba(59,130,246,.14);border-color:rgba(96,165,250,.34)}
 .kicker{font-size:11px;font-weight:700;letter-spacing:2px;color:var(--cyan);
   text-shadow:0 0 12px rgba(34,211,238,.45)}
 .page-head h1{margin:6px 0 4px;font-size:24px;font-weight:650;letter-spacing:-.5px;line-height:1.3}
@@ -365,7 +372,11 @@ input:focus,select:focus{outline:none;border-color:rgba(96,165,250,.55);
 .setrow{display:flex;align-items:center;gap:10px;min-height:44px;
   border-bottom:1px solid var(--line2)}
 .setrow:last-of-type{border-bottom:0}
-.setrow>span{flex:0 0 44px;font-size:12.5px;color:var(--muted)}
+/* 标签列固定 52px：「转让组长」「路线共享」都是四字，44px 会折成两行。
+   只钉第一个 span，后面的说明文字要能自己撑开和换行。 */
+.setrow>span{font-size:12.5px;color:var(--muted)}
+.setrow>span:first-child{flex:0 0 52px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
 .setrow input,.setrow select{flex:1 1 auto;min-width:0}
 .setrow>.btn,.setrow>button{flex:0 0 auto}
 .btn.sm{min-height:34px;padding:0 12px;font-size:12.5px;border-radius:10px}
@@ -449,7 +460,8 @@ i.pd{background:#F7F9FC;
 .wk .v{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wk .v.wrap{white-space:normal;overflow:visible;display:flex;flex-wrap:wrap;
   gap:2px 9px}
-.wk .v s{text-decoration:none;color:var(--muted);margin-left:7px}
+/* 左右都要留白：只给左边距的话，「已跑 38.1」会和「达成」粘成「38.1达成」 */
+.wk .v s{text-decoration:none;color:var(--muted);margin:0 7px}
 .wk .v b{font-weight:600;color:var(--ink)}
 .wk .v b.hit{color:var(--cyan)}
 /* 功能入口：4 列并列小图标。数据用行、功能用图标，两类东西形态不同才好扫。
@@ -467,6 +479,30 @@ i.pd{background:#F7F9FC;
   box-shadow:inset 0 0 14px rgba(34,211,238,.2)}
 .qg .qn{font-size:11px;font-weight:600;color:var(--ink2);white-space:nowrap;
   max-width:100%;overflow:hidden;text-overflow:ellipsis}
+/* 动态：一行一条。左色点认人，中间类型+距离，右边日期和评论数。
+   没有缩略图——这一栏按设计就是概要，给不出活动图。 */
+.frow{display:grid;grid-template-columns:8px minmax(0,auto) minmax(0,1fr) auto auto;
+  align-items:center;gap:0 8px;padding:10px 0;border-bottom:1px solid var(--line2);
+  color:inherit;text-decoration:none}
+.frow:last-child{border-bottom:0}
+.fd{width:8px;height:8px;border-radius:50%;box-shadow:0 0 0 1px rgba(255,255,255,.2) inset}
+.fn{font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap}
+.fn .fk{font-style:normal;font-weight:400;font-size:11px;color:var(--muted);margin-left:6px}
+.fv{font-size:11px;color:var(--ink2);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.ft{font-size:11px;color:var(--faint);white-space:nowrap}
+.fc{font-size:11px;color:var(--brand-ink);white-space:nowrap}
+/* 评论：表情一排按钮 + 一句话输入 */
+.erow{display:flex;gap:6px;flex-wrap:wrap;padding:2px 0 8px}
+.eform{margin:0}
+.ebtn{font-size:19px;line-height:1;padding:7px 10px;border-radius:10px;
+  border:1px solid var(--line2);background:rgba(255,255,255,.02);cursor:pointer}
+.ebtn:active{background:rgba(59,130,246,.14);border-color:rgba(96,165,250,.34)}
+.cm{display:flex;align-items:baseline;gap:7px;padding:7px 0;
+  border-bottom:1px solid var(--line2);font-size:12px;color:var(--ink2)}
+.cm:last-child{border-bottom:0}
+.cm b{font-size:12px;font-weight:600;color:var(--ink);white-space:nowrap}
+.cm .ce{font-size:17px;line-height:1}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，

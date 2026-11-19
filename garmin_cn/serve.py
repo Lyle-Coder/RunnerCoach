@@ -196,6 +196,14 @@ class _Handler(SimpleHTTPRequestHandler):
                 return self._html(groupui.map_page(tok, int(seg[0]), msg))
             if len(seg) == 2 and seg[0].isdigit() and seg[1] == "shirts":
                 return self._html(groupui.shirts_page(tok, int(seg[0]), msg))
+            if len(seg) == 2 and seg[0].isdigit() and seg[1] == "settings":
+                return self._html(groupui.settings_page(tok, int(seg[0]), msg))
+            if len(seg) == 2 and seg[0].isdigit() and seg[1] == "feed":
+                try:
+                    _act = int((q.get("act") or ["0"])[0] or 0)
+                except ValueError:
+                    _act = 0
+                return self._html(groupui.feed_page(tok, int(seg[0]), msg, _act))
             if len(seg) == 1 and seg[0].isdigit():
                 rng = "month" if (q.get("range") or [""])[0] == "month" else "week"
                 return self._html(groupui.group_page(tok, int(seg[0]), msg, rng))
@@ -1589,15 +1597,22 @@ class _Handler(SimpleHTTPRequestHandler):
                     elif act == "share":
                         r = G.set_share(gid, values.get("share") or "summary")
                         msg = "已保存" if r.get("ok") else (r.get("error") or "保存失败")
+                        back = f"/groups/{gid}/settings"
                     elif act == "alias":
                         r = G.set_alias(gid, values.get("alias") or "")
                         msg = (f'昵称已改成「{r.get("alias")}」' if r.get("changed")
                                else "昵称没变") if r.get("ok") \
                             else (r.get("error") or "改名失败")
+                        back = f"/groups/{gid}/settings"
+                    elif act == "transfer":
+                        r = G.transfer(gid, as_int(values.get("uid")))
+                        msg = "已转让" if r.get("ok") else (r.get("error") or "转让失败")
+                        back = f"/groups/{gid}/settings"
                     elif act == "report":
                         r = self._group_report(gid)
                         msg = (f'已上报 {r.get("saved", 0)} 天'
                                if r.get("ok") else (r.get("error") or "上报失败，已排队"))
+                        back = f"/groups/{gid}/settings"
                     elif act == "goal":
                         # 目标为空就当没填，不要拿 0 去撞服务端的范围校验
                         raw = (values.get("km") or "").strip()
@@ -1631,6 +1646,17 @@ class _Handler(SimpleHTTPRequestHandler):
                             _st.close()
                         msg = ("路线共享已打开" if on else "已关闭，格子已删除") \
                             if r.get("ok") else (r.get("error") or "设置失败")
+                        back = f"/groups/{gid}/map"
+                    elif act == "comment":
+                        # 表情和留言走同一个接口：只点了表情也要发一次空文本
+                        _aid = as_int(values.get("act"))
+                        if not _aid:
+                            raise ValueError("找不到这条动态")
+                        r = G.comment(gid, _aid,
+                                      values.get("text") or "", values.get("emoji") or "")
+                        if r.get("ok"):
+                            return self._see_other(f"/groups/{gid}/feed?act={_aid}")
+                        msg = r.get("error") or "发不出去"
                     elif act == "rotate":
                         r = G.rotate(gid)
                         msg = (f'新邀请码 {r["invite_code"]}' if r.get("ok")

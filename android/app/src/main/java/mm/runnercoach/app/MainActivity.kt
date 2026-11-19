@@ -106,6 +106,10 @@ class MainActivity : Activity() {
     private var dayCount = 0
     private val tabRoots = mutableListOf<LinearLayout>()
     private val tabIcons = mutableListOf<ImageView>()
+    // 简洁模式要藏掉「小组」tab，得留着 nav 本体按索引取子 view
+    private var navBar: LinearLayout? = null
+    private var simpleMode = false
+    private var simpleLoaded = false
     private val tabLabels = mutableListOf<TextView>()
 
     // 横屏全屏时要收起来的「外壳」：顶栏 + 上下两条 1px 分割线 + 底部 tab 栏。
@@ -268,6 +272,12 @@ class MainActivity : Activity() {
                         // 一级 tab 根页面落地后清空历史栈：否则「今日→历史→今日」
                         // 会在栈里堆三层，返回键就在 tab 之间来回跳。
                         if (isTabRoot(u)) v.clearHistory()
+                        // 简洁模式状态只读一次：Python 这时候一定起来了，
+                        // 再早调用会拿到异常，结果就是 tab 白显示。
+                        if (!simpleLoaded) {
+                            simpleLoaded = true
+                            loadSimpleMode()
+                        }
                         hideSplash()          // 首屏出来了，开屏可以退场
                         // 日历提醒开过后静默跟上：改期 / 标已订 / 删行程都会
                         // 重载页面，趁这一次把系统日历同步掉。两分钟节流，
@@ -620,6 +630,7 @@ class MainActivity : Activity() {
             setBackgroundColor(0xFF080D15.toInt())
             setPadding(dp(4), dp(6), dp(4), dp(6))
         }
+        navBar = nav
         for (i in TAB_NAMES.indices) {
             val item = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -645,8 +656,34 @@ class MainActivity : Activity() {
             tabIcons.add(icon)
             tabLabels.add(label)
         }
+        applySimpleTabs()
         updateTabs()
         return nav
+    }
+
+    /**
+     * 简洁模式连「小组」这个 tab 一起藏：那个模式留的就是「今日 / 教练 / 历史 /
+     * 我的」四个，再挂一个主打功能反而名不副实。用 GONE 而不是移除 view ——
+     * tabRoots / tabIcons / tabLabels 是按 TAB_* 索引取的，删了会全线错位。
+     * GONE 之后 LinearLayout 的 weight 均分，剩下四个自动铺满。
+     */
+    private fun applySimpleTabs() {
+        navBar?.getChildAt(TAB_GROUP)?.visibility =
+            if (simpleMode) View.GONE else View.VISIBLE
+    }
+
+    /**
+     * 读一次简洁模式状态。启动完成后首次 onPageFinished 时调——那时 Python
+     * 一定起来了；再早会拿到异常，tab 就白显示了。
+     */
+    private fun loadSimpleMode() {
+        thread {
+            val r = apiCall("simple_state")
+            ui {
+                simpleMode = r.optBoolean("simple_mode")
+                applySimpleTabs()
+            }
+        }
     }
 
     private fun updateTabs() {
@@ -1425,6 +1462,8 @@ class MainActivity : Activity() {
                     return@ui
                 }
                 toast(if (r.optBoolean("simple_mode")) "已切到简洁模式" else "已恢复完整模式")
+                simpleMode = r.optBoolean("simple_mode")
+                applySimpleTabs()
                 reload()
             }
         }
