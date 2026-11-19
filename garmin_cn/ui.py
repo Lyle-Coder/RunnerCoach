@@ -40,14 +40,21 @@ body{margin:0;color:var(--ink);line-height:1.6;font-size:14px;
 /* 两层辉光挪到固定伪元素：`background-attachment:fixed` 会让 WebView 在每次
    滚动时重绘整面背景（而不是缓存成层），中低端机就是「滚动发涩、下拉闪一下」。
    伪元素只合成一次，视觉效果完全一样。 */
+/* 一页一处辉光：页面本身只留一层极淡的冷色渐晕。
+   原来这里叠了两层（蓝 .17 + 青 .10），再加上页头 kicker 的 12px 文字发光、
+   积分卡的内发光、六件衫徽章的同色外环，一屏四处亮，焦点被摊平成一个
+   「哪里都在发光」的均值。现在页面这层只负责把顶部压出一点冷色，
+   辉光交给页面上唯一那个主数据卡。 */
 body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   background:
-    radial-gradient(900px 520px at 78% -8%, rgba(59,130,246,.17), transparent 62%),
-    radial-gradient(680px 420px at 6% 2%, rgba(34,211,238,.10), transparent 60%)}
+    radial-gradient(900px 520px at 78% -8%, rgba(59,130,246,.09), transparent 62%)}
 a{color:var(--brand-ink);text-decoration:none}
-.app{max-width:820px;margin:0 auto;padding:0 14px calc(30px + env(safe-area-inset-bottom))}
+/* 全局左右留白统一 16：原来 14，返回链接、标题、卡片、榜单行四种左边界
+   （14 / 16 / 14 / 25）混在一起，看着「说不上哪里没对齐」。
+   16 也让卡片内边距 16 与页面边距重合，文字落在同一条竖线上。 */
+.app{max-width:820px;margin:0 auto;padding:0 16px calc(30px + env(safe-area-inset-bottom))}
 .back{display:inline-flex;align-items:center;gap:5px;margin:8px 0 -4px;
-  min-height:44px;padding:0 2px;
+  min-height:44px;padding:0;
   font-size:12px;color:var(--brand-ink);text-decoration:none}
 .back:active{opacity:.6}
 /* 页头不再画收尾横线。
@@ -67,10 +74,14 @@ a{color:var(--brand-ink);text-decoration:none}
   color:var(--ink2);text-decoration:none;border:1px solid var(--line);
   background:var(--surface-2)}
 .hact:active{background:var(--brand-soft);border-color:var(--line-brand)}
-.kicker{font-size:11px;font-weight:600;letter-spacing:2px;color:var(--cyan);
-  text-shadow:0 0 12px rgba(34,211,238,.45)}
-.page-head h1{margin:6px 0 4px;font-size:var(--fs-dsp,32px);font-weight:600;
-  letter-spacing:-1px;line-height:1.2}
+/* kicker 不再做文字发光：11px 的字挂 12px 高斯模糊，在暗底上会糊成一团
+   青色雾，读起来是「亮」而不是「清楚」。颜色本身已经够区分。 */
+.kicker{font-size:11px;font-weight:600;letter-spacing:2px;color:var(--cyan)}
+/* 页头标题降到 24（--fs-h1）：它和卡片里的主数据（32，--fs-dsp）必须差一档，
+   否则「周末拉练队」和「63.8」一样大，第一眼不知道看哪个。
+   数字一屏只有一个，标题一页只有一个，两者的层级关系是固定的。 */
+.page-head h1{margin:6px 0 4px;font-size:var(--fs-h1,24px);font-weight:600;
+  letter-spacing:-.5px;line-height:1.25}
 .lede{margin:0;font-size:14px;color:var(--muted)}
 .meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
 .chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:3px 9px;
@@ -98,7 +109,9 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
   border-color:var(--line)}
 /* 实心品牌色：只给「今天」这种唯一的当前项，一屏最多一个 */
 .pill.brand{color:var(--ink-inv);background:var(--brand);border-color:transparent}
-.sec{margin-top:24px}
+/* 区块间距统一 32：原来是 24 / 40 / 48 三种混着来（.sec 24、
+   页头下 40、区块后 48），同一屏里三种节奏，眼睛会觉得「说不出的不整齐」。 */
+.sec{margin-top:32px}
 .sec-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px}
 /* 区块标题从 12px 字距 1.4px 的小标改成 16px 粗体：小标那套是「杂志目录」
    的做法，在手机上字太小、层级反而低于正文里的数字。 */
@@ -349,7 +362,7 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .grow .gmeta{flex:0 0 auto;font-size:11px;color:var(--muted);text-align:right;line-height:1.4}
 .grow .chev{flex:0 0 auto;color:var(--muted);font-size:15px}
-.rank{display:flex;align-items:center;gap:9px;padding:9px 0;
+.rank{display:flex;align-items:center;gap:9px;min-height:56px;padding:0;
   border-bottom:1px solid var(--line2)}
 .rank:last-child{border-bottom:0}
 .rank .no{flex:0 0 22px;font-size:12px;color:var(--muted);
@@ -359,7 +372,11 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .rank .sub{font-size:11px;color:var(--muted);margin-left:5px}
 .rank .km{flex:0 0 auto;font-size:14px;font-weight:600;color:var(--ink);
   font-variant-numeric:tabular-nums}
-.rank.me{background:var(--brand-soft);border-radius:10px;margin:0 -8px;padding:9px 8px}
+/* 单位不省：「42.3」单独一行是跑量还是配速、是公里还是英里，全靠猜。
+   数字用 600，单位退成 11px 的 --ink-3——单位是注解，不是数据。 */
+.rank .km i{font-style:normal;font-size:var(--fs-micro,11px);font-weight:400;
+  color:var(--ink-3);margin-left:2px}
+.rank.me{background:var(--brand-soft);border-radius:10px;margin:0 -8px;padding:0 8px}
 .chal{padding:10px 0;border-bottom:1px solid var(--line2)}
 .chal:last-child{border-bottom:0}
 .chal .t{font-size:14px;font-weight:600;color:var(--ink)}
@@ -369,8 +386,10 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .bar.done i{background:var(--ok)}
 /* 无框区块：组页里除了「远征」那张入口，其余数据块都直接铺在页面上。
    每条卡都有 1px 边框 + 圆角 + 内阴影，六个区块叠起来就是一堵墙；
-   数据本身有分隔线，不需要再给它们各发一个盒子。 */
-.flat{padding:2px 0}
+   数据本身有分隔线，不需要再给它们各发一个盒子。
+   左边留 11px 是为了和区块标题对齐——标题前面有 3px 竖条 + 8px 间距，
+   正文不缩进的话，榜单行会比「本周榜」这几个字明显靠左，看着像没对齐。 */
+.flat{padding:2px 0 2px 11px}
 /* 折叠：一年用一次的（建赛事、换邀请码）默认收起，行本身当标题用。
    summary 去掉默认三角，换成右侧一个会转的 ›，展开与否一眼能看出来。 */
 .fold{border-top:1px solid var(--line2);margin-top:6px}
@@ -524,7 +543,10 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
    只画波点不够——9px 的点上 1px 的红点被抗锯齿冲淡成粉色，远看仍是一个白点。
    加红边不是为了好看，是为了在 9px 这个尺寸上还能一眼和白衫分开：
    白衫是「纯白 + 白边」，圆点衫是「白心 + 红边」。 */
-i.pd{background:var(--map-shared);
+/* 只给「衫的色点」用，`i.pd` 这条一定要排除 .sbd：
+   六件衫徽章同样是 `i.sbd.pd`，选择器写成 `i.pd` 会把波点图案
+   盖到「没拿到」的空心徽章上——真机上就是「1/6 却画着 6 件衫」。 */
+i.pd:not(.sbd){background:var(--map-shared);
   background-image:radial-gradient(#C6342E 1.15px, rgba(198,52,46,0) 1.3px);
   background-size:2.9px 2.9px;background-position:.55px .55px;
   box-shadow:0 0 0 1.4px #D9534F}
@@ -550,35 +572,45 @@ i.pd{background:var(--map-shared);
   font-variant-numeric:tabular-nums}
 .sc-v i{font-style:normal;font-size:var(--fs-title,16px);font-weight:400;
   color:var(--ink-3);margin-left:3px;letter-spacing:0}
+/* 口径行：这是全页最大的数字，必须自己说清是什么分，不能让人猜。
+   12（--fs-cap）是能读的最小一档，再小就成了附注。 */
+.sc-note{margin-top:6px;font-size:var(--fs-cap,12px);color:var(--ink-3);
+  line-height:1.45}
 .sc-shirts{display:flex;align-items:center;justify-content:space-between;gap:10px;
   margin-top:14px;padding-top:13px;border-top:1px solid var(--line);
   text-decoration:none;color:inherit;min-height:44px}
 .sc-badges{display:flex;align-items:center;gap:12px}
-/* 徽章：28px 圆。没得到的压到 22% 透明度，得到的实色 + 一圈同色外环，
-   一眼看出「这周我穿着哪几件」。 */
-.sbd{width:28px;height:28px;border-radius:50%;background:var(--c);opacity:.38;
-  box-shadow:inset 0 0 0 1px rgba(255,255,255,.22)}
-.sbd.on{opacity:1;box-shadow:0 0 0 2px var(--bg),0 0 0 3.5px var(--c)}
-/* 圆点衫不是纯色：白底红波点，和 §六件衫 的图标保持同一张脸 */
-.sbd.pd{background:var(--map-shared);
+/* 徽章：28px 圆。**没得到的是空心**——原来压到 38% 透明度，在深底上
+   就是一个黑点，用户根本数不出「一共六件、我有一件」。
+   现在空心虚线 = 位置在、但没拿到；实色 + 2px 同色外环 = 拿到了。
+   空心不能再用透明色填充：透明度和「没有」是同一个视觉信号。 */
+.sbd{width:28px;height:28px;border-radius:50%;background:transparent;
+  border:1px dashed rgba(255,255,255,.22);box-sizing:border-box}
+.sbd.on{background:var(--c);border:0;
+  box-shadow:0 0 0 2px var(--c)}
+/* 圆点衫不是纯色：白底红波点，和 §六件衫 的图标保持同一张脸。
+   只在「拿到了」的时候上波点，空心态保持统一的虚线轮廓。 */
+.sbd.pd.on{background:var(--map-shared);
   background-image:radial-gradient(var(--bad) 2px,rgba(242,85,90,0) 2.2px);
   background-size:5px 5px;background-position:1px 1px;
-  box-shadow:inset 0 0 0 1.5px var(--bad)}
-.sbd.pd.on{box-shadow:0 0 0 2px var(--bg),0 0 0 3.5px var(--bad)}
+  box-shadow:0 0 0 2px var(--bad)}
 .sc-more{font-size:var(--fs-micro,11px);color:var(--brand-ink);white-space:nowrap}
 
 /* ---- 目标入口行 ----
-   48px、整行可点、和榜单条目同一节奏。原来它是四行表格里的一行，
-   既不像能点，也把「已跑多少」压成了灰字。 */
+   56px、整行可点。48px 是个尴尬的高度：它既不是「列表行 64」，也不是
+   「按钮 44」，在两组网格之间谁都不属于。取 56 = 44 触控区 + 上下各 6 的留白，
+   和榜单行（56）同高，视线扫下来是一条节奏。 */
 .goalrow{margin-bottom:12px}
-.goalrow>summary{display:flex;align-items:center;gap:10px;min-height:48px;
+.goalrow>summary{display:flex;align-items:center;gap:10px;min-height:56px;
   padding:0 14px;list-style:none;cursor:pointer;
   background:var(--surface);border:1px solid var(--line);
   border-radius:var(--r-2);color:inherit}
 .goalrow>summary::-webkit-details-marker{display:none}
 .goalrow .gk{font-size:var(--fs-lead,15px);font-weight:600;color:var(--ink);
   white-space:nowrap}
-.goalrow .gs{font-size:var(--fs-micro,11px);color:var(--ink-3);
+/* 12 而不是 11：这行里有「建议多少 km」「完成百分之几」，是影响决策的信息，
+   不是附注。用 --fs-micro 会让人以为可以跳过。 */
+.goalrow .gs{font-size:var(--fs-cap,12px);color:var(--ink-3);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .goalrow .chev{margin-left:auto;color:var(--ink-3);font-size:16px;line-height:1}
 .goalrow[open]>summary{border-radius:var(--r-2) var(--r-2) 0 0;
@@ -594,7 +626,7 @@ i.pd{background:var(--map-shared);
    每项语序还不一样（目标…已跑…达成 / 结对…我/他…逆袭），读起来像三句
    不相干的话。 */
 .kvrows{display:grid;grid-template-columns:24px minmax(0,1fr);gap:4px 8px;
-  padding:2px 0 8px;font-size:11px;color:var(--ink2);line-height:1.5}
+  padding:2px 0 0;font-size:var(--fs-cap,12px);color:var(--ink2);line-height:1.5}
 .kvrows .k{color:var(--ink-3)}
 
 .kvrows .v{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -608,7 +640,7 @@ i.pd{background:var(--map-shared);
    不加卡片边框——加了就是四张大卡片，占掉一行多的高度；这里要的是「一排
    应用图标」，主体应该是图标本身。 */
 .qgrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;
-  padding:4px 0 10px}
+  padding:4px 0 12px}
 .qg{display:flex;flex-direction:column;align-items:center;gap:5px;
   padding:7px 2px 5px;border-radius:14px;text-decoration:none;min-width:0}
 .qg:active{background:var(--brand-soft)}

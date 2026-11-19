@@ -869,6 +869,8 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     g = d["group"]
     role = g.get("role") or "member"
     is_admin = role in ("owner", "admin")
+    # 人数要在好几处判断（页头胶囊、名次文案、空榜），先取一次。
+    _n = int(g.get("member_count") or 0)
     my_share = (g.get("me") or {}).get("share") or "summary"
 
     # 把「路线共享开着吗」记到本地：上报时靠这个决定要不要多发一次格子，
@@ -909,9 +911,16 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
             name += f'<span class="sub">新 {_new_cells} 格</span>'
         rank_rows += (f'<div class="{cls}"><span class="no">{i}</span>'
                       f'<span class="nm">{name}<span class="sub">{days} 天</span></span>'
-                      f'<span class="km">{_km(x.get("distance_m"))}</span></div>')
+                      f'<span class="km">{_km(x.get("distance_m"))}<i>km</i></span></div>')
     hidden = int(b.get("hidden") or 0)
-    if not rank_rows:
+    # 一个人对着排行榜跟自己比：一条数据 + 半屏空白。这不是「空位」，
+    # 是页面没告诉用户下一步干什么。直接换成一句状态 + 一个邀请入口。
+    if _n <= 1:
+        rank_rows = ('<p class="note">本周还没有队友上榜。把邀请码发给他们，'
+                     '下次上报就会出现在这里。</p>'
+                     f'<div class="pager"><a class="btn sm primary" '
+                     f'href="/groups/{gid}/settings">邀请队友</a></div>')
+    elif not rank_rows:
         rank_rows = '<p class="note">本周还没有人上报。打开 App 才会同步，不跑后台任务。</p>'
     if hidden:
         rank_rows += f'<p class="note">另有 {hidden} 人关闭了共享，不参与排名。</p>'
@@ -973,9 +982,13 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
         chal_fold = ('<details class="fold"><summary>建一个赛事'
                      '<span class="fx">›</span></summary>' + chal_form + '</details>')
 
-    chips = (f'<span class="chip">{int(g.get("member_count") or 0)} 人</span>'
-             f'<span class="chip">{_km(total_m)} km '
-             + ("本月" if rng == "month" else "本周") + '</span>')
+    # 页头胶囊只说一件新事：全组本周跑了多少。
+    # 「N 人」已经写在副标题里，再放一枚同样的胶囊等于把一行字抄两遍；
+    # 一个人组里「全组」就等于「我」，所以干脆不出这枚胶囊。
+    chips = ""
+    if _n > 1:
+        chips = (f'<span class="chip">全组 {_km(total_m)} km '
+                 + ("本月" if rng == "month" else "本周") + '</span>')
 
     # 本周成绩条：我在组里第几、多少分、穿着哪件衫。
     # 这是「竞赛感」最省地方的表达——一行字，不做榜单页。取不到就整块不显示，
@@ -1011,16 +1024,30 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                     f'<i class="sbd{_pat}{" on" if _on else ""}" '
                     f'style="--c:{esc(sh.get("color"))}" title="{esc(_tip)}" '
                     f'aria-label="{esc(_tip)}"></i>')
+            # 一个人组里「第 1 名」没有信息量，直接说这是「本周成绩」。
+            _k = f'我 · 第 {_rk} 名' if _n > 1 else "本周成绩"
+            # 口径要自己交代：这是全页最大的数字，不说清是什么分，
+            # 用户只能猜「是跑量？出勤？还是综合」。满分和加分上限由服务端
+            # 下发（base_max / bonus_max），不在客户端写死——权重改了这里跟着变。
+            _bm = _se.get("base_max") or 90
+            _xb = _se.get("bonus_max") or 10
+            _note = (f'综合分 · 满分 {float(_bm):g}（跑量 · 出勤 · 爬升 · 进步 · 连跑）'
+                     f' + 加分 {float(_xb):g}')
+            _got = sum(1 for sh in (_se.get("shirts") or [])
+                       if str(sh.get("name") or "") in _mine_names)
             score_card = (
                 f'<section class="scorecard">'
                 f'<div class="sc-top"><div class="sc-l">'
-                f'<span class="sc-k">我 · 第 {_rk} 名</span>'
+                f'<span class="sc-k">{esc(_k)}</span>'
                 f'<div class="sc-v">{_sc:g}<i>分</i></div></div>'
-                + (f'<span class="pill warn">{esc(_tt)}</span>' if _tt else "")
+                # 称号是身份，不是警告：琥珀在体系里专给「逾期 / 超限」，
+                # 拿它标「先锋」会被读成「你这周有问题」。身份类一律中性。
+                + (f'<span class="pill ghost">{esc(_tt)}</span>' if _tt else "")
                 + '</div>'
+                f'<div class="sc-note">{esc(_note)}</div>'
                 f'<a class="sc-shirts" href="/groups/{gid}/shirts">'
                 f'<span class="sc-badges">{_badges}</span>'
-                f'<span class="sc-more">六件衫 ›</span></a></section>')
+                f'<span class="sc-more">六件衫 {_got}/6 ›</span></a></section>')
     shirt_row = ""
 
     # ---- 本周玩法：目标 / 对子 / 预言
@@ -1053,14 +1080,21 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
         _goal_km = _g.get("km")
         _suggest = float(_g.get("suggest") or 0)
 
-        # 目标单独成一行入口（48pt）：它是每周一次的动作，混在四行表格里
+        # 目标单独成一行入口（56pt）：它是每周一次的动作，混在四行表格里
         # 既不像「可点」，也把「已跑多少」这种每天看的信息压成了灰字。
+        # 副文必须有单位和进度百分比——「已跑 6.2 / 38.6 km」还得自己心算
+        # 才知完成几成，那是用户最想知道的那个数。
         if _goal_km:
+            # 达成之后就不再报百分比：127% 这种数看着像出错了，
+            # 而且「超了多少」对下周排目标没有指导意义，说「已达成」就够。
             _hit = _done_km >= float(_goal_km)
-            _gsub = (f'已跑 {_done_km:.1f} / {float(_goal_km):g} km'
-                     + (" · 达成" if _hit else ""))
+            _gsub = f'已跑 {_done_km:.1f} / {float(_goal_km):g} km · ' + (
+                "已达成" if _hit else f'{_done_km / float(_goal_km) * 100:.0f}%')
         elif _suggest:
-            _gsub = f'还没定 · 建议 {_suggest:g} km'
+            # 建议值的口径来自服务端 `_suggest_goal`：近 4 周周均 × 0.8。
+            # 不写「按上周 ×1.14」那种自创说法——算出来的数对不上，
+            # 用户一眼就能看出这个建议是编的。
+            _gsub = f'还没定 · 建议 {_suggest:g} km（近 4 周周均 × 0.8）'
         else:
             _gsub = "还没定"
         _gtxt = f'目标 {float(_goal_km):g} km' if _goal_km else "定本周目标"
@@ -1166,7 +1200,9 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     # 顺序是刻意的——点「小组」第一眼要看到「我在组里第几」，然后才是这一周的
     # 玩法。P2 加了两块之后榜单被挤到第三屏，这条就破了，所以玩法块必须并进
     # 头部，而不是自己占一个 section。
-    head = score_card + quick + week_form + week_line
+    # 目标行提到四个图标之前：它是这一周唯一要「做一个决定」的事，
+    # 图标只是去别处的入口，优先级低于它。
+    head = score_card + week_form + quick + week_line
 
     body = (msg
             + head
