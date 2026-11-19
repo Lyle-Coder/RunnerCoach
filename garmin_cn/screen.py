@@ -70,7 +70,7 @@ _BASE = """
 
 /* 恢复 hero：一句结论 + 一句解释在左、环在右、三格分解在下、建议胶囊收尾。
    原来是「标题条 + 环 + 三条横条分解」，结论和标题分居两块，说的是同一件事。 */
-.rc-hero{display:flex;gap:14px;align-items:center}
+.rc-hero{display:flex;gap:14px;align-items:flex-start}
 .rc-ring{flex:0 0 108px;width:108px;height:108px;display:block}
 .rc-ring.alert{filter:drop-shadow(0 0 14px rgba(242,85,90,.55))}
 .rc-hero-main{flex:1;min-width:0}
@@ -82,7 +82,7 @@ _BASE = """
 .rc-dot.ok{background:var(--ok,#3FD39A);box-shadow:0 0 9px rgba(63,211,154,.55)}
 .rc-dot.warn{background:var(--warn,#F5A524);box-shadow:0 0 9px rgba(245,165,36,.5)}
 .rc-dot.bad{background:var(--bad,#F2555A);box-shadow:0 0 9px rgba(242,85,90,.5)}
-.rc-hero-p{margin:6px 0 0;font-size:var(--fs-cap,12px);line-height:1.6;
+.rc-hero-p{margin:7px 0 0;font-size:var(--fs-body,14px);line-height:1.65;
   color:var(--ink-2,#A6B8CD)}
 /* 三格分解：标签 + 数值一行，进度条压在下面对齐整列。
    原来是「名称 | 横条 | 数值」三列并排，横条被挤在中间只剩几像素，
