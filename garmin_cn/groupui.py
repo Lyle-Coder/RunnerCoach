@@ -849,7 +849,8 @@ def _shape_svg(shape: str, color: str) -> str:
             ' vector-effect="non-scaling-stroke"/></svg>')
 
 
-def _act_card(a: dict, today: str, detail: bool = False) -> str:
+def _act_card(a: dict, today: str, detail: bool = False, *,
+              gid: int = 0, token: str = "", emojis=None) -> str:
     """一条动态的卡片：谁 / 轨迹剪影 / 距离 / 元信息 / 最新三条评论。
 
     剪影是**脱敏**的：客户端把轨迹抽稀到 24 点、等比缩放到 100×100 再上传，
@@ -884,26 +885,74 @@ def _act_card(a: dict, today: str, detail: bool = False) -> str:
             bits.append(f'爬升 {elev} m')
     sub = f'<p class="ac-sub">{" · ".join(bits)}</p>' if bits else ""
 
-    # 评论：列表里给最新三条；详情页由下面单独渲染全量，这里不重复
+    # 评论：**卡片内展开**，不再跳「这条」详情页。
+    # 收起态只留最新一条（一眼看出有没有人说话），点开展开全部 + 发言框。
     cm = ""
     if not detail:
         rec = a.get("recent") or []
         cnt = int(a.get("comments") or 0)
-        lines = ""
+        _aid = int(a.get("id") or 0)
+        if rec:
+            _c = rec[-1]
+            _e = esc(_c.get("emoji") or "")
+            _t = esc(_c.get("text") or "")
+            head = ('<span class="ac-sumline"><b>' + esc(_c.get("alias")) + '</b>'
+                    + ('<em>' + _e + '</em>' if _e else "")
+                    + (' ' + _t if _t else "") + '</span>')
+        else:
+            head = '<span class="ac-sumline none">还没有评论</span>'
+        label = ("共 %d 条" % cnt if cnt > 1 else ("去留一句" if not cnt else "看评论"))
+
+        body = ""
         for c in rec:
             _e = esc(c.get("emoji") or "")
             _t = esc(c.get("text") or "")
-            lines += (f'<p><b>{esc(c.get("alias"))}</b>'
-                      + (f'<em>{_e}</em>' if _e else "")
-                      + (f'<span>{_t}</span>' if _t else "") + '</p>')
-        if cnt > len(rec):
-            more = f'<span class="ac-more">还有 {cnt - len(rec)} 条评论 ›</span>'
-        elif rec:
-            # 有评论就别再挂「去留一句」：整张卡本来就是入口，多这一行像按钮
-            more = ""
-        else:
-            more = '<span class="ac-more">还没有评论 · 说一句 ›</span>'
-        cm = f'<div class="ac-c">{lines}{more}</div>'
+            _one = ('<div class="cm"><span class="cm-b"><b>'
+                    + esc(c.get("alias")) + '</b>'
+                    + ('<span class="ce">' + _e + '</span>' if _e else "")
+                    + ('<span>' + _t + '</span>' if _t else "") + '</span>')
+            if c.get("mine"):
+                _cid = int(c.get("id") or 0)
+                _one += (
+                    '<details class="cm-more">'
+                    '<summary aria-label="这条评论的操作">›</summary>'
+                    '<div class="cm-act">'
+                    '<form action="/__group/' + str(gid) + '/comment_edit" method="post">'
+                    + _tok(token)
+                    + '<input type="hidden" name="id" value="' + str(_cid) + '">'
+                    + '<input type="hidden" name="act" value="' + str(_aid) + '">'
+                    + '<input class="cm-in" type="text" name="text" maxlength="60" '
+                    + 'value="' + _t + '" aria-label="改这条评论">'
+                    '<div class="pager">'
+                    '<button class="btn sm" name="op" value="save" type="submit">保存</button>'
+                    '<button class="btn sm danger" name="op" value="del" type="submit" '
+                    'onclick="return confirm(\'删除这条评论？\')">删除</button>'
+                    '</div></form></div></details>')
+            _one += '</div>'
+            body += _one
+
+        # 发言区：表情一排 + 一句话。和原来的「说一句」同一套表单，只是搬进
+        # 卡片里，发完就停在这条动态上，不再跳来跳去。
+        emo = ""
+        for e in (emojis or []):
+            emo += ('<form action="/__group/' + str(gid) + '/comment" method="post" class="eform">'
+                    + _tok(token)
+                    + '<input type="hidden" name="act" value="' + str(_aid) + '">'
+                    + '<input type="hidden" name="emoji" value="' + esc(e) + '">'
+                    + '<button class="ebtn" type="submit">' + esc(e) + '</button></form>')
+        body += ('<div class="erow">' + emo + '</div>'
+                 '<form action="/__group/' + str(gid) + '/comment" method="post">'
+                 + _tok(token)
+                 + '<input type="hidden" name="act" value="' + str(_aid) + '">'
+                 '<div class="ac-say"><input class="cm-in" type="text" name="text" '
+                 'maxlength="60" placeholder="说一句" aria-label="给这条动态留言">'
+                 '<button class="btn sm" type="submit">发</button></div></form>')
+        # 摘要行在展开态要换掉：还写着「去留一句」的话，下面又摆着表情和
+        # 输入框，等于同一件事说两遍。展开时只留一个「收起」。
+        cm = ('<div class="ac-c"><details class="ac-cm"><summary>'
+              + head + '<span class="ac-cnt">' + label + ' ›</span>'
+              + '<span class="ac-cnt up">收起 ›</span></summary>'
+              + '<div class="ac-cb">' + body + '</div></details></div>')
 
     return ('<div class="ac-h">'
             f'<span class="fd" style="background:{esc(a.get("color"))}"></span>'
@@ -995,8 +1044,9 @@ def feed_page(token: str, gid: int, message: str = "", act: int = 0) -> str:
 
     items = ""
     for a in rows:
-        items += (f'<a class="acard" href="/groups/{gid}/feed?act={int(a["id"])}">'
-                  + _act_card(a, today) + "</a>")
+        items += ('<div class="acard">'
+                  + _act_card(a, today, gid=gid, token=token,
+                              emojis=emojis) + '</div>')
     if not items:
         items = ('<div class="card"><p class="note">最近还没有动态。'
                  '同步一次后，你和队友的活动概要会出现在这里。</p></div>')
@@ -1204,7 +1254,13 @@ def shirts_page(token: str, gid: int, message: str = "") -> str:
 
 
 # ---------------------------------------------------------------- 组详情
-def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> str:
+# 组页里一屏放多少条动态。20 条约 4000px，翻两屏到赛事后面接上，
+# 再多首屏 HTML 会到 200KB 以上（每张卡带一条轨迹形状）。
+FEED_PAGE = 20
+
+
+def group_page(token: str, gid: int, message: str = "", rng: str = "week",
+               feed_n: int = 0) -> str:
     from . import group as G
 
     today = dt.date.today().isoformat()
@@ -1601,23 +1657,30 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     ]
     quick = '<div class="qgrid">' + "".join(_tiles) + "</div>"
 
-    # ---- 大家的动态：和 /feed 用同一种卡片，但组页只放**两条**。
-    # 一条卡约 200px（大字 + 标尺 + 三项 + 三条评论），放三条就把「看全部」
-    # 挤到第三屏去了；组页的主角是榜单，动态是「顺手看一眼」。
+    # ---- 大家的动态：**并进组页，不再有独立的动态页**。
+    # 用户原话：「划到小组底部后自动数据流展示所有活动，划到顶部就回到小组」。
+    # 一次渲染 feed_n 条（默认 20），底部「继续往下看」再加载 20 条并锚回这里；
+    # 评论在卡片里原地展开，不再跳「这条」详情页。
     feed_rows = ""
     try:
         _fd = G.feed(gid, today)
     except Exception:      # noqa: BLE001 - 老服务端没有 /feed，整块不显示
         _fd = {}
-    if _fd.get("ok") and (_fd.get("rows") or []):
-        for a in (_fd.get("rows") or [])[:2]:
-            feed_rows += (f'<a class="acard" href="/groups/{gid}/feed?act={int(a["id"])}">'
-                          + _act_card(a, today) + "</a>")
-    feed_sec = (sec("大家的动态",
-                    feed_rows
-                    + f'<div class="pager"><a class="btn sm" href="/groups/{gid}/feed">'
-                    f'看全部 {len(_fd.get("rows") or [])} 条</a></div>')
-                if feed_rows else "")
+    _all = _fd.get("rows") or []
+    if _fd.get("ok") and _all:
+        _show = _all[:max(FEED_PAGE, min(len(_all), feed_n))]
+        for a in _show:
+            # 不能再用 <a> 包整张卡：卡片里现在有评论表单和 details，
+            # <a> 里嵌 form 是非法结构，点输入框会触发跳转。
+            feed_rows += ('<div class="acard">'
+                          + _act_card(a, today, gid=gid, token=token,
+                                      emojis=_fd.get("emojis") or []) + '</div>')
+        if len(_all) > len(_show):
+            _next = len(_show) + FEED_PAGE
+            feed_rows += ('<div class="pager"><a class="btn sm" '
+                          f'href="/groups/{gid}?feed={_next}#feed">'
+                          f'继续往下看（{len(_all) - len(_show)} 条）</a></div>')
+    feed_sec = (sec("大家的动态", feed_rows) if feed_rows else "")
 
     # 月榜/周榜互切。服务端一直支持 range=month，只是页面以前不读这个参数，
     # 入口就被写死成关闭（`if False`）——那是死开关，不是功能。

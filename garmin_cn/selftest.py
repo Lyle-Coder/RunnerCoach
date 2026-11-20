@@ -1744,7 +1744,10 @@ def run() -> int:
         f"图例数不对（{_mh.count('class="lgi"')} 条），可能又套了一层全局图例"
 
     # 动态：组页只给最近几条 + 入口；详情页有表情按钮和留言框
-    assert "大家的动态" in _gh and f"/groups/1/feed" in _gh, "组页没有动态区"
+    # 动态已经并进组页：不再有指向 /feed 的链接，评论在卡片里展开
+    assert "大家的动态" in _gh, "组页没有动态区"
+    assert "/groups/1/feed" not in _gh, "组页还有指向独立动态页的链接"
+    assert 'class="ac-cm"' in _gh, "组页动态卡片里没有评论折叠"
     # 动态从「一行一条」改成「一条一卡」：剪影 + 大字距离 + 元信息 + 三条评论
     assert 'class="acard"' in _gh, "组页动态没有按卡片渲染"
     assert 'class="ac-mid"' in _gh, "动态卡片没有剪影区"
@@ -1754,7 +1757,9 @@ def run() -> int:
     assert 'class="ac-km"' in _gh and 'class="ac-sub"' in _gh, \
         "动态卡片没有距离大字 / 元信息行"
     assert "大家最近" in _fdp and "跑步" in _fdp, "动态列表页没渲染出来"
-    assert "/feed?act=9" in _fdp, "动态列表没有进详情页的链接"
+    # 卡片不再是链接（里面有表单），评论折叠在卡内
+    assert "/feed?act=9" not in _fdp, "动态卡片还是链接，点输入框会跳页"
+    assert 'class="ac-cm"' in _fdp, "动态列表里没有评论折叠"
     assert 'name="emoji"' in _fdo and 'name="text"' in _fdo, "详情页没有表情/留言入口"
     # 自己的评论才有「改 / 删」，且折在 › 里（防误触）。夹具里 id=31 是 mine。
     assert _fdo.count('class="cm-more"') == 1, "自己的评论没有操作入口（或别人的也有）"
