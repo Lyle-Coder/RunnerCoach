@@ -59,6 +59,15 @@ CHALLENGES = {
         {"id": 2, "title": "累计 20 次出门", "kind": "acts", "target": 20,
          "current": 11, "pct": 55.0, "status": "running",
          "from": "2026-11-01", "to": "2026-11-30"},
+        {"id": 3, "title": "爬升 3000 米", "kind": "elevation", "target": 3000,
+         "current": 1860, "pct": 62.0, "status": "running",
+         "from": "2026-11-16", "to": "2026-11-22"},
+        {"id": 4, "title": "配速 5'30 以内", "kind": "speed", "target": 330,
+         "current": 348, "pct": 94.8, "status": "running",
+         "from": "2026-11-16", "to": "2026-11-22"},
+        {"id": 5, "title": "探索 60 格新地方", "kind": "explore", "target": 60,
+         "current": 38, "pct": 63.3, "status": "ended",
+         "from": "2026-11-01", "to": "2026-11-15"},
     ],
 }
 
@@ -245,7 +254,9 @@ def main() -> int:
     print(f"{_p4}  {len(_st2)} 字节")
 
     for _name, _html in (("feed", GU.feed_page("TOK", GID)),
-                         ("feedone", GU.feed_page("TOK", GID, "", 3))):
+                         ("feedone", GU.feed_page("TOK", GID, "", 3)),
+                         ("board", GU.board_page("TOK", GID)),
+                         ("boardmonth", GU.board_page("TOK", GID, "", "month"))):
         for prefix, sub in (("/content/", "garmin_cn/content"),):
             _html = _html.replace(f'"{prefix}', f'"{ (ROOT / sub).as_uri()}/')
         _html = _html.replace("</body>", '<style>html{background:#05080d}'
