@@ -572,6 +572,16 @@ def comment(gid: int, act: int, text: str = "", emoji: str = "") -> dict:
                  {"act": int(act), "text": text, "emoji": emoji})
 
 
+def comment_edit(gid: int, cid: int, text: str = "", emoji: str = "") -> dict:
+    """改自己的评论。服务端只认本人的，别人的会回 404。"""
+    return _call("POST", f"/v1/group/{int(gid)}/comment_edit",
+                 {"id": int(cid), "text": text, "emoji": emoji})
+
+
+def comment_del(gid: int, cid: int) -> dict:
+    return _call("POST", f"/v1/group/{int(gid)}/comment_del", {"id": int(cid)})
+
+
 def set_goal(gid: int, km: float, predict: int | None = None,
              today: str | None = None) -> dict:
     """报本周目标；顺手可以把预言一起投了。

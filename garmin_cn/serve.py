@@ -1685,6 +1685,28 @@ class _Handler(SimpleHTTPRequestHandler):
                         if r.get("ok"):
                             return self._see_other(f"/groups/{gid}/feed?act={_aid}")
                         msg = r.get("error") or "发不出去"
+                    elif act in ("comment_edit", "comment_del"):
+                        # 改和删共用一张表单（按钮带 op=save / del），所以这里
+                        # 先看 op 再决定走哪条。只能动自己的：服务端按 user_id
+                        # 校验，别人的回 404——这里不做「是不是我的」判断。
+                        _cid = as_int(values.get("id"))
+                        if not _cid:
+                            raise ValueError("找不到这条评论")
+                        _aid = as_int(values.get("act"))
+                        _del = act == "comment_del" or (values.get("op") or "save") == "del"
+                        if _del:
+                            r = G.comment_del(gid, _cid)
+                            msg = "已删除" if r.get("ok") else (r.get("error") or "删不掉")
+                        else:
+                            r = G.comment_edit(gid, _cid,
+                                               values.get("text") or "",
+                                               values.get("emoji") or "")
+                            msg = "已改好" if r.get("ok") else (r.get("error") or "改不了")
+                        # 改完/删完回原动态，别把人扔回列表
+                        if _aid:
+                            return self._see_other(
+                                f"/groups/{gid}/feed?act={_aid}"
+                                + (f"&msg={quote(msg)}" if msg and not r.get("ok") else ""))
                     elif act == "rotate":
                         r = G.rotate(gid)
                         msg = (f'新邀请码 {r["invite_code"]}' if r.get("ok")
