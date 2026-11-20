@@ -15,6 +15,7 @@ import datetime as dt
 import http.client
 import json
 import os
+import sqlite3
 import shutil
 import sys
 import tempfile
@@ -179,6 +180,10 @@ def main() -> int:
           str(rows.get("老李")))
     check("小赵 5 km", rows.get("小赵", {}).get("distance_m") == 5000, str(rows.get("小赵")))
     check("按里程降序", r["rows"][0]["alias"] == "老李", str([x["alias"] for x in r["rows"]]))
+    # 榜行必须带 user_id：客户端靠它挂「穿了哪几件衫」，按名字挂会在同组同名时出错
+    check("榜行带 user_id（客户端按它挂徽章）",
+          all(isinstance(x.get("user_id"), int) for x in r["rows"]),
+          str(r["rows"][0]))
     check("计划完成率只算有计划的天", abs((rows["老李"]["plan_rate"] or 0) - 0.5) < 0.01,
           str(rows["老李"].get("plan_rate")))
     check("小赵没有计划 → plan_rate 为 null", rows["小赵"]["plan_rate"] is None,
@@ -877,6 +882,105 @@ def main() -> int:
         st, r = req("GET", f"/v1/group/{_gid}", None, _again)
         _mine = [m["alias"] for m in r["group"]["members"] if m.get("is_me")]
         check("组内默认名 = 账号昵称", _mine == ["夜里跑的那个"], str(_mine))
+
+    # ---------------- 加入需批准
+    print("\n12b. 加入需批准")
+    _t6 = login("sixth@test.local")
+    _t7 = login("seventh@test.local")
+    st, r = req("POST", f"/v1/group/{gid}/joinmode", {"mode": "approve"}, a)
+    check("组长能改成「需我批准」", st == 200 and r.get("join_mode") == "approve", f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/joinmode", {"mode": "approve"}, _tok4)
+    check("普通成员改不了（403）", st == 403, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/joinmode", {"mode": "approve"}, a)
+    st, r = req("POST", f"/v1/group/join", {"code": _code_now, "alias": "小六"}, _t6)
+    check("申请先挂起，不直接进组", st == 200 and r.get("pending") is True, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}", None, _t6)
+    check("挂起期间看不到组（403）", st == 403, f"{st} {r}")
+
+    st, r = req("GET", f"/v1/group/{gid}", None, a)
+    _pend = (r.get("group") or {}).get("pending") or []
+    check("组长看得到待批准申请", len(_pend) == 1 and _pend[0]["alias"] == "小六", str(_pend))
+    _puid = int(_pend[0]["user_id"]) if _pend else 0
+    st, r = req("GET", f"/v1/group/{gid}", None, _tok4)
+    check("普通成员看不到申请列表", "pending" not in (r.get("group") or {}), str(r.get("group")))
+
+    st, r = req("POST", f"/v1/group/{gid}/decide", {"user_id": _puid, "ok": True}, _tok4)
+    check("普通成员不能批准（403）", st == 403, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/decide", {"user_id": _puid, "ok": True}, a)
+    check("批准 200", st == 200, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}", None, _t6)
+    check("批准后能进组", st == 200, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/join", {"code": _code_now, "alias": "小七"}, _t7)
+    st, r = req("POST", f"/v1/group/{gid}/decide",
+                {"user_id": int((req("GET", f"/v1/group/{gid}", None, a)[1]
+                                 ["group"]["pending"] or [{"user_id": 0}])[0]["user_id"]),
+                 "ok": False}, a)
+    check("拒绝 200", st == 200, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}", None, _t7)
+    check("被拒后仍进不来（403）", st == 403, f"{st} {r}")
+    req("POST", f"/v1/group/{gid}/joinmode", {"mode": "open"}, a)
+    check("能改回「扫码即入」",
+          req("GET", f"/v1/group/{gid}", None, a)[1]["group"].get("join_mode") == "open")
+
+    # ---------------- 营地（休整点 + 升级）
+    print("\n12d. 营地")
+    st, r = req("GET", f"/v1/group/{gid}/camp", None, a)
+    check("营地默认 Lv1、池为 0", st == 200 and r.get("level") == 1 and r.get("pool") == 0,
+          f"{st} {r}")
+    check("升级成本按人数缩放（人均 3 点 × 人数）",
+          (r.get("next") or {}).get("cost") == 3 * int(r.get("members") or 1),
+          str(r.get("next")))
+    check("池上限 = 40 × 人数", r.get("cap") == 40 * int(r.get("members") or 1), str(r.get("cap")))
+
+    # 上报 5 天「按计划休息」，服务端按每周 4 点截断
+    req("POST", f"/v1/group/{gid}/report", {"days": [
+        {"date": f"2026-11-{16 + i}", "acts": 0, "vigor": 1} for i in range(5)]}, a)
+    st, r = req("GET", f"/v1/group/{gid}/camp", None, a)
+    check("休整点每周最多 4 点", r.get("pool") == 4, str(r))
+
+    st, r = req("POST", f"/v1/group/{gid}/camp/upgrade", {}, _tok4)
+    check("普通成员不能升级营地（403）", st == 403, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/camp/upgrade", {}, a)
+    _cost = (req("GET", f"/v1/group/{gid}/camp", None, a)[1].get("next") or {}).get("cost", 0)
+    check("休整点不够时升级被拒（409）", st == 409 and _cost > 4, f"{st} {r}")
+
+    st, r = req("GET", f"/v1/group/{gid}", None, a)
+    check("组详情带营地等级", (r.get("group") or {}).get("camp_level") == 1, str(r.get("group")))
+
+    # ---------------- 审计
+    print("\n12c. 操作记录")
+    st, r = req("GET", f"/v1/group/{gid}/audit?limit=20", None, a)
+    check("审计 200 且有记录", st == 200 and len(r.get("rows") or []) > 0, f"{st} {r}")
+    check("记录带动作和操作人",
+          all(x.get("action") and x.get("actor") for x in r.get("rows") or []),
+          str((r.get("rows") or [])[:1]))
+    st, r = req("GET", f"/v1/group/{gid}/audit", None, _tok4)
+    check("普通成员看不了操作记录（403）", st == 403, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/audit?limit=abc", None, a)
+    check("limit 非法时退回默认值", st == 200 and len(r.get("rows") or []) <= 50, f"{st}")
+
+    # ---------------- 注销账号
+    print("\n13. 注销账号")
+    # 组长且组里还有人 → 必须先转让，不能把一堆组员挂在没有组长的组里
+    st, r = req("POST", "/v1/account/delete", {"confirm": "1"}, a)
+    check("组长未转让时注销被拒（409）", st == 409, f"{st} {r}")
+    st, r = req("POST", "/v1/account/delete", {}, c3)
+    check("没勾确认时被拒（400）", st == 400, f"{st} {r}")
+
+    # c3 只在组外（前面用它测过 403），注销应该干净利落
+    st, r = req("POST", "/v1/account/delete", {"confirm": "1"}, c3)
+    check("注销 200", st == 200 and r.get("ok") is True, f"{st} {r}")
+    st, r = req("GET", "/v1/me", None, c3)
+    check("注销后令牌失效（401）", st == 401, f"{st} {r}")
+    # 直接查库：手机号必须被换成不可反查的占位符
+    _db = sqlite3.connect(os.environ["DB_PATH"])
+    _p = _db.execute("SELECT revoked, nickname FROM users"
+                     " WHERE phone LIKE 'deleted-%'").fetchall()
+    _db.close()
+    check("账号标识已清空（deleted-<id> 占位、revoked=1）",
+          bool(_p) and _p[0][0] == 1 and _p[0][1] == "", str(_p))
 
     # ---------------- 汇总
     print(f"\n通过 {ok} 项，失败 {fail} 项")
