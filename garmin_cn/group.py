@@ -380,6 +380,12 @@ def set_share(gid: int, share: str) -> dict:
     return _call("POST", f"/v1/group/{int(gid)}/share", {"share": share})
 
 
+def set_role(gid: int, uid: int, role: str) -> dict:
+    """任命或撤销教练 / 管理员。只有组长能调，服务端会再判一次。"""
+    return _call("POST", f"/v1/group/{int(gid)}/role",
+                 {"user_id": int(uid), "role": str(role)})
+
+
 def set_alias(gid: int, alias: str) -> dict:
     """改我在这个组里的昵称（只影响这个组）。"""
     return _call("POST", f"/v1/group/{int(gid)}/me", {"alias": alias})
@@ -442,6 +448,33 @@ def map_data(gid: int, today: str | None = None) -> dict:
     """组内路线：每人的颜色 + 本周格子。"""
     q = f"?today={today}" if today else ""
     return _call("GET", f"/v1/group/{int(gid)}/map{q}")
+
+
+def share_route(gid: int, act_id: str, title: str, distance_m: int,
+                date: str, points: list) -> dict:
+    """把一条活动的完整轨迹发给同组。
+
+    这是唯一一条上传真实经纬度的通路（`push_cells` 只传网格编号）。
+    由用户在页面上勾了「知道会包含位置」才会调到这里。
+    """
+    return _call("POST", f"/v1/group/{int(gid)}/route",
+                 {"act_id": act_id, "title": title, "distance_m": int(distance_m),
+                  "date": date, "points": points})
+
+
+def unshare_route(gid: int, rid: int) -> dict:
+    """撤回一条路线。删了就没了。"""
+    return _call("POST", f"/v1/group/{int(gid)}/route/{int(rid)}/del", {})
+
+
+def routes(gid: int) -> dict:
+    """组内已分享的路线清单（不含轨迹点）。"""
+    return _call("GET", f"/v1/group/{int(gid)}/routes")
+
+
+def route(gid: int, rid: int) -> dict:
+    """单条路线 + 轨迹点。"""
+    return _call("GET", f"/v1/group/{int(gid)}/route/{int(rid)}")
 
 
 def news(gid: int, since: int = 0) -> dict:

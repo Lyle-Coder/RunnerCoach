@@ -213,6 +213,10 @@ class _Handler(SimpleHTTPRequestHandler):
                 # 完整榜单：周/月口径在这一页里切，不再回组页重载
                 _r = "month" if (q.get("range") or [""])[0] == "month" else "week"
                 return self._html(groupui.board_page(tok, int(seg[0]), msg, _r))
+            if len(seg) == 3 and seg[0].isdigit() and seg[1] == "route" \
+                    and seg[2].isdigit():
+                # 单条路线：点开才取坐标，清单不带点
+                return self._html(groupui.route_page(tok, int(seg[0]), int(seg[2]), msg))
             if len(seg) == 3 and seg[0].isdigit() and seg[1] == "challenge" \
                     and seg[2].isdigit():
                 # 单个赛事的完成度榜：谁跑了多少、谁已达标的那个页面
@@ -1548,6 +1552,41 @@ class _Handler(SimpleHTTPRequestHandler):
         finally:
             store.conn.close()
 
+    def _share_route(self, gid: int, act_id: str, confirmed: bool) -> dict:
+        """把一条活动的轨迹传到组里。
+
+        轨迹从本地库现读：点有 600 个，塞进表单会撞 64 KB 上限，也不该让
+        浏览器经手这些坐标。所以表单只传活动 id，服务端读库、抽稀、再上传。
+        """
+        from . import appapi as A, group as G
+        from .store import Store
+
+        if not confirmed:
+            return {"ok": False, "error": "要先勾「知道会包含位置」"}
+        act_id = (act_id or "").strip()
+        if not act_id:
+            return {"ok": False, "error": "没选活动"}
+        st = Store(A.DB)
+        try:
+            act = st.get_activity(act_id)
+            if not act:
+                return {"ok": False, "error": "本地找不到这条活动"}
+            dist = int(float(act.get("distance_m") or 0))
+            if dist < 3000:
+                return {"ok": False, "error": "短于 3 km 的路线不收录"}
+            det = st.get_detail(act_id) or {}
+            # 缓存的明细是精简版：轨迹在 `track`（[[lat,lon],...]），
+            # 不是云端原始的 geoPolylineDTO。build_track 在这里只会返回空。
+            pts = det.get("track") or []
+            if len(pts) > 600:                 # 服务端上限 800，600 够画
+                pts = pts[::max(1, len(pts) // 600)][:600]
+            if len(pts) < 3:
+                return {"ok": False, "error": "这条活动没有轨迹"}
+            return G.share_route(gid, act_id, str(act.get("name") or "")[:24],
+                                 dist, str(act.get("date") or "")[:10], pts)
+        finally:
+            st.conn.close()
+
     def _trial_evidence(self, gid: int, trial_id: str) -> tuple[dict, str]:
         """给一条试炼配证据：从本周活动里抽原始分圈。
 
@@ -1703,6 +1742,26 @@ class _Handler(SimpleHTTPRequestHandler):
                     elif act == "transfer":
                         r = G.transfer(gid, as_int(values.get("uid")))
                         msg = "已转让" if r.get("ok") else (r.get("error") or "转让失败")
+                        back = f"/groups/{gid}/settings"
+                    elif act == "route_share":
+                        r = self._share_route(
+                            gid, values.get("act") or "",
+                            (values.get("confirm") or "") == "1")
+                        msg = ("路线已分享" if r.get("ok")
+                               else (r.get("error") or "分享失败"))
+                        back = f"/groups/{gid}/map"
+                    elif act == "route_del":
+                        r = G.unshare_route(gid, as_int(values.get("rid")))
+                        msg = "已撤回" if r.get("ok") else (r.get("error") or "撤回失败")
+                        back = f"/groups/{gid}/map"
+                    elif act == "role":
+                        # 任命/撤销教练。服务端只让组长调用，这里不重复判。
+                        _role = values.get("role") or "member"
+                        r = G.set_role(gid, as_int(values.get("uid")), _role)
+                        if r.get("ok"):
+                            msg = "已任命为教练" if _role == "coach" else "已撤销教练"
+                        else:
+                            msg = r.get("error") or "改角色失败"
                         back = f"/groups/{gid}/settings"
                     elif act == "report":
                         r = self._group_report(gid)

@@ -1023,6 +1023,50 @@ def run() -> int:
     _g_html = GU.groups_page("TOK123", "")
     assert "去登录" in _g_html or "还没有加入小组" in _g_html, "小组页未登录分支不对"
 
+    # ---------------- 教练角色 ----------------
+    # 页面按角色裁权限：教练能看记录、能建赛事，但不能审批（服务端也拦）。
+    # 这里只钉住「页面上不该出现的入口」，接口层的 403 由 test_groups 守。
+    _real_detail = GG.detail
+
+    def _fake_detail(role: str, members: list):
+        def _d(gid):
+            return {"ok": True, "group": {
+                "id": 1, "name": "测试队", "role": role, "member_count": len(members),
+                "invite_code": "ABCD1234", "join_mode": "open", "pending": [],
+                "me": {"alias": "我", "share": "summary"}, "members": members}}
+        return _d
+
+    _m3 = [{"user_id": 1, "alias": "我", "role": "owner", "is_me": True},
+           {"user_id": 2, "alias": "小王", "role": "member"},
+           {"user_id": 3, "alias": "老李", "role": "coach"}]
+    try:
+        GG.detail = _fake_detail("owner", _m3)
+        _sp = GU.settings_page("TOK", 1, "")
+        assert "/__group/1/role" in _sp, "组长看不到「设教练」入口"
+        assert "设教练" in _sp and "撤销" in _sp, "教练管理入口缺文案"
+        assert "操作记录" in _sp, "组长看不到操作记录"
+
+        GG.detail = _fake_detail("coach", _m3)
+        _sp2 = GU.settings_page("TOK", 1, "")
+        assert "操作记录" in _sp2, "教练看不到操作记录（该能看到）"
+        assert "/__group/1/decide" not in _sp2, "教练看到审批入口，点进去必然 403"
+        assert "撤销" not in _sp2, "教练能任命/撤销教练，越权了"
+    finally:
+        GG.detail = _real_detail
+
+    # ---------------- 路线分享（单条折线） ----------------
+    # 投影必须和足迹页同一套，否则同一片路网上「格子在这、线在那」。
+    _rpts = [[31.20 + i * 0.0001, 121.50 + i * 0.0001] for i in range(50)]
+    _rsvg = GU._route_svg(_rpts, None)
+    assert _rsvg.count("L") == 49, f"折线点数不对：{[_rsvg.count('L')]}"
+    assert "stroke-width" in _rsvg, "折线没描边，深底上会看不清"
+    _rxs = [float(x) for x in re.findall(r"[ML]([\d.]+) ", _rsvg)]
+    _rys = [float(y) for y in re.findall(r"[ML][\d.]+ ([\d.]+)", _rsvg)]
+    assert min(_rxs) >= 0 and max(_rxs) <= GU.MAP_W, "折线 x 超出画幅"
+    assert min(_rys) >= 0 and max(_rys) <= GU.MAP_H, "折线 y 超出画幅"
+    assert GU._route_svg([[31.2, 121.5], [31.21, 121.51]], None).count("L") == 1, \
+        "两个点也该画出一段"
+
     # ---------------- 远征界面 ----------------
     # 小旗必须落在**当前幕那一段**里。整季累计进度在队伍超额时会超过 100%，
     # 如果拿它定位小旗，第二幕就会顶到最右端，看起来像这一季已经走完了。
@@ -5676,8 +5720,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.6.1 → 167）。
-    assert 'versionCode = 167' in (
+    # 每次发版要同步改这里（本次 1.6.2 → 168）。
+    assert 'versionCode = 168' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。

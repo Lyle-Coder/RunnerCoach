@@ -813,6 +813,156 @@ def main() -> int:
     finally:
         groups._now = _orig_now
 
+    # ---------------- 教练角色
+    print("\n8. 教练角色")
+    # 建赛事有「每组每天 5 个」限流，前面几段已经用完了
+    for _k in [k for k in groups._RATE if k[1] == "challenge"]:
+        groups._RATE.pop(_k, None)
+    _co = login("coach@example.com", "教练甲")
+    req("POST", f"/v1/group/{gid}/joinmode", {"mode": "open"}, a)
+    _code2 = (req("GET", f"/v1/group/{gid}", None, a)[1].get("group") or {}).get("invite_code")
+    st, r = req("POST", "/v1/group/join", {"code": _code2}, _co)
+    check("教练账号入组", st == 200, f"{st} {r}")
+    _mem2 = (req("GET", f"/v1/group/{gid}", None, a)[1].get("group") or {}).get("members") or []
+    _aid = next((int(x["user_id"]) for x in _mem2 if x.get("is_me")), 0)
+    _did = next((int(x["user_id"]) for x in _mem2
+                 if str(x.get("alias")) == "教练甲"), 0)
+    check("拿到两个 id", bool(_aid) and bool(_did), f"a={_aid} d={_did}")
+
+    st, r = req("POST", f"/v1/group/{gid}/role",
+                {"user_id": _did, "role": "coach"}, a)
+    check("组长任命教练", st == 200 and r.get("role") == "coach", f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/role",
+                {"user_id": _did, "role": "boss"}, a)
+    check("非法角色被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/role",
+                {"user_id": _aid, "role": "member"}, a)
+    check("不能改自己的角色（409）", st == 409, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/challenge/create",
+                {"title": "教练排的周末长距离", "kind": "distance", "target": 20000,
+                 "start_date": "2026-11-16", "end_date": "2026-11-22",
+                 "today": "2026-11-18"}, _co)
+    check("教练能建赛事", st == 200, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/audit", None, _co)
+    check("教练能看审计", st == 200, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/member/{_aid}/remove", None, _co)
+    check("教练不能踢人（403）", st == 403, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/decide",
+                {"user_id": _did, "ok": True}, _co)
+    check("教练不能审批加入（403）", st == 403, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/role",
+                {"user_id": _aid, "role": "member"}, _co)
+    check("教练不能改别人角色（403）", st == 403, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/role",
+                {"user_id": _did, "role": "member"}, a)
+    check("组长撤销教练", st == 200, f"{st} {r}")
+
+    # ---------------- 优质路线分享
+    print("\n9. 路线分享")
+
+    def _pts(n=5, lat0=31.2, lon0=121.5):
+        return [[lat0 + i * 0.001, lon0 + i * 0.001] for i in range(n)]
+
+    st, r = req("POST", f"/v1/group/{gid}/route",
+                {"act_id": "r1", "title": "太短", "distance_m": 1200,
+                 "date": "2026-11-19", "points": _pts()}, a)
+    check("短于 3 km 被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/route",
+                {"act_id": "r1", "title": "点太少", "distance_m": 8000,
+                 "points": [[31.2, 121.5], [31.21, 121.51]]}, a)
+    check("点数不足被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/route",
+                {"act_id": "r1", "title": "越界", "distance_m": 8000,
+                 "points": [[131.2, 121.5], [31.21, 121.51], [31.22, 121.52]]}, a)
+    check("坐标越界被拒（400）", st == 400, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/route",
+                {"act_id": "r1", "title": "滨江往返", "distance_m": 8200,
+                 "date": "2026-11-19", "points": _pts()}, a)
+    check("分享一条路线", st == 200 and r.get("points") == 5, f"{st} {r}")
+    _rid = int(r.get("id") or 0)
+
+    st, r = req("GET", f"/v1/group/{gid}/routes", None, b)
+    _row = (r.get("rows") or [{}])[0]
+    check("组员能看到清单", st == 200 and len(r.get("rows") or []) == 1, f"{st} {r}")
+    check("清单不带轨迹点", "points" not in _row, str(_row))
+    check("清单带昵称和距离",
+          bool(_row.get("alias")) and _row.get("distance_m") == 8200, str(_row))
+
+    st, r = req("GET", f"/v1/group/{gid}/route/{_rid}", None, b)
+    check("单条详情带轨迹点",
+          st == 200 and len((r.get("route") or {}).get("points") or []) == 5, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/route/{_rid}", None, a)
+    check("作者自己也能看", st == 200 and (r.get("route") or {}).get("me") is True, f"{st} {r}")
+
+    # 撤回走 POST：服务端没实现 do_DELETE
+    st, r = req("POST", f"/v1/group/{gid}/route/{_rid}/del", None, b)
+    check("别人删不掉（404）", st == 404, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/route/{_rid}/del", None, a)
+    check("自己撤回", st == 200, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/routes", None, a)
+    check("撤回后清单空了", not (r.get("rows") or []), str(r))
+
+    for _i in range(groups.ROUTE_PER_USER):
+        req("POST", f"/v1/group/{gid}/route",
+            {"act_id": f"m{_i}", "title": f"第{_i}条", "distance_m": 5000,
+             "points": _pts()}, a)
+    st, r = req("POST", f"/v1/group/{gid}/route",
+                {"act_id": "m9", "title": "第六条", "distance_m": 5000,
+                 "points": _pts()}, a)
+    check(f"超过 {groups.ROUTE_PER_USER} 条被拒（409）", st == 409, f"{st} {r}")
+
+    # ---------------- 数据保留
+    print("\n10. 数据保留")
+    _dbp = Path(os.environ["GROUPS_DB"])
+    _db = sqlite3.connect(str(_dbp))
+    _now_ts = int(dt.datetime.now().timestamp())
+    _old_day = (dt.date.today() - dt.timedelta(days=400)).isoformat()
+    _old200 = (dt.date.today() - dt.timedelta(days=200)).isoformat()
+    try:
+        _db.execute("INSERT INTO group_daily(group_id,user_id,date,distance_m,"
+                    "duration_s,acts,updated_at) VALUES(?,?,?,0,0,0,0)",
+                    (gid, 999001, _old_day))
+        _db.execute("INSERT INTO group_act(group_id,user_id,sid,date,kind,"
+                    "distance_m,duration_s,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (gid, 999001, "oldact", _old200, "run", 6000, 1800,
+                     _now_ts - 200 * 86400))
+        _old_aid = _db.execute("SELECT id FROM group_act WHERE sid='oldact'").fetchone()[0]
+        _db.execute("INSERT INTO group_comment(group_id,act_id,user_id,text,emoji,"
+                    "created_at) VALUES(?,?,?,?,?,?)",
+                    (gid, _old_aid, 999001, "老评论", "",
+                     _now_ts - 200 * 86400))
+        _db.commit()
+    finally:
+        _db.close()
+
+    _dry = groups.cleanup(dry_run=True)
+    check("dry-run 统计到超期数据",
+          _dry["rows"]["daily"] >= 1 and _dry["rows"]["act"] >= 1
+          and _dry["rows"]["comment"] >= 1, str(_dry))
+    _db = sqlite3.connect(str(_dbp))
+    try:
+        _left = _db.execute("SELECT COUNT(*) FROM group_daily WHERE user_id=999001").fetchone()[0]
+    finally:
+        _db.close()
+    check("dry-run 不真删", _left == 1, f"还剩 {_left} 行")
+
+    _real = groups.cleanup(dry_run=False)
+    check("真删执行了", _real["ok"] and _real["dry_run"] is False, str(_real))
+    _after = groups.cleanup(dry_run=True)
+    check("删完再统计归零",
+          _after["rows"]["daily"] == 0 and _after["rows"]["act"] == 0
+          and _after["rows"]["comment"] == 0, str(_after))
+    # 近期数据不能被误伤：上面几段造的今天/本周数据都还在
+    _db = sqlite3.connect(str(_dbp))
+    try:
+        _today = _db.execute("SELECT COUNT(*) FROM group_daily WHERE date=?",
+                             (dt.date.today().isoformat(),)).fetchone()[0]
+    finally:
+        _db.close()
+    check("近期数据没被删", _today >= 1, f"今天的行数 {_today}")
+
     # 隐私：关共享的人既不显示、也不能被评论
     st, r = req("POST", f"/v1/group/{gid}/share", {"share": "off"}, b)
     st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, a)
