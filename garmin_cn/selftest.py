@@ -3843,6 +3843,21 @@ def run() -> int:
         assert _after["version"] == 7 and _after["items"][0]["id"] == "keep", \
             "抓取失败把旧赛事数据覆盖掉了"
 
+        # 第 1 页断一次就重试：Errno 103 这类瞬时断连不该让整轮放弃
+        _tries = {"n": 0}
+
+        def _flaky(url):
+            _tries["n"] += 1
+            if _tries["n"] == 1:
+                raise OSError("[Errno 103] Software caused connection abort")
+            return _zc_card
+
+        _retry, _rst = _RF.fetch(pages=1, per_page=20,
+                                 today=dt.date(2026, 11, 13), opener=_flaky)
+        assert _retry, "第 1 页抖一次就整轮放弃，旧行为退回来了"
+        assert _tries["n"] == 2, f"没有重试：只请求了 {_tries['n']} 次"
+        assert not _rst.get("error"), f"重试成功却还留着错误：{_rst.get('error')}"
+
         # 当天已更新就不再抓
         _RF.OUT.write_text(_js3.dumps({"updated": "2026-11-13", "items": [{"id": "x"}]}),
                            encoding="utf-8")

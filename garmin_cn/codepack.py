@@ -154,7 +154,10 @@ def _fits(meta: dict) -> tuple[bool, str]:
     if not want:
         return False, f"代码包没有标注适用版本（当前 App {cur}）"
     if want != cur:
-        return False, f"代码包是给 {want} 的，当前 App 是 {cur}"
+        # 这句话会被拼进诊断日志的「代码包 未使用（…）」里，所以不要重复
+        # 「代码包」三个字，也不要只说「不匹配」——要让人知道**没坏**，
+        # 只是版本对不上，重装 APK 或等对应版本发布即可。
+        return False, f"线上包适配 {want}，当前 {cur}，版本不符不挂载"
     return True, ""
 
 
