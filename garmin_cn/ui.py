@@ -773,14 +773,16 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
    再小就只剩一团墨点；右侧两行（大数字 + 元信息）刚好和图等高。 */
 .ac-mid{display:flex;align-items:center;gap:12px;margin-top:12px}
 /* 轨迹剪影：浅底方块 + 成员色折线。底色比卡片亮一档，线才浮得出来 */
-.ac-tr{width:72px;height:72px;flex:0 0 auto;border-radius:var(--r-2);
+/* 88 而不是 72：轨迹的形状细节（小弯、折返的尖角）在 72 里会被压成
+   「一条折线」，88 才看得出这是条真实的路线。 */
+.ac-tr{width:88px;height:88px;flex:0 0 auto;border-radius:var(--r-2);
   background:var(--surface-2);border:1px solid var(--line2);
-  padding:6px;box-sizing:border-box}
-.ac-tr polyline{fill:none;stroke-width:2.6;stroke-linejoin:round;stroke-linecap:round}
+  padding:7px;box-sizing:border-box}
+.ac-tr polyline{fill:none;stroke-width:2.4;stroke-linejoin:round;stroke-linecap:round}
 /* 没有 GPS 的活动（室内/器械）或旧数据：占位方块，写「无轨迹」而不是画假线。
    画一条装饰性曲线会让人以为那是他的路线。 */
 /* 占位用虚线框：视觉上像「这里本该有张图」，而不是一个空方块 */
-.ac-ph{width:72px;height:72px;flex:0 0 auto;border-radius:var(--r-2);
+.ac-ph{width:88px;height:88px;flex:0 0 auto;border-radius:var(--r-2);
   background:transparent;border:1px dashed var(--line-strong);
   display:flex;align-items:center;justify-content:center;
   font-size:var(--fs-micro,11px);color:var(--muted)}

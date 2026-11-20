@@ -812,11 +812,12 @@ def _pace(distance_m: float, duration_s: float) -> str:
 
 
 def _shape_svg(shape: str, color: str) -> str:
-    """轨迹剪影。`shape` 是 "x,y;x,y;..."（0..100 相对坐标）。
+    """轨迹形状。`shape` 是 "x,y;x,y;..."，坐标 0..SHAPE_SCALE（1000）。
 
-    坐标已经在客户端归一化过（长边 = 100），这里只负责画：viewBox 按实际
-    bbox 收紧再加 6 的边距，线宽 2.6 在 72px 的方框里约 1.9px——再细就看不清，
-    再粗环形路线会糊成一团。
+    客户端归一化过（长边 = 1000，0.1% 精度，120 个点），这里只负责画。
+    线宽用 `vector-effect="non-scaling-stroke"` 固定成屏幕像素——同一个
+    1.8px 在 46 km 的长条和 1 km 的操场上都一样粗细，不会因为 viewBox 大小
+    忽粗忽细。
     """
     pts: list[tuple[int, int]] = []
     for seg in (shape or "").split(";"):
@@ -824,20 +825,28 @@ def _shape_svg(shape: str, color: str) -> str:
             continue
         x, y = seg.split(",", 1)
         try:
-            xi, yi = int(x), int(y)
+            xi, yi = int(float(x)), int(float(y))
         except ValueError:
             continue
-        if 0 <= xi <= 100 and 0 <= yi <= 100:
+        if 0 <= xi <= 1000 and 0 <= yi <= 1000:
             pts.append((xi, yi))
     if len(pts) < 3:
         return ""
     mx = max(p[0] for p in pts) or 1
     my = max(p[1] for p in pts) or 1
+    # 兼容 1.5.11 早期版本的 24 点 / 0..100 坐标：等比放大，形状不变
+    if mx <= 100 and my <= 100:
+        pts = [(x * 10, y * 10) for x, y in pts]
+        mx, my = mx * 10, my * 10
+    # 边距按长边 4% 留：线宽是屏幕像素、不随 viewBox 缩放，所以边距得给够，
+    # 否则线头/线宽会被 viewBox 裁掉半截。
+    pad = max(10, round(max(mx, my) * 0.04))
     stroke = esc(color) if color else "var(--brand)"
     poly = " ".join(f"{x},{y}" for x, y in pts)
-    return (f'<svg class="ac-tr" viewBox="-3 -3 {mx + 6} {my + 6}"'
+    return (f'<svg class="ac-tr" viewBox="{-pad} {-pad} {mx + pad * 2} {my + pad * 2}"'
             ' preserveAspectRatio="xMidYMid meet" aria-hidden="true">'
-            f'<polyline points="{poly}" stroke="{stroke}"/></svg>')
+            f'<polyline points="{poly}" stroke="{stroke}"'
+            ' vector-effect="non-scaling-stroke"/></svg>')
 
 
 def _act_card(a: dict, today: str, detail: bool = False) -> str:
@@ -978,10 +987,9 @@ def feed_page(token: str, gid: int, message: str = "", act: int = 0) -> str:
             + sec("大家最近", items)
             + (f'<p class="note">另有 {hidden} 人关闭了共享，不出现在这里。</p>'
                if hidden else "")
-            + '<p class="note">轨迹剪影是把路线抽稀成 24 个点、等比缩放到 '
-              '100×100 的相对形状——不含经纬度、起终点和位置，也反查不出是哪条路。'
-              '只有形状，没有经过哪些地方。配速是按距离÷时长算的，'
-              '不是上传的原始配速。</p>')
+            + '<p class="note">轨迹是这次路线的真实形状（抽稀成 120 个点）：'
+              '没有底图、不标起终点、不含经纬度——看得到怎么跑的，看不出跑在哪条街。'
+              '配速是按距离÷时长算的，不是上传的原始配速。</p>')
     return page("GROUP", "动态", f"{len(rows)} 条", body,
                 foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
                 back=("返回小组", f"/groups/{gid}"))
