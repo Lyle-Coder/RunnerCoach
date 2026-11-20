@@ -1771,6 +1771,16 @@ def run() -> int:
     assert _GP._shape([]) == "" and _GP._shape([[0, 0]] * 10) == "", \
         "没轨迹时剪影该是空串"
     assert "0,0;0,0" not in _sp, "剪影里还留着占位点"
+    # 方向：纬度越大越靠北，而 SVG 的 y 是向下的。少了翻转，整条轨迹南北
+    # 颠倒（往北跑会画成往南跑）——这条漏过一次，专门守在这里。
+    _north = [[30.0 + i * 0.0001, 120.0] for i in range(10)]
+    _npt = [tuple(int(v) for v in s2.split(","))
+            for s2 in _GP._shape(_north).split(";")]
+    assert _npt[0][1] > _npt[-1][1], "轨迹南北倒了：往北跑画成了往下"
+    _east = [[30.0, 120.0 + i * 0.0001] for i in range(10)]
+    _ept = [tuple(int(v) for v in s2.split(","))
+            for s2 in _GP._shape(_east).split(";")]
+    assert _ept[0][0] < _ept[-1][0], "轨迹东西倒了：往东跑画成了往左"
     assert "配速是按距离÷时长算的" in _fdp, "动态页没写清配速是算出来的"
     # 剪影是脱敏形状，文案必须说清「不含坐标/位置」，否则等于隐瞒上传了什么
     assert "不含经纬度" in _fdp and "没有底图" in _fdp, \
