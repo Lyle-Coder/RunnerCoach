@@ -1472,13 +1472,24 @@ class _Handler(SimpleHTTPRequestHandler):
         self.close_connection = True
 
     def _group_report(self, gid: int) -> dict:
-        """手动上报一次。首次加入发 30 天，之后 14 天。"""
+        """手动上报一次。首次加入发 30 天，之后 14 天。
+
+        顺手给「没有明细」的活动补抓一次：明细是按需懒抓的（打开详情才抓），
+        骑行、走路这类不常点开的活动本来永远没有轨迹，动态里就一直是
+        「无轨迹」。拿不到客户端（没登录/离线）就照旧只报里程，不阻塞。
+        """
         from . import appapi as A, group as G
         from .store import Store
 
         store = Store(A.DB)
+        client = None
         try:
-            return G.report_group(store, gid, first=not G.seen(gid, store))
+            client = A._client()
+        except Exception:      # noqa: BLE001 - 没客户端就不补抓，上报照常
+            client = None
+        try:
+            return G.report_group(store, gid, first=not G.seen(gid, store),
+                                  client=client)
         finally:
             store.conn.close()
 
