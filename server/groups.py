@@ -903,7 +903,7 @@ def api_goal(me, gid: int, body: dict) -> dict:
     pred_given = "predict" in body
     predict = body.get("predict")
     if km is None and not pred_given:
-        raise GroupError(400, "填个本周目标，或者选一个要猜的人")
+        raise GroupError(400, "先填本周目标，或者选一个要猜的人")
 
     with db() as c:
         _group(c, gid)
