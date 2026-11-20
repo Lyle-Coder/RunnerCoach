@@ -58,6 +58,7 @@ import os
 import re
 import secrets
 import sqlite3
+import ssl
 import subprocess
 import sys
 import time
@@ -110,6 +111,13 @@ PORT = int(os.environ.get("PORT", "8300"))
 # 两个变量任一为空就不启 TLS，本地开发仍然是 http。
 TLS_CERT = os.environ.get("RC_TLS_CERT", "").strip()
 TLS_KEY = os.environ.get("RC_TLS_KEY", "").strip()
+# TLS 握手超时（秒）。这个数字救过命，别调小也别去掉，原因见启动处的注释：
+# `wrap_socket` 之后握手发生在 `accept()` 里面，不设超时的话一个不做握手的
+# 连接就能把主线程永久卡死，整个网关假死。
+TLS_HANDSHAKE_TIMEOUT = 20
+# 握手完成之后的请求超时（秒）。AI 代理是流式转发，实测要 300 秒，
+# 所以不能沿用握手那个 20 秒——否则长回答会被半路切断。
+REQUEST_TIMEOUT = 300
 # 开发模式（验证码回显）会让人**登录任意账号**。绑在公网地址上时默认拒绝
 # 启动；内网联调确实需要的话显式设 RC_ALLOW_DEV_ECHO=1。
 ALLOW_DEV_ECHO = os.environ.get("RC_ALLOW_DEV_ECHO", "") == "1"
@@ -1164,6 +1172,43 @@ def admin_revoke(body: dict) -> dict:
 class Handler(BaseHTTPRequestHandler):
     server_version = "rc-gateway/0.2"
 
+    def setup(self) -> None:
+        """连接进来的第一件事：握手，然后把超时换成请求超时。
+
+        握手必须在**工作线程**里做，不能在 accept 里做——accept 跑在主线程，
+        它一卡整个网关就没了（见启动处的注释）。这里每个连接一个线程，
+        卡住最多 TLS_HANDSHAKE_TIMEOUT 秒，不影响其他连接。
+        """
+        if isinstance(self.request, ssl.SSLSocket):
+            try:
+                self.request.settimeout(TLS_HANDSHAKE_TIMEOUT)
+                self.request.do_handshake()
+            except (OSError, ssl.SSLError):
+                # 扫描器、探活、客户端中途放弃都走这里。直接关掉这个连接，
+                # 不当成服务端错误（下面 handle_error 也会把这类 traceback 吞掉）。
+                try:
+                    self.request.close()
+                except OSError:
+                    pass
+                raise ConnectionAbortedError("TLS 握手失败") from None
+        try:
+            # 握手那次 20 秒是专门卡握手的；请求本身可能很长（AI 代理流式
+            # 转发实测 300 秒），所以进来之后要放开。
+            self.request.settimeout(REQUEST_TIMEOUT)
+        except OSError:
+            pass
+        super().setup()
+
+    def handle_error(self, request, client_address) -> None:
+        """握手失败、连接被重置：不打 traceback。
+
+        端口扫描一天能来几十个，全打成 traceback 会把真错误淹掉。
+        """
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ssl.SSLError, ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
     def _service_closed(self) -> bool:
         """维护态守卫：探活/配置下发/看板静态仍可访问，业务接口一律快速拒绝。
 
@@ -1766,8 +1811,18 @@ def main() -> int:
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     srv.daemon_threads = True
     if TLS_CERT:
+        # 关键：**accept 阶段不握手**。
+        # wrap_socket 默认 do_handshake_on_connect=True，握手就发生在
+        # `srv.socket.accept()` 里面——而这时 ThreadingMixIn 还没来得及为这个
+        # 连接开线程，等于用主线程去等一个陌生客户端的 ClientHello。任何一个
+        # 连上却不发数据的端口扫描/探活，都能把整个网关永久卡死。
+        # 2026-11-20 线上就是这样：进程 active、端口 LISTEN、Recv-Q 涨到 6，
+        # 服务器连自己的 /health 都超时。
+        # 改成 accept 立刻返回，握手放到 Handler.setup 里（每个连接一个线程），
+        # 卡住也只占一个线程，最多 TLS_HANDSHAKE_TIMEOUT 秒。
         try:
-            srv.socket = _tls_context().wrap_socket(srv.socket, server_side=True)
+            srv.socket = _tls_context().wrap_socket(
+                srv.socket, server_side=True, do_handshake_on_connect=False)
         except Exception as e:  # noqa: BLE001
             print(f"× TLS 起不来（证书/私钥不匹配，或权限不足）：{type(e).__name__}: {e}")
             return 2
