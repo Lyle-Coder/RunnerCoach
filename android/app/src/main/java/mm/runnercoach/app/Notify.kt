@@ -92,6 +92,18 @@ object Notify {
             o.optString("by") + " 建了" + (if (k.isEmpty()) "" else k) +
                 "赛事「" + o.optString("title") + "」"
         }
+        // 队友今天跑了。没距离的活动（器械、室内）只说「完成了一次训练」，
+        // 不写「0.0 km」——那看起来像数据坏了。
+        "act" -> {
+            val km = o.optDouble("km", 0.0)
+            val who = o.optString("by")
+            if (km > 0.05) {
+                // 固定 Locale.US：某些系统区域设置会把小数点变成逗号
+                who + " 今天跑了 " + String.format(java.util.Locale.US, "%.1f", km) + " km"
+            } else {
+                who + " 今天完成了一次训练"
+            }
+        }
         else -> "有新的小组动态"
     }
 

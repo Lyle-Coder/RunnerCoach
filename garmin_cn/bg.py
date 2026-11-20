@@ -193,6 +193,12 @@ def _news_of(store, gid: int, gname: str) -> list[dict]:
                         "title": str(c.get("title") or "新赛事"),
                         "ckind": str(c.get("kind") or ""),
                         "at": int(c.get("at") or 0)})
+        # 队友今天跑了。服务端只给「活动日期 = 今天」的，补传历史不会触发。
+        for c in (r.get("acts") or []):
+            out.append({"gid": int(gid), "gname": gname, "kind": "act",
+                        "by": str(c.get("by") or "队友"),
+                        "km": round(float(c.get("distance_m") or 0) / 1000.0, 1),
+                        "at": int(c.get("at") or 0)})
 
     now = int(r.get("now") or 0)
     if now:
