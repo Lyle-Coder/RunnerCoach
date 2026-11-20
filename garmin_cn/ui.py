@@ -815,7 +815,10 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .ac-cb{padding:0 0 6px}
 /* 卡片内的「说一句」：输入框 + 发，一行 */
 .ac-say{display:flex;align-items:center;gap:8px;margin-top:4px}
-.ac-say .cm-in{flex:1 1 auto;min-width:0}
+/* 这里**不能用 width:100%**：.cm-in 的 100% 在 flex 里会反过来把容器撑开
+   （百分比宽度 + flex-basis:auto 的循环依赖），评论一展开卡片就比屏幕宽，
+   出现横向滚动。basis 归零、靠 flex-grow 填满才是可缩的。 */
+.ac-say .cm-in{flex:1 1 0;width:auto;min-width:0}
 .ac-say button{flex:0 0 auto}
 .ac-c p{margin:0 0 5px;font-size:var(--fs-cap,12px);color:var(--ink2);
   line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -849,7 +852,8 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
   justify-content:center;list-style:none;cursor:pointer;color:var(--muted);
   font-size:15px;transition:transform .16s}
 .cm-more>summary::-webkit-details-marker{display:none}
-.cm-more[open]>summary{transform:rotate(90deg);color:var(--brand-ink)}
+/* 铅笔图标不旋转：转 90° 的铅笔是歪的，只换颜色表示「已展开」 */
+.cm-more[open]>summary{color:var(--brand-ink)}
 /* 展开后独占一行，别挤在评论右边 */
 .cm-more[open]{flex:1 1 100%;margin-left:0}
 /* 展开后箭头**浮回评论行的右侧**（绝对定位，不占流）。
@@ -860,6 +864,16 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
   width:40px;height:36px;font-size:var(--fs-cap,12px)}
 .cm-act{margin:2px 0 0;padding:10px 12px;
   border-radius:var(--r-1);background:var(--surface-2)}
+/* 编辑区顶上那一行「编辑这条评论」：原来的 › 点开只有一个输入框，
+   用户不知道这是编辑、还以为在评论「这条评论本身」。 */
+.cm-ed{font-size:var(--fs-cap,12px);font-weight:600;color:var(--ink-3);
+  margin:0 0 8px}
+/* 编辑区里的表情条：和输入框是一组，压紧一点，别把卡片撑高半屏 */
+.cm-act .erow{gap:5px;padding:7px 0 0}
+.cm-act .ebtn{min-width:40px;padding:5px 8px;font-size:16px}
+/* 发言表单：输入 + 发一行，表情插在下面。表情是「插进光标」不是「直接发」 */
+.sayf{margin:0}
+.sayf .erow{padding:7px 0 0}
 /* 编辑框：44 高、占满宽度，和站内其它输入框同一套 */
 .cm-in{width:100%;min-height:44px;padding:0 12px;box-sizing:border-box;
   border-radius:var(--r-1);border:1px solid var(--line);
