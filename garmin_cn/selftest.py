@@ -1508,8 +1508,10 @@ def run() -> int:
                       "is_me": False, "date": dt.date.today().isoformat(),
                       "kind": "run", "kind_name": "跑步", "distance_m": 12000,
                       "duration_s": 3600, "elevation_m": 60, "comments": 1,
-                      "recent": [{"user_id": 1, "alias": "我", "text": "可以",
-                                  "emoji": ""}]}]}
+                      "recent": [{"id": 31, "user_id": 1, "alias": "我",
+                                  "mine": True, "text": "可以", "emoji": ""},
+                                 {"id": 32, "user_id": 2, "alias": "队友",
+                                  "mine": False, "text": "牛", "emoji": ""}]}]}
         # P2 的「本周」块：目标 + 结对 + 预言。不 mock 会去连真服务器，
         # 虽然失败很快，但每次自检都白等一次连接。
         _GP.week = lambda gid, today=None: {
@@ -1754,6 +1756,13 @@ def run() -> int:
     assert "大家最近" in _fdp and "跑步" in _fdp, "动态列表页没渲染出来"
     assert "/feed?act=9" in _fdp, "动态列表没有进详情页的链接"
     assert 'name="emoji"' in _fdo and 'name="text"' in _fdo, "详情页没有表情/留言入口"
+    # 自己的评论才有「改 / 删」，且折在 › 里（防误触）。夹具里 id=31 是 mine。
+    assert _fdo.count('class="cm-more"') == 1, "自己的评论没有操作入口（或别人的也有）"
+    assert "comment_edit" in _fdo and "comment_del" not in _fdo, \
+        "评论操作表单不对（改删应共用一张表单，用 op 区分）"
+    assert 'name="op" value="save"' in _fdo and 'name="op" value="del"' in _fdo, \
+        "改和删没有用 op 区分"
+    assert "confirm(" in _fdo, "删除没有二次确认"
     # 现在会**算**配速（距离÷时长），所以文案不能再写「没有配速」——
     # 那是不实陈述。要写清「配速是算的」「没有轨迹、没有位置」。
     # 剪影算法：形状归一化、去掉 (0,0) 占位点、异常输入不抛

@@ -1318,14 +1318,18 @@ def api_feed(me, gid: int, query: dict) -> dict:
             # 原来 ORDER BY id 取前两条，最新的讨论全被挡在外面，用户看到的
             # 永远是三天前那两句「牛」——这就是「动态太简单」的一半原因。
             for r in c.execute(
-                    f"SELECT act_id, user_id, text, emoji, created_at FROM group_comment"
+                    f"SELECT id, act_id, user_id, text, emoji, created_at FROM group_comment"
                     f" WHERE act_id IN ({marks}) ORDER BY id DESC", ids).fetchall():
                 a = int(r["act_id"])
                 counts[a] = counts.get(a, 0) + 1
                 # 列表里每条留最新 3 条；详情页（only 有值）全给
                 if only is not None or len(cmts.setdefault(a, [])) < 3:
                     cmts.setdefault(a, []).append({
+                        "id": int(r["id"]),
                         "user_id": int(r["user_id"]),
+                        # 只有自己的评论才给编辑/删除入口——判断放服务端，
+                        # 客户端别自己比 user_id（前端没有「我是谁」）
+                        "mine": int(r["user_id"]) == uid,
                         "text": str(r["text"] or ""),
                         "emoji": str(r["emoji"] or "")})
             # 倒序取是为了「留哪几条」，展示仍按时间正序（像对话，最新的在最后）
@@ -1393,6 +1397,56 @@ def api_comment(me, gid: int, body: dict) -> dict:
                   " VALUES(?,?,?,?,?,?)", (gid, act_id, uid, text, emoji, _now()))
         cid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
     return {"ok": True, "id": int(cid), "text": text, "emoji": emoji}
+
+
+def _my_comment(c, gid: int, uid: int, cid: int):
+    """取一条属于**本人**的评论。不是自己的就当没找到，不告诉调用方「存在但无权」。"""
+    row = c.execute("SELECT id, user_id, act_id FROM group_comment"
+                    " WHERE id=? AND group_id=?", (cid, gid)).fetchone()
+    if not row or int(row["user_id"]) != uid:
+        raise GroupError(404, "这条评论不在了")
+    return row
+
+
+def api_comment_edit(me, gid: int, body: dict) -> dict:
+    """改自己的评论。只能改自己的：别人的评论连「存在」都不确认。"""
+    uid = int(me["user_id"])
+    try:
+        cid = int(body.get("id"))
+    except (TypeError, ValueError):
+        raise GroupError(400, "id 不合法")
+    text = str(body.get("text") or "").strip()[:COMMENT_MAX]
+    emoji = str(body.get("emoji") or "").strip()
+    if emoji and emoji not in EMOJIS:
+        raise GroupError(400, "这个表情不在可选范围里")
+    if not text and not emoji:
+        raise GroupError(400, "说点什么，或者挑一个表情")
+    _rate_limit(f"u{uid}", "comment_edit", 60, window=3600)
+
+    with db() as c:
+        _group(c, gid)
+        _require_member(c, gid, uid)
+        _my_comment(c, gid, uid, cid)
+        c.execute("UPDATE group_comment SET text=?, emoji=? WHERE id=?",
+                  (text, emoji, cid))
+    return {"ok": True, "id": cid, "text": text, "emoji": emoji}
+
+
+def api_comment_del(me, gid: int, body: dict) -> dict:
+    """删自己的评论。"""
+    uid = int(me["user_id"])
+    try:
+        cid = int(body.get("id"))
+    except (TypeError, ValueError):
+        raise GroupError(400, "id 不合法")
+    _rate_limit(f"u{uid}", "comment_del", 60, window=3600)
+
+    with db() as c:
+        _group(c, gid)
+        _require_member(c, gid, uid)
+        _my_comment(c, gid, uid, cid)
+        c.execute("DELETE FROM group_comment WHERE id=?", (cid,))
+    return {"ok": True, "id": cid}
 
 
 def api_season(me, gid: int, query: dict) -> dict:
@@ -1892,6 +1946,10 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_feed(me, gid, query), 200
         if action == "comment" and method == "POST":
             return api_comment(me, gid, body), 200
+        if action == "comment_edit" and method == "POST":
+            return api_comment_edit(me, gid, body), 200
+        if action == "comment_del" and method == "POST":
+            return api_comment_del(me, gid, body), 200
         if action == "goal" and method == "POST":
             return api_goal(me, gid, body), 200
         if action == "home" and method == "GET":

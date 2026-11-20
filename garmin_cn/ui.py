@@ -808,11 +808,41 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .ebtn{font-size:20px;line-height:1;padding:7px 10px;border-radius:10px;
   border:1px solid var(--line2);background:rgba(255,255,255,.02);cursor:pointer}
 .ebtn:active{background:var(--brand-soft);border-color:var(--line-brand)}
-.cm{display:flex;align-items:baseline;gap:7px;padding:7px 0;
-  border-bottom:1px solid var(--line2);font-size:12px;color:var(--ink2)}
+/* 每行至少 44：有 › 的那条是 44 高的点击区，不统一的话同一屏里
+   评论行的行高会一条高一条矮，看着像漏了内边距。 */
+.cm{display:flex;align-items:center;gap:7px;min-height:44px;padding:7px 0;
+  border-bottom:1px solid var(--line2);font-size:12px;color:var(--ink2);
+  flex-wrap:wrap}
 .cm:last-child{border-bottom:0}
 .cm b{font-size:12px;font-weight:600;color:var(--ink);white-space:nowrap}
 .cm .ce{font-size:16px;line-height:1}
+/* 评论正文：昵称 + 内容，占满剩余宽度，长句自然折行 */
+.cm-b{flex:1 1 auto;min-width:0;display:flex;align-items:baseline;gap:7px;
+  flex-wrap:wrap}
+/* 自己的评论才有这个 ›：40×44 的点击区，折起来比直接摆删除按钮安全得多 */
+.cm-more{flex:0 0 auto;margin-left:auto}
+.cm-more>summary{width:40px;height:44px;display:flex;align-items:center;
+  justify-content:center;list-style:none;cursor:pointer;color:var(--muted);
+  font-size:15px;transition:transform .16s}
+.cm-more>summary::-webkit-details-marker{display:none}
+.cm-more[open]>summary{transform:rotate(90deg);color:var(--brand-ink)}
+/* 展开后独占一行，别挤在评论右边 */
+.cm-more[open]{flex:1 1 100%;margin-left:0}
+/* 展开后箭头**浮回评论行的右侧**（绝对定位，不占流）。
+   留在流里的话，它那 44 高的点击区会在评论和操作区之间顶出一条空缝，
+   而且看着像多出一个孤立的行。 */
+.cm-more[open]{position:relative}
+.cm-more[open]>summary{position:absolute;right:0;top:-38px;
+  width:40px;height:36px;font-size:var(--fs-cap,12px)}
+.cm-act{margin:2px 0 0;padding:10px 12px;
+  border-radius:var(--r-1);background:var(--surface-2)}
+/* 编辑框：44 高、占满宽度，和站内其它输入框同一套 */
+.cm-in{width:100%;min-height:44px;padding:0 12px;box-sizing:border-box;
+  border-radius:var(--r-1);border:1px solid var(--line);
+  background:var(--surface);color:var(--ink);font-size:var(--fs-body,14px)}
+.cm-in:focus{outline:none;border-color:var(--line-brand)}
+/* 保存和删除并排：它们是一组操作，竖排会各占一行 */
+.cm-act .pager{margin:8px 0 0;justify-content:flex-start;gap:8px}
 /* 计划编辑：一行一天（左日期 / 中类型 / 右里程与时长）。
    手机上宽度紧，用 flex 固定前两列、只让数字输入弹性收缩。 */
 /* 计划编辑：一行一天。用 grid 而不是 flex——select 的固有宽度由最长选项决定，
@@ -1323,7 +1353,7 @@ def _upcoming_html(days: int = 30, limit: int = 3) -> str:
             f'aria-label="{"取消提醒" if on else "设为提醒"}">'
             f'{"🔔" if on else "🔕"}</button></form></div></div>')
     return ('<section class="rc-panel rc-up-panel">'
-            '<div class="rc-panel-hd"><span class="rc-eyebrow sec">赛事提醒</span></div>'
+            '<div class="rc-panel-hd"><span class="rc-eyebrow lvl3">赛事提醒</span></div>'
             + "".join(out) + "</section>")
 
 
@@ -1354,7 +1384,7 @@ def _reading_card(limit: int = 8) -> str:
         f'<p class="rds">—— {esc(it["src"])}</p></div>'
         for i, it in enumerate(items))
     return ('<section class="rc-panel rc-rd-panel" id="rc-read">'
-            '<div class="rc-panel-hd"><span class="rc-eyebrow sec">延伸阅读</span>'
+            '<div class="rc-panel-hd"><span class="rc-eyebrow lvl3">延伸阅读</span>'
             '</div>'
             f'<div class="rc-rd">{slides}</div></section>'
             '<script>(function(){var b=document.getElementById("rc-read");'
@@ -1447,8 +1477,7 @@ def home_page() -> str:
     advice = ('<div class="rc-advice"><b>今日建议</b>'
               '<div class="rc-advice-list">' + "".join(
         f'<span class="pill ghost">{esc(x)}</span>' for x in _pills[:3])
-              + '</div>'
-              + _hero_cta(score) + "</div>")
+              + '</div></div>')
     hero = (f'<section class="rc-panel rc-hero-panel">'
             f'<div class="rc-hero"><div class="rc-hero-main">'
             f'<div class="rc-hero-t"><i class="rc-dot {_tone}"></i>'
@@ -1641,7 +1670,7 @@ def home_page() -> str:
         samples = ('<div class="rc-sample"><span class="t">最近 7 天还没有活动记录。'
                    '如果设备上有记录，可以下拉同步。</span></div>')
     week_html = (f'<section class="rc-panel rc-week-panel">'
-                 f'<div class="rc-panel-hd"><span class="rc-eyebrow sec">最近活动</span>'
+                 f'<div class="rc-panel-hd"><span class="rc-eyebrow lvl3">最近活动</span>'
                  f'<span class="rc-win">最近 7 天</span></div>'
                  f'<div class="rc-week"><div class="rc-week-hd">'
                  f'<div class="big-num rc-num">{km7:.1f}'
@@ -1682,23 +1711,6 @@ def _verdict(score) -> str:
     if s >= 55:
         return "今天轻松活动就好"
     return "今天先休息"
-
-
-def _hero_cta(score) -> str:
-    """hero 收口动作：结论 → 理由 → 这一个按钮，文案随结论走（§4.11）。
-
-    没同步（score 为 None）时没有结论可收口，不给按钮；否则链到 /plan 让
-    用户看具体安排。休息日文案改成「查看今日安排」，不再催人「开始训练」。
-    """
-    if score is None:
-        return ""
-    try:
-        s = float(score)
-    except (TypeError, ValueError):
-        return ""
-    label = "开始今天的训练" if s >= 55 else "查看今日安排"
-    return (f'<a class="rc-hero-cta" href="/plan?from=today" '
-            f'data-nopush>{label}</a>')
 
 
 def _baseline_delta(hist: list, score) -> int | None:
