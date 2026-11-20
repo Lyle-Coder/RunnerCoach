@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import re
 import secrets
@@ -307,6 +308,22 @@ def init_db() -> None:
           created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_gcmt_act ON group_comment(act_id, id);
+        -- 优质路线分享：用户**主动授权**才把某条活动的完整轨迹传上来。
+        -- 和「只传 500m 格子」是两条并行的口径：格子永远归一化、不带位置；
+        -- 这张表里的 points 是真经纬度，所以默认没有任何行，撤回即删。
+        CREATE TABLE IF NOT EXISTS group_route(
+          id         INTEGER PRIMARY KEY,
+          group_id   INTEGER NOT NULL,
+          user_id    INTEGER NOT NULL,
+          act_id     TEXT NOT NULL DEFAULT '',
+          title      TEXT NOT NULL DEFAULT '',
+          distance_m INTEGER NOT NULL DEFAULT 0,
+          date       TEXT NOT NULL DEFAULT '',
+          points     TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          UNIQUE(group_id, user_id, act_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_groute ON group_route(group_id, id);
         """)
         # 老库补列。SQLite 的 ADD COLUMN 支持带默认值，已有行会拿到 0；
         # 不做数据回填——0 就是「那几天还没有这个字段」，回填成别的值是编数据。
@@ -1361,6 +1378,136 @@ MAX_CELLS = 600
 # 超过这个数只可能是脏数据——截断而不是拒收，免得一条坏数据废掉整批。
 CELL_M_MAX = 50000
 CELL_RE = re.compile(r"^-?\d{1,6}:-?\d{1,6}$")
+
+
+ROUTE_MIN_M = 3000        # 短于 3 km 的路线不值得分享：小圈绕来绕去没有参考价值
+ROUTE_MAX_POINTS = 800    # 800 点约 12 KB，画一条线够用；再多只是浪费流量
+ROUTE_PER_USER = 5        # 每人每组最多 5 条，否则「我的路线」会变成相册
+
+
+def _clean_points(raw) -> list[list[float]]:
+    """轨迹点校验。越界/非数字一律拒，不做「修一下」——修复过的坐标是假数据。"""
+    if not isinstance(raw, list) or not 3 <= len(raw) <= ROUTE_MAX_POINTS:
+        raise GroupError(400, f"轨迹要有 3–{ROUTE_MAX_POINTS} 个点")
+    out: list[list[float]] = []
+    for p in raw:
+        try:
+            lat, lon = float(p[0]), float(p[1])
+        except (TypeError, ValueError, IndexError):
+            raise GroupError(400, "轨迹点格式不对") from None
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise GroupError(400, "轨迹点超出经纬度范围")
+        out.append([round(lat, 5), round(lon, 5)])   # 5 位 ≈ 1 米，再多没有意义
+    return out
+
+
+def api_route_share(me, gid: int, body: dict) -> dict:
+    """分享一条路线。**主动授权**才调这里，默认一条都不存在。
+
+    和 `api_cells` 的区别要说清楚：格子是归一化网格编号，看不出在哪条街；
+    这条路线上传的是真经纬度，同组成员能把这条路铺在地图上。
+    所以：
+    - 只能一条一条传，没有「全部共享」；
+    - 撤回是 DELETE，删了就没有；
+    - 页面上必须让用户先勾「知道会包含位置」（客户端负责，服务端只认结果）。
+    """
+    uid = int(me["user_id"])
+    act_id = str(body.get("act_id") or "").strip()[:40]
+    title = str(body.get("title") or "").strip()[:24]
+    date = str(body.get("date") or "").strip()[:10]
+    try:
+        dist = int(body.get("distance_m") or 0)
+    except (TypeError, ValueError):
+        raise GroupError(400, "distance_m 要是整数")
+    if dist < ROUTE_MIN_M:
+        raise GroupError(400, f"短于 {ROUTE_MIN_M // 1000} km 的路线不收录")
+    pts = _clean_points(body.get("points"))
+
+    with db() as c:
+        _require_member(c, gid, uid)
+        n = c.execute("SELECT COUNT(*) n FROM group_route WHERE group_id=? AND user_id=?",
+                      (gid, uid)).fetchone()["n"]
+        old = c.execute("SELECT id FROM group_route"
+                        " WHERE group_id=? AND user_id=? AND act_id=?",
+                        (gid, uid, act_id)).fetchone()
+        if old is None and n >= ROUTE_PER_USER:
+            raise GroupError(409, f"每人最多分享 {ROUTE_PER_USER} 条，先撤一条")
+        c.execute(
+            "INSERT INTO group_route(group_id,user_id,act_id,title,distance_m,date,"
+            "points,created_at) VALUES(?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(group_id,user_id,act_id) DO UPDATE SET"
+            " title=excluded.title, distance_m=excluded.distance_m,"
+            " date=excluded.date, points=excluded.points, created_at=excluded.created_at",
+            (gid, uid, act_id, title, dist, date, json.dumps(pts), _now()))
+        rid = c.execute("SELECT id FROM group_route"
+                        " WHERE group_id=? AND user_id=? AND act_id=?",
+                        (gid, uid, act_id)).fetchone()["id"]
+    return {"ok": True, "id": int(rid), "points": len(pts)}
+
+
+def api_route_del(me, gid: int, rid: int) -> dict:
+    """撤回一条路线。只能删自己的，别人的一律 404（不确认存在）。
+
+    走 POST 而不是 DELETE：这个服务端只实现了 GET/POST/PATCH，
+    DELETE 会被 base handler 直接判 501。
+    """
+    uid = int(me["user_id"])
+    with db() as c:
+        _require_member(c, gid, uid)
+        r = c.execute("SELECT user_id FROM group_route WHERE id=? AND group_id=?",
+                      (rid, gid)).fetchone()
+        if not r or int(r["user_id"]) != uid:
+            raise GroupError(404, "没有这条路线")
+        c.execute("DELETE FROM group_route WHERE id=?", (rid,))
+    return {"ok": True}
+
+
+def api_routes(me, gid: int, query: dict) -> dict:
+    """组内已分享的路线清单。**不带轨迹点**：先看有哪些，点开某条才取坐标。
+
+    一次把所有轨迹都下发的话，5 人 × 5 条 × 12 KB 就是 300 KB，
+    而用户通常只看其中一条。
+    """
+    uid = int(me["user_id"])
+    with db() as c:
+        _require_member(c, gid, uid)
+        rows = c.execute(
+            "SELECT r.id, r.user_id, r.title, r.distance_m, r.date, r.created_at,"
+            "       COALESCE(NULLIF(m.alias, ''), '队友') AS alias"
+            "  FROM group_route r"
+            "  LEFT JOIN group_members m"
+            "         ON m.group_id = r.group_id AND m.user_id = r.user_id"
+            " WHERE r.group_id=? ORDER BY r.id DESC LIMIT 100", (gid,)).fetchall()
+    return {"ok": True, "rows": [{
+        "id": int(r["id"]), "user_id": int(r["user_id"]),
+        "alias": str(r["alias"]), "title": str(r["title"]),
+        "distance_m": int(r["distance_m"] or 0), "date": str(r["date"]),
+        "me": int(r["user_id"]) == uid, "at": int(r["created_at"]),
+    } for r in rows]}
+
+
+def api_route_get(me, gid: int, rid: int) -> dict:
+    """单条路线 + 轨迹点。点开才取，取到就能直接铺到地图上。"""
+    uid = int(me["user_id"])
+    with db() as c:
+        _require_member(c, gid, uid)
+        r = c.execute(
+            "SELECT r.*, COALESCE(NULLIF(m.alias, ''), '队友') AS alias"
+            "  FROM group_route r"
+            "  LEFT JOIN group_members m"
+            "         ON m.group_id = r.group_id AND m.user_id = r.user_id"
+            " WHERE r.id=? AND r.group_id=?", (rid, gid)).fetchone()
+        if not r:
+            raise GroupError(404, "没有这条路线")
+    try:
+        pts = json.loads(r["points"])
+    except (TypeError, ValueError):
+        pts = []
+    return {"ok": True, "route": {
+        "id": int(r["id"]), "alias": str(r["alias"]), "title": str(r["title"]),
+        "distance_m": int(r["distance_m"] or 0), "date": str(r["date"]),
+        "me": int(r["user_id"]) == uid, "points": pts,
+    }}
 
 
 def api_mapshare(me, gid: int, body: dict) -> dict:
@@ -2465,6 +2612,20 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_map(me, gid, query), 200
         if action == "mapshare" and method == "POST":
             return api_mapshare(me, gid, body), 200
+        if action == "routes" and method == "GET":
+            return api_routes(me, gid, query), 200
+        if action == "route" and len(tail) == 1 and method == "POST":
+            return api_route_share(me, gid, body), 200
+        if action == "route" and len(tail) >= 2 and method == "GET":
+            try:
+                return api_route_get(me, gid, int(tail[1])), 200
+            except ValueError:
+                raise GroupError(400, "路线 id 不合法") from None
+        if action == "route" and len(tail) >= 3 and tail[2] == "del" and method == "POST":
+            try:
+                return api_route_del(me, gid, int(tail[1])), 200
+            except ValueError:
+                raise GroupError(400, "路线 id 不合法") from None
         if action == "cells" and method == "POST":
             return api_cells(me, gid, body), 200
         if action == "acts" and method == "POST":

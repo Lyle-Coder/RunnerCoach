@@ -858,6 +858,61 @@ def main() -> int:
                 {"user_id": _did, "role": "member"}, a)
     check("组长撤销教练", st == 200, f"{st} {r}")
 
+    # ---------------- 优质路线分享
+    print("\n9. 路线分享")
+
+    def _pts(n=5, lat0=31.2, lon0=121.5):
+        return [[lat0 + i * 0.001, lon0 + i * 0.001] for i in range(n)]
+
+    st, r = req("POST", f"/v1/group/{gid}/route",
+                {"act_id": "r1", "title": "太短", "distance_m": 1200,
+                 "date": "2026-11-19", "points": _pts()}, a)
+    check("短于 3 km 被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/route",
+                {"act_id": "r1", "title": "点太少", "distance_m": 8000,
+                 "points": [[31.2, 121.5], [31.21, 121.51]]}, a)
+    check("点数不足被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/route",
+                {"act_id": "r1", "title": "越界", "distance_m": 8000,
+                 "points": [[131.2, 121.5], [31.21, 121.51], [31.22, 121.52]]}, a)
+    check("坐标越界被拒（400）", st == 400, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/route",
+                {"act_id": "r1", "title": "滨江往返", "distance_m": 8200,
+                 "date": "2026-11-19", "points": _pts()}, a)
+    check("分享一条路线", st == 200 and r.get("points") == 5, f"{st} {r}")
+    _rid = int(r.get("id") or 0)
+
+    st, r = req("GET", f"/v1/group/{gid}/routes", None, b)
+    _row = (r.get("rows") or [{}])[0]
+    check("组员能看到清单", st == 200 and len(r.get("rows") or []) == 1, f"{st} {r}")
+    check("清单不带轨迹点", "points" not in _row, str(_row))
+    check("清单带昵称和距离",
+          bool(_row.get("alias")) and _row.get("distance_m") == 8200, str(_row))
+
+    st, r = req("GET", f"/v1/group/{gid}/route/{_rid}", None, b)
+    check("单条详情带轨迹点",
+          st == 200 and len((r.get("route") or {}).get("points") or []) == 5, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/route/{_rid}", None, a)
+    check("作者自己也能看", st == 200 and (r.get("route") or {}).get("me") is True, f"{st} {r}")
+
+    # 撤回走 POST：服务端没实现 do_DELETE
+    st, r = req("POST", f"/v1/group/{gid}/route/{_rid}/del", None, b)
+    check("别人删不掉（404）", st == 404, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/route/{_rid}/del", None, a)
+    check("自己撤回", st == 200, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/routes", None, a)
+    check("撤回后清单空了", not (r.get("rows") or []), str(r))
+
+    for _i in range(groups.ROUTE_PER_USER):
+        req("POST", f"/v1/group/{gid}/route",
+            {"act_id": f"m{_i}", "title": f"第{_i}条", "distance_m": 5000,
+             "points": _pts()}, a)
+    st, r = req("POST", f"/v1/group/{gid}/route",
+                {"act_id": "m9", "title": "第六条", "distance_m": 5000,
+                 "points": _pts()}, a)
+    check(f"超过 {groups.ROUTE_PER_USER} 条被拒（409）", st == 409, f"{st} {r}")
+
     # 隐私：关共享的人既不显示、也不能被评论
     st, r = req("POST", f"/v1/group/{gid}/share", {"share": "off"}, b)
     st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, a)

@@ -1054,6 +1054,19 @@ def run() -> int:
     finally:
         GG.detail = _real_detail
 
+    # ---------------- 路线分享（单条折线） ----------------
+    # 投影必须和足迹页同一套，否则同一片路网上「格子在这、线在那」。
+    _rpts = [[31.20 + i * 0.0001, 121.50 + i * 0.0001] for i in range(50)]
+    _rsvg = GU._route_svg(_rpts, None)
+    assert _rsvg.count("L") == 49, f"折线点数不对：{[_rsvg.count('L')]}"
+    assert "stroke-width" in _rsvg, "折线没描边，深底上会看不清"
+    _rxs = [float(x) for x in re.findall(r"[ML]([\d.]+) ", _rsvg)]
+    _rys = [float(y) for y in re.findall(r"[ML][\d.]+ ([\d.]+)", _rsvg)]
+    assert min(_rxs) >= 0 and max(_rxs) <= GU.MAP_W, "折线 x 超出画幅"
+    assert min(_rys) >= 0 and max(_rys) <= GU.MAP_H, "折线 y 超出画幅"
+    assert GU._route_svg([[31.2, 121.5], [31.21, 121.51]], None).count("L") == 1, \
+        "两个点也该画出一段"
+
     # ---------------- 远征界面 ----------------
     # 小旗必须落在**当前幕那一段**里。整季累计进度在队伍超额时会超过 100%，
     # 如果拿它定位小旗，第二幕就会顶到最右端，看起来像这一季已经走完了。

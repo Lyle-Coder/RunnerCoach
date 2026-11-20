@@ -854,8 +854,18 @@ def map_page(token: str, gid: int, message: str = "") -> str:
     else:
         _map_block = _map_card(svg, legend)
 
+    # 路线分享挂在足迹页底部：它和格子是同一件事的两种精度——格子说
+    # 「跑过哪片」，路线说「具体怎么跑」。分开放会让人以为这是两个功能。
+    _today_iso = dt.date.today().isoformat()
+    try:
+        _route_html = _route_block(token, gid, _today_iso)
+    except Exception:      # noqa: BLE001 - 路线拉不到不能把整页弄挂
+        _route_html = ""
+    _route_sec = (sec("路线分享", _route_html) if _route_html else "")
+
     body = (_msg(message)
             + _map_block
+            + _route_sec
             + sec("我的设置", '<div class="flat">' + _sw + '</div>')
             + '<p class="note">每格的颜色归**跑得最多**的那个人，颜色越深说明'
               '这格被跑得越多；两个人跑量接近的格子显示为白色。'
@@ -865,6 +875,209 @@ def map_page(token: str, gid: int, message: str = "") -> str:
     title = f"{len(people)} 人 · {int(r.get('cells') or 0)} 格" if people else "这周还没有路线"
     return page("GROUP", "组内路线", title, body,
                 foot="只上传 500 米网格，不上传轨迹、配速和位置点。",
+                back=("返回小组", f"/groups/{gid}"))
+
+
+def _route_svg(points, bm, color: str = "#4EA1FF",
+               w: int = MAP_W, h: int = MAP_H) -> str:
+    """底图 + 一条折线。
+
+    投影和足迹页同一套（`BM.to_px` + `p*s + t`）。不用同一套的话，同一片
+    路网上「格子在这、线在那」，用户会以为数据错了。
+    """
+    from . import basemap as BM
+
+    W, H = w, h
+    meta = (bm or {}).get("meta") or {}
+    iw, ih = int(meta.get("w") or W), int(meta.get("h") or H)
+    s = float(meta.get("s") or min(W / iw, H / ih))
+    tx = ty = 0.0
+    if bm:
+        pxs = [BM.to_px(lat, lon, meta) for lat, lon in points]
+        cx = (min(x for x, _ in pxs) + max(x for x, _ in pxs)) / 2
+        cy = (min(y for _, y in pxs) + max(y for _, y in pxs)) / 2
+        tx = min(0.0, max(W - iw * s, W / 2 - cx * s))
+        ty = min(0.0, max(H - ih * s, H / 2 - cy * s))
+
+        def xy(lat, lon):
+            x, y = BM.to_px(lat, lon, meta)
+            return x * s + tx, y * s + ty
+    else:
+        lats = [p[0] for p in points]
+        lons = [p[1] for p in points]
+        la0, la1 = min(lats), max(lats)
+        lo0, lo1 = min(lons), max(lons)
+        dlat = (la1 - la0) or 0.01
+        dlon = (lo1 - lo0) or 0.01
+
+        def xy(lat, lon):
+            return ((lon - lo0) / dlon * (W - 24) + 12,
+                    (1 - (lat - la0) / dlat) * (H - 24) + 12)
+
+    d = " ".join(("M" if i == 0 else "L") + f"{x:.1f} {y:.1f}"
+                 for i, (x, y) in enumerate(xy(la, lo) for la, lo in points))
+    bg = (f'<image href="/basemap/{esc(bm["png"].name)}" x="0" y="0" '
+          f'width="{iw}" height="{ih}" preserveAspectRatio="none" '
+          f'style="filter:brightness(.58) saturate(.66) contrast(1.04)" '
+          f'transform="translate({tx:.2f},{ty:.2f}) scale({s:.4f})"/>' if bm else
+          '<rect x="0" y="0" width="100%" height="100%" fill="#0E1621"/>')
+    return (f'<svg class="gmap" viewBox="0 0 {W} {H}" '
+            f'xmlns="http://www.w3.org/2000/svg" role="img" aria-label="这条路线的轨迹">'
+            '<defs><clipPath id="rtclip">'
+            f'<rect x="0" y="0" width="{W}" height="{H}" rx="12"/></clipPath></defs>'
+            f'<g clip-path="url(#rtclip)">{bg}'
+            f'<path d="{d}" fill="none" stroke="{esc(color)}" stroke-width="3.2" '
+            'stroke-linejoin="round" stroke-linecap="round" '
+            'style="filter:drop-shadow(0 0 4px rgba(78,161,255,.55))"/>'
+            f'<text x="8" y="{H - 7}" class="mapsrc">高德地图</text></g></svg>')
+
+
+def _route_block(token: str, gid: int, today: str) -> str:
+    """足迹页底部的「路线分享」：已分享的列表 + 可分享的活动。
+
+    候选从**本地库**读（只有本机有轨迹），已分享的从服务端读。
+    分享是逐条主动授权：这里没有「全部共享」，因为一旦上传就是真经纬度。
+    """
+    from . import group as G
+
+    try:
+        _r = G.routes(gid)
+        rows = (_r.get("rows") or []) if _r.get("ok") else []
+    except Exception:      # noqa: BLE001 - 拉不到就只显示候选
+        rows = []
+    mine = [x for x in rows if x.get("me")]
+    others = [x for x in rows if not x.get("me")]
+
+    shared: set[str] = set()
+    try:
+        shared = {str(x.get("title") or "") for x in mine}
+    except Exception:      # noqa: BLE001
+        shared = set()
+
+    cands: list[dict] = []
+    try:
+        from . import appapi as _A
+        from .store import Store as _S
+
+        _st = _S(_A.DB)
+        try:
+            cut = (dt.date.fromisoformat(today) - dt.timedelta(days=14)).isoformat()
+            for a in _st.conn.execute(
+                    "SELECT activity_id, name, date, distance_m FROM activities"
+                    " WHERE distance_m >= 3000 AND date >= ? AND date <= ?"
+                    " ORDER BY date DESC, start_ts DESC LIMIT 12",
+                    (cut, today)).fetchall():
+                # 没有明细就没有轨迹，列出来点了也只会失败
+                _det = _st.get_detail(a["activity_id"])
+                if not _det:
+                    continue
+                # 爬楼/室内：距离是楼层折算，GPS 只剩漂移圈。这种轨迹画出来
+                # 是在误导人 —— 一条 4.7 km 的「路线」实际只有操场那么大。
+                try:
+                    from .actcard import _track_span_m
+
+                    # 缓存的明细是精简版：轨迹在 `track` 里，没有 geoPolylineDTO
+                    _pts = _det.get("track") or []
+                    if (_pts and _track_span_m(_pts) < 2000
+                            and float(a["distance_m"] or 0) > 3000):
+                        continue
+                except Exception:      # noqa: BLE001 - 判不出来就按普通活动处理
+                    pass
+                cands.append(dict(a))
+        finally:
+            _st.conn.close()
+    except Exception:      # noqa: BLE001 - 本地库读不到就只剩已分享列表
+        cands = []
+
+    body = ""
+    if mine:
+        _lines = "".join(
+            f'<div class="kvline"><span>{esc(str(x.get("date") or "")[5:])}</span>'
+            f'<b>{esc(x.get("title") or "路线")}'
+            f'<s>·</s>{float(x.get("distance_m") or 0) / 1000:.1f} km</b>'
+            f'<form action="/__group/{gid}/route_del" method="post" style="margin:0">'
+            + _tok(token)
+            + f'<input type="hidden" name="rid" value="{int(x.get("id") or 0)}">'
+            '<button class="btn sm" type="submit">撤回</button></form></div>'
+            for x in mine)
+        body += ('<p class="note">我分享的（同组能看完整轨迹）</p>'
+                 f'<div class="flat">{_lines}</div>')
+    if others:
+        _ol = "".join(
+            f'<a class="kvline" href="/groups/{gid}/route/{int(x.get("id") or 0)}">'
+            f'<span>{esc(x.get("alias"))}</span>'
+            f'<b>{esc(x.get("title") or "路线")}'
+            f'<s>·</s>{float(x.get("distance_m") or 0) / 1000:.1f} km</b>'
+            '<span class="chev">›</span></a>'
+            for x in others)
+        body += f'<div class="flat">{_ol}</div>'
+
+    if not cands and not mine:
+        return (body or '<p class="note">近 14 天没有 3 km 以上、'
+                        '带轨迹的活动可以分享。</p>')
+
+    # 每条候选默认收起：分享动作要勾一次「知道会包含位置」，
+    # 摊开一列勾选框比点开一条更容易误触。
+    items = ""
+    for a in cands:
+        if str(a.get("name") or "") in shared:
+            continue
+        km = float(a.get("distance_m") or 0) / 1000.0
+        items += (
+            f'<details class="fold"><summary>{esc(str(a.get("date") or "")[5:])}'
+            f' · {esc(a.get("name") or "活动")} {km:.1f} km<span class="fx">›</span>'
+            '</summary><div class="foldbody">'
+            '<p class="note">分享后同组能看到这条路的完整轨迹，包含位置。'
+            '随时可以撤回。</p>'
+            f'<form action="/__group/{gid}/route_share" method="post">' + _tok(token) +
+            f'<input type="hidden" name="act" value="{esc(a.get("activity_id"))}">'
+            '<label class="ckline"><input type="checkbox" name="confirm" value="1">'
+            ' 我知道这会包含位置</label>'
+            '<div class="pager"><button class="btn sm primary" type="submit">'
+            '分享这条</button></div></form></div></details>')
+    if items:
+        body += '<p class="note">可以分享的活动</p>' + items
+    return body
+
+
+def route_page(token: str, gid: int, rid: int, message: str = "") -> str:
+    """单条路线：地图 + 一条折线。点开才取坐标，清单页不带点。"""
+    from . import group as G
+
+    r = G.route(gid, rid)
+    if not r.get("ok"):
+        _body = (_msg(message)
+                 + f'<div class="card"><p class="note">'
+                   f'{esc(r.get("error") or "打不开这条路线")}</p>'
+                 f'<div class="pager"><a class="btn" href="/groups/{gid}/map">'
+                 '返回路线</a></div></div>')
+        return page("GROUP", "路线", "", _body, back=("返回小组", f"/groups/{gid}"))
+    rt = r.get("route") or {}
+    pts = rt.get("points") or []
+    svg = ""
+    if len(pts) >= 3:
+        try:
+            from . import basemap as BM
+
+            _id = f"rt{gid}-{rid}"
+            bm = BM.ensure(pts, MAP_W, MAP_H, ident=_id)
+            svg = _route_svg(pts, bm)
+        except Exception:      # noqa: BLE001 - 底图拿不到也要画出形状
+            svg = _route_svg(pts, None)
+
+    km = float(rt.get("distance_m") or 0) / 1000.0
+    who = "我" if rt.get("me") else str(rt.get("alias") or "队友")
+    body = (_msg(message)
+            + (f'<div class="card">{svg}</div>' if svg
+               else '<div class="card"><p class="note">这条路线没有轨迹点。</p></div>')
+            + sec("这条路", f'<div class="kvrows">'
+                            f'<span class="k">谁</span><span class="v">{esc(who)}</span>'
+                            f'<span class="k">时间</span>'
+                            f'<span class="v">{esc(str(rt.get("date") or ""))}</span>'
+                            f'<span class="k">距离</span>'
+                            f'<span class="v">{km:.1f} km</span></div>'))
+    return page("GROUP", esc(rt.get("title") or "路线"), f"{who} · {km:.1f} km",
+                body, foot="这条路线的坐标只给组内的人看，撤回即删。",
                 back=("返回小组", f"/groups/{gid}"))
 
 
