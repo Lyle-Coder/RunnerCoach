@@ -243,6 +243,85 @@ def main() -> int:
     check("列表里有全组进度", r["challenges"][0].get("current") == 31000,
           str(r["challenges"][0]))
 
+    # ---------------- 赛事类型：爬升 / 探索 / 配速
+    # 这三种是后加的：聚合口径各不相同（量 / 格数 / 比值），最容易写成
+    # 「全都按里程算」还看不出来。
+    print("\n5b. 赛事类型（爬升 / 探索 / 配速）")
+    # 补的一天报在**小赵**名下：老李后面有一条「探索被截到 50 格」的断言，
+    # 这里往他身上加格子会把它顶成 59。
+    req("POST", f"/v1/group/{gid}/report",
+        {"days": [{"date": "2026-11-21", "distance_m": 10000, "duration_s": 4000,
+                   "acts": 1, "elevation_m": 400, "explorer": 9}]}, b)
+
+    st, r = req("POST", f"/v1/group/{gid}/challenge/create",
+                {"title": "爬升 1000 米", "kind": "elevation", "target": 1000,
+                 "start_date": "2026-11-16", "end_date": "2026-11-22",
+                 "today": "2026-11-21"}, a)
+    check("建爬升赛事 200", st == 200 and r["challenge"]["kind"] == "elevation",
+          f"{st} {r}")
+    check("爬升赛事下发单位", r["challenge"].get("unit") == "m", str(r["challenge"]))
+    _cid_e = r["challenge"]["id"]
+
+    st, r = req("GET", f"/v1/group/{gid}/challenge/{_cid_e}?today=2026-11-21", None, a)
+    _rows = {x["alias"]: x for x in r.get("rows", [])}
+    check("爬升按米累计", _rows["小赵"]["current"] == 400
+          and abs(_rows["小赵"]["pct"] - 40.0) < 0.1, str(_rows.get("小赵")))
+    check("没爬升的人算 0 而不是漏掉", _rows["老李"]["current"] == 0,
+          str(_rows.get("老李")))
+
+    st, r = req("POST", f"/v1/group/{gid}/challenge/create",
+                {"title": "探索 30 格", "kind": "explore", "target": 30,
+                 "start_date": "2026-11-16", "end_date": "2026-11-22",
+                 "today": "2026-11-21"}, a)
+    check("建探索赛事 200", st == 200 and r["challenge"]["kind"] == "explore", f"{st} {r}")
+    _cid_x = r["challenge"]["id"]
+    st, r = req("GET", f"/v1/group/{gid}/challenge/{_cid_x}?today=2026-11-21", None, b)
+    _rows = {x["alias"]: x for x in r.get("rows", [])}
+    check("探索按新踩格子累计", _rows["小赵"]["current"] == 9
+          and abs(_rows["小赵"]["pct"] - 30.0) < 0.1, str(_rows.get("小赵")))
+
+    # 配速：按人算加权平均 = 总时长 / 总距离。老李 26 km / 8500 s ≈ 5'27"，
+    # 小赵 15 km / 5800 s ≈ 6'27"；全组 41 km / 14300 s ≈ 5'49"。
+    st, r = req("POST", f"/v1/group/{gid}/challenge/create",
+                {"title": "配速 5'30", "kind": "speed", "target": 330,
+                 "start_date": "2026-11-16", "end_date": "2026-11-22",
+                 "today": "2026-11-21"}, a)
+    check("建配速赛事 200", st == 200 and r["challenge"]["kind"] == "speed", f"{st} {r}")
+    check("配速赛事下发秒/公里单位", r["challenge"].get("unit") == "秒/km", str(r["challenge"]))
+    st, r = req("GET", f"/v1/group/{gid}/challenge/{r['challenge']['id']}?today=2026-11-21",
+                None, a)
+    _rows = {x["alias"]: x for x in r.get("rows", [])}
+    # 老李 327 秒/km 进了目标 → 100%；小赵 387 秒/km 没进 → 85.3%
+    check("配速进目标就算达成", _rows["老李"]["pct"] == 100, str(_rows.get("老李")))
+    check("慢的人按比例算", abs(_rows["小赵"]["pct"] - 85.3) < 0.2, str(_rows.get("小赵")))
+
+    st, r = req("GET", f"/v1/group/{gid}/challenge/list?today=2026-11-21", None, a)
+    _sc = next((x for x in r.get("challenges") or [] if x["kind"] == "speed"), None)
+    check("列表里的全组配速也是比值而非里程",
+          _sc is not None and 330 <= _sc["current"] <= 360, str(_sc))
+
+    # 类型 / 目标范围校验
+    st, r = req("POST", f"/v1/group/{gid}/challenge/create",
+                {"title": "乱写的", "kind": "bogus", "target": 10,
+                 "start_date": "2026-11-16", "end_date": "2026-11-22",
+                 "today": "2026-11-21"}, a)
+    check("未知类型被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/challenge/create",
+                {"title": "爬升太小", "kind": "elevation", "target": 50,
+                 "start_date": "2026-11-16", "end_date": "2026-11-22",
+                 "today": "2026-11-21"}, a)
+    check("爬升目标低于 100 m 被拒（400）", st == 400, f"{st} {r}")
+
+    # 同时进行的赛事最多 3 个：再建第 4 个要被挡
+    st, r = req("POST", f"/v1/group/{gid}/challenge/create",
+                {"title": "第四個", "kind": "acts", "target": 5,
+                 "start_date": "2026-11-16", "end_date": "2026-11-22",
+                 "today": "2026-11-21"}, a)
+    check("同时进行上限 3 个（409）", st == 409, f"{st} {r}")
+
+    for _cid in (_cid_e, _cid_x):
+        req("POST", f"/v1/group/{gid}/challenge/{_cid}/close", {}, a)
+
     # ---------------- 共享开关
     print("\n6. 共享开关")
     st, r = req("POST", f"/v1/group/{gid}/share", {"share": "off"}, b)
@@ -502,6 +581,37 @@ def main() -> int:
     check("返回 bonus_max，页面不用写死 90", r.get("bonus_max") == 10.0)
     check("返回我的目标，页面能回显", (r.get("goal") or {}).get("km") == 35.0,
           str(r.get("goal")))
+
+    # 只猜别人、不动目标：以前 km 是必填，于是「我只想猜、不想改目标」这件事
+    # 根本做不了——用户反馈的「好像不能猜别人的目标」就是这条。
+    st, r = req("GET", f"/v1/group/{gid}/week?today=2026-11-18", None, a)
+    _ts = r.get("targets") or []
+    check("可猜对象带着他的目标（不然猜谁全凭感觉）",
+          bool(_ts) and all("km" in t for t in _ts) and _ts[0]["km"] == 20.0, str(_ts))
+
+    st, r = req("POST", f"/v1/group/{gid}/goal",
+                {"predict": _uid_b, "today": "2026-11-18"}, a)
+    check("目标留空也能只投预言", st == 200 and r.get("predict") == _uid_b
+          and r.get("km") == 35.0, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/goal",
+                {"predict": "", "today": "2026-11-18"}, a)
+    check("能把预言撤掉（不必连目标一起改）",
+          st == 200 and r.get("predict") is None, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/goal",
+                {"predict": _uid_b, "today": "2026-11-18"}, a)
+    check("撤掉后还能再投回来", st == 200 and r.get("predict") == _uid_b, f"{st} {r}")
+
+    # 目标不到 5 km 的人：没有「完不成」这回事，不该给猜
+    req("POST", f"/v1/group/{gid}/goal", {"km": 3, "today": "2026-11-18"}, b)
+    st, r = req("POST", f"/v1/group/{gid}/goal",
+                {"predict": _uid_b, "today": "2026-11-18"}, a)
+    check("目标不到 5 km 的人不能被猜（400）", st == 400, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/week?today=2026-11-18", None, a)
+    check("目标太小的人也不出现在可猜名单里",
+          all(t["user_id"] != _uid_b for t in r.get("targets") or []),
+          str(r.get("targets")))
+    req("POST", f"/v1/group/{gid}/goal", {"km": 20, "today": "2026-11-18"}, b)
 
     # 配对关系不因改目标而重排
     st, r = req("POST", f"/v1/group/{gid}/goal", {"km": 40, "today": "2026-11-18"}, a)

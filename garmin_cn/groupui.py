@@ -147,6 +147,57 @@ SAY_JS = (
     '});})();</script>')
 
 
+# 表单提交后回到原处：PRG（POST → 303 → GET）必然整页重渲染，CSS 折叠、
+# 输入焦点、滚动位置全部归零。用户发一条评论，回来时所有展开的评论都收起了、
+# 页面还跳回顶部——「发完就找不到刚才那条了」。
+#
+# 这里不做局部刷新（改造成本大、还要服务端支持片段），只用 sessionStorage
+# 把两件事记住并在下一页还原：
+#   1. 哪些 <details data-k> 是展开的（key 稳定，评论按活动 id、目标行按名字）；
+#   2. 滚动位置（只在表单提交/离开页面时写，回来时读一次就删）。
+# 键里带 pathname，所以组页、榜单页、设置页各存各的，互不串味。
+KEEP_JS = (
+    '<script>(function(){'
+    'var K="grpst:"+location.pathname,Y=K+":y";'
+    'function restore(){'
+    'var o=[];try{o=JSON.parse(sessionStorage.getItem(K)||"[]");}catch(e){}'
+    'for(var i=0;i<o.length;i++){'
+    'var d=document.querySelector(\'details[data-k="\'+o[i]+\'"]\');if(d)d.open=true;}'
+    'var y=null;try{y=sessionStorage.getItem(Y);}catch(e){}'
+    'if(y===null)return;try{sessionStorage.removeItem(Y);}catch(e){}'
+    'var n=parseInt(y,10)||0;window.scrollTo(0,n);'
+    'window.addEventListener("load",function(){window.scrollTo(0,n);});}'
+    'function save(){'
+    'var o=[],ds=document.querySelectorAll("details[data-k]"),i;'
+    'for(i=0;i<ds.length;i++){if(ds[i].open)o.push(ds[i].getAttribute("data-k"));}'
+    'try{sessionStorage.setItem(K,JSON.stringify(o));}catch(e){}}'
+    'function mark(){'
+    'try{sessionStorage.setItem(Y,String(window.scrollY||0));}catch(e){}}'
+    'document.addEventListener("toggle",save,true);'
+    'document.addEventListener("submit",function(){save();mark();},true);'
+    'window.addEventListener("pagehide",function(){save();mark();});'
+    'if(document.readyState==="loading")'
+    'document.addEventListener("DOMContentLoaded",restore);else restore();'
+    '})();</script>')
+
+
+# 建赛事表单：类型 → 单位 / 示例。五种类型的单位差得远（米 / 次 / 格 / 秒每
+# 公里），一个静态的「目标（米/次）」标签等于让用户自己记规矩。
+CHAL_JS = (
+    '<script>(function(){'
+    'function sync(s){'
+    'var f=s.form||(s.closest&&s.closest("form"));if(!f)return;'
+    'var o=s.options[s.selectedIndex];if(!o)return;'
+    'var u=f.querySelector("[data-unit]");'
+    'if(u)u.textContent=o.getAttribute("data-unit")||"";'
+    'var i=f.querySelector("[data-target]");'
+    'if(i)i.placeholder=o.getAttribute("data-ph")||"";}'
+    'document.addEventListener("change",function(ev){'
+    'var s=ev.target;'
+    'if(s&&s.matches&&s.matches(\'select[name=kind]\'))sync(s);});'
+    '})();</script>')
+
+
 def _km(m: int | float | None) -> str:
     v = float(m or 0) / 1000
     return f"{v:.1f}" if v < 100 else f"{v:.0f}"
@@ -903,6 +954,32 @@ def _pace(distance_m: float, duration_s: float) -> str:
     return f"{m}'{sec2:02d}\""
 
 
+def _pace_str(sec_per_km) -> str:
+    """秒/公里 → 5'30"。赛事里配速是**目标值**（不是算出来的），所以单列。"""
+    v = int(round(float(sec_per_km or 0)))
+    if v <= 0:
+        return "—"
+    return f"{v // 60}'{v % 60:02d}\""
+
+
+def _chal_prog(c: dict) -> str:
+    """赛事的「当前 / 目标」。五种类型各说各的单位，不共用一个 km。"""
+    kind = str(c.get("kind") or "distance")
+    cur = float(c.get("current") or 0)
+    tgt = float(c.get("target") or 0)
+    if kind == "distance":
+        return f"{cur / 1000:.1f} / {tgt / 1000:.1f} km"
+    if kind == "acts":
+        return f"{cur:.0f} / {tgt:.0f} 次"
+    if kind == "elevation":
+        return f"{cur:.0f} / {tgt:.0f} m 爬升"
+    if kind == "explore":
+        return f"{cur:.0f} / {tgt:.0f} 格新地方"
+    if kind == "speed":
+        return f"{_pace_str(cur)} / 目标 {_pace_str(tgt)}"
+    return f"{cur:.0f} / {tgt:.0f}"
+
+
 def _shape_svg(shape: str, color: str) -> str:
     """轨迹形状。`shape` 是 "x,y;x,y;..."，坐标 0..SHAPE_SCALE（1000）。
 
@@ -942,13 +1019,17 @@ def _shape_svg(shape: str, color: str) -> str:
 
 
 def _act_card(a: dict, today: str, detail: bool = False, *,
-              gid: int = 0, token: str = "", emojis=None) -> str:
+              gid: int = 0, token: str = "", emojis=None,
+              open_cm: bool = False) -> str:
     """一条动态的卡片：谁 / 轨迹剪影 / 距离 / 元信息 / 最新三条评论。
 
     剪影是**脱敏**的：客户端把轨迹抽稀到 24 点、等比缩放到 100×100 再上传，
     不含经纬度、起终点和朝向以外的信息（见 group._shape）。
     没有 GPS 的活动（室内/器械）或旧数据没有剪影，就画占位方块写「无轨迹」——
     绝不拿一条装饰曲线冒充路线。
+
+    `open_cm=True` 让这条的评论区默认展开：刚发完评论 303 回来时用，
+    否则整页重渲染，用户刚打的字连同刚展开的评论一起消失。
     """
     km = float(a.get("distance_m") or 0) / 1000.0
     dur = int(a.get("duration_s") or 0)
@@ -1007,7 +1088,9 @@ def _act_card(a: dict, today: str, detail: bool = False, *,
         body += _cm_say(gid, _aid, token, emojis)
         # 摘要行在展开态要换掉：还写着「去留一句」的话，下面又摆着表情和
         # 输入框，等于同一件事说两遍。展开时只留一个「收起」。
-        cm = ('<div class="ac-c"><details class="ac-cm"><summary>'
+        # data-k 是给「回来后还原展开状态」用的稳定键（see KEEP_JS）。
+        cm = ('<div class="ac-c"><details class="ac-cm" data-k="cm' + str(_aid) + '"'
+              + (" open" if open_cm else "") + '><summary>'
               + head + '<span class="ac-cnt">' + label + ' ›</span>'
               + '<span class="ac-cnt up">收起 ›</span></summary>'
               + '<div class="ac-cb">' + body + '</div></details></div>')
@@ -1281,10 +1364,38 @@ def shirts_page(token: str, gid: int, message: str = "") -> str:
 # 组页里一屏放多少条动态。20 条约 4000px，翻两屏到赛事后面接上，
 # 再多首屏 HTML 会到 200KB 以上（每张卡带一条轨迹形状）。
 FEED_PAGE = 20
+# 组页首屏榜单只放前 10：组里人一多，一屏十几二十行榜单会把动态整个推到
+# 第三屏之后，「往下滑看动态」就变成了「往下滑看人名」。完整名次交给
+# `/groups/{gid}/board` 那一页。
+BOARD_TOP = 10
 
 
-def group_page(token: str, gid: int, message: str = "", rng: str = "week",
-               feed_n: int = 0) -> str:
+def _rank_row(i: int, x: dict, marks: str = "") -> str:
+    cls = "rank me" if x.get("is_me") else "rank"
+    mk = f'<span class="mk">{marks}</span>' if marks else ""
+    return (f'<div class="{cls}"><span class="no">{i}</span>'
+            f'<span class="nm">{esc(x.get("alias"))}</span>{mk}'
+            f'<span class="km">{_km(x.get("distance_m"))}<i>km</i></span></div>')
+
+
+def _rank_marks(x: dict, marks_of: dict[str, str], min_cells: int) -> str:
+    """名字后面挂的图形：穿了哪几件衫 + 有没有探索徽章。
+
+    只对**周**榜有意义（衫和徽章都是按周结算的），月榜一律不挂——
+    挂上去会被读成「这个月的衫」，那是错的。
+    """
+    m = marks_of.get(str(x.get("alias") or ""), "")
+    if int(x.get("explorer") or 0) >= min_cells:
+        m += _explore_icon("jr", "探索徽章")
+    return m
+
+
+def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
+               focus: int = 0) -> str:
+    """组页：我的名次 → 本周玩法 → 本周榜（前 10）→ 赛事 → 动态。
+
+    `focus` 是刚从这条动态发完评论回来时要展开评论区的活动 id。
+    """
     from . import group as G
 
     today = dt.date.today().isoformat()
@@ -1293,7 +1404,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
     # /home 就退回逐个请求——四次握手约 0.5 秒，能省则省。
     _h = {}
     try:
-        _h = G.home(gid, rng, today)
+        _h = G.home(gid, "week", today)
     except Exception:      # noqa: BLE001
         _h = {}
     if not _h.get("ok"):
@@ -1327,7 +1438,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
     except Exception:      # noqa: BLE001 - 缓存写不进去不影响页面
         pass
 
-    b = _h.get("board") or G.board(gid, rng, today)
+    b = _h.get("board") or G.board(gid, "week", today)
     cl = _h.get("challenges") or G.challenge_list(gid, today)
     total_m = (b.get("summary") or {}).get("total_distance_m") or 0
 
@@ -1355,21 +1466,17 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
     # （虚线方框），原来的「我 / 组长 / N 天 / 新 N 格」四段小字全删了——
     # 四段字挤在名字后面，一屏十几行读起来像注脚；徽章本来就有图形，
     # 直接挂图形更快认。我自己那一行靠底色和品牌色区分，不用再写「我」。
-    rank_rows = ""
-    for i, x in enumerate(b.get("rows") or [], 1):
-        cls = "rank me" if x.get("is_me") else "rank"
-        _alias = str(x.get("alias") or "")
-        # 衫和探索徽章都是**按周结算**的（season 只有 /season，没有月口径），
-        # 挂到月榜上会被读成「这个月的衫」——那是错的。所以月榜只排里程。
-        marks = ""
-        if rng == "week":
-            marks = _marks_of.get(_alias, "")
-            if int(x.get("explorer") or 0) >= _min_cells:
-                marks += _explore_icon("jr", "探索徽章")
-        marks = f'<span class="mk">{marks}</span>' if marks else ""
-        rank_rows += (f'<div class="{cls}"><span class="no">{i}</span>'
-                      f'<span class="nm">{esc(_alias)}</span>{marks}'
-                      f'<span class="km">{_km(x.get("distance_m"))}<i>km</i></span></div>')
+    #
+    # 只渲染前 BOARD_TOP 名。我排在 10 名开外时补「⋯」+ 我自己那一行：
+    # 截断了却不让我看见自己，等于把榜单最该给的信息截掉了。
+    _rows = b.get("rows") or []
+    rank_rows = "".join(_rank_row(i, x, _rank_marks(x, _marks_of, _min_cells))
+                        for i, x in enumerate(_rows[:BOARD_TOP], 1))
+    _mine_at = next((i for i, x in enumerate(_rows, 1) if x.get("is_me")), 0)
+    if _mine_at > BOARD_TOP:
+        rank_rows += ('<div class="rk-gap" aria-hidden="true">⋯</div>'
+                      + _rank_row(_mine_at, _rows[_mine_at - 1],
+                                  _rank_marks(_rows[_mine_at - 1], _marks_of, _min_cells)))
     hidden = int(b.get("hidden") or 0)
     # 一个人对着排行榜跟自己比：一条数据 + 半屏空白。这不是「空位」，
     # 是页面没告诉用户下一步干什么。直接换成一句状态 + 一个邀请入口。
@@ -1394,21 +1501,21 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
         rank_rows = '<p class="note">本周还没有人上报。打开 App 才会同步，不跑后台任务。</p>'
     if hidden:
         rank_rows += f'<p class="note">另有 {hidden} 人关闭了共享，不参与排名。</p>'
+    # 完整榜单是**另一个页面**：组页要看动态，榜单不能无限长。
+    # 只有超过 10 人才需要这个入口——两个人的组摆一个「完整榜单」很荒唐。
+    if len(_rows) > BOARD_TOP:
+        rank_rows += ('<div class="pager"><a class="btn sm full" '
+                      f'href="/groups/{gid}/board">完整榜单 · 共 {len(_rows)} 人 →</a></div>')
 
     # 赛事
     ch_rows = ""
     for c in (cl.get("challenges") or []):
         pct = float(c.get("pct") or 0)
         done = pct >= 100
-        div = 1000 if c.get("kind") == "distance" else 1
-        unit = "km" if c.get("kind") == "distance" else "次"
-        cur = float(c.get("current") or 0) / div
-        tgt = float(c.get("target") or 0) / div
-        fmt = "{:.1f}" if unit == "km" else "{:.0f}"
         state_txt = {"running": "进行中", "closed": "已结束", "ended": "已到期"}.get(
             c.get("status") or "", "")
         ch_rows += (f'<div class="chal"><div class="t">{esc(c.get("title"))}</div>'
-                    f'<div class="m">{fmt.format(cur)} / {fmt.format(tgt)} {unit} · '
+                    f'<div class="m">{esc(_chal_prog(c))} · '
                     f'{pct:.0f}% · {esc(state_txt)} · {esc(str(c.get("from"))[5:])}–'
                     f'{esc(str(c.get("to"))[5:])}</div>'
                     f'<div class="bar{" done" if done else ""}">'
@@ -1418,24 +1525,38 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
 
     chal_form = ""
     if is_admin:
+        # 类型一变，单位跟着变：只写「目标（米/次）」的话，选「爬升」还得
+        # 自己猜是不是米、选「配速」更猜不到要填 330 这种秒数。
+        # 每种类型的单位/示例挂在 option 上，选择时同步到标签和 placeholder。
+        _kinds = [
+            ("distance", "累计里程", "米", "20000", "20000 = 20 km"),
+            ("acts", "累计次数", "次", "12", "练了几次，不分长短"),
+            ("elevation", "累计爬升", "米", "3000", "3000 = 3 km 爬升"),
+            ("explore", "探索新地方", "格", "40", "跑过的新格子数，500 m 一格"),
+            ("speed", "平均配速", "秒/km", "330", "330 = 5'30\"/km，越小越难"),
+        ]
+        _opts = "".join(
+            f'<option value="{k}" data-unit="{u}" data-ph="{ph}">{n}</option>'
+            for k, n, u, ph, _h in _kinds)
+        _hint = "；".join(f'{n}填{h}' for _k, n, _u, _ph, h in _kinds)
         chal_form = (f'<form action="/__group/{gid}/challenge" method="post">{_tok(token)}'
                      '<div class="card">'
                      '<div class="kvline"><span>标题</span><b>'
                      '<input type="text" name="title" maxlength="30" placeholder="本周 20 公里"></b></div>'
                      '<div class="kvline"><span>类型</span><b>'
-                     '<select name="kind"><option value="distance">累计里程</option>'
-                     '<option value="acts">累计次数</option></select></b></div>'
-                     '<div class="kvline"><span>目标（米/次）</span><b>'
+                     f'<select name="kind">{_opts}</select></b></div>'
+                     '<div class="kvline"><span>目标（<b data-unit>米</b>）</span><b>'
                      '<input type="number" name="target" min="1" max="1000000" step="1" '
-                     'placeholder="20000"></b></div>'
+                     'placeholder="20000" data-target></b></div>'
                      '<div class="kvline"><span>开始日</span><b>'
                      f'<input type="text" name="start_date" value="{esc(today)}" placeholder="YYYY-MM-DD"></b></div>'
                      '<div class="kvline"><span>结束日</span><b>'
                      '<input type="text" name="end_date" placeholder="YYYY-MM-DD"></b></div>'
-                     '</div><p class="note">里程按米填（20000 = 20 km）。'
+                     '</div><p class="note">' + esc(_hint) + '。'
                      '周期最长 90 天，开始日不能早于 7 天前。</p>'
                      '<div class="pager"><button class="btn" type="submit">建赛事</button></div>'
-                     '</form>')
+                     '</form>'
+                     + CHAL_JS)
 
     # 成员不再单开一块：榜上就是成员。「另有 N 人关闭了共享」已经跟在
     # 榜单行后面（rank_rows 里），这里不再重复一遍。
@@ -1457,8 +1578,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
     # 一个人组里「全组」就等于「我」，所以干脆不出这枚胶囊。
     chips = ""
     if _n > 1:
-        chips = (f'<span class="chip">全组 {_km(total_m)} km '
-                 + ("本月" if rng == "month" else "本周") + '</span>')
+        chips = f'<span class="chip">全组 {_km(total_m)} km 本周</span>'
 
     # ---- 核心数据卡：名次 + 分数 + 称号 / 六件衫徽章
     # 原来是两行：一行「我 · 第 2 名 63.8 分 [先锋] ●黄衫 ●绿衫」，紧接着
@@ -1485,12 +1605,8 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
                 _badges += _jersey(str(sh.get("color") or ""),
                                    str(sh.get("pattern") or ""), _on, "", _tip)
             # 一个人组里「第 1 名」没有信息量，直接说这是「本周成绩」。
-            # 月榜页里这张卡还是本周的（season 只有周口径），所以要写明「本周」，
-            # 否则「我 · 第 9 名」会被读成本月名次。
             if _n <= 1:
                 _k = "本周成绩"
-            elif rng == "month":
-                _k = f'本周 · 第 {_rk} 名'
             else:
                 _k = f'我 · 第 {_rk} 名'
             # 口径要自己交代：这是全页最大的数字，不说清是什么分，
@@ -1517,23 +1633,22 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
                 f'<span class="sc-more">荣誉 {_got}/6 ›</span></a></section>')
     shirt_row = ""
 
-    # ---- 本周玩法：目标 / 对子 / 预言
+    # ---- 本周玩法：目标 / 让分赛 / 预言
     # 一行放结论，改目标这种每周一次的动作折起来。榜单是每天看的，
     # 不能让它被表单顶下去——这是这个页面唯一的信息优先级。
+    #
+    # 用户反馈「看不明白这个功能怎么用，甚至不知道时间范围是什么」。
+    # 所以这一块的外壳补了三样东西：①「周期」一行明写周一到周日 24:00；
+    # ②让分/预言的文案从「我 30 / 他 75」改成有主语的短句；
+    # ③一个「怎么算的」折叠块把三条规则讲全（数字来自服务端，不写死）。
     _wk = _h.get("week") or {}
     if not _wk.get("ok"):
         try:
             _wk = G.week(gid, today)
         except Exception:      # noqa: BLE001 - 老服务端没有 /week，整块不显示即可
             _wk = {}
-    # 三行「标签 + 内容」对齐。原来是把三项塞进一个 flex 换行里，每项的
-    # 语序还不一样（「目标 30 km · 已跑 38.1 · 达成」/「结对 阿狗 · 我 30 /
-    # 他 75 · 逆袭」），读起来像三句不相干的话。对齐成两列之后，扫一眼就知道
-    # 哪一行是什么。衫得主也从上面挪进来当第一行，形状统一。
     week_form = ""
     rows: list[tuple[str, str]] = []
-    if shirt_row:
-        rows.append(("衫", shirt_row))
     if _wk.get("ok"):
         _g = _wk.get("goal") or {}
         # 自己的 uid 从成员表里认（detail 里就有），不依赖 season 成功——
@@ -1546,6 +1661,13 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
         _done_km = float((_mine_row or {}).get("distance_m") or 0) / 1000.0
         _goal_km = _g.get("km")
         _suggest = float(_g.get("suggest") or 0)
+        _rule = _wk.get("pair_rule") or {}
+
+        # 周期排在最前面：不知道「到哪天截止」，目标定多高、什么时候还能改，
+        # 全都没法判断。
+        rows.append(("周期", f'{esc(str(_wk.get("from"))[5:])} – '
+                             f'{esc(str(_wk.get("to"))[5:])}<s>·</s>'
+                             '<b>周日 24:00 截止</b>'))
 
         # 目标单独成一行入口（56pt）：它是每周一次的动作，混在四行表格里
         # 既不像「可点」，也把「已跑多少」这种每天看的信息压成了灰字。
@@ -1566,6 +1688,7 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
             _gsub = "还没定"
         _gtxt = f'目标 {float(_goal_km):g} km' if _goal_km else "定本周目标"
 
+        # 让分赛：说清楚「谁多跑多少」，而不是把两个数字斜杠拼在一起。
         _pair = next((p for p in (_wk.get("pairs") or [])
                       if _me_uid in (p["small"]["user_id"], p["big"]["user_id"])), None)
         if _pair:
@@ -1575,30 +1698,59 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
             _res = {"double": "双人徽章", "upset": "逆袭", "big_only": "让分达成",
                     "split": "一人达成", "none": "都还差一点"}.get(
                         _pair.get("result") or "", "")
-            rows.append(("结对", f'{esc(_other["alias"])}'
-                                 f'<s>我 {float(_me_side["target"]):g}'
-                                 f' / 他 {float(_other["target"]):g}</s>'
-                                 + (f'<b>{_res}</b>' if _res else "")))
+            # 让出去多少 = 让分后的目标 - 自报目标。服务端有 handicap_km，
+            # 但老服务端没有这个字段，所以这里也自己算一遍（别显示「多背 0」）。
+            _hc = float(_pair.get("handicap_km") or 0) or max(
+                0.0, float(_pair["big"]["target"]) - float(_pair["big"]["km"]))
+            if _pair.get("even"):
+                # 标签已经是「结对」了，值里再说一遍「和 xx 结对」就是重复。
+                _ptxt = (f'<b>{esc(_other["alias"])}</b>'
+                         f'<s>目标差不多，不打让分</s>各跑 '
+                         f'{float(_me_side["target"]):g} km')
+            else:
+                # 「他 75 km」不说清 75 是怎么来的，看着像系统乱加的数。
+                # 只写「多背 15 km」：怎么算出来的放在「这三个怎么算」里，
+                # 这一行是 nowrap + 省略号，写太长会被截掉最关键的那半句。
+                _ptxt = (f'<b>{esc(_other["alias"])}</b>'
+                         f'我 {float(_me_side["target"]):g} km<s>·</s>'
+                         f'他 {float(_other["target"]):g} km'
+                         f'<s>（多背 {_hc:g} km）</s>')
+            if _res:
+                _ptxt += f'<b class="hit">{_res}</b>'
+            rows.append(("结对", _ptxt))
 
+        # 预言：猜谁完不成。命中/被打脸都写出来，不然「预言 阿狗 完不成」
+        # 看不出结果是赚了还是亏了。
         _pred = (_wk.get("predict") or {}).get("mine")
         if _pred:
-            _pa = next((r.get("target_alias") for r in (_wk.get("predict") or {}).get("rows") or []
+            _pa = next((r.get("target_alias")
+                        for r in (_wk.get("predict") or {}).get("rows") or []
                         if r.get("user_id") == _me_uid), "")
+            _pres = next((r.get("result")
+                          for r in (_wk.get("predict") or {}).get("rows") or []
+                          if r.get("user_id") == _me_uid), "")
+            _ptail = {"hit": f'<b class="hit">猜中 +{float(_rule.get("predict_hit") or 2):g}</b>',
+                      "wrong": f'<b>被打脸，他 +{float(_rule.get("predict_face") or 3):g}</b>',
+                      "unknown": '<s>还没法结算</s>'}.get(str(_pres or ""), "")
             if _pa:
-                rows.append(("预言", f'{esc(_pa)}<s>完不成</s>'))
+                rows.append(("预言", f'猜 <b>{esc(_pa)}</b><s>这周完不成</s>' + _ptail))
 
-        # 表单：目标 +（可选）预言。选项只列已报目标的人——猜一个没目标的人
-        # 没法判「完不成」，服务端也会拒。
+        # 表单：目标 +（可选）预言。选项只列报了 ≥5 km 目标的人——猜一个
+        # 没目标的人没法判「完不成」，服务端也会拒；把 km 挂在名字后面，
+        # 猜谁才有依据。
+        _tg = _wk.get("targets") or []
         _opts = '<option value="">先不猜</option>'
-        for t in (_wk.get("targets") or []):
+        for t in _tg:
             _sel = " selected" if t["user_id"] == _pred else ""
             _opts += (f'<option value="{int(t["user_id"])}"{_sel}>'
-                      f'{esc(t["alias"])}</option>')
+                      f'{esc(t["alias"])} · {float(t.get("km") or 0):g} km</option>')
         _val = f'{float(_goal_km):g}' if _goal_km else (
             f'{_suggest:g}' if _suggest else "")
+        _no_tgt = ('<p class="note">还没有队友报目标。等他们报了，这里就能选人猜了'
+                   '（只能猜报了 5 km 以上目标的人）。</p>' if not _tg else "")
         # 入口行：左「目标 30 km」+ 右副文「已跑 12.3 / 30 km」，点开才是表单。
         # 48px 高、整行可点，和下面榜单条目同一节奏。
-        week_form = ('<details class="goalrow"><summary>'
+        week_form = ('<details class="goalrow" data-k="goal"><summary>'
                      f'<span class="gk">{esc(_gtxt)}</span>'
                      f'<span class="gs">{esc(_gsub)}</span>'
                      '<span class="chev">›</span></summary>'
@@ -1611,8 +1763,9 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
                      f'<select name="predict" aria-label="猜谁完不成">{_opts}</select></div>'
                      '<div class="pager"><button class="btn sm primary" type="submit">保存'
                      '</button></div></form>'
-                     '<p class="note">目标用于结对让分和预言结算；填低一点也没关系，'
-                     '达成比好看重要。</p></div></details>')
+                     + _no_tgt +
+                     '<p class="note">只想猜别人、不改目标？把上面的目标框清空直接保存。'
+                     '目标填低一点也没关系，达成比好看重要。</p></div></details>')
 
     # 「衫」那行内容是流式的（六件全有得主会折两行），要允许换行；
     # 其它行是单行结论，用省略号截断。
@@ -1622,6 +1775,29 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
                      f'<span class="v{" wrap" if k == "衫" else ""}">{v}</span>'
                      for k, v in rows)
                  + "</div>") if rows else ""
+
+    # 「怎么算的」：三条规则写全。用户的原话是「用户引导看不明白这个功能
+    # 怎么用（甚至不知道时间范围是什么），应该怎么玩」——把规则藏在心里、
+    # 只给一个输入框，等于让人猜。数字全部来自服务端下发，不写死。
+    _hr = (_wk.get("pair_rule") or {}) if _wk.get("ok") else {}
+    _hc_pct = int(round(float(_hr.get("handicap") or 0.5) * 100))
+    _cap = float(_hr.get("cap") or 1.6)
+    _hit_s = float(_hr.get("predict_hit") or 2)
+    _face_s = float(_hr.get("predict_face") or 3)
+    _min_km = float(_hr.get("min_km") or 5)
+    week_how = (
+        '<details class="fold" data-k="how"><summary>这三个怎么算'
+        '<span class="fx">›</span></summary><div class="foldbody">'
+        '<p class="note"><b>定目标</b>：这周打算跑多少 km。报了目标才会进让分赛，'
+        '也才会被别人猜。周内随时能改，改完按新目标结算。</p>'
+        f'<p class="note"><b>让分赛</b>：两个都报了 {_min_km:g} km 以上目标的人自动配一对，'
+        f'按目标高低一强一弱搭。强的那位要多跑「对方目标的 {_hc_pct}%」'
+        f'（最多到自己目标的 {_cap:g} 倍）；两个人目标差不多就不让分，只结伴。'
+        '两人都跑完 = 双人徽章；弱的跑完、强的没跑完 = 逆袭。</p>'
+        f'<p class="note"><b>预言</b>：挑一个报了目标的队友，猜他这周完不成。'
+        f'猜中 +{_hit_s:g} 分；被你猜中却完成了，他 +{_face_s:g} 分。</p>'
+        '<p class="note">每项都按「周一 00:00 到周日 24:00」结算，下周一自动清零重来。</p>'
+        '</div></details>')
 
     # ---- 功能入口：一排并列的小图标
     # 之前这些入口散在三处：六件衫是行尾一个蓝色文字、Bingo 塞在状况行里、
@@ -1691,46 +1867,52 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
     except Exception:      # noqa: BLE001 - 老服务端没有 /feed，整块不显示
         _fd = {}
     _all = _fd.get("rows") or []
+    _want = max(FEED_PAGE, min(len(_all), feed_n))
+    # 发完评论回来时那条动态必须**在页面里**：它可能排在 20 条之后，
+    # 光锚过去会落到一个不存在的 id 上。这里把窗口撑到它所在的位置。
+    if focus:
+        _fi = next((i for i, x in enumerate(_all)
+                    if int(x.get("id") or 0) == int(focus)), -1)
+        if _fi >= _want:
+            _want = _fi + 1
     if _fd.get("ok") and _all:
-        _show = _all[:max(FEED_PAGE, min(len(_all), feed_n))]
+        _show = _all[:_want]
         for a in _show:
             # 不能再用 <a> 包整张卡：卡片里现在有评论表单和 details，
             # <a> 里嵌 form 是非法结构，点输入框会触发跳转。
-            feed_rows += ('<div class="acard">'
+            # id="a{aid}" 让 303 回来能直接锚到这条（见 KEEP_JS）。
+            feed_rows += (f'<div class="acard" id="a{int(a.get("id") or 0)}">'
                           + _act_card(a, today, gid=gid, token=token,
-                                      emojis=_fd.get("emojis") or []) + '</div>')
+                                      emojis=_fd.get("emojis") or [],
+                                      open_cm=(int(a.get("id") or 0) == int(focus or 0)))
+                          + '</div>')
         if len(_all) > len(_show):
             _next = len(_show) + FEED_PAGE
             feed_rows += ('<div class="pager"><a class="btn sm" '
                           f'href="/groups/{gid}?feed={_next}#feed">'
                           f'继续往下看（{len(_all) - len(_show)} 条）</a></div>')
-    feed_sec = (sec("大家的动态", feed_rows) if feed_rows else "")
+    feed_sec = (sec("大家的动态", feed_rows, anchor="feed") if feed_rows else "")
 
-    # 月榜/周榜互切。服务端一直支持 range=month，只是页面以前不读这个参数，
-    # 入口就被写死成关闭（`if False`）——那是死开关，不是功能。
-    other = "month" if rng == "week" else "week"
-    more = ("月榜" if other == "month" else "周榜", f"/groups/{gid}?range={other}")
+    # 完整榜单在 `/groups/{gid}/board`：周榜/月榜的切换也搬过去了——在这个
+    # 200KB 的页面上重载一次只为换个口径，动态会被重刷、位置会丢。
+    # 人不超过 10 时榜已经完整，这一页真正多出来的只有月口径，就直接写「月榜」；
+    # 否则写「完整榜单」——两句话说的都是同一个页面，但都别撒谎。
+    more = (("完整榜单", f"/groups/{gid}/board") if len(_rows) > BOARD_TOP
+            else ("月榜", f"/groups/{gid}/board?range=month"))
 
     # 顶部一块：我的名次 + 本周状态（目标/结对/预言/Bingo），不带标题也不带卡片。
     # 顺序是刻意的——点「小组」第一眼要看到「我在组里第几」，然后才是这一周的
     # 玩法。P2 加了两块之后榜单被挤到第三屏，这条就破了，所以玩法块必须并进
     # 头部，而不是自己占一个 section。
-    # 顺序：卡片 → 三个入口 → 目标 → 结对/预言。
-    # 目标行原来在这排图标上面，试了一版之后放回来：目标是一行“输入”，
-    # 夹在卡片和图标之间会把首屏切成「数据 / 表单 / 入口」三段，
-    # 三个入口连成一条反而更像一组功能。
-    head = score_card + quick + week_form + week_line
+    # 顺序：卡片 → 三个入口 → 目标 → 结对/预言 → 怎么算的。
+    head = score_card + quick + week_form + week_line + week_how
 
     body = (msg
             + head
-            + sec("月榜" if rng == "month" else "本周榜",
-                  ('<p class="note">衫和探索徽章按周结算，月榜只排里程。</p>'
-                   if rng == "month" else "")
-                  + '<div class="flat">' + rank_rows + '</div>',
-                  more=more)
+            + sec("本周榜", '<div class="flat">' + rank_rows + '</div>', more=more)
             + sec("赛事", '<div class="flat">' + ch_rows + '</div>' + chal_fold)
             + feed_sec
-            + SAY_JS)
+            + SAY_JS + KEEP_JS)
     return _with_copy(page(
         "GROUP", g.get("name") or "小组",
         f'{int(g.get("member_count") or 0)} 人 · '
@@ -1738,3 +1920,106 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
         body, chips, action=_gear,
         foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
         back=("全部小组", "/groups?list=1")))
+
+
+def board_page(token: str, gid: int, message: str = "", rng: str = "week") -> str:
+    """完整榜单（周 / 月两个口径）。
+
+    为什么单开一页，而不是继续把完整榜塞在组页：
+    1. 组页主体是动态，榜单到 20 人就有 1100px 高，一屏看不到动态；
+    2. 周/月互切原来是在组页上换 URL —— 一次 200KB 的重渲染只为换个
+       聚合口径，动态重刷、滚动位置全丢。口径是「榜单内部的选择」，
+       就该在榜单页里切，不牵动别的板块。
+
+    月榜只排里程：衫（里程王/爬升王…）和探索徽章都是**按周**结算的，
+    挂到月榜上会被读成「这个月的衫」，那是错的。
+    """
+    from . import group as G
+
+    today = dt.date.today().isoformat()
+    rng = "month" if rng == "month" else "week"
+    d = G.detail(gid)
+    if not d.get("ok"):
+        body = (_msg(message)
+                + f'<div class="card"><p class="note">{esc(d.get("error") or "打不开榜单")}</p>'
+                f'<div class="pager"><a class="btn" href="/groups/{gid}">返回小组</a></div></div>')
+        return page("GROUP", "完整榜单", "", body, back=("返回小组", f"/groups/{gid}"))
+    g = d["group"]
+    _n = int(g.get("member_count") or 0)
+
+    b = G.board(gid, rng, today)
+    if not b.get("ok"):
+        body = (_msg(message)
+                + f'<div class="card"><p class="note">{esc(b.get("error") or "拉不到榜单")}</p>'
+                f'<div class="pager"><a class="btn" href="/groups/{gid}/board">重试</a></div></div>')
+        return page("GROUP", "完整榜单", "", body, back=("返回小组", f"/groups/{gid}"))
+
+    rows = b.get("rows") or []
+    _from, _to = str(b.get("from") or "")[5:], str(b.get("to") or "")[5:]
+    _tot = float((b.get("summary") or {}).get("total_distance_m") or 0) / 1000.0
+
+    # 周榜才挂衫和探索徽章。取不到 season 就整块降级（不挂图标而已）。
+    _marks_of: dict[str, str] = {}
+    _min_cells = 5
+    if rng == "week":
+        try:
+            _se = G.season(gid, today) or {}
+        except Exception:      # noqa: BLE001
+            _se = {}
+        _pat_of = {str(s2.get("id") or ""): str(s2.get("pattern") or "")
+                   for s2 in (_se.get("shirts") or [])}
+        for _p in (_se.get("people") or []):
+            _one = ""
+            for _x in (_p.get("shirts") or []):
+                _one += _jersey(str(_x.get("color") or ""),
+                                _pat_of.get(str(_x.get("id") or ""), ""), True, "jr",
+                                f'{_x.get("name") or ""}·{_x.get("title") or ""}')
+            _marks_of[str(_p.get("alias") or "")] = _one
+        _min_cells = int(((_se.get("explore") or {}).get("min_cells")) or 5)
+
+    rank_rows = "".join(_rank_row(i, x, _rank_marks(x, _marks_of, _min_cells)
+                                  if rng == "week" else "")
+                        for i, x in enumerate(rows, 1))
+    if not rank_rows:
+        rank_rows = ('<p class="note">'
+                     + ("本月还没有人上报。" if rng == "month" else "本周还没有人上报。")
+                     + '打开 App 才会同步，不跑后台任务。</p>')
+    hidden = int(b.get("hidden") or 0)
+    if hidden:
+        rank_rows += f'<p class="note">另有 {hidden} 人关闭了共享，不参与排名。</p>'
+
+    _mine = next((i for i, x in enumerate(rows, 1) if x.get("is_me")), 0)
+    _my_km = float(next((x.get("distance_m") for x in rows if x.get("is_me")), 0) or 0) / 1000.0
+    _me_line = ""
+    if _mine:
+        _me_line = (f'<div class="kvrows"><span class="k">我</span>'
+                    f'<span class="v">第 <b>{_mine}</b> 名<s>·</s>'
+                    f'{_my_km:g} km<s>·</s>共 {len(rows)} 人</span></div>')
+    elif rows:
+        _me_line = '<p class="note">这周还没上报，所以榜上暂时没有你。</p>'
+
+    # 分段控件：周 / 月。选中态用 .ok，和计划页的粒度切换同一套语义。
+    tab = (f'<div class="seg">'
+           f'<a href="/groups/{gid}/board"' + (' class="ok"' if rng == "week" else "")
+           + '>本周</a>'
+           f'<a href="/groups/{gid}/board?range=month"'
+           + (' class="ok"' if rng == "month" else "") + '>本月</a></div>')
+
+    _span = ("本周" if rng == "week" else "本月") + f" {_from} – {_to}"
+    _span += "（周一–周日）" if rng == "week" else "（自然月）"
+    note = ('<p class="note">月榜只排里程。衫（里程王 / 爬升王…）和探索徽章'
+            '都是按周结算的，月初到月末攒的那几件不在这一页。</p>'
+            if rng == "month" else
+            '<p class="note">按里程排；里程一样时，跑的天数多的在前。</p>')
+
+    _more = ("本周荣誉", f"/groups/{gid}/shirts") if rng == "week" else ""
+    body = (_msg(message)
+            + tab
+            + f'<p class="note">{esc(_span)} · 全组 {_tot:g} km</p>'
+            + _me_line
+            + sec("完整榜单", note + '<div class="flat">' + rank_rows + '</div>',
+                  more=_more))
+    return page("GROUP", "完整榜单",
+                f'{_n} 人 · ' + ("本周" if rng == "week" else "本月"), body,
+                foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
+                back=("返回小组", f"/groups/{gid}"))
