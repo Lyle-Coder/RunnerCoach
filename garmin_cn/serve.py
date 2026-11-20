@@ -202,14 +202,16 @@ class _Handler(SimpleHTTPRequestHandler):
             if len(seg) == 2 and seg[0].isdigit() and seg[1] == "settings":
                 return self._html(groupui.settings_page(tok, int(seg[0]), msg))
             if len(seg) == 2 and seg[0].isdigit() and seg[1] == "feed":
-                try:
-                    _act = int((q.get("act") or ["0"])[0] or 0)
-                except ValueError:
-                    _act = 0
-                return self._html(groupui.feed_page(tok, int(seg[0]), msg, _act))
+                # 动态页已经并进组页（用户要求：底部接着数据流，滑回顶部就是小组）。
+                # 旧链接（收藏、以前发的）落到对应的组页并锚到动态区。
+                return self._see_other(f"/groups/{int(seg[0])}#feed")
             if len(seg) == 1 and seg[0].isdigit():
                 rng = "month" if (q.get("range") or [""])[0] == "month" else "week"
-                return self._html(groupui.group_page(tok, int(seg[0]), msg, rng))
+                try:
+                    _fn = int((q.get("feed") or ["0"])[0] or 0)
+                except ValueError:
+                    _fn = 0
+                return self._html(groupui.group_page(tok, int(seg[0]), msg, rng, _fn))
             return self._json({"ok": False, "error": "没有这个页面"}, 404)
         if u.path == "/sports":
             if not self._is_loopback():
