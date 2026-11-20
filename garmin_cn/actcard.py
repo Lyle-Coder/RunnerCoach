@@ -827,6 +827,34 @@ def chart_svg(points: list, w: int, h: int, theme: dict | None = None,
 </svg>"""
 
 
+def _track_span_m(track: list) -> float:
+    """轨迹包围盒的对角线长度（米）。0 表示没有可用轨迹。
+
+    用来区分「楼里折返」和「山里往返」：两者都能切出爬升结构，
+    但爬山的轨迹会横跨几公里，爬楼那张实测只有 878 m（含 GPS 漂移）。
+    """
+    if not track or len(track) < 8:
+        return 0.0
+    try:
+        lats, lons = [], []
+        for p in track:
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                la, lo = p[0], p[1]
+            else:
+                la, lo = p.get("lat"), p.get("lon")
+            if la and lo:
+                lats.append(float(la))
+                lons.append(float(lo))
+        if len(lats) < 8:
+            return 0.0
+        dlat = (max(lats) - min(lats)) * 111320
+        dlon = (max(lons) - min(lons)) * 111320 * math.cos(
+            math.radians(sum(lats) / len(lats)))
+        return math.hypot(dlat, dlon)
+    except Exception:      # noqa: BLE001 - 轨迹坏了就当没有，不影响出图
+        return 0.0
+
+
 def _km_marks(run: list, t0: float, span: float) -> list[tuple[float, str]] | None:
     """x 轴刻度按公里给，而不是绝对时间。
 
@@ -1011,14 +1039,24 @@ def _runs(flags: list[bool], limit: int = 26) -> list[int]:
     return idx
 
 
-def spark_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
-    """走势小图：跑步看步频/步幅，其他运动看速度/心率。修正过的点单独标出来。"""
+def spark_svg(points: list, w: int, h: int, theme: dict | None = None,
+              stair: bool = False) -> str:
+    """走势小图：跑步看步频/步幅，其他运动看速度/心率。修正过的点单独标出来。
+
+    `stair=True` 时第二条带换成心率：爬楼课的距离是楼层折算的，步幅（cm）
+    跟着距离一起失真，但心率是真的。
+    """
     th = theme or theme_for(None)
     if SP.family(th["key"]) == "bike":
         run = [p for p in points if p.get("pwr") is not None or p.get("cad") is not None]
         lack = "无踏频或功率时序"
     elif th["is_run"]:
-        run = [p for p in points if p.get("cad") and (p.get("source") == "coros" or (p.get("spd") or 0) >= 2.2)]
+        # 爬楼课平均速度只有 1.9 m/s 左右（8'39"/km），按 2.2 的门槛会把
+        # 整段都滤掉，走势图变成「无步态时序」。这类课放宽到 0.8。
+        floor = 0.8 if stair else 2.2
+        run = [p for p in points
+               if p.get("cad") and (p.get("source") == "coros"
+                                    or (p.get("spd") or 0) >= floor)]
         lack = "无步态时序"
     else:
         # 骑行/划船/泳池外这些没有步频，速度门槛也放低（步走/慢骑都算在动）
@@ -1074,7 +1112,10 @@ def spark_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
     y2 = pad_t + band_h + gap
     b1 = band(cad, y1, band_h, th["acc"], "步频", "", "spk1")
     b2 = band(st, y2, band_h, "#E8C547", "步幅", "", "spk2")
-    if not th["is_run"]:
+    if stair:
+        # 上带步频保留（爬楼时步频真、疲劳会掉），下带换心率替掉步幅
+        b2 = band(hrs, y2, band_h, AXIS_HR, "心率", " bpm", "spk2")
+    elif not th["is_run"]:
         b1 = band(spd, y1, band_h, th["acc"], "速度", " km/h", "spk1")
         b2 = band(hrs, y2, band_h, AXIS_HR, "心率", " bpm", "spk2")
     if SP.family(th["key"]) == "bike":
@@ -1493,7 +1534,12 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
             # 「爬升课」= 以爬升区分工作与恢复的**往复**课（爬楼、楼梯机、跑坡重复）。
             # 只对跑步类生效：徒步（非 run）同样可能切出爬升结构，但它有真实配速，
             # 不该被套上爬楼版式。骑行不会走到这里（bike 分支里 iv 是 None）。
-            stair = True
+            #
+            # 再加一道空间约束：越野跑手动计圈也可能切出「上坡-下坡」结构，
+            # 但它的轨迹横跨几公里。爬楼那张实测 878 m，取 2 km 作界。
+            # 没有轨迹（楼梯机）时照旧降级——它本来就该走这套版式。
+            _span = _track_span_m(track)
+            stair = _span <= 2000
             lap_sub = (f'{sets_total} 组爬升 · 累计 +{work_b0.get("gain_m") or 0:.0f} m')
         elif len(bands) > 2:
             lap_sub = f'{len(bands)} 档强度 · {sets_total} 组'
@@ -1780,7 +1826,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
         {tech_html}
       </div>
       <div class="spkdiv"></div>
-      <div class="spark">{spark_svg(points, TW_CW, SPK_H, th)}</div>
+      <div class="spark">{spark_svg(points, TW_CW, SPK_H, th, stair=stair)}</div>
     </div>
     <div class="card ld">
       <div class="ctitle">负荷<span>{te_hint}</span></div>
