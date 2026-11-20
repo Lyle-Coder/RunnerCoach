@@ -2957,8 +2957,10 @@ def run() -> int:
         "Z4/Z5 都为 0 时没有合并，同一件事写了两遍"
     assert _AC.zone_block([180, 1550, 1150, 470, 0], "心率分区").count('class="zrow') == 5, \
         "只有最后一档为 0 时不该合并"
-    # 5) 强度码只认课表，不猜：没有课表必须返回 None，退回运动类型
-    assert _AC._plan_intensity("1999-01-01") is None, "没课表却猜出了强度码"
+    # 5) 右上角只显示运动类型：运动类型有二十多种，再混一个强度码进去，
+    #    读的人分不清这格是「什么运动」还是「什么强度」。强度码已整套移除。
+    assert "htag zone" not in _ac_src and "_plan_intensity" not in _ac_src, \
+        "强度码角标又回来了（右上角只留运动类型）"
     # 6) hero 六格分两级：k2 = 用时/平均心率，k3 = 其余
     _ac_row = {"type": "running", "distance_m": 11000, "duration_s": 3487,
                "date": "2026-11-18", "start_ts": "2026-11-18T17:25:00",
