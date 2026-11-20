@@ -750,11 +750,12 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
    原来是一行一条：色点 + 昵称 + 「4.7 km · 26:41 · 爬升 32 m」+ 日期。
    十八行叠起来像一张流水账，读不出「这次跑得怎么样」，评论还挤成一个小数字。
    现在一条一卡：谁 / 多少（大字）/ 距离标尺 / 三项数据 / 最新三条评论。 */
-.acard{display:block;padding:13px 14px;margin-bottom:10px;text-decoration:none;
+/* 卡片本身**不再是链接**：里面现在有评论表单和 details，
+   <a> 里嵌 form 是非法结构，点输入框会触发跳转。 */
+.acard{display:block;padding:13px 14px;margin-bottom:10px;
   color:inherit;background:var(--surface);border:1px solid var(--line);
   border-radius:var(--r-3)}
 .acard:last-child{margin-bottom:0}
-.acard:active{background:var(--surface-2)}
 .ac-h{display:flex;align-items:center;gap:7px;min-width:0}
 .fd{width:8px;height:8px;flex:0 0 auto;border-radius:50%;
   box-shadow:0 0 0 1px rgba(255,255,255,.2) inset}
@@ -793,7 +794,29 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-variant-numeric:tabular-nums}
 /* 最新三条评论：昵称淡一点、内容亮一点，一行一条，超出省略 */
-.ac-c{margin-top:12px;padding-top:10px;border-top:1px solid var(--line2)}
+.ac-c{margin-top:12px;padding-top:2px;border-top:1px solid var(--line2)}
+/* 评论：收起时一行（最新一条 + 「共 N 条 ›」），点开在卡片里展开全部。
+   44 高是因为它是个可点区，和站内其它行同一档。 */
+.ac-cm>summary{display:flex;align-items:center;gap:8px;min-height:44px;
+  list-style:none;cursor:pointer;font-size:var(--fs-cap,12px)}
+.ac-cm>summary::-webkit-details-marker{display:none}
+.ac-sumline{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;color:var(--ink2)}
+.ac-sumline b{font-weight:600;color:var(--ink-3);margin-right:5px}
+.ac-sumline em{font-style:normal;font-size:15px;vertical-align:-1px}
+.ac-sumline.none{color:var(--muted)}
+.ac-cnt{flex:0 0 auto;color:var(--brand-ink);white-space:nowrap}
+/* 展开态：摘要行只剩「收起」，评论摘要和「去留一句」都该让位给下面的内容 */
+.ac-cm>summary .ac-cnt.up{display:none}
+.ac-cm[open]>summary{justify-content:flex-end}
+.ac-cm[open]>summary .ac-sumline{display:none}
+.ac-cm[open]>summary .ac-cnt:not(.up){display:none}
+.ac-cm[open]>summary .ac-cnt.up{display:inline}
+.ac-cb{padding:0 0 6px}
+/* 卡片内的「说一句」：输入框 + 发，一行 */
+.ac-say{display:flex;align-items:center;gap:8px;margin-top:4px}
+.ac-say .cm-in{flex:1 1 auto;min-width:0}
+.ac-say button{flex:0 0 auto}
 .ac-c p{margin:0 0 5px;font-size:var(--fs-cap,12px);color:var(--ink2);
   line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ac-c p:last-child{margin-bottom:0}
@@ -805,7 +828,8 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 /* 评论：表情一排按钮 + 一句话输入 */
 .erow{display:flex;gap:6px;flex-wrap:wrap;padding:2px 0 8px}
 .eform{margin:0}
-.ebtn{font-size:20px;line-height:1;padding:7px 10px;border-radius:10px;
+.ebtn{font-size:20px;line-height:1;padding:7px 10px;min-width:44px;
+  min-height:44px;border-radius:10px;
   border:1px solid var(--line2);background:rgba(255,255,255,.02);cursor:pointer}
 .ebtn:active{background:var(--brand-soft);border-color:var(--line-brand)}
 /* 每行至少 44：有 › 的那条是 44 高的点击区，不统一的话同一屏里

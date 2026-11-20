@@ -1322,16 +1322,17 @@ def api_feed(me, gid: int, query: dict) -> dict:
                     f" WHERE act_id IN ({marks}) ORDER BY id DESC", ids).fetchall():
                 a = int(r["act_id"])
                 counts[a] = counts.get(a, 0) + 1
-                # 列表里每条留最新 3 条；详情页（only 有值）全给
-                if only is not None or len(cmts.setdefault(a, [])) < 3:
-                    cmts.setdefault(a, []).append({
-                        "id": int(r["id"]),
-                        "user_id": int(r["user_id"]),
-                        # 只有自己的评论才给编辑/删除入口——判断放服务端，
-                        # 客户端别自己比 user_id（前端没有「我是谁」）
-                        "mine": int(r["user_id"]) == uid,
-                        "text": str(r["text"] or ""),
-                        "emoji": str(r["emoji"] or "")})
+                # 评论**全给**：组页里每条活动都能原地展开看全部，不再有
+                # 「点进去看更多」那一步。评论本来就少（限流 30/小时），
+                # 40 条动态加起来通常不到 100 条、几十 KB。
+                cmts.setdefault(a, []).append({
+                    "id": int(r["id"]),
+                    "user_id": int(r["user_id"]),
+                    # 只有自己的评论才给编辑/删除入口——判断放服务端，
+                    # 客户端别自己比 user_id（前端没有「我是谁」）
+                    "mine": int(r["user_id"]) == uid,
+                    "text": str(r["text"] or ""),
+                    "emoji": str(r["emoji"] or "")})
             # 倒序取是为了「留哪几条」，展示仍按时间正序（像对话，最新的在最后）
             for a in cmts:
                 cmts[a].reverse()
