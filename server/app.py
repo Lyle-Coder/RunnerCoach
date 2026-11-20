@@ -1304,6 +1304,53 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
         self.close_connection = True
 
+    def _manage(self, method: str) -> None:
+        """组长网页后台（/manage*）。
+
+        表单是 `application/x-www-form-urlencoded`，不能走 `_read_body`
+        ——那个只吃 JSON，喂表单会 400。所以这里自己读一遍请求体，
+        并且在 do_POST 里必须**排在** `body = self._read_body()` 之前，
+        否则流已经被读走，这里只能拿到空字符串。
+        """
+        import manage as M
+
+        u = urllib.parse.urlsplit(self.path)
+        path = u.path.rstrip("/") or "/manage"
+        query = urllib.parse.parse_qs(u.query)
+        form: dict = {}
+        if method == "POST":
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = 0
+            raw = self.rfile.read(n) if n else b""
+            form = urllib.parse.parse_qs(raw.decode("utf-8", "replace"),
+                                        keep_blank_values=True)
+        cookie = self.headers.get("Cookie")
+        try:
+            if method == "POST":
+                code, body, ctype, extra = M.handle_post(path, form, cookie)
+            else:
+                code, body, ctype, extra = M.handle_get(path, query, cookie)
+        except Exception as e:      # noqa: BLE001 - 后台白屏比报错更难查
+            code, body = 500, f"后台出错：{type(e).__name__}: {e}".encode("utf-8")
+            ctype, extra = "text/plain; charset=utf-8", {}
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        # 后台页面永远不要缓存：成员名单和审核数随时在变
+        self.send_header("Cache-Control", "no-store")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            if body:
+                self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+        self.close_connection = True
+
     def _read_body(self) -> dict:
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -1372,6 +1419,9 @@ class Handler(BaseHTTPRequestHandler):
                                               else "builtin")})
             if self.path.split("?")[0].startswith("/v1/group"):
                 return self._groups("GET")
+            _mp = self.path.split("?")[0]
+            if _mp == "/manage" or _mp.startswith("/manage/"):
+                return self._manage("GET")
             if self.path == "/v1/me":
                 return self._json(api_me(_auth(self.headers)))
             if self.path == "/admin/accounts":
@@ -1408,6 +1458,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self._service_closed():
                 return
+            # 网页后台收的是表单，必须在 _read_body 之前分出去
+            _mp = self.path.split("?")[0]
+            if _mp == "/manage" or _mp.startswith("/manage/"):
+                return self._manage("POST")
             body = self._read_body()
             ip = self.headers.get("X-Forwarded-For", "").split(",")[0].strip() \
                 or self.client_address[0]
