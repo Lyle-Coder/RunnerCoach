@@ -2940,6 +2940,77 @@ def run() -> int:
         "标题行又允许回绕了，右侧标签会掉到下一行"
     assert ".htag{flex:none;white-space:nowrap" in _ac_src, \
         "标签会被长标题压缩/换行"
+
+    # ---- 活动图 P0（1.6.1）：曲线量程 / 分区结论 / hero 层级 / 强度角标 ----
+    # 1) 配速轴用 1.5×IQR 定界。曾用 2%~98% 分位，被前几分钟的慢速起跑拉到
+    #    4'52"–7'49"，后面 50 分钟全挤在顶部 1/4，E 跑最该看的稳定性看不见。
+    assert "q1 - 1.5 * iqr" in _ac_src and "_med * 2.2" in _ac_src, \
+        "配速轴又退回按极值定界了（会被慢速段压扁）"
+    # 2) 泳道按像素留空隙。按比例时 0.38/0.42 只差 8px，两条轴的刻度会叠字。
+    assert "band_gap = 30.0" in _ac_src, "泳道间隔又变回按比例了"
+    # 3) 分区结论只陈述分布，不评价训练质量（评价要看课表，课表不一定有）
+    assert _AC._zone_note([180, 800, 2500, 0, 0]) == "集中在 Z3（72%） · 阈值以上 0%"
+    assert "Z2+Z3" in _AC._zone_note([180, 1150, 1000, 470, 0]), \
+        "没有单档过半时没说占比最大的两档，一句结论会和明细打架"
+    # 4) 尾部连续为 0 的档合并成一行，省下来的高度给结论句
+    assert _AC.zone_block([180, 800, 2500, 0, 0], "心率分区").count('class="zrow') == 4, \
+        "Z4/Z5 都为 0 时没有合并，同一件事写了两遍"
+    assert _AC.zone_block([180, 1550, 1150, 470, 0], "心率分区").count('class="zrow') == 5, \
+        "只有最后一档为 0 时不该合并"
+    # 5) 右上角只显示运动类型：运动类型有二十多种，再混一个强度码进去，
+    #    读的人分不清这格是「什么运动」还是「什么强度」。强度码已整套移除。
+    assert "htag zone" not in _ac_src and "_plan_intensity" not in _ac_src, \
+        "强度码角标又回来了（右上角只留运动类型）"
+    # 6) hero 六格分两级：k2 = 用时/平均心率，k3 = 其余
+    _ac_row = {"type": "running", "distance_m": 11000, "duration_s": 3487,
+               "date": "2026-11-18", "start_ts": "2026-11-18T17:25:00",
+               "avg_hr": 146}
+    _ac_det = {"summary": {"cad_avg": 189, "stride_avg": 101},
+               "laps": [], "series": {"points": []}}
+    _ac_h = _AC.build_html(_ac_row, _ac_det, None, None, None)
+    assert _ac_h.count('class="st k2"') == 2 and _ac_h.count('class="st k3"') == 3, \
+        "hero 六格又变成同一级字号了"
+    assert 'class="st wd k3"' in _ac_h, "文字型取值（主要益处）没有降档"
+
+    # ---- 活动图 P1（1.6.1）----
+    # 7) x 轴按公里：11 km 的图应给 0/2/4/6/8/10 六个刻度
+    _pts = [{"t": 1000 + i * 30, "dist": i * 110.0} for i in range(101)]
+    _mk = _AC._km_marks(_pts, 1000, 3000)
+    assert _mk and _mk[0] == (0.0, "0") and [l for _, l in _mk][-1] == "10km", str(_mk)
+    # 距离缺失或不单调时不给公里刻度（退回时间轴，不编假公里数）
+    assert _AC._km_marks([{"t": i, "dist": None} for i in range(20)], 0, 20) is None
+    _bad = [{"t": i, "dist": (i * 100 if i < 50 else 5000 - i * 100)} for i in range(100)]
+    assert _AC._km_marks(_bad, 0, 100) is None, "距离不单调时仍在标公里"
+    # 8) 分圈：最快/最慢行内标记，且零头段不参与评选
+    _laps = [
+        {"idx": 1, "dist_m": 1000, "dur_s": 300, "pace_s": 300, "hr_avg": 140, "cad": 180},
+        {"idx": 2, "dist_m": 1000, "dur_s": 320, "pace_s": 320, "hr_avg": 145, "cad": 180},
+        {"idx": 3, "dist_m": 1000, "dur_s": 290, "pace_s": 290, "hr_avg": 150, "cad": 180},
+        {"idx": 4, "dist_m": 400, "dur_s": 100, "pace_s": 250, "hr_avg": 155,
+         "cad": 180, "is_partial": True},
+    ]
+    _lh = _AC.lap_rows(_laps)
+    assert _lh.count('class="lrow fast"') == 1 and _lh.count('class="lrow slow"') == 1, \
+        "最快/最慢段没有行内标记"
+    assert 'class="lrow partial"' in _lh, "零头段不再淡化"
+    assert "最快段 4'50\"" in _lh, f"最快段没排除零头段：{_lh[-160:]}"
+    # 9) 漂移结论排在数据前面
+    _dt = _AC._drift_txt({"hr_first": 139, "hr_second": 153,
+                          "pace_first": 322, "pace_second": 307}, {}, None)
+    assert re.sub(r"<[^>]+>", "", _dt).startswith("心率漂移"), \
+        f"漂移结论没有前置：{_dt[:40]}"
+    assert "前 5'22\"/139" in _dt, "漂移数据行被改坏了"
+    # 10) 爬楼课：关掉配速后不能还留着配速面积和配速刻度
+    _cpts = [{"t": 1000 + i * 10, "spd": 2.0, "hr": 140 + (i % 7),
+              "ele": 400 + (i % 12) * 3.0, "dist": i * 20.0} for i in range(120)]
+    _c1 = _AC.chart_svg(_cpts, 900, 262)
+    _c2 = _AC.chart_svg(_cpts, 900, 262, show_pace=False)
+    assert 'fill="url(#pfill)"' in _c1, "正常曲线图没有配速面积"
+    assert 'fill="url(#pfill)"' not in _c2, "关掉配速后还在画配速面积"
+    assert _c2.count("<text") < _c1.count("<text"), "关掉配速后刻度没减少"
+    # 11) 爬楼版式只对跑步类生效：徒步/骑行有真实配速，不能被套上爬楼口径
+    assert 'work_b0.get("name") == "爬升" and th["is_run"]' in _ac_src, \
+        "爬楼版式没有限定运动类型，徒步/骑行会被误降级"
     # 列表行：标题从单行省略改成最多两行，参数本来就换行
     assert "display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2" \
         in _ui_src, \
