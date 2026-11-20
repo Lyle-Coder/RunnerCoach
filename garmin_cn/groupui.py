@@ -477,18 +477,34 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
                 f'<details class="fold"><summary>{esc(x.get("name"))} · {_n} 人'
                 '<span class="fx">›</span></summary><div class="foldbody">'
                 '<p class="note">删除后成员、榜单、赛事、动态、路线全部清空，'
-                '不能恢复。</p>'
+                '不能恢复。要删的话，把组名'
+                f'「{esc(x.get("name"))}」原样输进下面的框。</p>'
                 f'<form action="/__group/{int(x["id"])}/purge" method="post">'
                 + _tok(token) +
-                '<div class="kvline"><span>输入组名</span><b>'
+                '<div class="kvline"><span>组名</span><b>'
                 f'<input type="text" name="confirm" maxlength="24" '
-                f'placeholder="{esc(x.get("name"))}" autocomplete="off"></b></div>'
+                f'data-want="{esc(x.get("name"))}" '
+                f'placeholder="在这里输入 {esc(x.get("name"))}" '
+                'autocomplete="off" autocapitalize="off" spellcheck="false"></b></div>'
                 '<div class="pager"><button class="btn sm danger" type="submit">'
                 '彻底删除</button></div></form></div></details>')
+        # 输对了组名按钮才变亮。**不用 disabled**：万一段脚本没跑起来
+        # （旧 WebView、CSP 拦截），禁用会把删除永久锁死，那比误点更糟。
+        # 真正的门槛在服务端，这里只做视觉提示。
+        _purge_js = ('<script>(function(){'
+                     'document.querySelectorAll("form[action$=\'/purge\']")'
+                     '.forEach(function(f){'
+                     'var i=f.querySelector("input[name=confirm]"),'
+                     'b=f.querySelector("button[type=submit]");'
+                     'if(!i||!b)return;'
+                     'var w=i.getAttribute("data-want")||"";'
+                     'function u(){b.style.opacity=i.value.trim()===w?"1":".4";}'
+                     'i.addEventListener("input",u);u();});})();</script>')
         arch_sec = (f'<details class="fold fold-gap"><summary>已解散的组'
                     f'（{len(_arch)}）<span class="fx">›</span></summary>'
                     '<div class="flat"><p class="note">解散只是从列表里收起，'
-                    '数据还在服务器上。</p>' + _rows + '</div></details>')
+                    '数据还在服务器上。</p>' + _rows + '</div></details>'
+                    + _purge_js)
 
     chips = "".join([f'<span class="chip">{len(items)} 个组</span>']) if items else ""
     if items:
