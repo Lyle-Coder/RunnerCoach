@@ -38,6 +38,15 @@ class SyncJob : JobService() {
                 val force = params.jobId == BgSync.JOB_NUDGE
                 val arg = if (force) "[true]" else "[false]"
                 msg = api.callAttr("call", "bg_catch_up", arg).toString()
+                // 补传的同一趟顺手把「跟我有关的新东西」发成通知。
+                // 放到这里而不是另起一个 job：两者共用一次网络与同一次登录态，
+                // 拆开就是两倍唤醒和两套失败分支。
+                try {
+                    val news = org.json.JSONObject(msg).optJSONArray("news")
+                    if (news != null) Notify.emit(applicationContext, news)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "通知这一段失败（不影响补传）", t)
+                }
             } catch (t: Throwable) {
                 // 走到这里说明 Python 层没兜住（导入失败、运行时没起来）。
                 // 记一条 logcat 就行：Python 侧的正常失败已经有 diag.log 了。
