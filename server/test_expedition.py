@@ -115,7 +115,8 @@ def main() -> int:
     check("抽到岔路", bool(d.get("fork")), str(d.get("fork")))
     check("每人两条支线", len(d["events"]) == 2, f'{len(d["events"])} 条')
     check("段目标 > 0（按人数算）", d["progress"]["target"] > 0, str(d["progress"]))
-    check("初始补给 3", d["me"]["supply"] == 3, str(d["me"]))
+    # Lv1 宿营给开局补给 +1（3 → 4）。Lv1 是所有组的起点，所以每个组都是 4。
+    check("初始补给 4（Lv1 宿营 +1）", d["me"]["supply"] == 4, str(d["me"]))
 
     st, d2 = state(gid, a, "2026-11-16")
     check("抽签确定：两次同一岔路", d["fork"]["id"] == d2["fork"]["id"],
@@ -270,8 +271,8 @@ def main() -> int:
     last = dg["season"].get("last") or {}
     check("上一季的结论带过来了", last.get("ending") in
           ("arrive", "detour", "missing", "lost", "discoverer"), str(last))
-    check("翻篇后补给回 3、行程回 0",
-          dg["me"]["supply"] == 3 and dg["me"]["pos"] == 0,
+    check("翻篇后补给回 4、行程回 0",
+          dg["me"]["supply"] == 4 and dg["me"]["pos"] == 0,
           f'supply={dg["me"]["supply"]} pos={dg["me"]["pos"]}')
     st, r = req("GET", f"/v1/group/{gid_auto}/run/outcome?today=2026-12-15", None, c3)
     check("新季里 outcome 是进度 + 上一季",
@@ -632,6 +633,37 @@ def main() -> int:
     st, r = req("POST", "/v1/sms/send", {"account": "someone@test.local"})
     check("邮箱通道仍可用（测试环境无 SMTP，故带 dev_code）",
           st == 200 and r.get("channel") == "email", f"{st} {r}")
+
+    # ---------------- 营地增益（Lv1–Lv5）----------------
+    print("\n营地增益")
+    # 纯函数先钉住：阈值和支线条数
+    check("Lv1/Lv2 的剔除阈值仍是 2 幕", EXP._drop_at(1) == 2 and EXP._drop_at(2) == 2)
+    check("Lv3 起剔除阈值放宽到 3 幕", EXP._drop_at(3) == 3 and EXP._drop_at(5) == 3)
+    _s2 = EXP._sides_of(1, "seed-x", 7, 2)
+    _s3 = EXP._sides_of(1, "seed-x", 7, 3)
+    check("支线条数跟着 n 走", len(_s2) == 2 and len(_s3) == 3,
+          f"{len(_s2)} / {len(_s3)}")
+    check("多加的那条不改动前两条（幂等）", _s3[:2] == _s2, f"{_s2} vs {_s3[:2]}")
+
+    # 集成：把组的营地直接设到 Lv5，看下一幕的支线是否真的多一条
+    with EXP.G.db() as _c:
+        _c.execute("INSERT INTO group_run_camp(group_id,level,spent,updated_at)"
+                   " VALUES(?,?,?,?) ON CONFLICT(group_id) DO UPDATE SET"
+                   " level=excluded.level", (gid_auto, 5, 0, 0))
+        _row0 = _c.execute("SELECT level FROM group_run_camp WHERE group_id=?",
+                           (gid_auto,)).fetchone()
+    check("营地等级已写成 5", int(_row0["level"]) == 5, str(_row0))
+    # 直接走内部函数重抽一次，比接口稳：state 只在特定时刻触发 draw
+    with EXP.G.db() as _c:
+        _se = dict(EXP._season_of(_c, gid_auto))
+        _uids = EXP._members(_c, gid_auto, 1)
+        _c.execute("DELETE FROM group_run_event WHERE group_id=? AND act=1", (gid_auto,))
+        EXP.draw(_c, gid_auto, _se, 1)
+        _n1 = _c.execute("SELECT COUNT(*) FROM group_run_event"
+                         " WHERE group_id=? AND act=1 AND user_id=?",
+                         (gid_auto, _uids[0])).fetchone()[0]
+    # 首幕 = 基础 2 + 传令 1 + 侦察 1（侦察只加首幕）
+    check("Lv5 首幕支线 4 条（2 基础 + 传令 + 侦察）", int(_n1) == 4, f"n={_n1}")
 
     print(f"\n通过 {ok} 项，失败 {fail} 项")
     srv.shutdown()
