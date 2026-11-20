@@ -55,6 +55,98 @@ def _tok(token: str) -> str:
     return f'<input type="hidden" name="token" value="{esc(token)}">'
 
 
+# ---------------------------------------------------------------- 评论：表情内嵌
+# 表情不再是「单独一个 emoji 字段 + 一句话」，而是插进文字里当普通字符：
+# 一次能插好几个、能和文字连成一句（「跑得不错👍🔥」）。存库时只写 text，
+# emoji 列留给旧数据（读的时候拼回文字，保证编辑时不丢）。
+CM_TEXT_MAX = 60
+
+
+def _cm_full(c: dict) -> str:
+    """一条评论的可编辑全文。旧数据把表情单独存在 emoji 列，这里拼回文字，
+    让「编辑」时表情和文字一起显示、一起改。"""
+    return (str(c.get("emoji") or "") + str(c.get("text") or "")).strip()
+
+
+def _cm_bar(emojis) -> str:
+    """一排表情按钮：type=button + data-ins，点一下插到同一张表单输入框的光标处。
+    **不是提交按钮**——提交的话每次点表情就发一条，没法「文字 + 表情」一起发。"""
+    if not emojis:
+        return ""
+    return ('<div class="erow">' + "".join(
+        f'<button type="button" class="ebtn" data-ins="{esc(e)}" '
+        f'aria-label="插入表情 {esc(e)}">{esc(e)}</button>' for e in emojis)
+        + '</div>')
+
+
+def _cm_say(gid: int, aid: int, token: str, emojis,
+            placeholder: str = "说一句，可以插表情") -> str:
+    """发言框：输入框 + 一排表情（插进光标）+ 发送。"""
+    return ('<form action="/__group/' + str(gid) + '/comment" method="post" class="sayf">'
+            + _tok(token)
+            + f'<input type="hidden" name="act" value="{aid}">'
+            '<div class="ac-say">'
+            f'<input class="cm-in" type="text" name="text" maxlength="{CM_TEXT_MAX}" '
+            f'placeholder="{esc(placeholder)}" data-say="1" '
+            'aria-label="给这条动态留言，可以插入表情">'
+            '<button class="btn sm primary" type="submit">发</button>'
+            '</div>'
+            + _cm_bar(emojis) + '</form>')
+
+
+def _cm_edit(gid: int, aid: int, c: dict, token: str, emojis) -> str:
+    """自己的评论：折在铅笔里改 / 删。
+
+    原来的 › 看着像「展开回复」，点开只有一个输入框，用户不知道那是编辑。
+    现在：铅笔图标（无障碍标签写「编辑这条评论」）+ 展开后明确一行标题 +
+    输入框预填全文 + 同一排表情（可改表情）+ 保存 / 删除。
+    """
+    cid = int(c.get("id") or 0)
+    full = _cm_full(c)
+    return ('<details class="cm-more">'
+            '<summary aria-label="编辑这条评论" title="编辑">'
+            '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" '
+            'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" '
+            'stroke-linejoin="round" aria-hidden="true">'
+            '<path d="M11.3 2.1l2.6 2.6L5.4 13.2l-3.3.7.7-3.3z"/></svg>'
+            '</summary>'
+            '<div class="cm-act">'
+            '<div class="cm-ed">编辑这条评论</div>'
+            f'<form action="/__group/{gid}/comment_edit" method="post">'
+            + _tok(token)
+            + f'<input type="hidden" name="id" value="{cid}">'
+            f'<input type="hidden" name="act" value="{aid}">'
+            f'<input class="cm-in" type="text" name="text" maxlength="{CM_TEXT_MAX}" '
+            f'value="{esc(full)}" data-say="1" aria-label="评论内容，可以插入表情">'
+            + _cm_bar(emojis)
+            + '<div class="pager">'
+            '<button class="btn sm" name="op" value="save" type="submit">保存</button>'
+            '<button class="btn sm danger" name="op" value="del" type="submit" '
+            'onclick="return confirm(\'删除这条评论？\')">删除</button>'
+            '</div></form></div></details>')
+
+
+# 表情插进光标：点按钮时把字符塞到输入框当前的 caret 位置。blur 时记下
+# caret（blur 不冒泡，必须捕获阶段），这样「输一半 → 点表情」能插在中间，
+# 而不是永远甩到末尾。全文用纯 DOM 操作，不引任何库。
+SAY_JS = (
+    '<script>(function(){'
+    'document.addEventListener("blur",function(ev){var t=ev.target;'
+    'if(t&&t.matches&&t.matches(\'input[data-say]\')&&t.selectionStart!=null)'
+    't.setAttribute("data-pos",t.selectionStart);},true);'
+    'document.addEventListener("click",function(ev){'
+    'var b=ev.target.closest?ev.target.closest(".ebtn[data-ins]"):null;'
+    'if(!b)return;ev.preventDefault();'
+    'var f=b.closest("form"),i=f&&f.querySelector(\'input[data-say]\');'
+    'if(!i)return;var ch=b.getAttribute("data-ins")||"";'
+    'var p=i.getAttribute("data-pos"),s=(p===null||p==="")?i.value.length:parseInt(p,10);'
+    'if(isNaN(s)||s<0||s>i.value.length)s=i.value.length;'
+    'i.value=i.value.slice(0,s)+ch+i.value.slice(s);'
+    'var n=s+ch.length;i.setAttribute("data-pos",n);i.focus();'
+    'try{i.setSelectionRange(n,n);}catch(x){}'
+    '});})();</script>')
+
+
 def _km(m: int | float | None) -> str:
     v = float(m or 0) / 1000
     return f"{v:.1f}" if v < 100 else f"{v:.0f}"
@@ -894,59 +986,25 @@ def _act_card(a: dict, today: str, detail: bool = False, *,
         _aid = int(a.get("id") or 0)
         if rec:
             _c = rec[-1]
-            _e = esc(_c.get("emoji") or "")
-            _t = esc(_c.get("text") or "")
             head = ('<span class="ac-sumline"><b>' + esc(_c.get("alias")) + '</b>'
-                    + ('<em>' + _e + '</em>' if _e else "")
-                    + (' ' + _t if _t else "") + '</span>')
+                    + '<span>' + esc(_cm_full(_c)) + '</span></span>')
         else:
             head = '<span class="ac-sumline none">还没有评论</span>'
         label = ("共 %d 条" % cnt if cnt > 1 else ("去留一句" if not cnt else "看评论"))
 
         body = ""
         for c in rec:
-            _e = esc(c.get("emoji") or "")
-            _t = esc(c.get("text") or "")
             _one = ('<div class="cm"><span class="cm-b"><b>'
                     + esc(c.get("alias")) + '</b>'
-                    + ('<span class="ce">' + _e + '</span>' if _e else "")
-                    + ('<span>' + _t + '</span>' if _t else "") + '</span>')
+                    + '<span>' + esc(_cm_full(c)) + '</span></span>')
             if c.get("mine"):
-                _cid = int(c.get("id") or 0)
-                _one += (
-                    '<details class="cm-more">'
-                    '<summary aria-label="这条评论的操作">›</summary>'
-                    '<div class="cm-act">'
-                    '<form action="/__group/' + str(gid) + '/comment_edit" method="post">'
-                    + _tok(token)
-                    + '<input type="hidden" name="id" value="' + str(_cid) + '">'
-                    + '<input type="hidden" name="act" value="' + str(_aid) + '">'
-                    + '<input class="cm-in" type="text" name="text" maxlength="60" '
-                    + 'value="' + _t + '" aria-label="改这条评论">'
-                    '<div class="pager">'
-                    '<button class="btn sm" name="op" value="save" type="submit">保存</button>'
-                    '<button class="btn sm danger" name="op" value="del" type="submit" '
-                    'onclick="return confirm(\'删除这条评论？\')">删除</button>'
-                    '</div></form></div></details>')
+                _one += _cm_edit(gid, _aid, c, token, emojis)
             _one += '</div>'
             body += _one
 
-        # 发言区：表情一排 + 一句话。和原来的「说一句」同一套表单，只是搬进
-        # 卡片里，发完就停在这条动态上，不再跳来跳去。
-        emo = ""
-        for e in (emojis or []):
-            emo += ('<form action="/__group/' + str(gid) + '/comment" method="post" class="eform">'
-                    + _tok(token)
-                    + '<input type="hidden" name="act" value="' + str(_aid) + '">'
-                    + '<input type="hidden" name="emoji" value="' + esc(e) + '">'
-                    + '<button class="ebtn" type="submit">' + esc(e) + '</button></form>')
-        body += ('<div class="erow">' + emo + '</div>'
-                 '<form action="/__group/' + str(gid) + '/comment" method="post">'
-                 + _tok(token)
-                 + '<input type="hidden" name="act" value="' + str(_aid) + '">'
-                 '<div class="ac-say"><input class="cm-in" type="text" name="text" '
-                 'maxlength="60" placeholder="说一句" aria-label="给这条动态留言">'
-                 '<button class="btn sm" type="submit">发</button></div></form>')
+        # 发言区：输入框 + 一排表情（插进光标）+ 发。搬到卡片里，发完停在
+        # 这条动态上，不再跳来跳去。
+        body += _cm_say(gid, _aid, token, emojis)
         # 摘要行在展开态要换掉：还写着「去留一句」的话，下面又摆着表情和
         # 输入框，等于同一件事说两遍。展开时只留一个「收起」。
         cm = ('<div class="ac-c"><details class="ac-cm"><summary>'
@@ -988,56 +1046,21 @@ def feed_page(token: str, gid: int, message: str = "", act: int = 0) -> str:
                     f'<div class="pager"><a class="btn" href="/groups/{gid}/feed">'
                     '返回动态</a></div></div>')
             return page("GROUP", "动态", "", body, back=("返回动态", f"/groups/{gid}/feed"))
-        emo = ""
-        for e in emojis:
-            emo += (f'<form action="/__group/{gid}/comment" method="post" class="eform">'
-                    f'{_tok(token)}<input type="hidden" name="act" value="{act}">'
-                    f'<input type="hidden" name="emoji" value="{esc(e)}">'
-                    f'<button class="ebtn" type="submit">{esc(e)}</button></form>')
         cmts = ""
         for c in (one.get("recent") or []):
-            _e = esc(c.get("emoji") or "")
-            _t = esc(c.get("text") or "")
             _body = (f'<b>{esc(c.get("alias"))}</b>'
-                     + (f'<span class="ce">{_e}</span>' if _e else "")
-                     + (f'<span>{_t}</span>' if _t else ""))
-            # 只有自己的评论给「改 / 删」，而且折在一个 › 里面：
-            # 直接摆一个删除按钮在评论旁边，滑一下就会点到。
-            more = ""
-            if c.get("mine"):
-                _cid = int(c.get("id") or 0)
-                # 改和删是**同一个 form**（用 op 区分）：两个 form 的话按钮
-                # 只能竖着排，占两行、还多一个间隙；一排两个按钮更像一组操作。
-                more = (
-                    '<details class="cm-more">'
-                    '<summary aria-label="这条评论的操作">›</summary>'
-                    '<div class="cm-act">'
-                    f'<form action="/__group/{gid}/comment_edit" method="post">'
-                    f'{_tok(token)}'
-                    f'<input type="hidden" name="id" value="{_cid}">'
-                    f'<input type="hidden" name="act" value="{act}">'
-                    f'<input class="cm-in" type="text" name="text" maxlength="60" '
-                    f'value="{_t}" aria-label="改这条评论">'
-                    '<div class="pager">'
-                    '<button class="btn sm" name="op" value="save" type="submit">'
-                    '保存</button>'
-                    '<button class="btn sm danger" name="op" value="del" '
-                    "type=\"submit\" onclick=\"return confirm('删除这条评论？')\">"
-                    '删除</button></div></form></div></details>')
+                     + f'<span>{esc(_cm_full(c))}</span>')
+            # 只有自己的评论给「改 / 删」，折在铅笔里：直接摆删除按钮在评论
+            # 旁边，滑一下就会点到。
+            more = _cm_edit(gid, act, c, token, emojis) if c.get("mine") else ""
             cmts += (f'<div class="cm"><span class="cm-b">{_body}</span>'
                      f'{more}</div>')
         body = (_msg(message)
                 + sec("这条", _act_card(one, today, detail=True))
                 + (sec("评论", '<div class="flat">' + cmts + '</div>') if cmts else "")
                 + sec("说一句", '<div class="flat">'
-                      '<div class="erow">' + emo + '</div>'
-                      f'<form action="/__group/{gid}/comment" method="post">{_tok(token)}'
-                      f'<input type="hidden" name="act" value="{act}">'
-                      '<div class="setrow"><span class="nowrap">留言</span>'
-                      '<input type="text" name="text" maxlength="60" '
-                      'placeholder="一句话" aria-label="留言"></div>'
-                      '<div class="pager"><button class="btn sm primary" type="submit">'
-                      '发出去</button></div></form></div>'))
+                      + _cm_say(gid, act, token, emojis) + '</div>')
+                + SAY_JS)
         return page("GROUP", "动态", f'{esc(one.get("alias"))} · '
                     f'{esc(one.get("kind_name"))}', body,
                     back=("返回动态", f"/groups/{gid}/feed"))
@@ -1063,7 +1086,8 @@ def feed_page(token: str, gid: int, message: str = "", act: int = 0) -> str:
                if hidden else "")
             + '<p class="note">轨迹就是这次跑过的路线本身：没有底图、不标起终点、'
               '不含经纬度——看得到怎么跑的，看不出跑在哪条街。'
-              '配速是按距离÷时长算的，不是上传的原始配速。</p>')
+              '配速是按距离÷时长算的，不是上传的原始配速。</p>'
+            + SAY_JS)
     return page("GROUP", "动态", f"{len(rows)} 条", body,
                 foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
                 back=("返回小组", f"/groups/{gid}"))
@@ -1705,7 +1729,8 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week",
                   + '<div class="flat">' + rank_rows + '</div>',
                   more=more)
             + sec("赛事", '<div class="flat">' + ch_rows + '</div>' + chal_fold)
-            + feed_sec)
+            + feed_sec
+            + SAY_JS)
     return _with_copy(page(
         "GROUP", g.get("name") or "小组",
         f'{int(g.get("member_count") or 0)} 人 · '
