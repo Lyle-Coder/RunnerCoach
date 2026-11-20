@@ -371,7 +371,7 @@ def history_page(qs: dict) -> str:
             f'<div class="tinyline">'
             f'本月 {cur_m.get("count") or 0} 次 · '
             f'今年 {cur_y.get("count") or 0} 次 · '
-            f'共 {total.get("count") or 0} 次 {float(total.get("dur_h") or 0):.0f} 小时'
+            f'共 {total.get("count") or 0} 次 · {float(total.get("dur_h") or 0):.0f} 小时'
             f'</div>')
     today = dt.date.today().isoformat()
 

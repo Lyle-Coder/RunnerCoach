@@ -1323,7 +1323,7 @@ def _upcoming_html(days: int = 30, limit: int = 3) -> str:
             f'aria-label="{"取消提醒" if on else "设为提醒"}">'
             f'{"🔔" if on else "🔕"}</button></form></div></div>')
     return ('<section class="rc-panel rc-up-panel">'
-            '<div class="rc-panel-hd"><span class="rc-eyebrow">赛事提醒</span></div>'
+            '<div class="rc-panel-hd"><span class="rc-eyebrow sec">赛事提醒</span></div>'
             + "".join(out) + "</section>")
 
 
@@ -1354,7 +1354,7 @@ def _reading_card(limit: int = 8) -> str:
         f'<p class="rds">—— {esc(it["src"])}</p></div>'
         for i, it in enumerate(items))
     return ('<section class="rc-panel rc-rd-panel" id="rc-read">'
-            '<div class="rc-panel-hd"><span class="rc-eyebrow">延伸阅读</span>'
+            '<div class="rc-panel-hd"><span class="rc-eyebrow sec">延伸阅读</span>'
             '</div>'
             f'<div class="rc-rd">{slides}</div></section>'
             '<script>(function(){var b=document.getElementById("rc-read");'
@@ -1444,8 +1444,11 @@ def home_page() -> str:
         _t = _t.strip("。 ")
         if _t and len(_t) <= 8 and _t not in _pills:
             _pills.append(_t)
-    advice = ('<div class="rc-advice"><b>今日建议</b>' + "".join(
-        f'<span class="pill ghost">{esc(x)}</span>' for x in _pills[:3]) + "</div>")
+    advice = ('<div class="rc-advice"><b>今日建议</b>'
+              '<div class="rc-advice-list">' + "".join(
+        f'<span class="pill ghost">{esc(x)}</span>' for x in _pills[:3])
+              + '</div>'
+              + _hero_cta(score) + "</div>")
     hero = (f'<section class="rc-panel rc-hero-panel">'
             f'<div class="rc-hero"><div class="rc-hero-main">'
             f'<div class="rc-hero-t"><i class="rc-dot {_tone}"></i>'
@@ -1638,7 +1641,7 @@ def home_page() -> str:
         samples = ('<div class="rc-sample"><span class="t">最近 7 天还没有活动记录。'
                    '如果设备上有记录，可以下拉同步。</span></div>')
     week_html = (f'<section class="rc-panel rc-week-panel">'
-                 f'<div class="rc-panel-hd"><span class="rc-eyebrow">最近活动</span>'
+                 f'<div class="rc-panel-hd"><span class="rc-eyebrow sec">最近活动</span>'
                  f'<span class="rc-win">最近 7 天</span></div>'
                  f'<div class="rc-week"><div class="rc-week-hd">'
                  f'<div class="big-num rc-num">{km7:.1f}'
@@ -1679,6 +1682,23 @@ def _verdict(score) -> str:
     if s >= 55:
         return "今天轻松活动就好"
     return "今天先休息"
+
+
+def _hero_cta(score) -> str:
+    """hero 收口动作：结论 → 理由 → 这一个按钮，文案随结论走（§4.11）。
+
+    没同步（score 为 None）时没有结论可收口，不给按钮；否则链到 /plan 让
+    用户看具体安排。休息日文案改成「查看今日安排」，不再催人「开始训练」。
+    """
+    if score is None:
+        return ""
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return ""
+    label = "开始今天的训练" if s >= 55 else "查看今日安排"
+    return (f'<a class="rc-hero-cta" href="/plan?from=today" '
+            f'data-nopush>{label}</a>')
 
 
 def _baseline_delta(hist: list, score) -> int | None:
