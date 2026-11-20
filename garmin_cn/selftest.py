@@ -1076,6 +1076,31 @@ def run() -> int:
     assert GU._route_svg([[31.2, 121.5], [31.21, 121.51]], None).count("L") == 1, \
         "两个点也该画出一段"
 
+    # ---------------- 综合榜：骑行单独记 ride_m ----------------
+    # `distance_m` 只装跑步；骑行进 `ride_m`，综合榜才按 4:1 折算。
+    # 两列不重叠是这套折算成立的前提——混在一起的话「骑行 4 km 算 1 km」
+    # 会把已经算过的跑步再折一次。
+    # 用独立临时库，不动上面那些基于主库的断言基线。
+    import tempfile as _tf2
+
+    from garmin_cn.demo import build as _bdemo
+
+    _rp = Path(_tf2.mkdtemp()) / "ride.db"
+    _bdemo(_rp, days=6, seed=3)
+    _rs2 = Store(_rp)
+    try:
+        with _rs2.conn:
+            _rs2.conn.execute(
+                "INSERT INTO activities(activity_id,date,type,distance_m,duration_s,ascent)"
+                " VALUES(?,?,?,?,?,?)",
+                ("ride-selftest", today.isoformat(), "cycling", 40000, 6000, 0))
+        _bd1 = {x["date"]: x for x in GG.build_days(_rs2, today.isoformat(), days=1)}
+        _cell = _bd1.get(today.isoformat()) or {}
+        assert _cell.get("ride_m", 0) >= 40000, f"骑行没进 ride_m：{_cell}"
+        assert _cell.get("distance_m", 0) < 40000, "骑行被算进了跑步里程"
+    finally:
+        _rs2.conn.close()
+
     # 远征页所有写操作都必须带 gid。漏了服务端永远收到 0，任何按钮都会
     # 静默失败——而前端失败也是 reload，用户只看到页面闪一下。
     _rsrc = (ROOT / "garmin_cn/runsui.py").read_text(encoding="utf-8")
@@ -1634,7 +1659,7 @@ def run() -> int:
 
     try:
         _GP.detail = _fake_detail
-        _GP.board = lambda gid, rng="week", today=None: {
+        _GP.board = lambda gid, rng="week", today=None, by="dist": {
             "ok": True, "range": rng, "rows": [
                 {"user_id": 2, "alias": "队友", "is_me": False, "distance_m": 12000,
                  "days": 3, "acts": 3, "explorer": 12},
@@ -1763,7 +1788,7 @@ def run() -> int:
         # 赛事详情：每人一行 + 达成日 + 管理员能提前结束
         _chp = _GU.challenge_page("TOK", 1, 7)
         # 超过 10 人：截到前 10 + 补「⋯ + 我」+ 完整榜单入口
-        _GP.board = lambda gid, rng="week", today=None: {
+        _GP.board = lambda gid, rng="week", today=None, by="dist": {
             "ok": True, "range": rng, "hidden": 0,
             "from": "2026-11-16", "to": "2026-11-22",
             "rows": [{"user_id": i, "alias": ("我" if i == 12 else f"队员{i}"), "is_me": i == 12,
