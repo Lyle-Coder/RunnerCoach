@@ -3,8 +3,11 @@
 
 三条设计约束（来自设计文档 5.3 / 11.3）
 --------------------------------------
-1. **只传日汇总**。不上传活动明细、轨迹、原始配速和位置。服务端只看到
-   「某天跑了多少米、多久、几次」，看不到你跑的是哪条路。
+1. **只传日汇总 + 脱敏剪影**。不上传活动明细、原始轨迹点、原始配速和位置。
+   除了「某天跑了多少米、多久、几次」，动态卡片另带一份**剪影**：轨迹抽稀成
+   24 个点、等比缩放到 100×100 的相对形状（`_shape()`）。
+   它不含经纬度、不含起终点、不含朝向之外的任何元信息，也无法反查是哪条路；
+   目的是让队友一眼看出「这次是绕圈还是直线」。
 2. **上报是窗口全量，不是增量**。每次发「最近 14 天」（首次加入 30 天），
    服务端按 (组, 人, 日期) 幂等覆盖。这样断网重连、重复提交都不会算两遍，
    也就不需要在客户端维护"发到哪儿了"的游标。
@@ -16,6 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -25,6 +29,12 @@ from . import account
 # 跑步类才算里程。骑行、力量、球类的里程不进组的「里程」口径——
 # 不然一个骑 100 km 的人会把跑团榜刷成笑话。
 RUN_TYPES = ("running", "trail_running", "treadmill_running")
+
+# 剪影规格：点数决定形状精度，100 是归一化边长。
+# 24 个点对「绕圈 / 折返 / 直线」已经够分辨，字符串约 130–180 字节，
+# 一条动态的额外带宽还不如一句评论多。
+SHAPE_POINTS = 24
+SHAPE_MAX_LEN = 400          # 服务端也按这个上限校验
 BACKOFF = (60, 300, 1800, 7200)
 MAX_TRIES = 8
 
@@ -395,6 +405,64 @@ def _kind(t) -> str:
     return "other"
 
 
+def _shape(track) -> str:
+    """把轨迹压成**脱敏剪影**：`"x,y;x,y;..."`，x/y 是 0..100 的相对坐标。
+
+    三步：
+    1. 丢掉非法点（0,0 是佳明没定位时的占位值，留着会把形状压成一条线）；
+    2. 按**累计长度**均匀抽 24 个点——按索引抽的话，慢速段点密、快速段点稀，
+       同一个圈会画成歪的；
+    3. 等比缩放到长边 = 100，短边按比例（**不能各自拉伸到 100**，那会把
+       圆形跑道画成正方形）。
+
+    出去的东西里没有任何经纬度、起终点坐标或时间——只有形状。
+    """
+    pts: list[tuple[float, float]] = []
+    for p in (track or []):
+        try:
+            lat, lon = float(p[0]), float(p[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            continue
+        if abs(lat) < 1e-6 and abs(lon) < 1e-6:
+            continue
+        pts.append((lat, lon))
+    if len(pts) < 4:
+        return ""
+
+    # 累计长度（米）。经度按纬度压缩，否则高纬度会把东西方向拉长。
+    coslat = math.cos(math.radians(pts[0][0])) or 1.0
+    acc = [0.0]
+    for i in range(1, len(pts)):
+        dy = (pts[i][0] - pts[i - 1][0]) * 111320.0
+        dx = (pts[i][1] - pts[i - 1][1]) * 111320.0 * coslat
+        acc.append(acc[-1] + math.hypot(dx, dy))
+    total = acc[-1]
+    if total <= 1.0:          # 全程不到 1 米，等于没动
+        return ""
+
+    n = min(SHAPE_POINTS, len(pts))
+    picked: list[tuple[float, float]] = []
+    j = 0
+    for k in range(n):
+        target = total * k / (n - 1)
+        while j < len(acc) - 1 and acc[j] < target:
+            j += 1
+        picked.append(pts[j])
+
+    ys = [(p[0] - pts[0][0]) * 111320.0 for p in picked]
+    xs = [(p[1] - pts[0][1]) * 111320.0 * coslat for p in picked]
+    # 原点挪回最小角，避免负号
+    xs = [v - min(xs) for v in xs]
+    ys = [v - min(ys) for v in ys]
+    span = max(max(xs), max(ys))
+    if span <= 0:
+        return ""
+    return ";".join(f"{round(x / span * 100):d},{round(y / span * 100):d}"
+                   for x, y in zip(xs, ys))
+
+
 def build_acts(store, today: str | None = None, days: int = 14) -> list[dict]:
     """把最近的活动压成概要。
 
@@ -411,6 +479,19 @@ def build_acts(store, today: str | None = None, days: int = 14) -> list[dict]:
             "SELECT activity_id, date, type, distance_m, duration_s, ascent"
             " FROM activities WHERE date BETWEEN ? AND ? ORDER BY date",
             (start.isoformat(), day.isoformat())).fetchall()
+        # 剪影要读活动明细里的 track。一次 IN 查询取回，别在循环里一条条查。
+        shapes: dict[str, str] = {}
+        ids = [str(r["activity_id"]) for r in rows if r["activity_id"]]
+        if ids:
+            marks = ",".join("?" * len(ids))
+            for d in store.conn.execute(
+                    f"SELECT activity_id, payload FROM activity_detail"
+                    f" WHERE activity_id IN ({marks})", ids):
+                try:
+                    t = json.loads(d["payload"]).get("track") or []
+                except (ValueError, TypeError, AttributeError):
+                    t = []
+                shapes[str(d["activity_id"])] = _shape(t)
     out = []
     for r in rows:
         aid = str(r["activity_id"] or "")
@@ -424,6 +505,8 @@ def build_acts(store, today: str | None = None, days: int = 14) -> list[dict]:
             "distance_m": int(round(float(r["distance_m"] or 0))),
             "duration_s": int(round(float(r["duration_s"] or 0))),
             "elevation_m": int(round(float(r["ascent"] or 0))),
+            # 空串 = 没有 GPS（室内/器械）或还没同步到明细，服务端照样收
+            "shape": shapes.get(aid, "")[:SHAPE_MAX_LEN],
         })
     return out
 
