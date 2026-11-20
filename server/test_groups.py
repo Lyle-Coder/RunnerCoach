@@ -224,6 +224,11 @@ def main() -> int:
           and abs(rows["老李"]["pct"] - 80.0) < 0.1, str(rows["老李"]))
     check("未达标 done_at 为 null", rows["老李"]["done_at"] is None)
     check("小赵 5 km", rows["小赵"]["current"] == 5000, str(rows["小赵"]))
+    # 详情页头部要用全组进度：不给的话页面只有「每人一行」，说不出这场打到哪了
+    check("详情也带全组进度（20+5=25 km / 100%）",
+          r["challenge"].get("current") == 25000
+          and abs(float(r["challenge"].get("pct") or 0) - 100.0) < 0.1,
+          str(r["challenge"]))
 
     # 补一跑，让老李达标
     req("POST", f"/v1/group/{gid}/report",
