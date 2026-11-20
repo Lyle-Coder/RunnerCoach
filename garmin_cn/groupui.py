@@ -1859,7 +1859,7 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
         try:
             G.note_map(_st, gid, bool((g.get("me") or {}).get("map_share")))
         finally:
-            _st.close()
+            _st.conn.close()
     except Exception:      # noqa: BLE001 - 缓存写不进去不影响页面
         pass
 

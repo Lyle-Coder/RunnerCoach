@@ -1809,7 +1809,7 @@ class _Handler(SimpleHTTPRequestHandler):
                                 if mm:
                                     G.push_cells(gid, list(mm), mm)
                         finally:
-                            _st.close()
+                            _st.conn.close()
                         msg = ("路线共享已打开" if on else "已关闭，格子已删除") \
                             if r.get("ok") else (r.get("error") or "设置失败")
                         back = f"/groups/{gid}/map"
