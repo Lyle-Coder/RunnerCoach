@@ -1393,7 +1393,7 @@ def run() -> int:
         "return group_page(" in _gsrc, "只有一个组时没有直接进详情页（或没给 message 留口子）"
     # 单组直达必须能被 ?list=1 绕过，否则「加入另一个组」永远没入口
     assert "force_list: bool = False" in _gsrc, "列表页没有强制列表的开关"
-    assert 'class="fold fold-lg" open' in _gsrc, \
+    assert 'class="fold fold-lg fold-gap" open' in _gsrc, \
         "被引导进来时「再加入一个」还是折着的"
     assert '<summary>再加入一个' in _gsrc, \
         "建组/加入没有了"
@@ -1405,7 +1405,7 @@ def run() -> int:
     assert "/archive" in _ssrc and "解散这个组" in _ssrc, \
         "组长没有解散入口——既建不了新组也解散不掉旧组，是个死结"
     # 唯独不能退回「永久折叠」：force_list 之外仍是折叠的
-    assert "else '<details class=\"fold\">'" in _gsrc, \
+    assert "else '<details class=\"fold fold-gap\">'" in _gsrc, \
         "底部入组表单不再折叠，会和榜单抢版面"
     # 单组时组详情的「全部小组」必须带 list=1，否则点回去又被弹回本组
     _gpage_src = inspect.getsource(_GU.group_page)
