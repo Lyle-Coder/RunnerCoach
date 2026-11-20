@@ -290,6 +290,21 @@ def send_sms(phone: str, code: str) -> None:
         print(f"  [sms:dev] {phone} 验证码 {code}", file=sys.stderr, flush=True)
 
 
+def disk_stats() -> tuple[float, float]:
+    """根分区的 (已用百分比, 剩余 GB)。
+
+    给 /health 用：磁盘快满时先清理再排查，比等服务写不进去再找人快。
+    读不到就返回 0，不让健康检查因为这一项挂掉。
+    """
+    try:
+        import shutil as _sh
+        u = _sh.disk_usage("/")
+        return (round(u.used / u.total * 100, 1) if u.total else 0.0,
+                round(u.free / 1073741824, 1))
+    except Exception:      # noqa: BLE001
+        return (0.0, 0.0)
+
+
 def smtp_ready() -> bool:
     return bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
 
@@ -1320,9 +1335,12 @@ class Handler(BaseHTTPRequestHandler):
                 channel = "email" + ("" if smtp_ready() else "（开发模式）")
                 if not smtp_ready():
                     channel = "email(dev)/sms:" + SMS_PROVIDER
+                _dp, _df = disk_stats()
                 return self._json({"ok": True, "model": UPSTREAM_MODEL,
                                    "sms": SMS_PROVIDER, "email": smtp_ready(),
                                    "channel": channel, "service": "open",
+                                   # 磁盘水位：每周发版 +22 MB，堆到满会影响写入
+                                   "disk_pct": _dp, "disk_free_gb": _df,
                                    # 这两个字段是给部署自检看的：
                                    # dev_echo=true 表示验证码明文回显（不能上公网），
                                    # tls=true 表示这条连接已经是 HTTPS
