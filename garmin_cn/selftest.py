@@ -1101,6 +1101,24 @@ def run() -> int:
     finally:
         _rs2.conn.close()
 
+    # onclick 属性必须整体转义。`json.dumps("a")` 产生带双引号的 "a"，
+    # 而属性本身是双引号包裹 —— 直接拼会把属性提前闭合，浏览器只拿到
+    # `rcPick(0,`，点击时语法错误、一行 JS 都不执行，也不发任何请求。
+    # 症状是「所有按钮点了没反应」且没有任何报错，比参数缺失更彻底。
+    from html import unescape as _unesc
+
+    from garmin_cn import runsui as _RS
+
+    _ev = {"id": "e1", "title": "岔路", "options": [
+        {"id": "a", "name": "翻塌方口", "cost": 40},
+        {"id": "b", "name": "走羊道", "cost": 0}]}
+    _ons = re.findall(r'onclick="([^"]*)"', _RS.event_card(_ev, 0))
+    assert len(_ons) >= 2, "岔路选项没有 onclick"
+    for _a in _ons:
+        _js = _unesc(_a)
+        assert _js.strip().startswith("rcPick("), f"onclick 被截断了：{_a!r}"
+        assert _js.rstrip().endswith("return false"), f"onclick 不完整：{_a!r}"
+
     # 远征页所有写操作都必须带 gid。漏了服务端永远收到 0，任何按钮都会
     # 静默失败——而前端失败也是 reload，用户只看到页面闪一下。
     _rsrc = (ROOT / "garmin_cn/runsui.py").read_text(encoding="utf-8")
