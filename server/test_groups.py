@@ -913,6 +913,56 @@ def main() -> int:
                  "points": _pts()}, a)
     check(f"超过 {groups.ROUTE_PER_USER} 条被拒（409）", st == 409, f"{st} {r}")
 
+    # ---------------- 数据保留
+    print("\n10. 数据保留")
+    _dbp = Path(os.environ["GROUPS_DB"])
+    _db = sqlite3.connect(str(_dbp))
+    _now_ts = int(dt.datetime.now().timestamp())
+    _old_day = (dt.date.today() - dt.timedelta(days=400)).isoformat()
+    _old200 = (dt.date.today() - dt.timedelta(days=200)).isoformat()
+    try:
+        _db.execute("INSERT INTO group_daily(group_id,user_id,date,distance_m,"
+                    "duration_s,acts,updated_at) VALUES(?,?,?,0,0,0,0)",
+                    (gid, 999001, _old_day))
+        _db.execute("INSERT INTO group_act(group_id,user_id,sid,date,kind,"
+                    "distance_m,duration_s,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (gid, 999001, "oldact", _old200, "run", 6000, 1800,
+                     _now_ts - 200 * 86400))
+        _old_aid = _db.execute("SELECT id FROM group_act WHERE sid='oldact'").fetchone()[0]
+        _db.execute("INSERT INTO group_comment(group_id,act_id,user_id,text,emoji,"
+                    "created_at) VALUES(?,?,?,?,?,?)",
+                    (gid, _old_aid, 999001, "老评论", "",
+                     _now_ts - 200 * 86400))
+        _db.commit()
+    finally:
+        _db.close()
+
+    _dry = groups.cleanup(dry_run=True)
+    check("dry-run 统计到超期数据",
+          _dry["rows"]["daily"] >= 1 and _dry["rows"]["act"] >= 1
+          and _dry["rows"]["comment"] >= 1, str(_dry))
+    _db = sqlite3.connect(str(_dbp))
+    try:
+        _left = _db.execute("SELECT COUNT(*) FROM group_daily WHERE user_id=999001").fetchone()[0]
+    finally:
+        _db.close()
+    check("dry-run 不真删", _left == 1, f"还剩 {_left} 行")
+
+    _real = groups.cleanup(dry_run=False)
+    check("真删执行了", _real["ok"] and _real["dry_run"] is False, str(_real))
+    _after = groups.cleanup(dry_run=True)
+    check("删完再统计归零",
+          _after["rows"]["daily"] == 0 and _after["rows"]["act"] == 0
+          and _after["rows"]["comment"] == 0, str(_after))
+    # 近期数据不能被误伤：上面几段造的今天/本周数据都还在
+    _db = sqlite3.connect(str(_dbp))
+    try:
+        _today = _db.execute("SELECT COUNT(*) FROM group_daily WHERE date=?",
+                             (dt.date.today().isoformat(),)).fetchone()[0]
+    finally:
+        _db.close()
+    check("近期数据没被删", _today >= 1, f"今天的行数 {_today}")
+
     # 隐私：关共享的人既不显示、也不能被评论
     st, r = req("POST", f"/v1/group/{gid}/share", {"share": "off"}, b)
     st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, a)

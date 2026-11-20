@@ -2554,6 +2554,80 @@ def api_challenge_close(me, gid: int, cid: int) -> dict:
     return {"ok": True, "challenge": _challenge_view(ch2, dt.date.today())}
 
 
+# ---------------------------------------------------------------- 数据保留
+# 保留期只写这一处，docs/用户组设计.md §11.12 跟着这份改。
+# 最短的 90 天也远大于一个赛季（4 周），所以清理不会把正在进行的赛季删掉。
+RETENTION_DAYS = {
+    "daily": 365,      # 日汇总：一年，跨年对比还要用
+    "act": 180,        # 动态：半年
+    "comment": 180,    # 评论跟动态一起走
+    "route": 180,      # 路线：半年（主动分享的，也不该永久存档）
+    "audit": 90,       # 审计：三个月，够追责
+}
+KEEP_WEEKS = 4         # 足迹格子：只留最近 4 周，再往前没人看
+
+
+def cleanup(dry_run: bool = True) -> dict:
+    """按保留期清理组数据，返回每张表处理了多少行。
+
+    为什么按「日」而不是「行数上限」：行数上限会让活跃组的近期数据被
+    老组挤掉，而且「为什么我的记录少了」根本解释不清。按天说才站得住。
+
+    `dry_run=True` 只统计，不动数据——线上第一次跑必须先看这个数。
+    """
+    today = dt.date.today()
+    now = int(time.time())
+    out: dict[str, int] = {}
+    with db() as c:
+        for name, days in RETENTION_DAYS.items():
+            cut_day = (today - dt.timedelta(days=days)).isoformat()
+            cut_ts = now - days * 86400
+            if name == "daily":
+                q, arg = "DELETE FROM group_daily WHERE date < ?", cut_day
+                nq, narg = "SELECT COUNT(*) n FROM group_daily WHERE date < ?", cut_day
+            elif name == "act":
+                q, arg = "DELETE FROM group_act WHERE date < ?", cut_day
+                nq, narg = "SELECT COUNT(*) n FROM group_act WHERE date < ?", cut_day
+            elif name == "comment":
+                q, arg = "DELETE FROM group_comment WHERE created_at < ?", cut_ts
+                nq, narg = "SELECT COUNT(*) n FROM group_comment WHERE created_at < ?", cut_ts
+            elif name == "route":
+                q, arg = "DELETE FROM group_route WHERE created_at < ?", cut_ts
+                nq, narg = "SELECT COUNT(*) n FROM group_route WHERE created_at < ?", cut_ts
+            else:                                   # audit
+                q, arg = "DELETE FROM group_audit WHERE ts < ?", cut_ts
+                nq, narg = "SELECT COUNT(*) n FROM group_audit WHERE ts < ?", cut_ts
+            n = int(c.execute(nq, (narg,)).fetchone()["n"])
+            if n and not dry_run:
+                c.execute(q, (arg,))
+            out[name] = n
+
+        # 格子按周清：保留最近 KEEP_WEEKS 个 week_start。用「第 4 新的周」
+        # 当下界，而不是算 4×7 天——周起点是周一，算天数会切在一周中间。
+        weeks = [r["week_start"] for r in c.execute(
+            "SELECT DISTINCT week_start FROM group_cell"
+            " ORDER BY week_start DESC LIMIT ?", (KEEP_WEEKS,)).fetchall()]
+        if weeks:
+            cut = weeks[-1]
+            n = int(c.execute("SELECT COUNT(*) n FROM group_cell WHERE week_start < ?",
+                              (cut,)).fetchone()["n"])
+            if n and not dry_run:
+                c.execute("DELETE FROM group_cell WHERE week_start < ?", (cut,))
+            out["cell"] = n
+        else:
+            out["cell"] = 0
+
+        # 孤儿评论：动态被清理后评论还挂着。没有外键，只能定期扫。
+        n = int(c.execute(
+            "SELECT COUNT(*) n FROM group_comment WHERE act_id NOT IN"
+            " (SELECT id FROM group_act)").fetchone()["n"])
+        if n and not dry_run:
+            c.execute("DELETE FROM group_comment WHERE act_id NOT IN"
+                      " (SELECT id FROM group_act)")
+        out["orphan_comment"] = n
+    return {"ok": True, "dry_run": bool(dry_run), "rows": out}
+
+
 # ---------------------------------------------------------------- 分发
 def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
     """返回 (payload, status_code)。异常在这里统一转成 JSON，不往上抛。"""
