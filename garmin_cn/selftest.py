@@ -1082,6 +1082,18 @@ def run() -> int:
     assert "var GID=" in _rsrc, "远征页没把 gid 传给前端"
     assert "f.append('gid'" in _rsrc, "远征的 post() 没提交 gid"
     assert _rsrc.count('name="gid"') >= 2, "远征的表单缺 gid（目标和营地升级）"
+    # 请求体格式必须和服务端解析器一致。服务端 `_run_post` 用 parse_qs，
+    # 只认 urlencoded；裸 FormData 会发 multipart，parse_qs 解析出垃圾键，
+    # token 读不到 → 一律「页面已过期」→ 所有按钮静默失效（连云端请求都没有）。
+    assert "new FormData()" not in _rsrc, \
+        "远征页用 FormData 发 body 会变成 multipart，服务端 parse_qs 读不到 token"
+    assert "URLSearchParams" in _rsrc, "远征页没发 urlencoded"
+    _ssrc = (ROOT / "garmin_cn/serve.py").read_text(encoding="utf-8")
+    _rblk = _ssrc[_ssrc.index("def _run_post"):]
+    _rblk = _rblk[:_rblk.index("def _see_other")]
+    assert (_rblk.index('gid = int(vals.get("gid")')
+            < _rblk.index("compare_digest")), \
+        "gid 要在令牌校验前解析，否则令牌过期时会被踢去组列表"
 
     # ---------------- 远征界面 ----------------
     # 小旗必须落在**当前幕那一段**里。整季累计进度在队伍超额时会超过 100%，
