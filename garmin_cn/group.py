@@ -467,6 +467,11 @@ def _shape(track) -> str:
     # 原点挪回最小角，避免负号
     xs = [v - min(xs) for v in xs]
     ys = [v - min(ys) for v in ys]
+    # **y 轴要翻过来**：纬度越大越靠北，而 SVG 的 y 是向下增大的。
+    # 少了这一步，整条轨迹是南北颠倒的——往北跑会画成往南跑。
+    # （本地活动图的 projector 一直是对的，它用的是 maxy - lat；这里漏了。）
+    ymax = max(ys)
+    ys = [ymax - v for v in ys]
     span = max(max(xs), max(ys))
     if span <= 0:
         return ""

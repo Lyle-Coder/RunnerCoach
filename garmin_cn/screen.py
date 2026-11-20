@@ -53,6 +53,12 @@ _BASE = """
   color:var(--ink,#E9F0F8);position:relative;padding-left:10px}
 .rc-eyebrow::before{content:"";position:absolute;left:0;top:50%;width:3px;
   height:14px;margin-top:-7px;border-radius:2px;background:var(--brand)}
+/* 三级区块标题（§3.7 区块分级）：灰字、不画品牌竖条。原来七个区块都挂
+   15px 竖条区头，等于七个「重点」抢一屏、hero 被稀释。三级区（赛事 /
+   最近活动 / 延伸阅读）降成 12px 灰标题，把竖条留给 hero 之下的二级数据区。 */
+.rc-eyebrow.sec{font-size:var(--fs-cap,12px);font-weight:600;letter-spacing:.4px;
+  color:var(--ink-3,#7A8DA4);padding-left:0}
+.rc-eyebrow.sec::before{display:none}
 .rc-win{font-size:var(--fs-micro,11px);color:var(--ink-3,#7A8DA4);
   font-variant-numeric:tabular-nums;white-space:nowrap}
 .rc-num{font-variant-numeric:tabular-nums;font-weight:600;
@@ -70,7 +76,7 @@ _BASE = """
 
 /* 恢复 hero：一句结论 + 一句解释在左、环在右、三格分解在下、建议胶囊收尾。
    原来是「标题条 + 环 + 三条横条分解」，结论和标题分居两块，说的是同一件事。 */
-.rc-hero{display:flex;gap:14px;align-items:flex-start}
+.rc-hero{display:flex;gap:14px;align-items:center}
 .rc-ring{flex:0 0 108px;width:108px;height:108px;display:block}
 .rc-ring.alert{filter:drop-shadow(0 0 14px rgba(242,85,90,.55))}
 .rc-hero-main{flex:1;min-width:0}
@@ -99,9 +105,24 @@ _BASE = """
   background:linear-gradient(90deg,var(--brand,#3B82F6),var(--brand-ink,#9CC6FF))}
 .rc-part .v{grid-area:v;font-size:var(--fs-body,14px);font-weight:600;text-align:right;
   color:var(--ink,#E9F0F8);font-variant-numeric:tabular-nums}
-.rc-advice{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:10px;
+/* 建议：引导词独立占一行作小标题，建议胶囊在下一行各自成块。
+   原来「今日建议 + St24×2·爬楼梯 + 优先补觉」全挤一行，胶囊和文字
+   混排，扫一眼分不清哪是引导、哪是可点的建议。 */
+.rc-advice{display:block;margin-top:12px;padding-top:10px;
+  border-top:1px solid var(--line,rgba(255,255,255,.065));
   font-size:var(--fs-micro,11px);color:var(--ink-2,#A6B8CD)}
-.rc-advice b{color:var(--ink,#E9F0F8);font-weight:600;margin-right:2px}
+.rc-advice b{display:block;color:var(--ink-3,#7A8DA4);font-weight:600;
+  letter-spacing:.3px;margin-bottom:7px}
+.rc-advice .pill{font-size:var(--fs-cap,12px);height:28px;padding:0 12px}
+.rc-advice-list{display:flex;flex-wrap:wrap;gap:6px}
+/* hero 收口动作：结论 → 理由 → 这一个按钮。主按钮品牌实色 + 白字，
+   全页唯一；文案随结论走（开始今天的训练 / 休息，不安排）。 */
+.rc-hero-cta{display:inline-flex;align-items:center;justify-content:center;
+  min-height:40px;padding:0 18px;margin-top:12px;border-radius:var(--r-1,10px);
+  background:var(--brand,#3B82F6);color:var(--ink-inv,#F2F7FF);
+  font-size:var(--fs-body,14px);font-weight:600;text-decoration:none;
+  white-space:nowrap}
+.rc-hero-cta:active{opacity:.85}
 
 /* 负荷带 60：三个数并列，**不是三张卡** */
 .rc-load{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
