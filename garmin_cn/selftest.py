@@ -2997,8 +2997,17 @@ def run() -> int:
     # 9) 漂移结论排在数据前面
     _dt = _AC._drift_txt({"hr_first": 139, "hr_second": 153,
                           "pace_first": 322, "pace_second": 307}, {}, None)
-    assert _dt.startswith("心率漂移"), f"漂移结论没有前置：{_dt[:40]}"
+    assert re.sub(r"<[^>]+>", "", _dt).startswith("心率漂移"), \
+        f"漂移结论没有前置：{_dt[:40]}"
     assert "前 5'22\"/139" in _dt, "漂移数据行被改坏了"
+    # 10) 爬楼课：关掉配速后不能还留着配速面积和配速刻度
+    _cpts = [{"t": 1000 + i * 10, "spd": 2.0, "hr": 140 + (i % 7),
+              "ele": 400 + (i % 12) * 3.0, "dist": i * 20.0} for i in range(120)]
+    _c1 = _AC.chart_svg(_cpts, 900, 262)
+    _c2 = _AC.chart_svg(_cpts, 900, 262, show_pace=False)
+    assert 'fill="url(#pfill)"' in _c1, "正常曲线图没有配速面积"
+    assert 'fill="url(#pfill)"' not in _c2, "关掉配速后还在画配速面积"
+    assert _c2.count("<text") < _c1.count("<text"), "关掉配速后刻度没减少"
     # 列表行：标题从单行省略改成最多两行，参数本来就换行
     assert "display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2" \
         in _ui_src, \
