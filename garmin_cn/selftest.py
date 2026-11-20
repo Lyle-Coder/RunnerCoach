@@ -892,6 +892,82 @@ def run() -> int:
         assert _box.bump(3, GG.MAX_TRIES) == 0, "超过上限后应立刻可重试"
         _box.drop(3)
         assert not _box.pending(now=0), "清空后队列还有残留"
+
+        # ---------------- 后台补传 ----------------
+        # 三个出口全部替换掉（拉组列表 / 上报 / 拉详情），只看调度与记账：
+        # 什么时候跑、跑几次、失败了记不记时间。这一步不碰网络。
+        from garmin_cn import account as _ACC
+        from garmin_cn import bg as BGM
+
+        _bd = Path(tempfile.mkdtemp())
+        _bs = _GStore(_bd / "bg.db")
+        _calls: list[int] = []
+        _real = (GG.groups, GG.report_group, GG.detail, _ACC.logged_in)
+        try:
+            GG.groups = lambda: {"ok": True, "groups": [{"id": 1}, {"id": 2}]}
+            GG.report_group = lambda store, gid, today=None, first=False, client=None: (
+                _calls.append(int(gid)) or {"ok": True})
+            GG.detail = lambda gid: {"ok": True, "me": {"map_share": True}}
+
+            _ACC.logged_in = lambda: False
+            assert BGM.catch_up(store=_bs, force=True).get("skip") == "no_account", \
+                "没登录也在跑补传"
+            assert not _calls, "没登录还去上报了"
+
+            _ACC.logged_in = lambda: True
+            _r = BGM.catch_up(store=_bs, today="2026-11-18", force=True)
+            assert _r.get("ok") and _r.get("sent") == 2, f"两个组没都报：{_r}"
+            assert sorted(_calls) == [1, 2], f"上报的组不对：{_calls}"
+            assert _bs.get_meta(BGM.KEY_AT), "跑完没记时间"
+            assert _bs.get_meta(BGM.KEY_RES) == "2/2", \
+                f"结果没记账：{_bs.get_meta(BGM.KEY_RES)}"
+
+            # 20 分钟内再触发（来回切前后台）应直接跳过，不能重复上报
+            _calls.clear()
+            assert BGM.catch_up(store=_bs, today="2026-11-18").get("skip") == "recent", \
+                "节流没生效"
+            assert not _calls, "节流期间仍然发了上报"
+
+            # 拉不到组列表：可以失败，但不能把节流时间推后——
+            # 否则用户重登后还得白等 20 分钟才轮到下一轮
+            _bs.set_meta(BGM.KEY_AT, "2026-01-01T00:00:00")
+            GG.groups = lambda: {"ok": False, "error": "token 过期"}
+            _r3 = BGM.catch_up(store=_bs, today="2026-11-18", force=True)
+            assert not _r3.get("ok"), "拉不到组列表却当成成功"
+            assert _bs.get_meta(BGM.KEY_AT) == "2026-01-01T00:00:00", \
+                "失败也把节流推后了"
+
+            # 没记过开关的组补一次 detail；明确关着（"0"）的不要打扰，
+            # 更不能被后台任务改成开
+            GG.groups = lambda: {"ok": True, "groups": [{"id": 1}, {"id": 2}]}
+            # 前面几轮已经把 group 1 的开关写进本地了，这里回到「从没进过页面」
+            with _bs.conn:
+                _bs.conn.execute("DELETE FROM meta WHERE key LIKE 'group_map_%'")
+            _bs.set_meta("group_map_2", "0")
+            _bs.set_meta(BGM.KEY_AT, "2026-01-01T00:00:00")
+            _asked: list[int] = []
+
+            def _det(gid):
+                _asked.append(int(gid))
+                return {"ok": True, "me": {"map_share": True}}
+
+            GG.detail = _det
+            BGM.catch_up(store=_bs, today="2026-11-18", force=True)
+            assert _asked == [1], f"只该问没有缓存的那个组，实际问了 {_asked}"
+            assert _bs.get_meta("group_map_1") == "1", "补回来的开关没落本地"
+            assert _bs.get_meta("group_map_2") == "0", "明确关着的开关被改成了开"
+
+            # 同一时刻只跑一轮：周期任务与前台 nudge 撞上时后者直接放弃
+            BGM._LOCK.acquire()
+            try:
+                assert BGM.catch_up(store=_bs, force=True).get("skip") == "busy", \
+                    "重入时没有挡住"
+            finally:
+                BGM._LOCK.release()
+        finally:
+            (GG.groups, GG.report_group, GG.detail, _ACC.logged_in) = _real
+            _bs.conn.close()
+            shutil.rmtree(_bd, ignore_errors=True)
     finally:
         _gs.conn.close()
         if _old_home is None:
@@ -5546,8 +5622,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.5.11 → 164）。
-    assert 'versionCode = 165' in (
+    # 每次发版要同步改这里（本次 1.6.0 → 166）。
+    assert 'versionCode = 166' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。

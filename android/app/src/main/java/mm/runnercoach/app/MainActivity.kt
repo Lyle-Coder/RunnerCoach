@@ -498,6 +498,18 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
+    /**
+     * 每次回到前台排一次后台补传（30 秒后跑）。
+     *
+     * 为什么需要它：用户跑完步把 App 切到后台，很可能再也没点开过组页，
+     * 于是队友一直看不到他今天的里程。周期任务最晚要等 6 小时，这里
+     * 把这个窗口收到半分钟。首次 onCreate 后也会走到这里，排任务本身幂等。
+     */
+    override fun onResume() {
+        super.onResume()
+        BgSync.nudge(this)
+    }
+
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
         if (!this::web.isInitialized) {
@@ -893,6 +905,9 @@ class MainActivity : Activity() {
         }
         // 静默查一次新版本：延迟 6 秒，避开首屏渲染与登录框；24 小时节流
         ui { web.postDelayed({ checkUpdate(silent = true) }, 6000) }
+        // 后台补传：周期任务兜底（6 小时一次）。已排过就什么都不做，
+        // 所以每次启动都调是安全的——它同时负责「job 被系统清掉后重排」。
+        BgSync.schedule(this)
     }
 
     private fun setStatus(s: JSONObject) {
@@ -3723,9 +3738,19 @@ class MainActivity : Activity() {
         busy(true)
         thread {
             val r = apiCall("diag_text", 300)
+            // 补传状态放在最上面：用户点开这里，多半就是因为「队友看不到我的
+            // 里程」这类问题，第一眼要能确认后台任务到底跑没跑、成了几个组，
+            // 而不必再教他去连电脑看 logcat。
+            val bg = apiCall("bg_status")
+            val head = if (bg.optBoolean("ok") && bg.optString("at").isNotEmpty()) {
+                "后台补传 · " + bg.optString("at").replace("T", " ").take(16) +
+                    " · 成功 " + bg.optString("result", "—") + " 组\n\n"
+            } else {
+                "后台补传 · 还没跑过（等系统调度，或先手动切一次前后台）\n\n"
+            }
             ui {
                 busy(false)
-                val txt = r.optString("text", "（读不出来）")
+                val txt = head + r.optString("text", "（读不出来）")
                 val tv = TextView(this).apply {
                     text = txt
                     setTextIsSelectable(true)
