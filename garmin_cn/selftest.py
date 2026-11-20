@@ -1119,6 +1119,16 @@ def run() -> int:
         assert _js.strip().startswith("rcPick("), f"onclick 被截断了：{_a!r}"
         assert _js.rstrip().endswith("return false"), f"onclick 不完整：{_a!r}"
 
+    # 岔路必须走 rcFork。/run/fork 只收 option，/run/event 要 slot；
+    # 岔路卡片渲染时 slot 是 -1，按普通事件发会永远 404「没有这条事件」。
+    _fk = {"id": "f1", "type": "story", "kind": "fork", "title": "岔路",
+           "options": [{"id": "a", "label": "翻塌方口"},
+                       {"id": "b", "label": "走羊道"}]}
+    _fons = [_unesc(x) for x in
+             re.findall(r'onclick="([^"]*)"', _RS.event_card(_fk, -1))]
+    assert _fons, "岔路卡片没有选项按钮"
+    assert all("rcFork(" in x for x in _fons), f"岔路按钮应该调 rcFork：{_fons}"
+
     # 远征页所有写操作都必须带 gid。漏了服务端永远收到 0，任何按钮都会
     # 静默失败——而前端失败也是 reload，用户只看到页面闪一下。
     _rsrc = (ROOT / "garmin_cn/runsui.py").read_text(encoding="utf-8")

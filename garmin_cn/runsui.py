@@ -405,9 +405,16 @@ def _options_html(ev: dict, slot: int) -> str:
         if picked:
             out.append(f'<div class="opt on">{inner}</div>')
         else:
-            out.append(f'<a class="opt" href="#" '
-                       f'{_on(f"rcPick({slot},{json.dumps(oid)});return false")}'
-                       f'>{inner}</a>')
+            # 岔路和普通事件是**两个接口**：
+            #   /run/fork  —— 只收 option，岔路是每幕一条，没有 slot 概念
+            #   /run/event —— 要 slot，指这一幕里的第几条事件
+            # 岔路卡片渲染时 slot 传的是 -1（见 cards += event_card(fork, -1)），
+            # 如果照样发 rcPick(-1,...)，服务端会拿 slot=-1 去事件表里查，
+            # 永远查不到 → 404「没有这条事件」→ 页面看起来毫无反应。
+            _code = (f"rcFork({json.dumps(oid)});return false"
+                     if str(ev.get("kind") or "") == "fork"
+                     else f"rcPick({slot},{json.dumps(oid)});return false")
+            out.append(f'<a class="opt" href="#" {_on(_code)}>{inner}</a>')
     return "".join(out)
 
 
