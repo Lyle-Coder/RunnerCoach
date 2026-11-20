@@ -225,7 +225,9 @@ BUFF_TEXT = {
     "weekly_advance_add": ("结算 +{v:g} 格", False),
     "weekly_morale_add": ("士气 +{v:g}", False),
     "weekly_supply_add": ("补给 +{v:g}", False),
-    # 营地还没做，这类增益先灰着显示：在，但暂时不兑现
+    # 已废弃：营地接进来时把「发休整点」改成了「发补给」（act_vigor_add ->
+    # weekly_supply_add）。留着是为了老赛季存档里的事件还能显示出名字，
+    # 新事件不会再产生这个键。
     "act_vigor_add": ("休整点 +{v:g}", True),
 }
 TYPE_ZH = {"trial": "试炼", "supply": "补给", "story": "遭遇"}
