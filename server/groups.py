@@ -194,6 +194,11 @@ def init_db() -> None:
           elevation_m  INTEGER NOT NULL DEFAULT 0,
           -- 当日新踩的 500 m 格数（探索徽章）。只有整数上来，格子 ID 留在手机。
           explorer     INTEGER NOT NULL DEFAULT 0,
+          -- 当日骑行里程（米）。只服务月榜的「综合榜」（骑行 4 km 折算 1 km）。
+          -- 跑步仍记在 distance_m，两者不重叠，所以综合 = distance_m + ride_m/4。
+          -- 老客户端不传 → 0：结果是**只漏骑行**，不会把骑行误算成跑步，
+          -- 所以历史行和旧客户端都不会污染榜单。
+          ride_m       INTEGER NOT NULL DEFAULT 0,
           updated_at   INTEGER NOT NULL,
           PRIMARY KEY(group_id, user_id, date)
         );
@@ -333,6 +338,11 @@ def init_db() -> None:
                       " NOT NULL DEFAULT 0")
         if "explorer" not in cols:
             c.execute("ALTER TABLE group_daily ADD COLUMN explorer INTEGER"
+                      " NOT NULL DEFAULT 0")
+        # 骑行里程：只在「综合榜」里用。默认 0 表示「这一版客户端还没传」，
+        # 综合距离会因此少算骑行，但绝不会把骑行当跑步多算。
+        if "ride_m" not in cols:
+            c.execute("ALTER TABLE group_daily ADD COLUMN ride_m INTEGER"
                       " NOT NULL DEFAULT 0")
         # 路线图开关默认 **关**：位置比里程敏感得多，不能靠「用户没注意」就开。
         mcols = {r["name"] for r in c.execute("PRAGMA table_info(group_members)")}
@@ -992,6 +1002,8 @@ def api_report(me, gid: int, body: dict) -> dict:
             acts = int(d.get("acts") or 0)
             elev = int(d.get("elevation_m") or 0)
             expl = int(d.get("explorer") or 0)
+            # 骑行里程（米）。老客户端不传 → 0，综合榜少算骑行而已，不算错。
+            ride = int(d.get("ride_m") or 0)
             # 休整点：0/1。每周上限 4 在后面按「本周已存 + 本次」截断，
             # 不让一次补传 30 天就把团队池灌满。
             vigor = 1 if int(d.get("vigor") or 0) > 0 else 0
@@ -1003,6 +1015,8 @@ def api_report(me, gid: int, body: dict) -> dict:
             raise GroupError(400, f"{day} 单日时长超出范围")
         if not 0 <= acts <= DAY_ACTS_MAX:
             raise GroupError(400, f"{day} 单日次数超出范围")
+        if not 0 <= ride <= DAY_DIST_MAX_M:
+            raise GroupError(400, f"{day} 单日骑行里程超出范围")
         if not 0 <= elev <= DAY_ELEV_MAX:
             raise GroupError(400, f"{day} 单日爬升超出范围")
         # 爬升密度防刷：日报表只有日汇总，没有单次数据，所以按
@@ -1023,7 +1037,8 @@ def api_report(me, gid: int, body: dict) -> dict:
         if expl > DAY_EXPLORER_MAX:
             expl = DAY_EXPLORER_MAX
             clamped_explorer += 1
-        rows.append((gid, uid, day, dist, dur, acts, elev, expl, plan, _now(), vigor))
+        rows.append((gid, uid, day, dist, dur, acts, elev, expl, plan, _now(),
+                     vigor, ride))
 
     with db() as c:
         m = _require_member(c, gid, uid)
@@ -1048,11 +1063,12 @@ def api_report(me, gid: int, body: dict) -> dict:
                     (gid, u, wf_s, wt_s)).fetchone()[0]
                 room = max(0, VIGOR_WEEK_MAX - int(already))
                 for i in idxs[room:]:
-                    rows[i] = rows[i][:10] + (0,)
+                    # 只清 vigor（第 11 项），ride_m 必须原样留着
+                    rows[i] = rows[i][:10] + (0,) + rows[i][11:]
 
         c.executemany("""
-            INSERT INTO group_daily(group_id,user_id,date,distance_m,duration_s,acts,elevation_m,explorer,plan_done,updated_at,vigor)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO group_daily(group_id,user_id,date,distance_m,duration_s,acts,elevation_m,explorer,plan_done,updated_at,vigor,ride_m)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(group_id,user_id,date) DO UPDATE SET
                 distance_m=excluded.distance_m,
                 duration_s=excluded.duration_s,
@@ -1061,7 +1077,8 @@ def api_report(me, gid: int, body: dict) -> dict:
                 explorer=excluded.explorer,
                 plan_done=excluded.plan_done,
                 updated_at=excluded.updated_at,
-                vigor=excluded.vigor
+                vigor=excluded.vigor,
+                ride_m=excluded.ride_m
         """, rows)
     out = {"ok": True, "saved": len(rows), "skipped": 0, "share": m["share_level"]}
     # 说出来，不静默改数：客户端传了不合理的爬升或格数，用户该知道被截了。
@@ -2138,9 +2155,23 @@ def api_home(me, gid: int, query: dict) -> dict:
 
 
 # ---------------------------------------------------------------- 榜单
+# 综合榜的骑行折算：骑行 4 km 记 1 km 综合距离。
+# 只影响「综合榜」。跑步榜、六件衫、探索徽章、赛季积分的口径全部不动——
+# 那些都是「跑步」的语义，掺进骑行会让「里程王」变得说不清。
+RIDE_DIVISOR = 4.0
+
+
 def api_board(me, gid: int, query: dict) -> dict:
     uid = int(me["user_id"])
     rng = (query.get("range") or ["week"])[0]
+    # by=dist 是原来的里程榜（只算跑步）；by=comp 是月榜的「综合榜」。
+    # 只做月榜：周榜已经挂了衫和探索徽章，再加一种排序只会让「本周谁是第一」
+    # 变得有歧义。
+    by = (query.get("by") or ["dist"])[0]
+    if by not in ("dist", "comp"):
+        raise GroupError(400, "by 只能是 dist 或 comp")
+    if by == "comp" and rng != "month":
+        raise GroupError(400, "综合榜只提供月榜")
     today = _today((query.get("today") or [None])[0])
     if rng == "month":
         start, end = _month(today)
@@ -2158,6 +2189,7 @@ def api_board(me, gid: int, query: dict) -> dict:
         agg = c.execute("""
             SELECT user_id,
                    SUM(distance_m) AS dist, SUM(duration_s) AS dur, SUM(acts) AS acts,
+                   SUM(ride_m) AS ride,
                    COUNT(*) AS days,
                    SUM(CASE WHEN plan_done=1 THEN 1 ELSE 0 END) AS plan_ok,
                    SUM(CASE WHEN plan_done IS NOT NULL THEN 1 ELSE 0 END) AS plan_total,
@@ -2167,22 +2199,30 @@ def api_board(me, gid: int, query: dict) -> dict:
             WHERE group_id=? AND date BETWEEN ? AND ?
             GROUP BY user_id
         """, (gid, s, e)).fetchall()
-    by = {int(r["user_id"]): r for r in agg}
+    # 注意别叫 `by`：上面那个 by 是「按什么排」，这里是人到汇总行的映射
+    agg_by = {int(r["user_id"]): r for r in agg}
 
     rows, hidden = [], 0
     for m in members:
         if m["share_level"] != "summary":
             hidden += 1
             continue
-        a = by.get(int(m["user_id"]))
+        a = agg_by.get(int(m["user_id"]))
         plan_total = int(a["plan_total"] or 0) if a else 0
+        _dist = int(a["dist"] or 0) if a else 0
+        _ride = int(a["ride"] or 0) if a else 0
         rows.append({
             # user_id 必带：客户端要用它挂「穿了哪几件衫」「探索徽章」。
             # 原来只给 alias，组里两个人叫「小王」时徽章会挂到错的人头上。
             "user_id": int(m["user_id"]),
             "alias": m["alias"],
             "is_me": int(m["user_id"]) == uid,
-            "distance_m": int(a["dist"] or 0) if a else 0,
+            "distance_m": _dist,
+            # 骑行原始里程，给界面显示分项用（「跑步 42 + 骑行 96」）
+            "ride_m": _ride,
+            # 综合距离：跑步 + 骑行/RIDE_DIVISOR。四舍五入到整数米，
+            # 否则 4 舍 5 入的误差会在 30 天里攒出几百米。
+            "comp_m": _dist + int(round(_ride / RIDE_DIVISOR)),
             "duration_s": int(a["dur"] or 0) if a else 0,
             "acts": int(a["acts"] or 0) if a else 0,
             "days": int(a["days"] or 0) if a else 0,
@@ -2193,14 +2233,18 @@ def api_board(me, gid: int, query: dict) -> dict:
             "explorer": int(a["expl"] or 0) if a else 0,
             "updated_at": int(a["seen"] or 0) if a else 0,
         })
-    # 里程优先，其次天数——同里程时「跑得更分散」的人排前面
-    rows.sort(key=lambda x: (-x["distance_m"], -x["days"], -x["duration_s"]))
+    # 综合榜按综合距离排，里程榜按跑步里程排。
+    # 其次天数——同距离时「跑得更分散」的人排前面。
+    _sort_key = "comp_m" if by == "comp" else "distance_m"
+    rows.sort(key=lambda x: (-x[_sort_key], -x["days"], -x["duration_s"]))
     return {
-        "ok": True, "range": rng, "from": s, "to": e,
+        "ok": True, "range": rng, "by": by, "from": s, "to": e,
         "rows": rows, "hidden": hidden,
         "summary": {
             "members": len(members), "shown": len(rows), "hidden": hidden,
             "total_distance_m": sum(x["distance_m"] for x in rows),
+            "total_ride_m": sum(x["ride_m"] for x in rows),
+            "total_comp_m": sum(x["comp_m"] for x in rows),
         },
     }
 
