@@ -228,8 +228,8 @@ def account_page(token: str, message: str = "", account: str = "",
         body = (msg
                 + sec("当前账号", '<div class="card">'
                       f'<div class="kvline"><span>账号</span><b>{esc(st["label"] or "已登录")}</b></div>'
-                      '<p class="note">令牌只存在这台手机里。换手机重新登录就能找回组和榜单，'
-                      '不需要备份什么。</p></div>')
+                      '<p class="note">令牌只存在这台手机里。换手机重新登录即可'
+                      '找回组和榜单。</p></div>')
                 # 账号昵称是建组/入组时的默认名字，在这里改一次就够
                 + sec("昵称", '<div class="flat">'
                       f'<form action="/__account/nickname" method="post">{_tok(token)}'
@@ -255,7 +255,7 @@ def account_page(token: str, message: str = "", account: str = "",
                  f'<input type="text" name="account" value="{esc(account)}" '
                  'placeholder="you@example.com" autocomplete="username">'
                  '</b></div></div>'
-                 '<p class="note">首次登录会自动注册。登录只用于训练小组与平台额度，'
+                 '<p class="note">首次登录自动注册，只用于小组和平台额度，'
                  '不绑定跑步数据。</p>'
                  '<div class="pager"><button class="btn primary" type="submit">发送验证码</button>'
                  '</div></form>')
@@ -297,9 +297,8 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
     st = AC.state()
     msg = _msg(message)
     if not st["logged_in"]:
-        body = (msg + '<div class="card"><p class="note">训练小组需要一个账号：'
-                '建组、加入朋友的组、看本周榜都靠它。只上传每日里程合计，'
-                '不上传原始轨迹和位置。</p>'
+        body = (msg + '<div class="card"><p class="note">小组需要登录：'
+                '建组、入组、看榜。只上传每日里程合计，不上传位置。</p>'
                 '<div class="pager"><a class="btn primary" href="/account">去登录</a></div>'
                 '</div>')
         return page("GROUP", "训练小组", "还没登录", body,
@@ -426,9 +425,9 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
     blocked = ""
     if owner_g:
         blocked = (
-            '<div class="card flat"><p class="note">你已经当着「'
-            f'{esc(owner_g.get("name"))}」的组长，一个人同时只能当一个组的组长。'
-            '想建新组，先去那个组的设置里解散或转让。</p>'
+            '<div class="card flat"><p class="note">你已经是「'
+            f'{esc(owner_g.get("name"))}」的组长，一人只能当一组的组长。'
+            '建新组前先解散或转让。</p>'
             f'<div class="pager"><a class="btn sm" '
             f'href="/groups/{int(owner_g["id"])}/settings">去处理</a></div></div>')
     elif len(items) >= 3:
@@ -500,7 +499,7 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
             f'<form action="/__group/{gid}/report" method="post">{_tok(token)}'
             '<div class="setrow"><span>上报</span>'
             '<span class="note" style="flex:1 1 auto;margin:0">同步时自动上报；'
-            '缺轨迹的活动会顺带补抓，可能等几秒</span>'
+            '缺轨迹的会补抓，可能等几秒</span>'
             '<button class="btn sm" type="submit">立即</button></div></form>')
 
     grp = ""
@@ -534,13 +533,11 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
     else:
         # 组长不能直接退出，但**必须能解散**：一个人同时只能当 1 个组的组长，
         # 建新组时服务端会 409。没有解散入口的话，「建不了新组」就成了死结。
-        grp += ('<p class="note">你是组长：先把组长转给别人才能退出，'
-                '或者直接解散这个组。</p>'
+        grp += ('<p class="note">你是组长。要退出得先转让，或者解散这个组。</p>'
                 f'<details class="fold"><summary>解散这个组'
                 '<span class="fx">›</span></summary>'
                 '<div class="foldbody">'
-                '<p class="note">解散后这个组、榜和赛事都不再出现，成员也看不到；'
-                '这个动作不能撤销。</p>'
+                '<p class="note">解散后组、榜、赛事都不再出现，且不能撤销。</p>'
                 f'<form action="/__group/{gid}/archive" method="post">{_tok(token)}'
                 '<label class="ckline"><input type="checkbox" name="confirm"'
                 ' value="1"> 我知道解散不能撤销</label>'
@@ -561,8 +558,8 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
     body = (_msg(message)
             + sec("我的", '<div class="flat">' + mine + '</div>')
             + sec("组", '<div class="flat">' + grp + '</div>')
-            + '<p class="note">组里只收每日里程合计和活动概要；轨迹、配速、'
-              '位置都不上传。关掉共享之后，这些数据在组内立刻不可见。</p>')
+            + '<p class="note">只收每日里程合计和活动概要，不上传轨迹点、'
+              '配速和位置。</p>')
     return _with_copy(page(
         "GROUP", "小组设置",
         f'{esc(g.get("name"))} · '
@@ -1047,7 +1044,7 @@ def challenge_page(token: str, gid: int, cid: int, message: str = "") -> str:
                 f'<span class="nm">{esc(x.get("alias"))}</span>{mk}'
                 f'<span class="km">{_num}<i>{_den}</i></span></div>')
     if not lis:
-        lis = '<p class="note">还没有人上榜。打开 App 同步一次，成绩会出现在这里。</p>'
+        lis = '<p class="note">还没有人上榜。打开 App 同步一次。</p>'
     if hidden:
         lis += (f'<p class="note">另有 {hidden} 人关闭了共享，不参与这场比赛。</p>')
 
@@ -1058,8 +1055,7 @@ def challenge_page(token: str, gid: int, cid: int, message: str = "") -> str:
             '<span class="fx">›</span></summary><div class="foldbody">'
             f'<form action="/__group/{gid}/challenge/{int(cid)}/close" method="post">'
             + _tok(token)
-            + '<p class="note">结束后不再累计，已跑的成绩保留可查。到期会自动结束，'
-              '不用手动点。</p>'
+            + '<p class="note">结束后不再累计，成绩保留。到期自动结束。</p>'
               '<div class="pager"><button class="btn danger" type="submit" '
               'onclick="return confirm(\'提前结束这个赛事？\')">结束</button></div>'
               '</form></div></details>')
@@ -1067,11 +1063,9 @@ def challenge_page(token: str, gid: int, cid: int, message: str = "") -> str:
     body = (_msg(message)
             + sec("这场怎么算", head)
             + sec("谁排第几", '<div class="flat">' + lis + '</div>')
-            + ('<p class="note">已达成的人按达成日期排，其余按完成度排；'
-               '完成度按周期内的累计值算，不是最快的一次。</p>'
+            + ('<p class="note">已达成按达成日排，其余按完成度排。</p>'
                if kind != "speed" else
-               '<p class="note">配速是「累计时长 ÷ 累计距离」，越跑越快才会变好，'
-               '不是取最快的那一次。</p>')
+               '<p class="note">配速 = 累计时长 ÷ 累计距离。</p>')
             + close_form)
     return page("GROUP", str(ch.get("title") or "赛事"),
                 f'{len(rows)} 人 · {pct:.0f}%', body,
@@ -1286,15 +1280,14 @@ def feed_page(token: str, gid: int, message: str = "", act: int = 0) -> str:
     # 会以为功能坏了，而补报是**手动**的（设置页那个「立即」），所以要明说。
     _no_shape = bool(rows) and not any(str(x.get("shape") or "") for x in rows)
     body = (_msg(message)
-            + ('<p class="note">剪影要补报一次才有：小组设置 → 上报 →「立即」，'
-               '会补最近 14 天的活动；更早的只显示「无轨迹」。</p>'
+            + ('<p class="note">轨迹要补报一次：小组设置 → 上报 → 立即，'
+               '补最近 14 天。</p>'
                if _no_shape else "")
             + sec("大家最近", items)
             + (f'<p class="note">另有 {hidden} 人关闭了共享，不出现在这里。</p>'
                if hidden else "")
-            + '<p class="note">轨迹就是这次跑过的路线本身：没有底图、不标起终点、'
-              '不含经纬度——看得到怎么跑的，看不出跑在哪条街。'
-              '配速是按距离÷时长算的，不是上传的原始配速。</p>'
+            + '<p class="note">轨迹只有形状：没有底图，不标起终点，不含经纬度。'
+              '配速按距离 ÷ 时长算。</p>'
             + SAY_JS)
     return page("GROUP", "动态", f"{len(rows)} 条", body,
                 foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
@@ -1468,10 +1461,6 @@ def shirts_page(token: str, gid: int, message: str = "") -> str:
 
     body = (_msg(message) + intro
             + sec("六项称号", '<div class="honbox">' + cards + '</div>')
-            + '<details class="hwhy"><summary>为什么叫「衫」？</summary>'
-              '<p class="hintro">这个叫法借自公路自行车：总成绩第一穿黄衫，'
-              '爬坡王穿红点衫。跑步组沿用这套颜色——六个称号配六种颜色，'
-              '扫一眼就知道自己缺哪几件。</p></details>'
             + '<p class="note">关掉共享的人不参与。探索徽章不占称号，'
               '单独列在最后一行。</p>')
 
@@ -1617,8 +1606,8 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
     if _n <= 1:
         _code = str(g.get("invite_code") or "")
         if _code:
-            rank_rows += ('<p class="note">本周还没有队友上榜。把邀请码发出去，'
-                          '他们加入并上报后就会排在这里。</p>'
+            rank_rows += ('<p class="note">本周还没有队友。把邀请码发给他们，'
+                          '加入并上报后就会上榜。</p>'
                           '<div class="invrow">'
                           f'<span class="iv">{esc(_code)}</span>'
                           '<button class="btn sm" type="button" '
@@ -1629,7 +1618,7 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
                           f'<div class="pager"><a class="btn sm primary" '
                           f'href="/groups/{gid}/settings">邀请队友</a></div>')
     elif not rank_rows:
-        rank_rows = '<p class="note">本周还没有人上报。打开 App 才会同步，不跑后台任务。</p>'
+        rank_rows = '<p class="note">本周还没有人上报。打开 App 才会同步。</p>'
     if hidden:
         rank_rows += f'<p class="note">另有 {hidden} 人关闭了共享，不参与排名。</p>'
     # 完整榜单是**另一个页面**：组页要看动态，榜单不能无限长。
@@ -1656,7 +1645,7 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
                     f'<div class="bar{" done" if done else ""}">'
                     f'<i style="width:{min(100, pct):.0f}%"></i></div></a>')
     if not ch_rows:
-        ch_rows = '<p class="note">还没有赛事。组长可以建一个共同目标，全组自动参与。</p>'
+        ch_rows = '<p class="note">还没有赛事。组长可以建一个，全组自动参与。</p>'
 
     chal_form = ""
     if is_admin:
@@ -1818,8 +1807,7 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
                     f'<b>{_bn:g}<i> / {float(_xb):g} 分</i></b></div>'
                     f'<div class="bar{" done" if _bn > 0 else ""}">'
                     f'<i style="width:{_bp:.0f}%"></i></div>'
-                    f'<div class="sp-s">让分赛与预言给的加分'
-                    f'（具体值见下面的「这三个怎么算」）</div></div>')
+                    f'<div class="sp-s">让分赛与预言的加分</div></div>')
 
             # ---- 称号：为什么是「同行者」
             _tlist = ""
@@ -1832,25 +1820,21 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
             # 称号的判定有优先级（同行者 > 远征队长 > 先锋 > 行者），
             # 所以「我为什么是这个」不能只说门槛，要说命中的那一条。
             _why = {
-                "同行者": f'全组这周都动了，你也已经参与 {int(_me.get("weeks") or 1)} 周',
-                "远征队长": f'本周综合分第 {_rk} 名，在全组前 10%',
-                "先锋": f'本周综合分第 {_rk} 名，在全组前 30%',
-                "行者": f'已经参与 {int(_me.get("weeks") or 1)} 周',
+                "同行者": f'全组这周都动了，你也已参与 {int(_me.get("weeks") or 1)} 周',
+                "远征队长": f'综合分第 {_rk} 名，前 10%',
+                "先锋": f'综合分第 {_rk} 名，前 30%',
+                "行者": f'已参与 {int(_me.get("weeks") or 1)} 周',
             }.get(_tt, "")
             _how = (f'<details class="scorehow" data-k="scorehow">'
-                    f'<summary>这个分数和称号是怎么来的'
+                    f'<summary>详细情况'
                     '<span class="fx">›</span></summary>'
                     f'<div class="shbody">'
-                    f'<p class="note">名次按综合分从高到低排，同分并列。'
-                    f'分数是<b>组内相对分</b>：每一项都拿你和组里最高的人比，'
-                    f'所以换一批队友、换一周，同样的跑量算出来也不一样——'
-                    f'它只用来排这个组的名次，不是能力评级。</p>'
-                    f'<p class="note">满分 {float(_bm):g} 是五项权重之和，'
-                    f'不是扣分制；加分另算，最多 {float(_xb):g} 分。</p>'
+                    f'<p class="note">名次按综合分排，同分并列。每项和组里'
+                    f'最高的比，满分 {float(_bm):g}，加分最多 {float(_xb):g}。</p>'
                     + _sp
                     + '<div class="sp-t">称号</div>'
-                    + (f'<p class="note">你现在是「<b>{esc(_tt)}</b>」——'
-                       f'{esc(_why)}。称号只取最高的一个，不叠加。</p>'
+                    + (f'<p class="note">你现在是「<b>{esc(_tt)}</b>」：'
+                       f'{esc(_why)}。称号只取最高的一个。</p>'
                        if _tt else
                        '<p class="note">这周还没有称号：综合分不在前 30%，'
                        '参与也还没满 3 周。</p>')
@@ -2004,8 +1988,8 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
                      '<div class="pager"><button class="btn sm primary" type="submit">保存'
                      '</button></div></form>'
                      + _no_tgt +
-                     '<p class="note">只想猜别人、不改目标？把上面的目标框清空直接保存。'
-                     '目标填低一点也没关系，达成比好看重要。</p></div></details>')
+                     '<p class="note">只猜人、不改目标：目标框留空直接保存。</p>'
+                     '</div></details>')
 
     # 「衫」那行内容是流式的（六件全有得主会折两行），要允许换行；
     # 其它行是单行结论，用省略号截断。
@@ -2026,17 +2010,15 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
     _face_s = float(_hr.get("predict_face") or 3)
     _min_km = float(_hr.get("min_km") or 5)
     week_how = (
-        '<details class="fold" data-k="how"><summary>这三个怎么算'
+        '<details class="fold" data-k="how"><summary>玩法说明'
         '<span class="fx">›</span></summary><div class="foldbody">'
         '<p class="note"><b>定目标</b>：这周打算跑多少 km。报了目标才会进让分赛，'
-        '也才会被别人猜。周内随时能改，改完按新目标结算。</p>'
-        f'<p class="note"><b>让分赛</b>：两个都报了 {_min_km:g} km 以上目标的人自动配一对，'
-        f'按目标高低一强一弱搭。强的那位要多跑「对方目标的 {_hc_pct}%」'
-        f'（最多到自己目标的 {_cap:g} 倍）；两个人目标差不多就不让分，只结伴。'
-        '两人都跑完 = 双人徽章；弱的跑完、强的没跑完 = 逆袭。</p>'
-        f'<p class="note"><b>预言</b>：挑一个报了目标的队友，猜他这周完不成。'
-        f'猜中 +{_hit_s:g} 分；被你猜中却完成了，他 +{_face_s:g} 分。</p>'
-        '<p class="note">每项都按「周一 00:00 到周日 24:00」结算，下周一自动清零重来。</p>'
+        '也才会被猜。周内可改。</p>'
+        f'<p class="note"><b>让分赛</b>：两个都报了 {_min_km:g} km 以上目标的人自动配对。'
+        f'目标高的多跑「对方目标的 {_hc_pct}%」，最多到自己的 {_cap:g} 倍。'
+        '两人都完成 = 双人徽章；弱的完成、高的没完成 = 逆袭。</p>'
+        f'<p class="note"><b>预言</b>：猜一个报了目标的队友这周完不成。'
+        f'猜中 +{_hit_s:g}；他完成了 +{_face_s:g}，算他的。</p>'
         '</div></details>')
 
     # ---- 功能入口：一排并列的小图标
@@ -2237,7 +2219,7 @@ def board_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                     f'<span class="v">第 <b>{_mine}</b> 名<s>·</s>'
                     f'{_my_km:g} km<s>·</s>共 {len(rows)} 人</span></div>')
     elif rows:
-        _me_line = '<p class="note">这周还没上报，所以榜上暂时没有你。</p>'
+        _me_line = '<p class="note">这周还没上报，榜上暂时没有你。</p>'
 
     # 分段控件：周 / 月。选中态用 .ok，和计划页的粒度切换同一套语义。
     tab = (f'<div class="seg">'

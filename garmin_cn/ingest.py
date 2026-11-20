@@ -391,8 +391,8 @@ def validate(ev: dict, course: dict) -> list[dict]:
             if spd > MAX_EQ_SPEED:
                 issues.append(_issue(
                     "error", "speed_fast", "CP%s" % s.get("idx"),
-                    "CP%s 这段要求 %.1f km/h 等效（%.1f km / %.1f h），超过人类极限 %.0f——"
-                    "关门时间大概率录错（漏了一小时/12:45 认成 02:45）"
+                    "CP%s 要求 %.1f km/h 等效（%.1f km / %.1f h），"
+                    "超过上限 %.0f。关门时间可能录错（漏一小时，或 12:45 写成 02:45）"
                     % (s.get("idx"), spd, eq, leg_h, MAX_EQ_SPEED)))
             elif spd < MIN_EQ_SPEED:
                 issues.append(_issue(
@@ -428,8 +428,8 @@ def validate(ev: dict, course: dict) -> list[dict]:
             if t_share > 3 * e_share and lh > dur_total * 0.2:
                 issues.append(_issue(
                     "error", "share", "CP%s" % x.get("idx"),
-                    "CP%s 这一段花了总关门的 %.0f%%（%.1f h），等效距离只占 %.0f%%"
-                    "（%.0f 倍）——钟点大概率录错（小时位漏了一位，或跨零点被算错）"
+                    "CP%s 占掉总关门 %.0f%%（%.1f h），等效距离只占 %.0f%%"
+                    "（%.0f 倍）。钟点可能录错（漏一位，或跨零点算错）"
                     % (x.get("idx"), t_share * 100, lh, e_share * 100,
                        t_share / max(e_share, 1e-6))))
 
@@ -575,7 +575,7 @@ def apply(ev: dict, draft: dict, by: str = "user", force: bool = False) -> dict:
     if estimated:
         issues.append(_issue(
             "warn", "dplus_est", "segments",
-            "没有官方的分段爬升，已按里程比例摊总爬升——等效距离与余量是估算值"))
+            "没有分段爬升数据，已按里程摊总爬升。等效距离与余量是估算。"))
     if errors(issues) and not force:
         return {"ok": False, "issues": issues,
                 "error": "有 %d 处必须修正，未写入" % len(errors(issues))}

@@ -1399,7 +1399,7 @@ def run() -> int:
         "建组/加入没有了"
     # 建组有两个服务端硬限制（一人只能当 1 个组的组长 / 最多 3 个组），
     # 命中时不能还摆一个注定 409 的表单
-    assert "owner_g =" in _gsrc and "你已经当着「" in _gsrc, \
+    assert "owner_g =" in _gsrc and "你已经是「" in _gsrc, \
         "已经是组长时还摆着建组表单"
     _ssrc = inspect.getsource(_GU.settings_page)
     assert "/archive" in _ssrc and "解散这个组" in _ssrc, \
@@ -1699,10 +1699,10 @@ def run() -> int:
     assert "完不成" in _gh, "我投的预言没回显"
     assert 'name="predict"' in _gh, "没有预言选择框"
     # 「怎么算的」：玩法规则要能自己读到，不能靠猜
-    assert "这三个怎么算" in _gh, "没有玩法说明入口"
+    assert "玩法说明" in _gh, "没有玩法说明入口"
     for _h in ("定目标", "让分赛", "预言"):
         assert f"<b>{_h}</b>" in _gh, f"玩法说明缺「{_h}」"
-    assert "周一 00:00 到周日 24:00" in _gh, "玩法说明没写结算周期"
+    # 结算周期只在「周期」那一行说一次，说明里不再重复
     # 目标入口是 details：summary 那行常驻，表单点开才出现
     assert '<details class="goalrow"' in _gh and 'data-k="goal"' in _gh, \
         "目标入口不是可展开的（或没留还原状态的 key）"
@@ -1935,7 +1935,7 @@ def run() -> int:
     _ept = [tuple(int(v) for v in s2.split(","))
             for s2 in _GP._shape(_east).split(";")]
     assert _ept[0][0] < _ept[-1][0], "轨迹东西倒了：往东跑画成了往左"
-    assert "配速是按距离÷时长算的" in _fdp, "动态页没写清配速是算出来的"
+    assert "配速按距离 ÷ 时长算" in _fdp, "动态页没写清配速是算出来的"
     # 剪影是脱敏形状，文案必须说清「不含坐标/位置」，否则等于隐瞒上传了什么
     assert "不含经纬度" in _fdp and "没有底图" in _fdp, \
         "动态页没写清轨迹不含坐标、没有底图"

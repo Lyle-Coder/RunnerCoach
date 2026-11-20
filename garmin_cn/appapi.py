@@ -3829,7 +3829,7 @@ def db_import(zip_path: str = "") -> dict:
             newer = False
         if newer:
             return {"ok": False,
-                    "error": "这个包来自更新的版本，请先把 App 升级到最新再导入"}
+                    "error": "这个包版本更高，先升级 App 再导入"}
 
         tmp = HOME / "data" / ".import.part"
         try:
