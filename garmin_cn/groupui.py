@@ -968,7 +968,13 @@ def feed_page(token: str, gid: int, message: str = "", act: int = 0) -> str:
         items = ('<div class="card"><p class="note">最近还没有动态。'
                  '同步一次后，你和队友的活动概要会出现在这里。</p></div>')
     hidden = int(r.get("hidden") or 0)
+    # 剪影从 1.5.11 才开始上传，老数据全是空的。用户一进来看到一片「无轨迹」
+    # 会以为功能坏了，而补报是**手动**的（设置页那个「立即」），所以要明说。
+    _no_shape = bool(rows) and not any(str(x.get("shape") or "") for x in rows)
     body = (_msg(message)
+            + ('<p class="note">剪影要补报一次才有：小组设置 → 上报 →「立即」，'
+               '会补最近 14 天的活动；更早的只显示「无轨迹」。</p>'
+               if _no_shape else "")
             + sec("大家最近", items)
             + (f'<p class="note">另有 {hidden} 人关闭了共享，不出现在这里。</p>'
                if hidden else "")
