@@ -25,6 +25,7 @@
 """
 
 import json
+from html import escape as _hes
 from pathlib import Path
 
 from . import ui
@@ -236,6 +237,22 @@ CN_NUM = "一二三四五六"
 
 
 # ---------------------------------------------------------------- 小工具
+def _on(code: str) -> str:
+    """把一段 JS 拼进 onclick 属性。
+
+    **必须转义双引号**。属性本身是双引号包裹的，而 `json.dumps("a")` 的
+    结果是 `"a"`（带双引号）。直接把后者拼进去，浏览器会在它那个双引号处
+    提前结束属性：
+
+        onclick="rcPick(0,"a");return false"
+        → 实际值只剩 `rcPick(0,`
+
+    点击时抛语法错误，一行 JS 都不执行，也不会发出任何请求。表现就是
+    「所有按钮点了没反应」，而且没有任何报错可看——这个坑比参数缺失更彻底。
+    """
+    return f'onclick="{_hes(code, quote=True)}"'
+
+
 def _icon(name: str, size: int = 16) -> str:
     """内联 SVG 图标。用 path 不用字体：图标字体在 WebView 里要么缺字要么糊。"""
     paths = {
@@ -388,8 +405,9 @@ def _options_html(ev: dict, slot: int) -> str:
         if picked:
             out.append(f'<div class="opt on">{inner}</div>')
         else:
-            out.append(f'<a class="opt" href="#" onclick="rcPick({slot},'
-                       f'{json.dumps(oid)});return false">{inner}</a>')
+            out.append(f'<a class="opt" href="#" '
+                       f'{_on(f"rcPick({slot},{json.dumps(oid)});return false")}'
+                       f'>{inner}</a>')
     return "".join(out)
 
 
@@ -443,8 +461,8 @@ def event_card(ev: dict, slot: int) -> str:
         else:
             tid = json.dumps(str(ev.get("id") or ""))
             tail += ('<div class="tbtns">'
-                     f'<button class="ok" onclick="rcTrial({tid},true)">跑完了</button>'
-                     f'<button onclick="rcTrial({tid},false)">没跑成</button>'
+                     f'<button class="ok" {_on(f"rcTrial({tid},true)")}>跑完了</button>'
+                     f'<button {_on(f"rcTrial({tid},false)")}>没跑成</button>'
                      "</div>"
                      '<div class="thint">会拿本周的活动记录核一遍：'
                      "没有记录就按未核验记，格数只算一半。</div>")
@@ -634,7 +652,7 @@ def run_page(token: str, message: str = "", data: dict | None = None,
                  " 1 格行程和 1 份补给，换来全队士气 +1。</div>")
         for x in stranded[:3]:
             uid = int(x.get("user_id") or 0)
-            stuck += f'<button onclick="rcRescue({uid})">去接他</button>'
+            stuck += f'<button {_on(f"rcRescue({uid})")}>去接他</button>'
         stuck += "</div>"
 
     # ---- 本周目标
