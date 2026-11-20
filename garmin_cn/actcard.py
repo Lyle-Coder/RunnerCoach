@@ -87,7 +87,7 @@ TW_W = round(TECH_W * 1.18 / 2.18)
 LD_W = TECH_W - TW_W
 TW_CW = TW_W - 2 - 48          # 技术卡内容宽
 LD_CW = LD_W - 2 - 48          # 负荷卡内容宽
-TECH_H = 322                   # 两卡同高
+TECH_H = 344                   # 两卡同高（1.6.1 起 +22：负荷卡多了参照与 TE 释义两行）
 SPK_H = 140                    # 步频 / 步幅走势高度（原 96，去掉区间条后加高）
 
 BG = "#0F1319"
@@ -188,6 +188,42 @@ def dur_txt(sec, zero: str = "—") -> str:
     sec = round(sec)
     h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _recent_load(row: dict) -> tuple[float, int, float] | None:
+    """近 7 天（含本次）的累计负荷、次数、本次负荷。
+
+    出图是本地行为，读的是同一台机器上的库，所以一次聚合查询就够。
+    库里没有这条活动、或表结构不对，返回 None，卡片上就不显示这一行——
+    宁可少一行，也不编一个「参照」出来。
+    """
+    d = str(row.get("date") or "")[:10]
+    if not d:
+        return None
+    try:
+        start = (dt.date.fromisoformat(d) - dt.timedelta(days=6)).isoformat()
+    except ValueError:
+        return None
+    home = os.environ.get("GARMIN_HOME")
+    base = Path(home).expanduser() if home else Path(__file__).resolve().parent.parent
+    db = base / "data" / "garmin.db"
+    if not db.exists():
+        return None
+    try:
+        import sqlite3
+        c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            got = c.execute(
+                "SELECT COALESCE(SUM(load),0), COUNT(*) FROM activities"
+                " WHERE date BETWEEN ? AND ? AND load > 0", (start, d)).fetchone()
+        finally:
+            c.close()
+    except Exception:      # noqa: BLE001 - 读不到就当没有参照，不影响出图
+        return None
+    total, n = float(got[0] or 0), int(got[1] or 0)
+    if n <= 0:
+        return None
+    return (total, n, float(num(row.get("load")) or 0))
 
 
 def _hcell(v: str, u: str, wd: int = 0, tier: str = "") -> str:
@@ -560,7 +596,8 @@ def ele_span(points: list) -> tuple[float, float] | None:
     return lo, hi
 
 
-def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
+def chart_svg(points: list, w: int, h: int, theme: dict | None = None,
+              km_axis: bool = True) -> str:
     th = theme or theme_for(None)
     # 纵向刻度口径跟着运动走：跑步标配速，骑行/划船标时速
     if th["kind"] == "speed":
@@ -681,12 +718,21 @@ def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
     seg_e = _path(xs, ey) if use_ele else ""
     area_e = _area(xs, ey, e_top + e_h) if use_ele else ""
     ticks = []
-    for frac in (0, 0.25, 0.5, 0.75, 1.0):
-        lbl = dur_txt(span * frac, "0:00")
+    # 爬楼这类「距离是楼层折算」的课不给公里刻度：4.69 km 不是真跑了 4.69 km，
+    # 标上「1km/2km」等于把折算值当路程讲。调用方判定后传 km_axis=False。
+    marks = _km_marks(run, t0, span) if km_axis else None
+    if marks:
+        grid = marks
+    else:
+        # 没有可信距离就退回时间轴，四分位
+        grid = [(f, dur_txt(span * f, "0:00")) for f in (0, 0.25, 0.5, 0.75, 1.0)]
+    for frac, lbl in grid:
         x = x0 + pw * frac
-        anchor = "start" if frac == 0 else ("end" if frac == 1 else "middle")
-        ticks.append(f'<text x="{x:.0f}" y="{h - 6}" class="axis" text-anchor="{anchor}">{lbl}</text>')
-        if 0 < frac < 1:
+        anchor = ("start" if frac <= 0.02 else
+                  "end" if frac >= 0.98 else "middle")
+        ticks.append(f'<text x="{x:.0f}" y="{h - 6}" class="axis" '
+                     f'text-anchor="{anchor}">{esc(lbl)}</text>')
+        if 0.02 < frac < 0.98:
             ticks.append(f'<line x1="{x:.0f}" y1="{top_pad}" x2="{x:.0f}" y2="{top_pad + plot_h}" '
                          f'stroke="{LINE}" stroke-width="1" stroke-dasharray="3 5"/>')
 
@@ -749,6 +795,44 @@ def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
   {ele_layer}
   </g>
 </svg>"""
+
+
+def _km_marks(run: list, t0: float, span: float) -> list[tuple[float, str]] | None:
+    """x 轴刻度按公里给，而不是绝对时间。
+
+    跑者读图时想的是「第 5 公里发生了什么」，不是「第 29 分钟」。
+    距离缺失或不单调（跑步机、爬楼这种按楼层折算的）就返回 None，
+    调用方退回时间刻度——不硬编一个假的公里数上去。
+    """
+    ds = [p.get("dist") for p in run]
+    if len(ds) < 8 or any(d is None for d in ds):
+        return None
+    if any(b < a - 1 for a, b in zip(ds, ds[1:])):
+        return None
+    total = float(ds[-1])
+    if total < 1000:
+        return None
+    km = total / 1000.0
+    step = 50
+    for cand in (1, 2, 5, 10, 20, 50):
+        step = cand
+        if km / cand <= 6:
+            break
+    out: list[tuple[float, str]] = []
+    k = 0
+    while k * step < km - 0.05:
+        d = k * step * 1000.0
+        idx = next((i for i, v in enumerate(ds) if v >= d), len(ds) - 1)
+        t = run[idx].get("t")
+        if not t:
+            return None
+        frac = (t - t0) / (span or 1)
+        out.append((min(1.0, max(0.0, frac)), f"{k * step}km" if k else "0"))
+        k += 1
+    # 两个刻度落在同一点上（配速极慢时会出现）就没有意义
+    if len(out) < 3 or len({round(f, 3) for f, _ in out}) != len(out):
+        return None
+    return out
 
 
 def _path(xs: list, ys: list) -> str:
@@ -1012,6 +1096,13 @@ def lap_rows(laps: list[dict], theme: dict | None = None,
         return '<div class="empty">无分圈数据</div>'
     paces = [l["pace_s"] for l in real]
     fast, slow = min(paces), max(paces)
+    # 最快/最慢只在**完整圈**里评：最后一段常是 1.1 km 的零头，距离短配速天然快，
+    # 标成「最快段」会误导（11 km 那张的最后 1.1 km 就是 4'57"）。
+    full = [l for l in real if not l.get("is_partial")]
+    f_idx = s_idx = None
+    if len(full) >= 3:
+        f_idx = min(full, key=lambda x: x["pace_s"])
+        s_idx = max(full, key=lambda x: x["pace_s"])
     total_dist = sum(l["dist_m"] for l in real)
     avg = sum(l["dur_s"] for l in real) * 1000 / total_dist if total_dist else None
     span = (slow - fast) or 1
@@ -1029,8 +1120,16 @@ def lap_rows(laps: list[dict], theme: dict | None = None,
         hr = f"{l['hr_avg']:.0f}" if l.get("hr_avg") else "—"
         main = (f"{kmh(l['pace_s']):.1f}" if th["kind"] == "speed"
                 else pace_txt(l["pace_s"]))
+        row_cls = "lrow"
+        if l.get("is_partial"):
+            row_cls += " partial"
+        # 只加行底色和圈号颜色，**不动任何列宽**：改宽度会让整张表错位
+        elif l is f_idx:
+            row_cls += " fast"
+        elif l is s_idx:
+            row_cls += " slow"
         out.append(
-            f'<div class="lrow{" partial" if l.get("is_partial") else ""}">'
+            f'<div class="{row_cls}">'
             f'<span class="lid">{l["idx"]}</span>'
             f'<span class="ldist">{dist} km</span>'
             f'<span class="lbar"><i style="width:{width:.1f}%;background:{color}"></i></span>'
@@ -1047,7 +1146,13 @@ def lap_rows(laps: list[dict], theme: dict | None = None,
         head = ('<div class="lhead"><span class="lid">圈</span><span class="ldist">距离</span>'
                 '<span class="lbar"></span><span class="lpace">配速</span>'
                 '<span class="lhr">心率</span><span class="lcad">步频</span></div>')
-        note = f'分段平均 {pace_txt(avg)}｜最快段 {pace_txt(fast)}｜最慢段 {pace_txt(slow)}'
+        # 底部文字必须和行内标记同一口径：否则「最快 4'57"」会指向那行
+        # 被淡化、也没标记的零头段，自相矛盾。用「段」不用「圈」——
+        # 圈数超过 10 会按整数圈合并，合并后的一行未必是整圈。
+        _f = min(l["pace_s"] for l in full) if full else fast
+        _s2 = max(l["pace_s"] for l in full) if full else slow
+        note = (f'平均 {pace_txt(avg)} · 最快段 {pace_txt(_f)} · '
+                f'最慢段 {pace_txt(_s2)}')
     return head + ''.join(out) + f'<div class="lnote">{note}</div>'
 
 
@@ -1303,6 +1408,17 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
 
     te_a = f'{num(row["aerobic_te"]):.1f}' if num(row.get("aerobic_te")) is not None else "—"
     te_n = f'{num(row["anaerobic_te"]):.1f}' if num(row.get("anaerobic_te")) is not None else "—"
+    # 负荷参照：孤立一个「91」看不出高低，补上近 7 天累计和占比
+    _ref = _recent_load(row)
+    ldref = ""
+    if _ref and _ref[1] >= 2:
+        _tot, _n, _mine = _ref
+        _share = _mine / _tot * 100 if _tot else 0
+        ldref = f'近 7 天 {_tot:.0f} / {_n} 次 · 本次占 {_share:.0f}%'
+    elif _ref:
+        ldref = "近 7 天只有这一次"
+    # TE 对多数人是个陌生缩写，给一行极简对照，不解释算法
+    te_hint = "TE ≥3 才算练到" if (te_a != "—" or te_n != "—") else ""
     # 佳明在活动列表 raw 里带这两个字段；高驰的跑步动态在明细 summary 里，
     # 由 coros_activity.dynamics() 归一成 ms / cm 后放在 gct_ms、vo_cm。
     gct = (num(s.get("gct_ms")) if is_coros else
@@ -1467,7 +1583,10 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
             bar = ''.join(f'<i title="Z{z["zone"]} {z["seconds"] / 60:.1f} 分钟" style="display:block;width:{z["seconds"] / ztotal * 100:.2f}%;background:{colors[z["zone"] - 1]}"></i>' for z in zs)
             power_note += '<br>功率区间（Z1–Z7）<div style="display:flex;height:10px;margin-top:5px;border-radius:5px;overflow:hidden">' + bar + '</div>'
     if chart_html is None:
-        chart_html = chart_svg(points, CH_CW, 262, th)
+        # 首档叫「爬升」= 楼层课，距离是折算出来的，x 轴退回时间
+        _stair = bool(iv and any((b or {}).get("name") == "爬升"
+                                 for b in (iv.get("bands") or [])))
+        chart_html = chart_svg(points, CH_CW, 262, th, km_axis=not _stair)
     # hero 右侧固定「上 3 下 3」：用时 / 爬升 / 主要益处，然后技术三项。
     # 距离已经提到左侧大数字，不再重复占格。
     # 高驰没有 Garmin 的 trainingEffectLabel，但给了有氧/无氧 TE；
@@ -1533,7 +1652,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
   <div class="{head_cls}">
     <div class="hleft">
       <div class="hname">{esc(title or row.get("name"))}</div>
-      <div class="hsub">{esc(date_txt)} {esc(wd)}{time_txt}{(' · ' + esc(weather_txt)) if weather_txt else ''}</div>
+      <div class="hsub">{esc(date_txt)} {esc(wd)}{time_txt}{(' · <span class="env">' + esc(weather_txt) + '</span>') if weather_txt else ''}</div>
     </div>
     <div class="htag">{htag_html}</div>
   </div>
@@ -1584,6 +1703,8 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
         <div class="t"><b>{te_a}</b><span>有氧 TE</span></div>
         <div class="t"><b>{te_n}</b><span>无氧 TE</span></div>
       </div>
+      {f'<div class="ldref">{ldref}</div>' if ldref else ''}
+      {f'<div class="tehint">{te_hint}</div>' if te_hint else ''}
       <div class="drift{' power-note' if power_note else ''}">{power_note or ("—" if is_coros else _drift_txt(drift, s, th))}</div>
     </div>
   </div>
@@ -1637,14 +1758,22 @@ def _drift_txt(drift: dict, s: dict, theme: dict | None = None) -> str:
     else:
         trend = "配速加快" if dp < -3 else ("配速放慢" if dp > 3 else "配速持平")
         f_txt = pace_txt
-    # 「心率持平 0 bpm」是句病句：都说持平了，后面那个 0 只是把同一件事写两遍
+    # 结论前置：先给「这次漂移大不大」，数据和趋势退到第二行。
+    # 原来先摆四个数再说「上浮 14 bpm」，读的人得自己判断这算不算多。
+    # 口径按百分比：前半程心率做分母，>8% 明显、>4% 偏大（有氧漂移的常用界线）。
+    base = max(1, int(drift["hr_first"]))
+    pct = dh / base * 100
     if abs(dh) <= 3:
-        htxt = "心率持平"
+        head = "心率稳定"
+    elif pct >= 8:
+        head = f'心率漂移明显（{pct:+.0f}%）'
+    elif pct >= 4:
+        head = f'心率漂移偏大（{pct:+.0f}%）'
     else:
-        htxt = f'心率{"上浮" if dh > 0 else "回落"} {abs(dh)} bpm'
-    return (f'前 {f_txt(drift["pace_first"])}/{drift["hr_first"]}bpm → '
-            f'后 {f_txt(drift["pace_second"])}/{drift["hr_second"]}bpm<br>'
-            f'{trend}，{htxt}')
+        head = f'心率基本稳定（{pct:+.0f}%）'
+    return (f'{head}<br>'
+            f'前 {f_txt(drift["pace_first"])}/{drift["hr_first"]} → '
+            f'后 {f_txt(drift["pace_second"])}/{drift["hr_second"]}，{trend}')
 
 
 _CSS = """
@@ -1674,9 +1803,13 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .hname{font-size:36px;font-weight:700;letter-spacing:.5px;line-height:1.3;
   overflow-wrap:anywhere;word-break:break-word;
   max-height:calc(36px * 1.3 * 2);overflow:hidden}
-.hsub{font-size:21px;color:#939FAD;margin-top:10px;line-height:1.5;
+/* 副标题分两级：日期/周几/起跑是一件事，天气是另一件事。
+   原来 7 个字段同为 21px 挤在一行，和 36px 的标题只差 1.7 倍，
+   环境参数抢了「这是什么课」的注意力。 */
+.hsub{font-size:19px;color:#939FAD;margin-top:9px;line-height:1.5;
   overflow-wrap:anywhere;word-break:break-word;
-  max-height:calc(21px * 1.5 * 2);overflow:hidden}
+  max-height:calc(19px * 1.5 * 2);overflow:hidden}
+.hsub .env{font-size:17px;color:#7C8A99}
 .htag{flex:none;white-space:nowrap;font-size:19px;color:var(--tagfg);
   border:1px solid var(--tagbd);background:var(--tagbg);
   padding:7px 16px;border-radius:24px}
@@ -1731,7 +1864,7 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
   stroke:#101A26;stroke-width:3.4;stroke-linejoin:round}
 .ch{height:360px}
 .lp{margin-top:0}
-.tech{display:flex;gap:16px;height:322px}
+.tech{display:flex;gap:16px;height:344px}
 .tw{width:var(--tw-w);display:flex;flex-direction:column}
 .ld{flex:1;display:flex;flex-direction:column}
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
@@ -1745,6 +1878,11 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .spkval{font-size:16px;fill:#76838F;font-variant-numeric:tabular-nums}
 /* 与左侧技术卡对齐：底部一段「文字说明」用同一条分隔线起头，
    两卡并排时结构一致，也不会让负荷卡中间空出一大块 */
+/* 负荷的参照与 TE 释义：两行小字，压在漂移结论上方。
+   只补「这个数算大算小」，不复述数字。 */
+.ldref{font-size:15px;color:#8FA4BF;margin-top:9px;line-height:1.4;
+  font-variant-numeric:tabular-nums}
+.tehint{font-size:14px;color:#8593A3;margin-top:3px;line-height:1.4}
 .drift{font-size:19px;color:#939FAD;line-height:1.6;margin-top:auto;
   padding-top:14px;border-top:1px solid #23364A}
 .drift.power-note{font-size:16px;line-height:1.35;padding-top:10px}
@@ -1778,7 +1916,13 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .lhead{font-size:16px;color:#76838F;padding-bottom:8px;border-bottom:1px solid #23364A}
 /* 表头里的条形格子只是占位，用来和下面的数据行对齐，不能画成一条空数据条 */
 .lhead .lbar{background:none}
-.lrow{padding:5px 0}
+/* 最快/最慢段：行底色 + 圈号提色。底部那行文字仍给精确值，
+   这里只是让 12 行扫下来能一眼定位到哪一行。 */
+.lrow{padding:5px 0;border-radius:5px}
+.lrow.fast{background:linear-gradient(90deg,rgba(79,214,166,.07),transparent 52%)}
+.lrow.slow{background:linear-gradient(90deg,rgba(232,132,58,.07),transparent 52%)}
+.lrow.fast .lid{color:#4FD6A6;font-weight:700}
+.lrow.slow .lid{color:#E8843A;font-weight:700}
 .lid{width:64px;text-align:right;font-size:19px;color:#939FAD;flex:none}
 .ldist{width:82px;font-size:19px;color:#939FAD;flex:none}
 .lbar{flex:1;height:12px;background:#10161C;border-radius:6px;overflow:hidden}
