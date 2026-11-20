@@ -34,6 +34,7 @@ _LOCK = threading.Lock()
 
 KEY_AT = "bg_last_at"          # 上次真正跑完的时间（ISO）
 KEY_RES = "bg_last_res"        # 上次结果，形如 "2/2"
+KEY_NEWS = "news_at_"          # 每组一个：通知游标（unix 秒），拼组 id
 
 # 距上次不到这么久就跳过。前台来回切不该反复上报：一次全量覆盖虽然幂等，
 # 但白耗流量，队友的榜单也会被无谓刷新。
@@ -113,6 +114,8 @@ def _run(store, today: str | None, force: bool) -> dict:
             return {"ok": False, "error": lst.get("error") or "拉不到小组列表"}
 
         gids = [int(x["id"]) for x in (lst.get("groups") or []) if x.get("id")]
+        names = {int(x["id"]): str(x.get("name") or "小组")
+                 for x in (lst.get("groups") or []) if x.get("id")}
         sent = failed = 0
         for gid in gids:
             try:
@@ -132,6 +135,16 @@ def _run(store, today: str | None, force: bool) -> dict:
         except Exception as e:      # noqa: BLE001
             diag.log_exc("bg.flush", e)
 
+        # 通知：拉「跟我有关」的新东西，原生拿它发系统通知。
+        # 放在上报之后：上报失败的组，通知同样发不出去（同一套 token），
+        # 先报数据再谈提醒，顺序上不吃亏。
+        news: list[dict] = []
+        for gid in gids:
+            try:
+                news.extend(_news_of(store, gid, names.get(gid, "小组")))
+            except Exception as e:      # noqa: BLE001 - 通知拉不到不影响上报
+                diag.log_exc(f"bg.news:{gid}", e)
+
         stamp = dt.datetime.now().isoformat(timespec="seconds")
         try:
             store.set_meta(KEY_AT, stamp)
@@ -139,13 +152,55 @@ def _run(store, today: str | None, force: bool) -> dict:
         except Exception:      # noqa: BLE001 - 记账失败不影响本次已传上去的数据
             pass
         return {"ok": True, "groups": len(gids), "sent": sent,
-                "failed": failed, "at": stamp}
+                "failed": failed, "at": stamp, "news": news}
     finally:
         if own:
             try:
                 store.conn.close()
             except Exception:      # noqa: BLE001
                 pass
+
+
+def _news_of(store, gid: int, gname: str) -> list[dict]:
+    """拉一次「跟我有关的新东西」，顺手把游标推到现在。
+
+    第一次（本地没有游标）只记时间、不返回条目：装完就弹一屏三个月前的
+    评论，用户第一件事就是把通知关掉。
+    """
+    from . import group as G
+
+    key = KEY_NEWS + str(int(gid))
+    try:
+        since = int(store.get_meta(key) or 0)
+    except Exception:      # noqa: BLE001 - 游标读不出来就当第一次
+        since = 0
+
+    r = G.news(gid, since)
+    if not r.get("ok"):
+        return []
+
+    out: list[dict] = []
+    if since:
+        for c in (r.get("comments") or []):
+            out.append({"gid": int(gid), "gname": gname, "kind": "comment",
+                        "by": str(c.get("by") or "队友"),
+                        "text": str(c.get("text") or ""),
+                        "on_my_act": bool(c.get("on_my_act")),
+                        "at": int(c.get("at") or 0)})
+        for c in (r.get("challenges") or []):
+            out.append({"gid": int(gid), "gname": gname, "kind": "challenge",
+                        "by": str(c.get("by") or "队友"),
+                        "title": str(c.get("title") or "新赛事"),
+                        "ckind": str(c.get("kind") or ""),
+                        "at": int(c.get("at") or 0)})
+
+    now = int(r.get("now") or 0)
+    if now:
+        try:
+            store.set_meta(key, str(now))
+        except Exception:      # noqa: BLE001 - 游标写不进去下次重复提醒，不影响别的
+            pass
+    return out
 
 
 def _prime_map(store, gid: int) -> None:

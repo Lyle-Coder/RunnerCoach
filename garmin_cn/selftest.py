@@ -902,7 +902,7 @@ def run() -> int:
         _bd = Path(tempfile.mkdtemp())
         _bs = _GStore(_bd / "bg.db")
         _calls: list[int] = []
-        _real = (GG.groups, GG.report_group, GG.detail, _ACC.logged_in)
+        _real = (GG.groups, GG.report_group, GG.detail, GG.news, _ACC.logged_in)
         try:
             GG.groups = lambda: {"ok": True, "groups": [{"id": 1}, {"id": 2}]}
             GG.report_group = lambda store, gid, today=None, first=False, client=None: (
@@ -964,8 +964,47 @@ def run() -> int:
                     "重入时没有挡住"
             finally:
                 BGM._LOCK.release()
+
+            # 通知游标：第一次只取起点，之后只回游标之后的新东西
+            with _bs.conn:
+                _bs.conn.execute("DELETE FROM meta WHERE key LIKE 'news_at_%'")
+            _seq = {"n": 0}
+
+            def _gnews(gid, since=0):
+                _seq["n"] += 1
+                _now = 1000 + _seq["n"]
+                return {"ok": True, "now": _now, "since": since,
+                        "comments": ([{"id": 1, "act_id": 1, "by": "张三", "at": 995,
+                                       "on_my_act": True, "text": "今晚跑吗"}]
+                                     if since else []),
+                        "challenges": []}
+
+            GG.news = _gnews
+            _r = BGM.catch_up(store=_bs, today="2026-11-18", force=True)
+            assert not (_r.get("news") or []), "第一次就补了一屏历史通知"
+            assert _bs.get_meta("news_at_1") == "1001", \
+                f"游标没落库：{_bs.get_meta('news_at_1')}"
+
+            _r = BGM.catch_up(store=_bs, today="2026-11-18", force=True)
+            _nw = _r.get("news") or []
+            assert len(_nw) == 2 and {x["gid"] for x in _nw} == {1, 2}, \
+                f"两个组各该有一条通知：{_nw}"
+            assert _nw[0]["kind"] == "comment" and _nw[0]["gname"], \
+                f"通知条目缺字段：{_nw[0]}"
+            assert int(_bs.get_meta("news_at_1") or 0) > 1001, \
+                "拉完没推游标，下次会重复提醒"
+
+            # 通知拉不到不能把上报拖下水
+            def _boom(gid, since=0):
+                raise OSError("连接被重置")
+
+            GG.news = _boom
+            _r = BGM.catch_up(store=_bs, today="2026-11-18", force=True)
+            assert _r.get("ok") and _r.get("sent") == 2, \
+                f"通知异常影响了上报：{_r}"
         finally:
-            (GG.groups, GG.report_group, GG.detail, _ACC.logged_in) = _real
+            (GG.groups, GG.report_group, GG.detail, GG.news,
+             _ACC.logged_in) = _real
             _bs.conn.close()
             shutil.rmtree(_bd, ignore_errors=True)
     finally:
@@ -5637,8 +5676,8 @@ def run() -> int:
     assert _hex(_surf) == _hex(_bg.split('android:gravity="center"')[0]), \
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
-    # 每次发版要同步改这里（本次 1.6.0 → 166）。
-    assert 'versionCode = 166' in (
+    # 每次发版要同步改这里（本次 1.6.1 → 167）。
+    assert 'versionCode = 167' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。

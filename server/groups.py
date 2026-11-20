@@ -1652,6 +1652,80 @@ def api_feed(me, gid: int, query: dict) -> dict:
             "hidden": sum(1 for m in mem if (m["share_level"] or "summary") != "summary")}
 
 
+NEWS_LIMIT = 5          # 通知里每类最多给几条：通知栏不需要 20 条
+
+
+def api_news(me, gid: int, query: dict) -> dict:
+    """自 `since` 以来**跟我有关**的新东西，给后台通知用。
+
+    只回三类：别人评论了我的动态、别人在我参与过的动态下发言、组里新建了赛事。
+    别人的日常动态**不算**，否则 11 个人的组一天几十条，通知栏会变成瀑布流。
+
+    刻意做得很轻：不带动态正文和轨迹剪影。后台每 6 小时替所有组拉一次，
+    响应大一点就是长期白烧流量。所以只给「谁、干了什么、什么时候、说了几个字」。
+
+    `since` 缺失或 ≤0 时只回当前时间、不返回条目：第一次装不该在通知栏里
+    堆一屏三个月前的历史。
+    """
+    uid = int(me["user_id"])
+    try:
+        since = int((query.get("since") or ["0"])[0] or 0)
+    except (TypeError, ValueError):
+        raise GroupError(400, "since 不合法")
+    now = _now()
+    with db() as c:
+        _group(c, gid)
+        _require_member(c, gid, uid)
+        if since <= 0:
+            return {"ok": True, "now": now, "since": now,
+                    "comments": [], "challenges": []}
+
+        # 跟我有关 = 评论落在我发的动态上，或者落在我评论过的动态上。
+        # 第二个条件用 EXISTS 而不是再查一遍评论表：同一条动态下我评过 5 次
+        # 也只该算一条通知。
+        cms = c.execute(
+            "SELECT cm.id, cm.act_id, cm.user_id, cm.text, cm.created_at,"
+            "       a.user_id AS act_owner,"
+            "       COALESCE(NULLIF(m.alias, ''), '队友') AS alias"
+            "  FROM group_comment cm"
+            "  JOIN group_act a ON a.id = cm.act_id AND a.group_id = cm.group_id"
+            "  LEFT JOIN group_members m"
+            "         ON m.group_id = cm.group_id AND m.user_id = cm.user_id"
+            " WHERE cm.group_id = ? AND cm.created_at > ? AND cm.user_id <> ?"
+            "   AND (a.user_id = ?"
+            "        OR EXISTS (SELECT 1 FROM group_comment mine"
+            "                    WHERE mine.act_id = cm.act_id AND mine.user_id = ?))"
+            " ORDER BY cm.created_at DESC LIMIT ?",
+            (gid, since, uid, uid, uid, NEWS_LIMIT)).fetchall()
+
+        chs = c.execute(
+            "SELECT ch.id, ch.title, ch.kind, ch.created_at, ch.created_by,"
+            "       COALESCE(NULLIF(m.alias, ''), '队友') AS alias"
+            "  FROM group_challenges ch"
+            "  LEFT JOIN group_members m"
+            "         ON m.group_id = ch.group_id AND m.user_id = ch.created_by"
+            " WHERE ch.group_id = ? AND ch.created_at > ? AND ch.archived = 0"
+            "   AND ch.created_by <> ?"
+            " ORDER BY ch.created_at DESC LIMIT ?",
+            (gid, since, uid, NEWS_LIMIT)).fetchall()
+
+    comments = [{
+        "id": int(r["id"]), "act_id": int(r["act_id"]),
+        "by": str(r["alias"]), "at": int(r["created_at"]),
+        # 评论我的动态 vs 在我参与过的动态下发言，通知文案不一样
+        "on_my_act": int(r["act_owner"]) == uid,
+        # 正文截 40 字：通知里放不下，完整内容点进去看
+        "text": str(r["text"] or "")[:40],
+    } for r in cms]
+    challenges = [{
+        "id": int(r["id"]), "title": str(r["title"]),
+        "kind": str(r["kind"]), "by": str(r["alias"]),
+        "at": int(r["created_at"]),
+    } for r in chs]
+    return {"ok": True, "now": now, "since": since,
+            "comments": comments, "challenges": challenges}
+
+
 def api_comment(me, gid: int, body: dict) -> dict:
     """给一条动态留一句话。
 
@@ -2356,6 +2430,8 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_acts(me, gid, body), 200
         if action == "feed" and method == "GET":
             return api_feed(me, gid, query), 200
+        if action == "news" and method == "GET":
+            return api_news(me, gid, query), 200
         if action == "comment" and method == "POST":
             return api_comment(me, gid, body), 200
         if action == "comment_edit" and method == "POST":
