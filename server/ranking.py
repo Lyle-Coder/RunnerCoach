@@ -173,6 +173,27 @@ def _maxes(all_m: list[dict]) -> dict[str, float]:
             "explorer": top("explorer")}
 
 
+def score_parts(m: dict, maxes: dict, bonus: float = 0.0) -> dict:
+    """把总分拆成五项 + 加分，页面要拿它解释「这 50.6 分是怎么来的」。
+
+    用户看到的是一个「50.6」，没有任何办法知道里面跑量占多少、进步占多少；
+    只写「跑量 · 出勤 · 爬升 · 进步 · 连跑」五个词，等于让他自己猜权重。
+    这里把每一项的得分按同一套口径算出来，页面直接列。
+    """
+    def part(field: str, weight: float, val) -> float:
+        top = _f(maxes.get(field))
+        if top <= 0 or val is None:
+            return 0.0
+        return max(0.0, min(1.0, _f(val) / top)) * weight
+
+    out = {}
+    for field, weight in (("km", W_KM), ("days", W_DAYS), ("elev", W_ELEV),
+                          ("progress", W_PROGRESS), ("streak", W_STREAK)):
+        out[field] = round(part(field, weight, m.get(field)), 1)
+    out["bonus"] = round(max(0.0, min(BONUS_MAX, _f(bonus))), 1)
+    return out
+
+
 def score(m: dict, maxes: dict, bonus: float = 0.0) -> float:
     """0–100 的百分制：基础 90 + 让分/预言加分（最多 10）。
 
@@ -183,19 +204,8 @@ def score(m: dict, maxes: dict, bonus: float = 0.0) -> float:
     加分项单独加在这里，不并进权重：命中预言和跑量不是一个量纲，
     混进权重会让人算不明白自己为什么掉分。
     """
-    def part(field: str, weight: float, val) -> float:
-        top = _f(maxes.get(field))
-        if top <= 0 or val is None:
-            return 0.0
-        return max(0.0, min(1.0, _f(val) / top)) * weight
-
-    s = (part("km", W_KM, m.get("km"))
-         + part("days", W_DAYS, m.get("days"))
-         + part("elev", W_ELEV, m.get("elev"))
-         + part("streak", W_STREAK, m.get("streak"))
-         + part("progress", W_PROGRESS, m.get("progress")))
-    b = max(0.0, min(BONUS_MAX, _f(bonus)))
-    return round(min(BASE_MAX + BONUS_MAX, s + b), 1)
+    s = sum(score_parts(m, maxes, bonus).values())
+    return round(min(BASE_MAX + BONUS_MAX, s), 1)
 
 
 def shirts(all_m: dict[int, dict]) -> dict[str, list[int]]:
@@ -267,6 +277,16 @@ def title_of(rank: int, total: int, weeks_done: int, all_active: bool) -> str:
     if weeks_done >= 3:
         return "行者"
     return ""
+
+
+# 称号的说明。客户端不写死文案：门槛是服务端算的（ceil 取整、3 周、全员
+# 活跃），页面上一句「前 10%」如果和实际判定不一致，用户只会觉得是 bug。
+TITLES = [
+    {"name": "远征队长", "hint": "本周综合分在组里前 10%"},
+    {"name": "先锋", "hint": "本周综合分在组里前 30%"},
+    {"name": "行者", "hint": "在这个组已经参与满 3 周"},
+    {"name": "同行者", "hint": "全组这周都动了，且你已参与满 3 周"},
+]
 
 
 # ---------------------------------------------------------------- 让分赛
@@ -420,6 +440,10 @@ def build(rows_by_user: dict[int, list[dict]],
         b = max(0.0, min(BONUS_MAX, _f(bonus.get(uid))))
         d.update({"user_id": uid, "alias": aliases.get(uid, ""),
                   "score": score(m, maxes, b), "bonus": round(b, 1),
+                  # 分项分数：页面上要能点开看「这 50.6 分是怎么来的」，
+                  # 只给一个总数等于让用户自己猜权重。
+                  "parts": score_parts(m, maxes, b),
+                  "weeks": int(weeks_by_user.get(uid, 1)),
                   "shirts": mine,
                   # 探索徽章不占衫：达标就发，不算名次
                   "explorer_badge": int(m.get("explorer") or 0) >= EXPLORE_MIN_CELLS})
@@ -464,6 +488,13 @@ def build(rows_by_user: dict[int, list[dict]],
                     "elev": int(maxes["elev"]), "streak": int(maxes["streak"]),
                     "progress": maxes["progress"],
                     "explorer": int(maxes.get("explorer") or 0)},
+            # 权重和称号说明一起下发：页面要解释分数和称号，写死一份文案
+            # 迟早和服务端算的对不上（改权重、改门槛的那天）。
+            "weights": {"km": W_KM, "days": W_DAYS, "elev": W_ELEV,
+                        "progress": W_PROGRESS, "streak": W_STREAK,
+                        "bonus": BONUS_MAX},
+            "titles": TITLES,
+            "all_active": all_active,
             "explore": {"min_cells": EXPLORE_MIN_CELLS,
                         "badges": [{"user_id": int(p["user_id"]),
                                     "alias": p.get("alias") or "",
