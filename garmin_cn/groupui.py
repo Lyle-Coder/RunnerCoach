@@ -966,6 +966,119 @@ def _pace(distance_m: float, duration_s: float) -> str:
     return f"{m}'{sec2:02d}\""
 
 
+def _chal_pair(c: dict) -> tuple[str, str]:
+    """把一条进度拆成「主数 / 分母」。榜要用右侧的大数字 + 淡色分母，
+    而 `_chal_prog` 是给一行纯文本用的（带「目标」字样）。"""
+    kind = str(c.get("kind") or "distance")
+    cur = float(c.get("current") or 0)
+    tgt = float(c.get("target") or 0)
+    if kind == "distance":
+        return f"{cur / 1000:.1f}", f" / {tgt / 1000:.1f} km"
+    if kind == "acts":
+        return f"{cur:.0f}", f" / {tgt:.0f} 次"
+    if kind == "elevation":
+        return f"{cur:.0f}", f" / {tgt:.0f} m"
+    if kind == "explore":
+        return f"{cur:.0f}", f" / {tgt:.0f} 格"
+    if kind == "speed":
+        return _pace_str(cur), f" / {_pace_str(tgt)}"
+    return f"{cur:.0f}", f"/{tgt:.0f}"
+
+
+def challenge_page(token: str, gid: int, cid: int, message: str = "") -> str:
+    """单个赛事的完成度榜：谁跑了多少、谁已经达标。
+
+    组页那张赛事卡只有「全组合计」——一个人问「我在这场比赛里排第几、
+    队友跑到哪了」，页面上没有答案。服务端早就按人算好了（`/challenge/{cid}`
+    给每人的 current / pct / 首次达标日），缺的只是一个页面。
+    """
+    from . import group as G
+
+    today = dt.date.today().isoformat()
+    r = G.challenge_get(gid, cid, today)
+    if not r.get("ok"):
+        body = (_msg(message)
+                + f'<div class="card"><p class="note">'
+                  f'{esc(r.get("error") or "打不开这个赛事")}</p>'
+                  f'<div class="pager"><a class="btn" href="/groups/{gid}#chal">'
+                  '返回小组</a></div></div>')
+        return page("GROUP", "赛事", "", body, back=("返回小组", f"/groups/{gid}#chal"))
+
+    ch = r.get("challenge") or {}
+    rows = r.get("rows") or []
+    hidden = int(r.get("hidden") or 0)
+    kind = str(ch.get("kind") or "distance")
+    pct = float(ch.get("pct") or 0)
+    done = pct >= 100
+    _from, _to = str(ch.get("from") or "")[5:], str(ch.get("to") or "")[5:]
+    state_txt = {"running": "进行中", "closed": "已结束", "ended": "已到期"}.get(
+        str(ch.get("status") or ""), "")
+    _done_n = sum(1 for x in rows if x.get("done_at"))
+
+    # 有角色才能决定要不要给「提前结束」：detail 拿不到就退化成只读，
+    # 赛事本身仍然看得到（不能因为一次请求失败把榜也藏了）。
+    try:
+        d = G.detail(gid) or {}
+    except Exception:      # noqa: BLE001
+        d = {}
+    role = ((d.get("group") or {}).get("role")) or ""
+    is_admin = role in ("owner", "admin")
+
+    head = (f'<div class="card">'
+            f'<div class="kvline"><span>全组进度</span><b>{esc(_chal_prog(ch))}'
+            f' · {pct:.0f}%</b></div>'
+            f'<div class="bar{" done" if done else ""}">'
+            f'<i style="width:{min(100, pct):.0f}%"></i></div>'
+            f'<div class="kvline"><span>周期</span><b>{esc(_from)} – {esc(_to)}'
+            f' · {esc(state_txt)}</b></div>'
+            f'<div class="kvline"><span>参与</span><b>{len(rows)} 人'
+            + (f' · {_done_n} 人已达成' if _done_n else "")
+            + '</b></div></div>')
+
+    lis = ""
+    for i, x in enumerate(rows, 1):
+        _num, _den = _chal_pair({"kind": kind, "current": x.get("current"),
+                                 "target": ch.get("target")})
+        _dd = str(x.get("done_at") or "")
+        mk = (f'<span class="mk"><span class="done">✓ {esc(_dd[5:])}</span></span>'
+              if _dd else "")
+        lis += (f'<div class="{"rank me" if x.get("is_me") else "rank"}">'
+                f'<span class="no">{i}</span>'
+                f'<span class="nm">{esc(x.get("alias"))}</span>{mk}'
+                f'<span class="km">{_num}<i>{_den}</i></span></div>')
+    if not lis:
+        lis = '<p class="note">还没有人上榜。打开 App 同步一次，成绩会出现在这里。</p>'
+    if hidden:
+        lis += (f'<p class="note">另有 {hidden} 人关闭了共享，不参与这场比赛。</p>')
+
+    close_form = ""
+    if is_admin and not ch.get("status") == "closed":
+        close_form = (
+            '<details class="fold"><summary>提前结束这个赛事'
+            '<span class="fx">›</span></summary><div class="foldbody">'
+            f'<form action="/__group/{gid}/challenge/{int(cid)}/close" method="post">'
+            + _tok(token)
+            + '<p class="note">结束后不再累计，已跑的成绩保留可查。到期会自动结束，'
+              '不用手动点。</p>'
+              '<div class="pager"><button class="btn danger" type="submit" '
+              'onclick="return confirm(\'提前结束这个赛事？\')">结束</button></div>'
+              '</form></div></details>')
+
+    body = (_msg(message)
+            + sec("这场怎么算", head)
+            + sec("谁排第几", '<div class="flat">' + lis + '</div>')
+            + ('<p class="note">已达成的人按达成日期排，其余按完成度排；'
+               '完成度按周期内的累计值算，不是最快的一次。</p>'
+               if kind != "speed" else
+               '<p class="note">配速是「累计时长 ÷ 累计距离」，越跑越快才会变好，'
+               '不是取最快的那一次。</p>')
+            + close_form)
+    return page("GROUP", str(ch.get("title") or "赛事"),
+                f'{len(rows)} 人 · {pct:.0f}%', body,
+                foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
+                back=("返回小组", f"/groups/{gid}#chal"))
+
+
 def _pace_str(sec_per_km) -> str:
     """秒/公里 → 5'30"。赛事里配速是**目标值**（不是算出来的），所以单列。"""
     v = int(round(float(sec_per_km or 0)))
@@ -1532,12 +1645,16 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
         done = pct >= 100
         state_txt = {"running": "进行中", "closed": "已结束", "ended": "已到期"}.get(
             c.get("status") or "", "")
-        ch_rows += (f'<div class="chal"><div class="t">{esc(c.get("title"))}</div>'
+        # 整张卡都是入口：组页只给「全组合计」，谁跑了多少在详情页里。
+        # 这也解释得通为什么每行右侧要有 ›——之前没有任何可点的迹象。
+        ch_rows += (f'<a class="chal" href="/groups/{gid}/challenge/{int(c.get("id") or 0)}">'
+                    f'<div class="t">{esc(c.get("title"))}'
+                    '<span class="chev">›</span></div>'
                     f'<div class="m">{esc(_chal_prog(c))} · '
                     f'{pct:.0f}% · {esc(state_txt)} · {esc(str(c.get("from"))[5:])}–'
                     f'{esc(str(c.get("to"))[5:])}</div>'
                     f'<div class="bar{" done" if done else ""}">'
-                    f'<i style="width:{min(100, pct):.0f}%"></i></div></div>')
+                    f'<i style="width:{min(100, pct):.0f}%"></i></div></a>')
     if not ch_rows:
         ch_rows = '<p class="note">还没有赛事。组长可以建一个共同目标，全组自动参与。</p>'
 
