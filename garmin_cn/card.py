@@ -662,8 +662,8 @@ def build_html(res: dict, sync_at: str | None = None,
         body_rows = (f'<div class="today-body" style="min-height:{_minh}px">'
                      f'{"".join(today_rows)}</div>')
     else:
-        body_rows = ('<div class="empty today-empty">今天还没有训练记录'
-                     '——练完同步后这里会亮起来</div>')
+        body_rows = ('<div class="empty today-empty">今天还没有训练记录。'
+                     '练完同步后显示在这里。</div>')
     today_card = (f'<div class="card today-card">'
                   f'<div class="chd"><h3>今日训练</h3>{wk_head}</div>'
                   f'{body_rows}</div>')
