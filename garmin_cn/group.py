@@ -450,6 +450,17 @@ def map_data(gid: int, today: str | None = None) -> dict:
     return _call("GET", f"/v1/group/{int(gid)}/map{q}")
 
 
+def archived() -> dict:
+    """我作为组长、已经解散的组。App 的组列表看不到它们。"""
+    return _call("GET", "/v1/group/archived")
+
+
+def purge(gid: int, confirm: str) -> dict:
+    """彻底删掉一个已解散的组。`confirm` 必须是组名，服务端逐字比对。"""
+    return _call("POST", f"/v1/group/{int(gid)}/purge",
+                 {"confirm": str(confirm or "")})
+
+
 def share_route(gid: int, act_id: str, title: str, distance_m: int,
                 date: str, points: list) -> dict:
     """把一条活动的完整轨迹发给同组。

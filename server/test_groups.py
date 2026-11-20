@@ -963,6 +963,49 @@ def main() -> int:
         _db.close()
     check("近期数据没被删", _today >= 1, f"今天的行数 {_today}")
 
+    # ---------------- 彻底删除已解散的组
+    print("\n11. 彻底删除已解散的组")
+    _purger = login("purge@example.com", "清道夫")
+    st, r = req("POST", "/v1/group/create", {"name": "待清理测试队"}, _purger)
+    check("新建一个组", st == 200, f"{st} {r}")
+    _pg = int(r["group"]["id"])
+    # 留一条数据，删完要能证明清干净了
+    req("POST", f"/v1/group/{_pg}/report",
+        {"days": [{"date": dt.date.today().isoformat(), "distance_m": 5000,
+                   "duration_s": 1800, "acts": 1}]}, _purger)
+    st, r = req("POST", f"/v1/group/{_pg}/archive", {"confirm": "1"}, _purger)
+    check("先解散", st == 200, f"{st} {r}")
+
+    st, r = req("GET", "/v1/group/archived", None, _purger)
+    check("已解散列表里有它",
+          any(int(x["id"]) == _pg for x in (r.get("groups") or [])), str(r))
+
+    st, r = req("POST", f"/v1/group/{_pg}/purge", {"confirm": "名字不对"}, _purger)
+    check("组名对不上被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/purge", {"confirm": "接口联调队"}, a)
+    check("活跃组不能直接删（409）", st == 409, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{_pg}/purge", {"confirm": "待清理测试队"}, b)
+    check("不是组长不能删（403）", st == 403, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{_pg}/purge", {"confirm": "待清理测试队"}, _purger)
+    check("彻底删除", st == 200, f"{st} {r}")
+    st, r = req("GET", "/v1/group/archived", None, _purger)
+    check("删完列表空了", not (r.get("groups") or []), str(r))
+    st, r = req("GET", f"/v1/group/{_pg}", None, _purger)
+    check("组打不开了（404）", st == 404, f"{st} {r}")
+
+    _db = sqlite3.connect(str(_dbp))
+    try:
+        _left = sum(int(_db.execute(f"SELECT COUNT(*) FROM {_t} WHERE group_id=?",
+                                    (_pg,)).fetchone()[0])
+                    for _t in groups.PURGE_TABLES)
+        _gleft = int(_db.execute("SELECT COUNT(*) FROM groups WHERE id=?",
+                                 (_pg,)).fetchone()[0])
+    finally:
+        _db.close()
+    check("所有 group_* 行都清掉了", _left == 0, f"还剩 {_left} 行")
+    check("groups 行也没了", _gleft == 0, f"还剩 {_gleft} 行")
+
     # 隐私：关共享的人既不显示、也不能被评论
     st, r = req("POST", f"/v1/group/{gid}/share", {"share": "off"}, b)
     st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, a)

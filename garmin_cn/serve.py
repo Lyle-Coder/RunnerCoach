@@ -1743,6 +1743,14 @@ class _Handler(SimpleHTTPRequestHandler):
                         r = G.transfer(gid, as_int(values.get("uid")))
                         msg = "已转让" if r.get("ok") else (r.get("error") or "转让失败")
                         back = f"/groups/{gid}/settings"
+                    elif act == "purge":
+                        # 删完这个组就不存在了，不能回 /groups/{gid}
+                        r = G.purge(gid, values.get("confirm") or "")
+                        if r.get("ok"):
+                            return self._see_other(
+                                "/groups?list=1&msg=" + quote("已彻底删除这个组"))
+                        msg = r.get("error") or "删除失败"
+                        back = "/groups?list=1"
                     elif act == "route_share":
                         r = self._share_route(
                             gid, values.get("act") or "",
