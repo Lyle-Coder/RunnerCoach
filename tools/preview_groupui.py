@@ -135,6 +135,26 @@ SEASON = {
     ],
 }
 SEASON["me"] = SEASON["people"][1]
+# 分数明细：页面要能点开看「63.8 分是怎么来的」，所以每人都带 parts。
+SEASON["weights"] = {"km": 30, "days": 20, "elev": 15, "progress": 15,
+                     "streak": 10, "bonus": 10}
+SEASON["titles"] = [
+    {"name": "远征队长", "hint": "本周综合分在组里前 10%"},
+    {"name": "先锋", "hint": "本周综合分在组里前 30%"},
+    {"name": "行者", "hint": "在这个组已经参与满 3 周"},
+    {"name": "同行者", "hint": "全组这周都动了，且你已参与满 3 周"}]
+SEASON["all_active"] = False
+SEASON["max"] = {"km": 42.3, "days": 5, "elev": 620, "streak": 5,
+                 "progress": 0.12, "explorer": 51}
+for _p, _parts, _wk in (
+        (SEASON["people"][0], {"km": 30.0, "days": 20.0, "elev": 15.0,
+                               "progress": 15.0, "streak": 10.0, "bonus": 0.0}, 8),
+        (SEASON["people"][1], {"km": 25.5, "days": 15.0, "elev": 8.4,
+                               "progress": 6.4, "streak": 5.5, "bonus": 3.0}, 5),
+        (SEASON["people"][2], {"km": 9.1, "days": 8.0, "elev": 2.2,
+                               "progress": 0.0, "streak": 4.0, "bonus": 0.0}, 2)):
+    _p["parts"] = _parts
+    _p["weeks"] = _wk
 
 # P2 的「本周」块：目标 + 结对 + 预言。故意造一组「逆袭」的数据——
 # 那是这三行里最不容易排版的组合（长短不一 + 有结论词）。

@@ -1493,10 +1493,24 @@ def run() -> int:
                              "color": "#E8C43A"}]},
                 {"user_id": 1, "alias": "我", "rank": 2, "score": 63.8,
                  "km": 9.0, "days": 2, "elev": 0, "streak": 2, "plan_rate": 0.5,
-                 "progress": 0.05, "title": "", "shirts": []}],
+                 "progress": 0.05, "title": "先锋", "shirts": [],
+                 "weeks": 5,
+                 "parts": {"km": 22.5, "days": 13.3, "elev": 0.0,
+                           "progress": 6.2, "streak": 6.7, "bonus": 0.0}}],
             "me": {"user_id": 1, "alias": "我", "rank": 2, "score": 63.8,
                    "km": 9.0, "days": 2, "elev": 0, "streak": 2, "plan_rate": 0.5,
-                   "progress": 0.05, "title": "", "shirts": []},
+                   "progress": 0.05, "title": "先锋", "shirts": [],
+                   "weeks": 5,
+                   "parts": {"km": 22.5, "days": 13.3, "elev": 0.0,
+                             "progress": 6.2, "streak": 6.7, "bonus": 0.0}},
+            # 分数与称号的说明：权重要下发，页面不写死
+            "weights": {"km": 30, "days": 20, "elev": 15, "progress": 15,
+                        "streak": 10, "bonus": 10},
+            "titles": [{"name": "远征队长", "hint": "本周综合分在组里前 10%"},
+                       {"name": "先锋", "hint": "本周综合分在组里前 30%"},
+                       {"name": "行者", "hint": "在这个组已经参与满 3 周"},
+                       {"name": "同行者", "hint": "全组这周都动了，且你已参与满 3 周"}],
+            "all_active": False,
             "shirts": [
                 _shirt("yellow", "黄衫", "里程王", "#E8C43A", "km",
                        "本周跑步的总里程", ("12.0 km", "9.0 km")),
@@ -1651,11 +1665,22 @@ def run() -> int:
     assert 'class="sc-v"' in _gh and "分</i>" in _gh, "分数没进核心卡"
     # 只数核心卡里那 6 件：周榜行现在也挂小号衫图标，全页数会数多
     _i_sc = _gh.find('class="sc-badges"')
-    _j_sc = _gh.find("</a></section>", _i_sc)
+    _j_sc = _gh.find("</section>", _i_sc)
     _sc_block = _gh[_i_sc:_j_sc] if _i_sc >= 0 and _j_sc > _i_sc else ""
     assert _sc_block.count('class="jsh') == 6, \
         f"荣誉徽章应该是 6 件衫，实际 {_sc_block.count('class="jsh')} 件"
     assert 'class="sc-shirts"' in _gh and "/shirts" in _gh, "徽章组不是进六件衫榜单的入口"
+    # ---- 分数与称号：用户看到「50.6 分」「同行者」却无处确认，必须能点开看
+    assert 'class="scorehow"' in _gh and 'data-k="scorehow"' in _gh, \
+        "核心卡没有「分数/称号怎么来的」入口"
+    for _lb in ("跑量", "出勤", "爬升", "进步", "连跑", "加分"):
+        assert f'<span>{_lb}</span>' in _gh, f"分数明细缺「{_lb}」这一项"
+    assert "22.5<i> / 30 分</i>" in _gh, "分数明细没按「得分 / 权重」显示"
+    assert "组里最高 12.0 km" in _gh, "分数明细没写清「和谁比」"
+    # 称号：说明 + 为什么是我这个
+    assert "本周综合分在组里前 30%" in _gh, "称号没有对应的门槛说明"
+    assert "你现在是「<b>先锋</b>」" in _gh, "没说明我为什么是这个称号"
+    assert "称号只取最高的一个" in _gh, "没说清称号不叠加"
 
     # ---- 目标：独立入口行，不再是四行表格里的一行
     assert 'class="goalrow"' in _gh, "目标没有做成独立入口行"
