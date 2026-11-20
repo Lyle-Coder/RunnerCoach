@@ -245,6 +245,29 @@ def buff_sums(c, gid: int, act_no: int) -> dict[int, dict[str, float]]:
 
 
 # ---------------------------------------------------------------- 试炼核验
+def _camp_level(c, gid: int) -> int:
+    """当前营地等级（1–5）。只读表，不做溢出结算——那是 camp_state 的事。
+
+    远征每次结算都要用它，走 `G._camp_state()` 会把「池满记 spent」的写
+    也带进来，读路径上不该有写。
+    """
+    try:
+        r = c.execute("SELECT level FROM group_run_camp WHERE group_id=?",
+                      (gid,)).fetchone()
+        return max(1, min(5, int(r["level"]) if r else 1))
+    except Exception:      # noqa: BLE001 - 表还没建时按 Lv1 处理
+        return 1
+
+
+def _drop_at(level: int) -> int:
+    """连续几幕没动才从目标分母里剔除。Lv3 医师把这个门槛放宽一幕。
+
+    原口径是「连续两幕没动就剔除」（`excluded >= 2`）。恢复期的人本来
+    就该少算一周，医师让他多留一幕，避免刚复出就被从分母里抹掉。
+    """
+    return 3 if int(level) >= 3 else 2
+
+
 def _num(v) -> float | None:
     try:
         f = float(v)
@@ -418,13 +441,19 @@ def _fork_of(act: int, seed: str) -> dict | None:
     return forks[_rng(seed, act, "fork").randrange(len(forks))]
 
 
-def _sides_of(act: int, seed: str, uid: int) -> list[str]:
-    """每人每幕的支线。类型按 40/35/25 抽，同一个人不重复。"""
+def _sides_of(act: int, seed: str, uid: int,
+              n: int = SIDES_PER_ACT) -> list[str]:
+    """每人每幕的支线。类型按 40/35/25 抽，同一个人不重复。
+
+    `n` 由调用方按营地等级给：Lv2 侦察让首幕多一条，Lv5 传令让每幕都多一条。
+    随机种子只跟 (seed, act, uid, slot) 走，所以**已生成的前几条不会变**，
+    升级营地只是往后多加一槽，不会把玩家已经看到的选择重摇一遍。
+    """
     cand = [e for e in pool().get("events") or []
             if int(e.get("act") or 0) == act and e.get("kind") != "fork"
             and not _is_relic(e)]
     out: list[str] = []
-    for slot in range(SIDES_PER_ACT):
+    for slot in range(max(1, int(n))):
         rng = _rng(seed, act, uid, slot)
         kind = rng.choices([k for k, _ in TYPE_W], weights=[w for _, w in TYPE_W], k=1)[0]
         bucket = [e for e in cand if e["type"] == kind and e["id"] not in out]
@@ -481,13 +510,14 @@ def _target_km(c, gid: int, act: int) -> float:
     第四幕的目标和第一幕一样大。
     """
     total = 0.0
+    drop = _drop_at(_camp_level(c, gid))
     for a in range(1, max(1, act) + 1):
         rows = c.execute("SELECT week_target_km, excluded FROM group_run_member"
                          " WHERE group_id=? AND act=?", (gid, a)).fetchall()
         if not rows:
             continue
         for r in rows:
-            if int(r["excluded"] or 0) >= 2:      # 连续两幕没动才剔除
+            if int(r["excluded"] or 0) >= drop:
                 continue
             total += float(r["week_target_km"] or 0) or DEFAULT_WEEK_KM
     return total / KM_PER_GRID * STAGE_RATIO
@@ -706,6 +736,8 @@ def _settle(c, gid: int, act_no: int, season) -> None:
     s, e = _act_span(season, act_no)
     uids = _members(c, gid, act_no)
     flags = json.loads(season["flags"] or "{}")
+    camp = _camp_level(c, gid)
+    drop_at = _drop_at(camp)
 
     # 1) 本周每人跑步里程（只有跑步类算里程，和上报口径一致）。
     #    `days` 也要数：增益里「每天多算 2 km」是按**实际跑的天数**加的，
@@ -762,6 +794,10 @@ def _settle(c, gid: int, act_no: int, season) -> None:
         target = float(row["week_target_km"] or 0) or DEFAULT_WEEK_KM
         # 顺风：本周**每天**多算 N km 上限。只按真跑过的天算，没出门的天不给。
         cap = float(b.get("weekly_cap_add") or 0) * min(ACT_DAYS, days.get(uid, 0))
+        # 营地 Lv4 驮马：每日贡献上限 +1 km，按实际出勤天数算，
+        # 和「顺风」同一条算法（没出门的天不给）。
+        if camp >= 4:
+            cap += 1.0 * min(ACT_DAYS, days.get(uid, 0))
         base = min(km, target + cap) / KM_PER_GRID
         total += (base + int(row["pos"]) + trial_ok.get(uid, 0) * 3
                   + int(b.get("weekly_advance_add") or 0)
@@ -812,7 +848,7 @@ def _settle(c, gid: int, act_no: int, season) -> None:
         # 算目标时补的，不回写表）。于是「连续两幕」退化成「只要有一幕没动」，
         # 踢得比设计严一倍，段目标也跟着变小。
         prev_idle = int(prev["excluded"]) if prev else 0
-        nxt = 0 if moved else min(2, prev_idle + 1)
+        nxt = 0 if moved else min(drop_at, prev_idle + 1)
         if nxt != int(row["excluded"] or 0):
             c.execute("UPDATE group_run_member SET excluded=?"
                       " WHERE group_id=? AND user_id=? AND act=?", (nxt, gid, uid, act_no))
@@ -844,19 +880,27 @@ def draw(c, gid: int, season, act_no: int) -> None:
     这一幕的目标算成 0，段目标凭空少掉一整周。
     """
     uids = _members(c, gid, act_no)
+    camp = _camp_level(c, gid)
+    # Lv1 宿营：开局补给 3 → 4。Lv1 是所有组的起点，所以这项对每个组都成立，
+    # 它解释的是「为什么开局有 4 点」，不是升级带来的差异。
+    base_supply = 4 if camp >= 1 else 3
     for uid in uids:
         if _row(c, gid, uid, act_no):
             continue
         prev = _row(c, gid, uid, act_no - 1) if act_no > 1 else None
         c.execute("INSERT OR IGNORE INTO group_run_member(group_id,user_id,act,supply,"
                   "week_target_km,status,updated_at) VALUES(?,?,?,?,?,'moving',?)",
-                  (gid, uid, act_no, int(prev["supply"]) if prev else 3, 0, G._now()))
+                  (gid, uid, act_no,
+                   int(prev["supply"]) if prev else base_supply, 0, G._now()))
     if c.execute("SELECT 1 FROM group_run_event WHERE group_id=? AND act=? LIMIT 1",
                  (gid, act_no)).fetchone():
         return
     relic = _relic_of(act_no, season["seed"], uids)
     for uid in uids:
-        sides = _sides_of(act_no, season["seed"], uid)
+        # Lv2 侦察让首幕多一条支线（开局看得远），Lv5 传令让每幕都多一条
+        slots = SIDES_PER_ACT + (1 if camp >= 5 else 0) + (
+            1 if camp >= 2 and act_no == 1 else 0)
+        sides = _sides_of(act_no, season["seed"], uid, slots)
         if relic and relic[0] == uid:
             sides = [relic[1]] + sides[:-1]      # 遗迹占第一个槽位
         for slot, eid in enumerate(sides):
