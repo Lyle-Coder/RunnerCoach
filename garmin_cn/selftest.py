@@ -1076,6 +1076,13 @@ def run() -> int:
     assert GU._route_svg([[31.2, 121.5], [31.21, 121.51]], None).count("L") == 1, \
         "两个点也该画出一段"
 
+    # 远征页所有写操作都必须带 gid。漏了服务端永远收到 0，任何按钮都会
+    # 静默失败——而前端失败也是 reload，用户只看到页面闪一下。
+    _rsrc = (ROOT / "garmin_cn/runsui.py").read_text(encoding="utf-8")
+    assert "var GID=" in _rsrc, "远征页没把 gid 传给前端"
+    assert "f.append('gid'" in _rsrc, "远征的 post() 没提交 gid"
+    assert _rsrc.count('name="gid"') >= 2, "远征的表单缺 gid（目标和营地升级）"
+
     # ---------------- 远征界面 ----------------
     # 小旗必须落在**当前幕那一段**里。整季累计进度在队伍超额时会超过 100%，
     # 如果拿它定位小旗，第二幕就会顶到最右端，看起来像这一季已经走完了。
