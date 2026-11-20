@@ -600,8 +600,12 @@ def api_join(me, body: dict, ip: str) -> dict:
                            (gid,)).fetchone()[0]
         if active >= g["max_members"]:
             raise GroupError(409, f"这个组满了（{g['max_members']} 人）")
-        n = c.execute("SELECT COUNT(*) FROM group_members WHERE user_id=? AND status='active'",
-                      (uid,)).fetchone()[0]
+        # 计数必须排除已解散的组：解散只是归档，成员行还在，
+        # 不排除的话「最多 3 个组」会被一个界面上看不见的组永久占着。
+        n = c.execute(
+            "SELECT COUNT(*) FROM group_members m JOIN groups g ON g.id=m.group_id"
+            " WHERE m.user_id=? AND m.status='active' AND g.archived=0",
+            (uid,)).fetchone()[0]
         if n >= MAX_GROUPS_PER_USER:
             raise GroupError(409, f"最多同时加入 {MAX_GROUPS_PER_USER} 个组")
 
@@ -1475,8 +1479,8 @@ def api_routes(me, gid: int, query: dict) -> dict:
             "SELECT r.id, r.user_id, r.title, r.distance_m, r.date, r.created_at,"
             "       COALESCE(NULLIF(m.alias, ''), '队友') AS alias"
             "  FROM group_route r"
-            "  LEFT JOIN group_members m"
-            "         ON m.group_id = r.group_id AND m.user_id = r.user_id"
+            "  JOIN group_members m ON m.group_id = r.group_id"
+            "       AND m.user_id = r.user_id AND m.status = 'active'"
             " WHERE r.group_id=? ORDER BY r.id DESC LIMIT 100", (gid,)).fetchall()
     return {"ok": True, "rows": [{
         "id": int(r["id"]), "user_id": int(r["user_id"]),
@@ -1494,8 +1498,8 @@ def api_route_get(me, gid: int, rid: int) -> dict:
         r = c.execute(
             "SELECT r.*, COALESCE(NULLIF(m.alias, ''), '队友') AS alias"
             "  FROM group_route r"
-            "  LEFT JOIN group_members m"
-            "         ON m.group_id = r.group_id AND m.user_id = r.user_id"
+            "  JOIN group_members m ON m.group_id = r.group_id"
+            "       AND m.user_id = r.user_id AND m.status = 'active'"
             " WHERE r.id=? AND r.group_id=?", (rid, gid)).fetchone()
         if not r:
             raise GroupError(404, "没有这条路线")
@@ -2229,8 +2233,12 @@ def api_leave(me, gid: int) -> dict:
             raise GroupError(409, "组长不能直接退出，先转让给别人或解散这个组")
         c.execute("UPDATE group_members SET status='left' WHERE group_id=? AND user_id=?",
                   (gid, uid))
-        # 退出即删本组内我的明细：留在库里等于「退出了但数据还在」
-        c.execute("DELETE FROM group_daily WHERE group_id=? AND user_id=?", (gid, uid))
+        # 退出即删本组内我的明细：留在库里等于「退出了但数据还在」。
+        # 原来只删了日汇总，动态、格子、路线、评论都还挂着——地图过滤了
+        # active 成员所以看不出来，但路线页不过滤，退组的人路线还能被点开。
+        for _t in ("group_daily", "group_act", "group_cell",
+                   "group_route", "group_comment"):
+            c.execute(f"DELETE FROM {_t} WHERE group_id=? AND user_id=?", (gid, uid))
         _audit(c, gid, uid, "leave")
     return {"ok": True}
 
@@ -2378,6 +2386,10 @@ def api_archive(me, gid: int, body: dict) -> dict:
         if str(body.get("confirm") or "") != "1":
             raise GroupError(400, "解散需要二次确认（confirm=1）")
         c.execute("UPDATE groups SET archived=1 WHERE id=?", (gid,))
+        # 解散 = 这个组对所有成员都结束了。不改成员状态的话，他们会一直
+        # 占着自己的「最多 3 个组」名额（见 api_join 的注释）。
+        c.execute("UPDATE group_members SET status='left'"
+                  " WHERE group_id=? AND status='active'", (gid,))
         _audit(c, gid, uid, "archive")
     return {"ok": True}
 
