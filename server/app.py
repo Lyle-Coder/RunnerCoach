@@ -1360,7 +1360,11 @@ class Handler(BaseHTTPRequestHandler):
         import manage as M
 
         u = urllib.parse.urlsplit(self.path)
-        path = u.path.rstrip("/") or "/manage"
+        p = u.path.rstrip("/")
+        # /w 是成员视角的只读 Web 端，和 /manage（组长工具）共用这一套
+        # 「表单 + Cookie」的读取逻辑。两者的差别只在渲染模块。
+        is_web = p == "/w" or p.startswith("/w/")
+        path = (p or "/w") if is_web else (p or "/manage")
         query = urllib.parse.parse_qs(u.query)
         form: dict = {}
         if method == "POST":
@@ -1373,10 +1377,14 @@ class Handler(BaseHTTPRequestHandler):
                                         keep_blank_values=True)
         cookie = self.headers.get("Cookie")
         try:
-            if method == "POST":
-                code, body, ctype, extra = M.handle_post(path, form, cookie)
+            if is_web:
+                import web as W
+
+                fn = W.handle_post if method == "POST" else W.handle_get
             else:
-                code, body, ctype, extra = M.handle_get(path, query, cookie)
+                fn = M.handle_post if method == "POST" else M.handle_get
+            code, body, ctype, extra = fn(path, form if method == "POST" else query,
+                                          cookie)
         except Exception as e:      # noqa: BLE001 - 后台白屏比报错更难查
             code, body = 500, f"后台出错：{type(e).__name__}: {e}".encode("utf-8")
             ctype, extra = "text/plain; charset=utf-8", {}
@@ -1465,7 +1473,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path.split("?")[0].startswith("/v1/group"):
                 return self._groups("GET")
             _mp = self.path.split("?")[0]
-            if _mp == "/manage" or _mp.startswith("/manage/"):
+            if (_mp == "/manage" or _mp.startswith("/manage/")
+                    or _mp == "/w" or _mp.startswith("/w/")):
                 return self._manage("GET")
             if self.path == "/v1/me":
                 return self._json(api_me(_auth(self.headers)))
@@ -1505,7 +1514,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # 网页后台收的是表单，必须在 _read_body 之前分出去
             _mp = self.path.split("?")[0]
-            if _mp == "/manage" or _mp.startswith("/manage/"):
+            if (_mp == "/manage" or _mp.startswith("/manage/")
+                    or _mp == "/w" or _mp.startswith("/w/")):
                 return self._manage("POST")
             body = self._read_body()
             ip = self.headers.get("X-Forwarded-For", "").split(",")[0].strip() \
