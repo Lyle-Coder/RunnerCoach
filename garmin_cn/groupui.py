@@ -462,6 +462,34 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
     if blocked:
         create_form = blocked
 
+    # 已解散的组：列表里看不到，但数据还在服务端。给一个彻底删除的出口，
+    # 否则「解散」只是让它从列表消失，数据永远躺着——用户以为删了，其实没删。
+    try:
+        _arch = (G.archived() or {}).get("groups") or []
+    except Exception:      # noqa: BLE001 - 拉不到就不显示这块
+        _arch = []
+    arch_sec = ""
+    if _arch:
+        _rows = ""
+        for x in _arch:
+            _n = int(x.get("members") or 0)
+            _rows += (
+                f'<details class="fold"><summary>{esc(x.get("name"))} · {_n} 人'
+                '<span class="fx">›</span></summary><div class="foldbody">'
+                '<p class="note">删除后成员、榜单、赛事、动态、路线全部清空，'
+                '不能恢复。</p>'
+                f'<form action="/__group/{int(x["id"])}/purge" method="post">'
+                + _tok(token) +
+                '<div class="kvline"><span>输入组名</span><b>'
+                f'<input type="text" name="confirm" maxlength="24" '
+                f'placeholder="{esc(x.get("name"))}" autocomplete="off"></b></div>'
+                '<div class="pager"><button class="btn sm danger" type="submit">'
+                '彻底删除</button></div></form></div></details>')
+        arch_sec = (f'<details class="fold fold-gap"><summary>已解散的组'
+                    f'（{len(_arch)}）<span class="fx">›</span></summary>'
+                    '<div class="flat"><p class="note">解散只是从列表里收起，'
+                    '数据还在服务器上。</p>' + _rows + '</div></details>')
+
     chips = "".join([f'<span class="chip">{len(items)} 个组</span>']) if items else ""
     if items:
         # 已经有组的人，建组/加入是低频动作：折成一行放在底部，
@@ -481,6 +509,7 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
         body = (msg
                 + sec("加入小组", '<div class="card">' + join_form + '</div>')
                 + sec("创建小组", '<div class="card">' + create_form + '</div>'))
+    body = body + arch_sec
     return page("GROUP", "训练小组", "本周榜只在组内可见", body, chips,
                 foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
                 back=("返回我的", "/me"))

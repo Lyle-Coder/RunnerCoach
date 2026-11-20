@@ -199,6 +199,29 @@ def groups_page(me) -> bytes:
     body = ('<div class=card>' + ("".join(rows) or
             '<div class=empty>没有可管理的组。只有组长、管理员和教练能进这里。</div>')
             + '</div>')
+
+    # 已解散的组：App 的组列表不显示它们，数据却还在服务器上。
+    # 不在这儿给出口，就永远删不掉。
+    try:
+        arch = (G.api_archived(me) or {}).get("groups") or []
+    except Exception:      # noqa: BLE001 - 这块拉不到不影响主列表
+        arch = []
+    if arch:
+        items = ""
+        for x in arch:
+            _nm = str(x.get("name") or "")
+            items += (
+                f'<div class=row><div class=g><b>{_e(_nm)}</b>'
+                f'<div class=sub>{int(x.get("members") or 0)} 人 · 已解散</div></div>'
+                '<details><summary class=pill>彻底删除</summary>'
+                '<form method=post action="/manage/act" style="margin-top:10px">'
+                f'<input type=hidden name=gid value="{int(x["id"])}">'
+                '<input type=hidden name=op value=purge>'
+                f'<input name=confirm placeholder="输入组名确认" '
+                f'style="max-width:220px;margin-bottom:8px"><br>'
+                '<button class=danger>确认删除</button></form></details></div>')
+        body += ('<h2>已解散的组</h2><div class=card>' + items + '</div>'
+                 '<p class=sub>删除后成员、榜单、赛事、动态、路线全部清空，不能恢复。</p>')
     return _page("我管理的组", body, me=me)
 
 
@@ -503,6 +526,10 @@ def handle_post(path: str, form: dict, cookie: str | None) -> tuple:
             if op == "reject":
                 G.api_decide(me, gid, int(uk), False)
                 return _back(gid, "pending", "已拒绝")
+            if op == "purge":
+                # 删完组就不存在了，回组页会 404
+                G.api_purge(me, gid, {"confirm": s("confirm")})
+                return (303, b"", "text/plain", {"Location": "/manage"})
             if op == "setcoach":
                 G.api_set_role(me, gid, {"user_id": int(uk), "role": "coach"})
                 return _back(gid, "members", "已设为教练")
