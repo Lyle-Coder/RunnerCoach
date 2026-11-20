@@ -155,6 +155,26 @@ def main() -> int:
         st, _, txt, _ = req("GET", f"/manage/g/{gid}?tab=pending", cookie=ck_a)
         check("批准后审核页空了", "没有待审核" in txt, txt[:200])
 
+        print("\n3b. 已解散的组")
+        _d = login("gone@example.com", "消失的组")
+        ck_d = "rc_tok=" + urllib.parse.quote(_d)
+        st, r, _, _ = req("POST", "/v1/group/create", {"name": "测试解散队"}, _d)
+        check("新用户建组", st == 200, f"{st} {r}")
+        _g2 = int(r["group"]["id"])
+        req("POST", f"/v1/group/{_g2}/archive", {"confirm": "1"}, _d)
+        st, _, txt, _ = req("GET", "/manage", cookie=ck_d)
+        check("列表页出现已解散的组",
+              "已解散的组" in txt and "测试解散队" in txt, f"{st}")
+        st, _, txt, _ = req("GET", "/manage", cookie=ck_a)
+        check("别人的解散组不出现", "测试解散队" not in txt, "")
+        st, _, _, hdrs = req("POST", "/manage/act",
+                             form={"gid": _g2, "op": "purge",
+                                   "confirm": "测试解散队"}, cookie=ck_d)
+        check("删除后 303 回列表",
+              st == 303 and hdrs.get("Location") == "/manage", f"{st}")
+        st, _, txt, _ = req("GET", "/manage", cookie=ck_d)
+        check("删完不再出现", "测试解散队" not in txt, "")
+
         print("\n4. 导出")
         st, _, txt, hdrs = req("GET", f"/manage/export/{gid}.csv", cookie=ck_a)
         check("导出 200", st == 200, f"{st}")
