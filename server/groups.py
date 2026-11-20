@@ -435,6 +435,19 @@ def _require_owner(c, gid: int, uid: int):
     return m
 
 
+# 教练能做的事：建赛事、结束赛事、看审计、升级营地。
+# 刻意**不含**人事（审批加入、踢人、改名、换邀请码）——教练在跑团里负责
+# 训练安排，不该决定谁进谁出。这条边界写在这里，别在接口里各自判断。
+STAFF_ROLES = ("owner", "admin", "coach")
+
+
+def _require_staff(c, gid: int, uid: int):
+    m = _require_member(c, gid, uid)
+    if m["role"] not in STAFF_ROLES:
+        raise GroupError(403, "需要教练及以上的角色")
+    return m
+
+
 def _group(c, gid: int):
     g = c.execute("SELECT * FROM groups WHERE id=? AND archived=0", (gid,)).fetchone()
     if not g:
@@ -689,7 +702,7 @@ def api_camp_upgrade(me, gid: int) -> dict:
     """花休整点升一级营地。只有 owner/admin 能点（钱的入口只给管理者）。"""
     uid = int(me["user_id"])
     with db() as c:
-        _require_admin(c, gid, uid)
+        _require_staff(c, gid, uid)
         st = _camp_state(c, gid)      # 同一个连接：先结算溢出，再扣点
         nxt = st.get("next")
         if not nxt:
@@ -717,7 +730,7 @@ def api_audit(me, gid: int, query: dict) -> dict:
     except (TypeError, ValueError):
         limit = 50
     with db() as c:
-        _require_admin(c, gid, uid)
+        _require_staff(c, gid, uid)
         rows = c.execute(
             "SELECT a.actor_id, a.action, a.target_id, a.ts, m.alias AS actor_alias,"
             "       t.alias AS target_alias"
@@ -2108,6 +2121,34 @@ def api_rotate(me, gid: int) -> dict:
     return {"ok": True, "invite_code": code}
 
 
+def api_set_role(me, gid: int, body: dict) -> dict:
+    """任命或撤销教练 / 管理员。只有组长能改。
+
+    coach 只多四件事（建赛事、结束赛事、看审计、升级营地），人事权限不给：
+    教练在跑团里负责训练安排，不该决定谁进谁出。
+    组长自己的角色不能在这里改，换组长走 transfer。
+    """
+    uid = int(me["user_id"])
+    try:
+        target = int(body.get("user_id") or 0)
+    except (TypeError, ValueError):
+        raise GroupError(400, "user_id 不合法")
+    role = str(body.get("role") or "").strip()
+    if role not in ("coach", "admin", "member"):
+        raise GroupError(400, "只能设成教练、管理员或成员")
+    with db() as c:
+        _require_owner(c, gid, uid)
+        m = _member(c, gid, target)
+        if not m or m["status"] != "active":
+            raise GroupError(404, "这个人不在组里")
+        if target == uid or str(m["role"]) == "owner":
+            raise GroupError(409, "不能改组长自己的角色")
+        c.execute("UPDATE group_members SET role=? WHERE group_id=? AND user_id=?",
+                  (role, gid, target))
+        _audit(c, gid, uid, "role", target)
+    return {"ok": True, "role": role}
+
+
 def api_transfer(me, gid: int, body: dict) -> dict:
     uid = int(me["user_id"])
     try:
@@ -2223,7 +2264,7 @@ def api_challenge_create(me, gid: int, body: dict) -> dict:
 
     with db() as c:
         _group(c, gid)
-        _require_admin(c, gid, uid)
+        _require_staff(c, gid, uid)
         _rate_limit(f"g{gid}", "challenge", 5, 86400)
         running = c.execute("""
             SELECT COUNT(*) FROM group_challenges
@@ -2354,7 +2395,7 @@ def api_challenge_get(me, gid: int, cid: int, query: dict) -> dict:
 def api_challenge_close(me, gid: int, cid: int) -> dict:
     uid = int(me["user_id"])
     with db() as c:
-        _require_admin(c, gid, uid)
+        _require_staff(c, gid, uid)
         ch = c.execute("SELECT * FROM group_challenges WHERE id=? AND group_id=? AND archived=0",
                        (cid, gid)).fetchone()
         if not ch:
@@ -2450,6 +2491,8 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_me_update(me, gid, body), 200
         if action == "transfer" and method == "POST":
             return api_transfer(me, gid, body), 200
+        if action == "role" and method == "POST":
+            return api_set_role(me, gid, body), 200
         if action == "archive" and method == "POST":
             return api_archive(me, gid, body), 200
         if action == "invite" and len(tail) >= 2 and tail[1] == "rotate" and method == "POST":

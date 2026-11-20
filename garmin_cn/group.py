@@ -380,6 +380,12 @@ def set_share(gid: int, share: str) -> dict:
     return _call("POST", f"/v1/group/{int(gid)}/share", {"share": share})
 
 
+def set_role(gid: int, uid: int, role: str) -> dict:
+    """任命或撤销教练 / 管理员。只有组长能调，服务端会再判一次。"""
+    return _call("POST", f"/v1/group/{int(gid)}/role",
+                 {"user_id": int(uid), "role": str(role)})
+
+
 def set_alias(gid: int, alias: str) -> dict:
     """改我在这个组里的昵称（只影响这个组）。"""
     return _call("POST", f"/v1/group/{int(gid)}/me", {"alias": alias})

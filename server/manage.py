@@ -44,10 +44,10 @@ AUDIT_CN = {
     "join_mode": "改了加入方式", "goal": "改了目标", "mapshare": "改了路线共享",
     "camp": "升级了营地",
 }
-# 教练角色还没落地（P3 第二项），先只放行组长和管理员。
-# 做完角色再把 "coach" 加回来——api_pending / api_decide 那边同样要放开，
-# 只改这里会出现「页面能进、操作 403」。
-MANAGER_ROLES = ("owner", "admin")
+# 教练能进：看成员、结束赛事、查审计、导出。
+# 但「审核」「设置」两个 tab 对他们不展示——api_pending / api_set_join_mode
+# 还是 owner/admin 的门槛，放进来只会点出一个 403。
+MANAGER_ROLES = ("owner", "admin", "coach")
 
 CSS = """
 :root{--bg:#0e1116;--card:#171b22;--line:#262c36;--fg:#e7ecf3;--dim:#8b97a8;
@@ -202,9 +202,13 @@ def groups_page(me) -> bytes:
     return _page("我管理的组", body, me=me)
 
 
-def _tabs(gid: int, cur: str, pending: int) -> str:
-    items = [("members", "成员"), ("pending", f"审核（{pending}）" if pending else "审核"),
-             ("challenge", "赛事"), ("audit", "操作记录"), ("settings", "设置")]
+def _tabs(gid: int, cur: str, pending: int, role: str = "member") -> str:
+    items = [("members", "成员")]
+    if role in ("owner", "admin"):
+        items.append(("pending", f"审核（{pending}）" if pending else "审核"))
+    items += [("challenge", "赛事"), ("audit", "操作记录")]
+    if role in ("owner", "admin"):
+        items.append(("settings", "设置"))
     out = ['<div class=tabs>']
     for key, label in items:
         cls = " class=on" if key == cur else ""
@@ -233,6 +237,9 @@ def group_page(me, gid: int, tab: str = "members", msg: str = "") -> bytes:
     except Exception:      # noqa: BLE001 - 审核数拿不到不该让页面挂
         pend = 0
 
+    if tab in ("pending", "settings") and role not in ("owner", "admin"):
+        tab = "members"
+
     head = (f'<div class=card><div class=row><div class=g>'
             f'<b style="font-size:18px">{_e(g.get("name"))}</b>'
             f'<div class=sub>{int(g.get("member_count") or 0)} 人 · '
@@ -240,7 +247,7 @@ def group_page(me, gid: int, tab: str = "members", msg: str = "") -> bytes:
             f'<b>{_e(g.get("invite_code") or "仅组长可见")}</b></div></div>'
             f'<a class=pill href="/manage/export/{gid}.csv">导出 CSV</a></div></div>')
 
-    body = head + _tabs(gid, tab, pend)
+    body = head + _tabs(gid, tab, pend, role)
     if tab == "pending":
         body += _tab_pending(me, gid)
     elif tab == "challenge":
@@ -267,6 +274,8 @@ def _tab_members(me, gid: int) -> str:
     except Exception:      # noqa: BLE001
         d = {}
     mem = ((d.get("group") or {}).get("members") or [])
+    # 页面自己的角色：决定要不要显示「设教练」。api_get 已按角色裁过 members。
+    my_role = str((d.get("group") or {}).get("role") or "")
     if not mem:
         return '<div class=card><div class=empty>读不到成员列表。</div></div>'
     rows = []
@@ -275,6 +284,20 @@ def _tab_members(me, gid: int) -> str:
         s = stats.get(uid) or {}
         km = float(s.get("distance_m") or 0) / 1000.0
         role = str(m.get("role") or "member")
+        coach_btn = ""
+        if (my_role == "owner" and role == "member"
+                and uid != int(me["user_id"])):
+            coach_btn = ('<form class=inline method=post action="/manage/act">'
+                         f'<input type=hidden name=gid value="{gid}">'
+                         f'<input type=hidden name=uid value="{uid}">'
+                         '<input type=hidden name=tab value=members>'
+                         '<button class=ghost name=op value=setcoach>设教练</button></form>')
+        elif my_role == "owner" and role == "coach":
+            coach_btn = ('<form class=inline method=post action="/manage/act">'
+                         f'<input type=hidden name=gid value="{gid}">'
+                         f'<input type=hidden name=uid value="{uid}">'
+                         '<input type=hidden name=tab value=members>'
+                         '<button class=ghost name=op value=uncoach>撤销教练</button></form>')
         kick = ""
         if role != "owner" and uid != int(me["user_id"]):
             kick = ('<form class=inline method=post action="/manage/act">'
@@ -288,7 +311,7 @@ def _tab_members(me, gid: int) -> str:
             f'<td class=sub>{_e(ROLE_CN.get(role, role))}</td>'
             f'<td class=right>{km:.1f}</td>'
             f'<td class=right class=sub>{int(s.get("days") or 0)} 天</td>'
-            f'<td class=right>{kick}</td></tr>')
+            f'<td class=right>{coach_btn}{kick}</td></tr>')
     return ('<div class=card><table><tr><th>昵称</th><th>角色</th>'
             '<th class=right>本周 km</th><th class=right>出勤</th><th></th></tr>'
             + "".join(rows) + '</table></div>')
@@ -480,6 +503,12 @@ def handle_post(path: str, form: dict, cookie: str | None) -> tuple:
             if op == "reject":
                 G.api_decide(me, gid, int(uk), False)
                 return _back(gid, "pending", "已拒绝")
+            if op == "setcoach":
+                G.api_set_role(me, gid, {"user_id": int(uk), "role": "coach"})
+                return _back(gid, "members", "已设为教练")
+            if op == "uncoach":
+                G.api_set_role(me, gid, {"user_id": int(uk), "role": "member"})
+                return _back(gid, "members", "已撤销教练")
             if op == "kick":
                 G.api_remove(me, gid, int(uk))
                 return _back(gid, "members", "已移出")
