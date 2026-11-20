@@ -1543,7 +1543,9 @@ def run() -> int:
 
     # 榜单/赛事/设置三块直接铺在页面上，不再各发一个盒子
     assert 'class="flat"' in _gh, "组页又给数据块套上卡片了"
-    assert _gh.count('class="flat"') >= 3, "数据块没有改用无框样式"
+    # 榜单和赛事仍是无框数据块；动态改成了一条一卡（.acard），
+    # 所以这里不再数「≥3 个 flat」，免得把合法的改版判成回归。
+    assert _gh.count('class="flat"') >= 2, "榜单/赛事又被套上卡片盒子了"
     # 低频表单折叠：建赛事、管理
     assert "建一个赛事" in _gh and "<details" in _gh, "建赛事表单又常驻展开了"
     # 昵称 / 共享 / 邀请码 / 退出全搬进「小组设置」了，组页只留一个页头齿轮。
@@ -1741,11 +1743,19 @@ def run() -> int:
 
     # 动态：组页只给最近几条 + 入口；详情页有表情按钮和留言框
     assert "大家的动态" in _gh and f"/groups/1/feed" in _gh, "组页没有动态区"
-    assert 'class="frow"' in _gh, "组页动态没有按行渲染"
+    # 动态从「一行一条」改成「一条一卡」：大字距离 + 半马标尺 + 三项 + 三条评论
+    assert 'class="acard"' in _gh, "组页动态没有按卡片渲染"
+    assert 'class="ac-scale"' in _gh, "动态卡片没有距离标尺"
+    assert 'class="ac-3"' in _gh, "动态卡片没有时长/配速/爬升三格"
     assert "大家最近" in _fdp and "跑步" in _fdp, "动态列表页没渲染出来"
     assert "/feed?act=9" in _fdp, "动态列表没有进详情页的链接"
     assert 'name="emoji"' in _fdo and 'name="text"' in _fdo, "详情页没有表情/留言入口"
-    assert "没有轨迹、没有配速、没有活动图" in _fdp, "动态页没写明只给概要"
+    # 现在会**算**配速（距离÷时长），所以文案不能再写「没有配速」——
+    # 那是不实陈述。要写清「配速是算的」「没有轨迹、没有位置」。
+    assert "配速是按距离÷时长算的" in _fdp, "动态页没写清配速是算出来的"
+    assert "没有轨迹、没有位置" in _fdp, "动态页没写明不上传轨迹/位置"
+    # 最新三条评论要在卡片里露出来（原来只露一个「N 条」的数字）
+    assert 'class="ac-c"' in _fdp, "动态卡片没有评论区"
 
     # ---- P2 口径守卫：数字必须两端同一套，否则用户看到的格数和服务端记的
     # 对不上，而且这种偏差没人会主动报 bug，只会觉得「徽章不准」。

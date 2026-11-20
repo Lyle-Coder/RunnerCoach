@@ -356,16 +356,46 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
   color:var(--ink2);padding:7px 0;border-bottom:1px solid var(--line2)}
 .kvline:last-child{border-bottom:0}
 .kvline b{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
-/* 训练小组 */
-.grow{display:flex;align-items:center;gap:10px;padding:11px 0;
-  border-bottom:1px solid var(--line2);color:inherit;text-decoration:none}
-.grow:last-child{border-bottom:0}
-/* 组名后面的角色小标签（组长/成员）：不给样式会直接粘成名的一部分 */
-.grow .gname .sub{font-size:11px;font-weight:400;color:var(--faint);margin-left:6px}
-.grow .gname{flex:1 1 auto;min-width:0;font-size:14px;font-weight:600;color:var(--ink);
+/* ---- 训练小组：一组一张卡 ----
+   原来是一行一条（组名 + 一句「本周第 N/M 名」）。三个组叠在一起是三条
+   同构的细线，看完只知道「我有三个组」，不知道每个组里我过得怎么样。
+   一组一卡，卡上回答三件事：这个组多大、我在里面第几、我在这儿拿到了什么。 */
+.gcard{display:block;padding:13px 14px;margin-bottom:10px;text-decoration:none;
+  color:inherit;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-3)}
+.gcard:last-child{margin-bottom:0}
+.gcard:active{background:var(--surface-2)}
+.gc-h{display:flex;align-items:center;gap:8px}
+.gc-n{flex:1 1 auto;min-width:0;font-size:var(--fs-title,16px);font-weight:600;
+  color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gc-h .chev{flex:0 0 auto;color:var(--muted);font-size:15px}
+/* 概述一行：几个人、全组这周跑了多少。名次放下一行单独说，不挤在这 */
+.gc-m{margin:3px 0 0;font-size:var(--fs-cap,12px);color:var(--ink-3);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.grow .gmeta{flex:0 0 auto;font-size:11px;color:var(--muted);text-align:right;line-height:1.4}
-.grow .chev{flex:0 0 auto;color:var(--muted);font-size:15px}
+/* 我在这组的位置：左边名次、右边里程（里程是这一屏的第二个大数字） */
+.gc-me{display:flex;align-items:baseline;gap:8px;margin-top:9px}
+.gc-me .rk{font-size:var(--fs-body,14px);font-weight:600;color:var(--ink);
+  white-space:nowrap}
+.gc-me .rk i{font-style:normal;font-weight:400;font-size:var(--fs-micro,11px);
+  color:var(--ink-3);margin-left:4px}
+.gc-me .km{margin-left:auto;font-size:var(--fs-title,16px);font-weight:600;
+  color:var(--brand-ink);font-variant-numeric:tabular-nums}
+.gc-me .km i{font-style:normal;font-size:var(--fs-micro,11px);font-weight:400;
+  color:var(--ink-3);margin-left:2px}
+/* 目标：一条 3px 进度 + 一行小字。没有目标就整块不出现（不留空条） */
+.gc-goal{margin-top:9px}
+.gc-goal .bar{height:3px;border-radius:2px;background:var(--line);overflow:hidden}
+.gc-goal .bar>i{display:block;height:100%;border-radius:2px;background:var(--brand)}
+.gc-goal p{margin:5px 0 0;font-size:var(--fs-micro,11px);color:var(--ink-3)}
+/* 成就：六件衫画满六个位置（没拿到的空心），右边挂探索徽章。
+   只画拿到的那几件，就看不出「这组里我还有几件没拿到」。 */
+.gc-hon{display:flex;align-items:center;gap:3px;margin-top:11px;padding-top:10px;
+  border-top:1px solid var(--line2)}
+.gc-hon .jsh{width:19px;height:19px}
+.gc-hon .hn{margin-left:5px;font-size:var(--fs-micro,11px);font-weight:600;
+  color:var(--ink-2);white-space:nowrap}
+.gc-hon .jx{width:17px;height:17px;margin-left:auto;color:var(--brand-ink)}
+.gc-hon .jsh.off + .jsh.off{margin-left:0}
 .rank{display:flex;align-items:center;gap:9px;min-height:56px;padding:0;
   border-bottom:1px solid var(--line2)}
 .rank:last-child{border-bottom:0}
@@ -716,19 +746,64 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .invrow{display:flex;align-items:center;gap:10px;margin-top:10px}
 .invrow .iv{font-size:var(--fs-lead,15px);font-weight:600;letter-spacing:1.6px;
   color:var(--ink);font-variant-numeric:tabular-nums}
-/* 动态：一行一条。左色点认人，中间类型+距离，右边日期和评论数。
-   没有缩略图——这一栏按设计就是概要，给不出活动图。 */
-.frow{display:grid;grid-template-columns:8px minmax(0,auto) minmax(0,1fr) auto auto;
-  align-items:center;gap:0 8px;padding:10px 0;border-bottom:1px solid var(--line2);
-  color:inherit;text-decoration:none}
-.frow:last-child{border-bottom:0}
-.fd{width:8px;height:8px;border-radius:50%;box-shadow:0 0 0 1px rgba(255,255,255,.2) inset}
-.fn{font-size:14px;font-weight:600;color:var(--ink);white-space:nowrap}
-.fn .fk{font-style:normal;font-weight:400;font-size:11px;color:var(--muted);margin-left:6px}
-.fv{font-size:11px;color:var(--ink2);white-space:nowrap;overflow:hidden;
-  text-overflow:ellipsis}
-.ft{font-size:11px;color:var(--faint);white-space:nowrap}
-.fc{font-size:11px;color:var(--brand-ink);white-space:nowrap}
+/* ---- 动态：一条活动一张卡 ----
+   原来是一行一条：色点 + 昵称 + 「4.7 km · 26:41 · 爬升 32 m」+ 日期。
+   十八行叠起来像一张流水账，读不出「这次跑得怎么样」，评论还挤成一个小数字。
+   现在一条一卡：谁 / 多少（大字）/ 距离标尺 / 三项数据 / 最新三条评论。 */
+.acard{display:block;padding:13px 14px;margin-bottom:10px;text-decoration:none;
+  color:inherit;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-3)}
+.acard:last-child{margin-bottom:0}
+.acard:active{background:var(--surface-2)}
+.ac-h{display:flex;align-items:center;gap:7px;min-width:0}
+.fd{width:8px;height:8px;flex:0 0 auto;border-radius:50%;
+  box-shadow:0 0 0 1px rgba(255,255,255,.2) inset}
+.ac-n{font-size:var(--fs-body,14px);font-weight:600;color:var(--ink);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ac-h .fk{font-style:normal;flex:0 0 auto;font-size:var(--fs-micro,11px);
+  color:var(--muted)}
+.ac-d{flex:0 0 auto;margin-left:auto;font-size:var(--fs-micro,11px);
+  color:var(--faint);white-space:nowrap}
+/* 主数字：距离。这一屏只有一个 32 的字（和核心数据卡的分数同档） */
+.ac-km{margin-top:8px;font-size:var(--fs-dsp,32px);font-weight:600;color:var(--ink);
+  line-height:1;letter-spacing:-1px;font-variant-numeric:tabular-nums}
+.ac-km i{font-style:normal;font-size:var(--fs-cap,12px);font-weight:400;
+  color:var(--ink-3);margin-left:4px;letter-spacing:0}
+/* 距离标尺：0 → 半马，**绝对刻度**，所有卡片横向可比。
+   不给它固定上限的话，每条按自己缩放，「12.4 km」和「2.1 km」的条一样长。 */
+.ac-scale{position:relative;height:3px;margin:13px 0 0;border-radius:2px;
+  background:var(--line)}
+.ac-scale>i{position:absolute;top:-3.5px;width:10px;height:10px;border-radius:50%;
+  background:var(--brand);box-shadow:0 0 0 2px var(--surface);
+  transform:translateX(-50%)}
+.ac-scale>u{position:absolute;top:0;width:1px;height:3px;background:var(--line-strong)}
+.ac-tk{display:flex;justify-content:space-between;margin-top:5px;
+  font-size:var(--fs-micro,11px);color:var(--faint);
+  font-variant-numeric:tabular-nums}
+/* 三项数据：时长 / 平均配速 / 爬升。配速是 distance÷duration 算的，
+   不是上传的原始配速——文案上别写「配速数据」 */
+.ac-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;
+  margin-top:12px}
+/* 没有距离的活动只给两格（类型 / 爬升），三列会空出一格 */
+.ac-3.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+/* 没距离时用来代替距离标尺的一行说明 */
+.ac-note{margin:11px 0 0;font-size:var(--fs-cap,12px);color:var(--ink-3)}
+.ac-3>div{min-width:0}
+.ac-3 b{display:block;font-size:var(--fs-body,14px);font-weight:600;
+  color:var(--ink2);font-variant-numeric:tabular-nums;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ac-3 span{display:block;margin-top:2px;font-size:var(--fs-micro,11px);
+  color:var(--ink-3)}
+/* 最新三条评论：昵称淡一点、内容亮一点，一行一条，超出省略 */
+.ac-c{margin-top:12px;padding-top:10px;border-top:1px solid var(--line2)}
+.ac-c p{margin:0 0 5px;font-size:var(--fs-cap,12px);color:var(--ink2);
+  line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ac-c p:last-child{margin-bottom:0}
+.ac-c p b{font-weight:600;color:var(--ink-3);margin-right:5px}
+.ac-c p em{font-style:normal;font-size:15px;vertical-align:-1px}
+.ac-c .ac-more{display:block;margin-top:7px;font-size:var(--fs-micro,11px);
+  color:var(--brand-ink)}
+.ac-c .none{font-size:var(--fs-cap,12px);color:var(--muted)}
 /* 评论：表情一排按钮 + 一句话输入 */
 .erow{display:flex;gap:6px;flex-wrap:wrap;padding:2px 0 8px}
 .eform{margin:0}

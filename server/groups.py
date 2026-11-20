@@ -589,6 +589,35 @@ def api_list(me) -> dict:
             # 本周名次：列表页直接显示，不用点进去才知道自己第几
             g["week"] = _week_rank(c, int(r["id"]), uid)
             out.append(g)
+
+    # 每组再补一份「我在这组的成就」：拿到几件衫、有没有探索徽章、目标完成到哪。
+    # 直接复用 api_season（实测单组 ~5 ms，最多 3 个组就是 ~15 ms）。
+    # 不另写一套轻量指标算法——两套算法迟早会对不上，列表说 2 件、点进去 3 件，
+    # 那种 bug 比慢 15 毫秒难查得多。
+    for g in out:
+        try:
+            se = api_season(me, int(g["id"]), {})
+        except Exception:      # noqa: BLE001 - 成就算不出来不该让列表打不开
+            continue
+        mine = se.get("me") or {}
+        # 下发**全部六项**、每项标 got：卡片要画出「六件里我有几件」，
+        # 只给我拿到的那些，前端就没法画空位，用户数不出缺几件。
+        got_ids = {str(x.get("id")) for x in (mine.get("shirts") or [])}
+        g["honors"] = {
+            "shirts": [{"id": x.get("id"), "name": x.get("name"),
+                        "title": x.get("title"), "color": x.get("color"),
+                        "pattern": str(x.get("pattern") or ""),
+                        "got": str(x.get("id")) in got_ids}
+                       for x in (se.get("shirts") or [])],
+            "score": mine.get("score"),
+            "explorer": int(mine.get("explorer") or 0),
+            "explore_min": int((se.get("explore") or {}).get("min_cells") or 5),
+            "goal_km": (se.get("goal") or {}).get("km"),
+            "rank": mine.get("rank"),
+            "total": len(se.get("people") or []),
+            "total_km": round(sum(float(x.get("km") or 0)
+                                  for x in (se.get("people") or [])), 1),
+        }
     return {"ok": True, "groups": out}
 
 
@@ -1250,17 +1279,23 @@ def api_feed(me, gid: int, query: dict) -> dict:
         counts: dict[int, int] = {}
         if ids:
             marks = ",".join("?" * len(ids))
+            # 倒序取：列表里要的是**最新** 3 条，不是最早 2 条。
+            # 原来 ORDER BY id 取前两条，最新的讨论全被挡在外面，用户看到的
+            # 永远是三天前那两句「牛」——这就是「动态太简单」的一半原因。
             for r in c.execute(
                     f"SELECT act_id, user_id, text, emoji, created_at FROM group_comment"
-                    f" WHERE act_id IN ({marks}) ORDER BY id", ids).fetchall():
+                    f" WHERE act_id IN ({marks}) ORDER BY id DESC", ids).fetchall():
                 a = int(r["act_id"])
                 counts[a] = counts.get(a, 0) + 1
-                # 列表里每条只留前两条；详情页（only 有值）全给
-                if only is not None or len(cmts.setdefault(a, [])) < 2:
+                # 列表里每条留最新 3 条；详情页（only 有值）全给
+                if only is not None or len(cmts.setdefault(a, [])) < 3:
                     cmts.setdefault(a, []).append({
                         "user_id": int(r["user_id"]),
                         "text": str(r["text"] or ""),
                         "emoji": str(r["emoji"] or "")})
+            # 倒序取是为了「留哪几条」，展示仍按时间正序（像对话，最新的在最后）
+            for a in cmts:
+                cmts[a].reverse()
 
     color = {int(m["user_id"]): MAP_COLORS[i % len(MAP_COLORS)]
              for i, m in enumerate(mem)}

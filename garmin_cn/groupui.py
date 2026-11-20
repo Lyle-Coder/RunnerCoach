@@ -144,11 +144,11 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
     if not st["logged_in"]:
         body = (msg + '<div class="card"><p class="note">训练小组需要一个账号：'
                 '建组、加入朋友的组、看本周榜都靠它。只上传每日里程合计，'
-                '不上传轨迹和配速。</p>'
+                '不上传轨迹和位置。</p>'
                 '<div class="pager"><a class="btn primary" href="/account">去登录</a></div>'
                 '</div>')
         return page("GROUP", "训练小组", "还没登录", body,
-                    foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+                    foot="只上传里程合计，不上传轨迹和位置；配速按距离÷时长算。",
                     back=("返回我的", "/me"))
 
     r = G.groups()
@@ -162,7 +162,7 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
             body = (msg + f'<div class="card"><p class="note">{esc(err)}</p>'
                     '<div class="pager"><a class="btn" href="/groups">重试</a></div></div>')
         return page("GROUP", "训练小组", "连接有问题", body,
-                    foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+                    foot="只上传里程合计，不上传轨迹和位置；配速按距离÷时长算。",
                     back=("返回我的", "/me"))
 
     items = r.get("groups") or []
@@ -176,24 +176,70 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
             return group_page(token, int(items[0]["id"]))
         except Exception:      # noqa: BLE001 - 详情页挂了也要能回到列表
             pass
-    rows = ""
+    # 一组一卡。卡上四层：组名+角色 → 概述（人数·全组里程）→ 我的名次与里程
+    # → 目标进度与成就（六件衫 + 探索徽章）。原来一行一条，三个组看完只知道
+    # 「我有三个组」，不知道每个组里我过得怎么样。
+    cards = ""
     for g in items:
         role = {"owner": "组长", "admin": "管理员"}.get(g.get("role") or "", "成员")
-        # 名次优先于人数：点「小组」想知道的是「我在组里怎么样」，
-        # 而不是这个组有几口人。人数退到括号里。
+        h = g.get("honors") or {}
         wk = g.get("week") or {}
-        if wk.get("rank"):
-            meta = (f'本周第 {int(wk["rank"])}/{int(wk["total"])} 名'
-                    f' · {float(wk["km"]):g} km')
+        n = int(g.get("member_count") or 0)
+        tot = float(h.get("total_km") or 0)
+        km = float(wk.get("km") or 0)
+        rk, tt = h.get("rank"), int(h.get("total") or 0)
+
+        meta = (f'{n} 人 · 本周全组 {tot:g} km' if tot > 0
+                else f'{n} 人 · 本周还没有里程')
+
+        # 名次：一个人组里「第 1 名」没有信息量，改说「本周成绩」
+        if rk and tt > 1:
+            who = f'第 {int(rk)} 名<i>共 {tt} 人</i>'
+        elif rk and tt == 1:
+            who = '本周成绩'
+        elif km > 0:
+            who = '本周还没有名次'
         else:
-            meta = f'本周还没有里程 · {int(g.get("member_count") or 0)} 人'
-        rows += (f'<a class="grow" href="/groups/{g["id"]}">'
-                 f'<span class="gname">{esc(g.get("name"))}'
-                 f'<span class="sub">{esc(role)}</span></span>'
-                 f'<span class="gmeta">{meta}</span>'
-                 '<span class="chev">›</span></a>')
-    if not rows:
-        rows = '<p class="note">还没有加入小组。自己建一个，或者拿邀请码加入。</p>'
+            who = '本周还没有记录'
+        kmtxt = f'{km:g}<i>km</i>' if km > 0 else ""
+
+        # 目标：有分母才画条，没定目标就整块不出现（不留一条空条）
+        goal = ""
+        gk = h.get("goal_km")
+        if gk:
+            gk = float(gk)
+            pct = max(0.0, min(1.0, km / gk)) if gk > 0 else 0.0
+            goal = ('<div class="gc-goal">'
+                    f'<div class="bar"><i style="width:{pct * 100:.0f}%"></i></div>'
+                    f'<p>本周目标 {gk:g} km · 完成 {pct * 100:.0f}%</p></div>')
+
+        # 成就：六件衫画满六个位置，没拿到的空心——「缺几件」得数得出来
+        hon = ""
+        shirts = h.get("shirts") or []
+        if shirts:
+            got = sum(1 for x in shirts if x.get("got"))
+            ic = "".join(
+                _jersey(str(x.get("color") or ""), str(x.get("pattern") or ""),
+                        bool(x.get("got")), "",
+                        f'{x.get("name") or ""}·{x.get("title") or ""}')
+                for x in shirts)
+            ex = ""
+            if int(h.get("explorer") or 0) >= int(h.get("explore_min") or 5):
+                ex = _explore_icon("jx", "探索徽章")
+            hon = ('<div class="gc-hon">' + ic
+                   + f'<span class="hn">荣誉 {got}/{len(shirts)}</span>{ex}</div>')
+
+        cards += (f'<a class="gcard" href="/groups/{int(g["id"])}">'
+                  '<div class="gc-h">'
+                  f'<span class="gc-n">{esc(g.get("name"))}</span>'
+                  f'<span class="pill ghost">{esc(role)}</span>'
+                  '<span class="chev">›</span></div>'
+                  f'<p class="gc-m">{esc(meta)}</p>'
+                  f'<div class="gc-me"><span class="rk">{who}</span>'
+                  f'<span class="km">{kmtxt}</span></div>'
+                  + goal + hon + '</a>')
+    if not cards:
+        cards = '<p class="note">还没有加入小组。自己建一个，或者拿邀请码加入。</p>'
 
     join_form = (f'<form action="/__group/join" method="post">{_tok(token)}'
                  '<div class="card">'
@@ -241,7 +287,7 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
         # 已经有组的人，建组/加入是低频动作：折成一行放在底部，
         # 别让它和「我的小组」抢版面。
         body = (msg
-                + sec("我的小组", '<div class="card">' + rows + '</div>')
+                + sec("我的小组", cards)
                 # force_list 时默认展开：用户是从「加入另一个组」点进来的，
                 # 再折一次等于告诉他「这里没有」。
                 + ('<details class="fold fold-lg" open>' if force_list
@@ -256,7 +302,7 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
                 + sec("加入小组", '<div class="card">' + join_form + '</div>')
                 + sec("创建小组", '<div class="card">' + create_form + '</div>'))
     return page("GROUP", "训练小组", "本周榜只在组内可见", body, chips,
-                foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+                foot="只上传里程合计，不上传轨迹和位置；配速按距离÷时长算。",
                 back=("返回我的", "/me"))
 
 
@@ -366,7 +412,7 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
         "GROUP", "小组设置",
         f'{esc(g.get("name"))} · '
         + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
-        body, foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+        body, foot="只上传里程合计，不上传轨迹和位置；配速按距离÷时长算。",
         back=("返回小组", f"/groups/{gid}")))
 
 
@@ -407,7 +453,7 @@ def bingo_page(token: str, gid: int, message: str = "") -> str:
                   '连成一行、一列或一条对角线就算一条线；只做荣誉，不加赛季分。</p>'))
     # 不传 chips：副标题已经写了「10/25 格 · 1 条线」，再加两个 chip 是同一句话
     return page("GROUP", "Bingo", f"{done}/{total} 格 · {lines} 条线", body,
-                foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+                foot="只上传里程合计，不上传轨迹和位置；配速按距离÷时长算。",
                 back=("返回小组", f"/groups/{gid}"))
 
 
@@ -752,24 +798,93 @@ def _hm(sec: int) -> str:
     return f"{h}:{m:02d}" if h else f"{m}:{r:02d}"
 
 
-def _act_line(a: dict, today: str, detail: bool = False) -> str:
-    """一条动态。只有概要：类型、距离、时长、爬升——没有图，也没有配速。"""
-    km = float(a.get("distance_m") or 0) / 1000
-    bits = [f'{km:.1f} km']
-    if a.get("duration_s"):
-        bits.append(_hm(int(a["duration_s"])))
-    if int(a.get("elevation_m") or 0) > 0:
-        bits.append(f'爬升 {int(a["elevation_m"])} m')
-    tail = ""
+# 距离标尺的上限固定成半马。**绝对刻度**是关键：按每条自己缩放的话，
+# 12.4 km 和 2.1 km 的条一样长，图就白画了。
+HALF_MARATHON_KM = 21.0975
+
+
+def _pace(distance_m: float, duration_s: float) -> str:
+    """平均配速 m'ss"。由距离和时长**算**出来的，不是上传的配速。"""
+    km = float(distance_m or 0) / 1000.0
+    sec = float(duration_s or 0)
+    if km <= 0 or sec <= 0:
+        return ""
+    spk = sec / km
+    m, sec2 = int(spk // 60), int(round(spk % 60))
+    if sec2 == 60:
+        m, sec2 = m + 1, 0
+    return f"{m}'{sec2:02d}\""
+
+
+def _act_card(a: dict, today: str, detail: bool = False) -> str:
+    """一条动态的卡片：谁 / 距离大字 / 距离标尺 / 时长·配速·爬升 / 最新三条评论。
+
+    图形只用真实数据映射：标尺的位置就是「这次距离 / 半马」。不画轨迹
+    （服务端没有轨迹，也不上传），也不用装饰性曲线——那种图看着像数据，
+    其实什么都没说。
+    """
+    km = float(a.get("distance_m") or 0) / 1000.0
+    dur = int(a.get("duration_s") or 0)
+    elev = int(a.get("elevation_m") or 0)
+
+    # 标尺：0 → 半马。两条刻度线（5 / 10）只做视觉参考，不标字，避免挤。
+    pct = max(1.6, min(100.0, km / HALF_MARATHON_KM * 100.0)) if km > 0 else 0.0
+    ticks = "".join(f'<u style="left:{x / HALF_MARATHON_KM * 100:.1f}%"></u>'
+                    for x in (5.0, 10.0))
+    scale = ('<div class="ac-scale">' + ticks
+             + (f'<i style="left:{pct:.1f}%"></i>' if km > 0 else "")
+             + '</div><div class="ac-tk"><span>0</span>'
+             '<span>半马 21.1 km</span></div>')
+
+    if km > 0:
+        main = f'<div class="ac-km">{km:.1f}<i>km</i></div>'
+        visual = scale
+        cells = (f'<div><b>{_hm(dur) if dur else "—"}</b><span>时长</span></div>'
+                 f'<div><b>{_pace(km * 1000, dur) or "—"}</b><span>平均配速</span></div>'
+                 f'<div><b>{f"{elev} m" if elev else "—"}</b><span>爬升</span></div>')
+        three = f'<div class="ac-3">{cells}</div>'
+    else:
+        # 没有距离的活动（室内/器械类）不能显示「0.0 km」——那看着像数据坏了。
+        # 主数字改用时长，标尺没意义就不画，三格缩成两格。
+        main = f'<div class="ac-km">{_hm(dur) if dur else "—"}<i>时长</i></div>'
+        visual = '<p class="ac-note">这次没有距离记录（室内或器械类）</p>'
+        three = ('<div class="ac-3 two">'
+                 f'<div><b>{esc(a.get("kind_name"))}</b><span>类型</span></div>'
+                 f'<div><b>{f"{elev} m" if elev else "—"}</b><span>爬升</span></div>'
+                 '</div>')
+
+    # 评论：列表里给最新三条；详情页由下面单独渲染全量，这里不重复
+    cm = ""
     if not detail:
-        tail = (f'<span class="fc">{int(a.get("comments") or 0)} 条</span>'
-                if int(a.get("comments") or 0) else "")
-    return (f'<span class="fd" style="background:{esc(a.get("color"))}"></span>'
-            f'<span class="fn">{esc(a.get("alias"))}'
-            f'<i class="fk">{esc(a.get("kind_name"))}</i></span>'
-            f'<span class="fv">{" · ".join(bits)}</span>'
-            f'<span class="ft">{esc(_rel_day(str(a.get("date")), today))}</span>'
-            + tail)
+        rec = a.get("recent") or []
+        cnt = int(a.get("comments") or 0)
+        if rec:
+            lines = ""
+            for c in rec:
+                _e = esc(c.get("emoji") or "")
+                _t = esc(c.get("text") or "")
+                lines += (f'<p><b>{esc(c.get("alias"))}</b>'
+                          + (f'<em>{_e}</em>' if _e else "")
+                          + (f'<span>{_t}</span>' if _t else "") + '</p>')
+        else:
+            # 没评论时两行（「还没有人说话」+「去留一句」）太散，并成一行引导
+            lines = ""
+        if cnt > len(rec):
+            more = f'<span class="ac-more">还有 {cnt - len(rec)} 条评论 ›</span>'
+        elif rec:
+            # 有评论就别再挂「去留一句」：整张卡本来就是入口，多这一行像按钮
+            more = ""
+        else:
+            more = '<span class="ac-more">还没有评论 · 说一句 ›</span>'
+        cm = f'<div class="ac-c">{lines}{more}</div>'
+
+    return ('<div class="ac-h">'
+            f'<span class="fd" style="background:{esc(a.get("color"))}"></span>'
+            f'<span class="ac-n">{esc(a.get("alias"))}</span>'
+            f'<i class="fk">{esc(a.get("kind_name"))}</i>'
+            f'<span class="ac-d">{esc(_rel_day(str(a.get("date")), today))}</span>'
+            '</div>'
+            + main + visual + three + cm)
 
 
 def feed_page(token: str, gid: int, message: str = "", act: int = 0) -> str:
@@ -811,8 +926,7 @@ def feed_page(token: str, gid: int, message: str = "", act: int = 0) -> str:
                      + (f'<span>{_t}</span>' if _t else "")
                      + "</div>")
         body = (_msg(message)
-                + sec("这条", '<div class="flat"><div class="frow">'
-                      + _act_line(one, today, detail=True) + "</div></div>")
+                + sec("这条", _act_card(one, today, detail=True))
                 + (sec("评论", '<div class="flat">' + cmts + '</div>') if cmts else "")
                 + sec("说一句", '<div class="flat">'
                       '<div class="erow">' + emo + '</div>'
@@ -829,20 +943,21 @@ def feed_page(token: str, gid: int, message: str = "", act: int = 0) -> str:
 
     items = ""
     for a in rows:
-        items += (f'<a class="frow" href="/groups/{gid}/feed?act={int(a["id"])}">'
-                  + _act_line(a, today) + "</a>")
+        items += (f'<a class="acard" href="/groups/{gid}/feed?act={int(a["id"])}">'
+                  + _act_card(a, today) + "</a>")
     if not items:
         items = ('<div class="card"><p class="note">最近还没有动态。'
                  '同步一次后，你和队友的活动概要会出现在这里。</p></div>')
     hidden = int(r.get("hidden") or 0)
     body = (_msg(message)
-            + sec("大家最近", '<div class="flat">' + items + '</div>')
+            + sec("大家最近", items)
             + (f'<p class="note">另有 {hidden} 人关闭了共享，不出现在这里。</p>'
                if hidden else "")
-            + '<p class="note">这里是活动概要：类型、距离、时长、爬升。'
-              '没有轨迹、没有配速、没有活动图。</p>')
+            + '<p class="note">每条是活动概要：距离、时长、爬升。'
+              '配速是按距离÷时长算的，不是上传的原始配速。'
+              '没有轨迹、没有位置。</p>')
     return page("GROUP", "动态", f"{len(rows)} 条", body,
-                foot="只上传活动概要，不上传轨迹、配速和位置。",
+                foot="只上传活动概要，不上传轨迹和位置；配速按距离÷时长算。",
                 back=("返回小组", f"/groups/{gid}"))
 
 
@@ -1026,7 +1141,7 @@ def shirts_page(token: str, gid: int, message: str = "") -> str:
         got.append("探索徽章")
     sub = ("我拿到 " + "、".join(got)) if got else "本周还没拿到"
     return _with_copy(page("GROUP", "本周荣誉", sub, body,
-                           foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+                           foot="只上传里程合计，不上传轨迹和位置；配速按距离÷时长算。",
                            back=("返回小组", f"/groups/{gid}")))
 
 
@@ -1428,21 +1543,21 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     ]
     quick = '<div class="qgrid">' + "".join(_tiles) + "</div>"
 
-    # ---- 大家的动态：组页只放最近几条，全部在 /feed
-    # 只给概要（类型/距离/时长/爬升），不出图——活动图是「我的」那边的东西，
-    # 组页拿到的是别人的数据，给不出也不该给。
+    # ---- 大家的动态：和 /feed 用同一种卡片，但组页只放**两条**。
+    # 一条卡约 200px（大字 + 标尺 + 三项 + 三条评论），放三条就把「看全部」
+    # 挤到第三屏去了；组页的主角是榜单，动态是「顺手看一眼」。
     feed_rows = ""
     try:
         _fd = G.feed(gid, today)
     except Exception:      # noqa: BLE001 - 老服务端没有 /feed，整块不显示
         _fd = {}
     if _fd.get("ok") and (_fd.get("rows") or []):
-        for a in (_fd.get("rows") or [])[:3]:
-            feed_rows += (f'<a class="frow" href="/groups/{gid}/feed?act={int(a["id"])}">'
-                          + _act_line(a, today) + "</a>")
+        for a in (_fd.get("rows") or [])[:2]:
+            feed_rows += (f'<a class="acard" href="/groups/{gid}/feed?act={int(a["id"])}">'
+                          + _act_card(a, today) + "</a>")
     feed_sec = (sec("大家的动态",
-                    '<div class="flat">' + feed_rows + '</div>'
-                    f'<div class="pager"><a class="btn sm" href="/groups/{gid}/feed">'
+                    feed_rows
+                    + f'<div class="pager"><a class="btn sm" href="/groups/{gid}/feed">'
                     f'看全部 {len(_fd.get("rows") or [])} 条</a></div>')
                 if feed_rows else "")
 
@@ -1475,5 +1590,5 @@ def group_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
         f'{int(g.get("member_count") or 0)} 人 · '
         + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
         body, chips, action=_gear,
-        foot="只上传每日里程合计到你的账号，不上传轨迹、配速和位置。",
+        foot="只上传里程合计，不上传轨迹和位置；配速按距离÷时长算。",
         back=("全部小组", "/groups?list=1")))
