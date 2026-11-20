@@ -949,10 +949,34 @@ def feed_page(token: str, gid: int, message: str = "", act: int = 0) -> str:
         for c in (one.get("recent") or []):
             _e = esc(c.get("emoji") or "")
             _t = esc(c.get("text") or "")
-            cmts += (f'<div class="cm"><b>{esc(c.get("alias"))}</b>'
+            _body = (f'<b>{esc(c.get("alias"))}</b>'
                      + (f'<span class="ce">{_e}</span>' if _e else "")
-                     + (f'<span>{_t}</span>' if _t else "")
-                     + "</div>")
+                     + (f'<span>{_t}</span>' if _t else ""))
+            # 只有自己的评论给「改 / 删」，而且折在一个 › 里面：
+            # 直接摆一个删除按钮在评论旁边，滑一下就会点到。
+            more = ""
+            if c.get("mine"):
+                _cid = int(c.get("id") or 0)
+                # 改和删是**同一个 form**（用 op 区分）：两个 form 的话按钮
+                # 只能竖着排，占两行、还多一个间隙；一排两个按钮更像一组操作。
+                more = (
+                    '<details class="cm-more">'
+                    '<summary aria-label="这条评论的操作">›</summary>'
+                    '<div class="cm-act">'
+                    f'<form action="/__group/{gid}/comment_edit" method="post">'
+                    f'{_tok(token)}'
+                    f'<input type="hidden" name="id" value="{_cid}">'
+                    f'<input type="hidden" name="act" value="{act}">'
+                    f'<input class="cm-in" type="text" name="text" maxlength="60" '
+                    f'value="{_t}" aria-label="改这条评论">'
+                    '<div class="pager">'
+                    '<button class="btn sm" name="op" value="save" type="submit">'
+                    '保存</button>'
+                    '<button class="btn sm danger" name="op" value="del" '
+                    "type=\"submit\" onclick=\"return confirm('删除这条评论？')\">"
+                    '删除</button></div></form></div></details>')
+            cmts += (f'<div class="cm"><span class="cm-b">{_body}</span>'
+                     f'{more}</div>')
         body = (_msg(message)
                 + sec("这条", _act_card(one, today, detail=True))
                 + (sec("评论", '<div class="flat">' + cmts + '</div>') if cmts else "")
