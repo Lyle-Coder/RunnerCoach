@@ -204,6 +204,16 @@ def main() -> int:
     G.detail = lambda gid: DETAIL                     # type: ignore[assignment]
     G.board = lambda gid, rng="week", today=None: BOARD   # type: ignore[assignment]
     G.challenge_list = lambda gid, today=None: CHALLENGES  # type: ignore[assignment]
+    G.challenge_get = lambda gid, cid, today=None: {        # type: ignore[assignment]
+        "ok": True, "hidden": 1,
+        "challenge": next(c for c in CHALLENGES["challenges"] if c["id"] == cid),
+        "rows": [
+            {"alias": "阿狗", "is_me": False, "current": 42100, "pct": 100.0,
+             "done_at": "2026-11-18"},
+            {"alias": "老李", "is_me": True, "current": 38100, "pct": 91.0,
+             "done_at": None},
+            {"alias": "小赵", "is_me": False, "current": 13000, "pct": 31.0,
+             "done_at": None}]}
     G.season = lambda gid, today=None: SEASON          # type: ignore[assignment]
     G.week = lambda gid, today=None: WEEK              # type: ignore[assignment]
     G.bingo = lambda gid, today=None: BINGO            # type: ignore[assignment]
@@ -256,7 +266,8 @@ def main() -> int:
     for _name, _html in (("feed", GU.feed_page("TOK", GID)),
                          ("feedone", GU.feed_page("TOK", GID, "", 3)),
                          ("board", GU.board_page("TOK", GID)),
-                         ("boardmonth", GU.board_page("TOK", GID, "", "month"))):
+                         ("boardmonth", GU.board_page("TOK", GID, "", "month")),
+                         ("challenge", GU.challenge_page("TOK", GID, 1))):
         for prefix, sub in (("/content/", "garmin_cn/content"),):
             _html = _html.replace(f'"{prefix}', f'"{ (ROOT / sub).as_uri()}/')
         _html = _html.replace("</body>", '<style>html{background:#05080d}'

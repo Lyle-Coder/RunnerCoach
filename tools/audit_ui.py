@@ -184,6 +184,15 @@ def _group_pages(tmp: Path) -> dict[str, Path]:
         G.season = lambda gid, today=None: season
         G.week = lambda gid, today=None: P.WEEK
         G.challenge_list = lambda gid, today=None: P.CHALLENGES
+        G.challenge_get = lambda gid, cid, today=None: {
+            "ok": True, "hidden": 1,
+            "challenge": P.CHALLENGES["challenges"][0],
+            "rows": [{"alias": "阿狗", "is_me": False, "current": 42100,
+                      "pct": 100.0, "done_at": "2026-11-18"},
+                     {"alias": "老李", "is_me": True, "current": 38100,
+                      "pct": 91.0, "done_at": None},
+                     {"alias": "小赵", "is_me": False, "current": 13000,
+                      "pct": 31.0, "done_at": None}]}
         G.feed = lambda gid, today=None, act=None: P.FEED
         G.run_state = lambda gid, today=None: {}
         G.groups = lambda: {"ok": True, "groups": glist}
@@ -192,6 +201,7 @@ def _group_pages(tmp: Path) -> dict[str, Path]:
             "小组列表": GU.groups_page("TOK", force_list=True),
             "小组详情": GU.group_page("TOK", 1),
             "完整榜单": GU.board_page("TOK", 1),
+            "赛事详情": GU.challenge_page("TOK", 1, 1),
             "本周荣誉": GU.shirts_page("TOK", 1),
             "小组设置": GU.settings_page("TOK", 1),
         }
