@@ -360,7 +360,8 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
     # 「我有三个组」，不知道每个组里我过得怎么样。
     cards = ""
     for g in items:
-        role = {"owner": "组长", "admin": "管理员"}.get(g.get("role") or "", "成员")
+        role = {"owner": "组长", "admin": "管理员", "coach": "教练"}.get(
+            g.get("role") or "", "成员")
         h = g.get("honors") or {}
         wk = g.get("week") or {}
         n = int(g.get("member_count") or 0)
@@ -506,6 +507,8 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
     role = g.get("role") or "member"
     is_owner = role == "owner"
     is_admin = role in ("owner", "admin")
+    # 教练能建赛事、看操作记录、导出；人事（踢人、审批、改码）不给
+    is_staff = role in ("owner", "admin", "coach")
     my_share = (g.get("me") or {}).get("share") or "summary"
     my_alias = (g.get("me") or {}).get("alias") or ""
 
@@ -569,6 +572,30 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
                     '<div class="setrow"><span>转让组长</span>'
                     f'<select name="uid" aria-label="转给谁">{_opts}</select>'
                     '<button class="btn sm" type="submit">转让</button></div></form>')
+        # 教练：只多「建赛事 / 看操作记录 / 导出」，人事不给。放在组长专属区，
+        # 因为只有组长能任命——管理员能踢人却不能任命教练，这是故意的。
+        _coaches = [m for m in (g.get("members") or [])
+                    if str(m.get("role") or "") == "coach"]
+        _cand = [m for m in (g.get("members") or [])
+                 if not m.get("is_me") and str(m.get("role") or "member") == "member"]
+        if _coaches or _cand:
+            grp += ('<p class="note">教练能建赛事、看操作记录，不能踢人和审批。</p>')
+        for _m in _coaches:
+            grp += (f'<form action="/__group/{gid}/role" method="post" class="setrow">'
+                    + _tok(token)
+                    + f'<input type="hidden" name="uid" value="{int(_m["user_id"])}">'
+                    f'<span style="flex:1 1 auto">{esc(_m.get("alias"))} · 教练</span>'
+                    '<button class="btn sm" name="role" value="member" '
+                    'type="submit">撤销</button></form>')
+        if _cand:
+            _copts = "".join(
+                f'<option value="{int(m["user_id"])}">{esc(m.get("alias"))}</option>'
+                for m in _cand)
+            grp += (f'<form action="/__group/{gid}/role" method="post">{_tok(token)}'
+                    '<div class="setrow"><span>设教练</span>'
+                    f'<select name="uid" aria-label="设谁当教练">{_copts}</select>'
+                    '<button class="btn sm" name="role" value="coach" '
+                    'type="submit">任命</button></div></form>')
     if not is_owner:
         grp += (f'<form action="/__group/{gid}/leave" method="post">{_tok(token)}'
                 '<div class="setrow"><span>退出</span>'
@@ -588,7 +615,7 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
                 ' value="1"> 我知道解散不能撤销</label>'
                 '<div class="pager"><button class="btn sm danger" type="submit">'
                 '解散</button></div></form></div></details>')
-    if is_admin:
+    if is_staff:
         # 组长工具：谁做了什么、这一周的数据能不能导出来对账
         grp += (f'<a class="setrow" href="/groups/{gid}/audit">'
                 '<span>操作记录</span>'
@@ -620,7 +647,8 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
     return _with_copy(page(
         "GROUP", "小组设置",
         f'{esc(g.get("name"))} · '
-        + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
+        + {"owner": "我是组长", "admin": "我是管理员",
+                             "coach": "我是教练"}.get(role, "我是成员"),
         body, foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
         back=("返回小组", f"/groups/{gid}")))
 
@@ -2204,7 +2232,8 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
     return _with_copy(page(
         "GROUP", _gname(g) or "小组",
         f'{int(g.get("member_count") or 0)} 人 · '
-        + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
+        + {"owner": "我是组长", "admin": "我是管理员",
+                             "coach": "我是教练"}.get(role, "我是成员"),
         body, chips, action=_gear,
         foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
         back=("全部小组", "/groups?list=1")))

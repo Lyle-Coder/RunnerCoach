@@ -1023,6 +1023,37 @@ def run() -> int:
     _g_html = GU.groups_page("TOK123", "")
     assert "去登录" in _g_html or "还没有加入小组" in _g_html, "小组页未登录分支不对"
 
+    # ---------------- 教练角色 ----------------
+    # 页面按角色裁权限：教练能看记录、能建赛事，但不能审批（服务端也拦）。
+    # 这里只钉住「页面上不该出现的入口」，接口层的 403 由 test_groups 守。
+    _real_detail = GG.detail
+
+    def _fake_detail(role: str, members: list):
+        def _d(gid):
+            return {"ok": True, "group": {
+                "id": 1, "name": "测试队", "role": role, "member_count": len(members),
+                "invite_code": "ABCD1234", "join_mode": "open", "pending": [],
+                "me": {"alias": "我", "share": "summary"}, "members": members}}
+        return _d
+
+    _m3 = [{"user_id": 1, "alias": "我", "role": "owner", "is_me": True},
+           {"user_id": 2, "alias": "小王", "role": "member"},
+           {"user_id": 3, "alias": "老李", "role": "coach"}]
+    try:
+        GG.detail = _fake_detail("owner", _m3)
+        _sp = GU.settings_page("TOK", 1, "")
+        assert "/__group/1/role" in _sp, "组长看不到「设教练」入口"
+        assert "设教练" in _sp and "撤销" in _sp, "教练管理入口缺文案"
+        assert "操作记录" in _sp, "组长看不到操作记录"
+
+        GG.detail = _fake_detail("coach", _m3)
+        _sp2 = GU.settings_page("TOK", 1, "")
+        assert "操作记录" in _sp2, "教练看不到操作记录（该能看到）"
+        assert "/__group/1/decide" not in _sp2, "教练看到审批入口，点进去必然 403"
+        assert "撤销" not in _sp2, "教练能任命/撤销教练，越权了"
+    finally:
+        GG.detail = _real_detail
+
     # ---------------- 远征界面 ----------------
     # 小旗必须落在**当前幕那一段**里。整季累计进度在队伍超额时会超过 100%，
     # 如果拿它定位小旗，第二幕就会顶到最右端，看起来像这一季已经走完了。

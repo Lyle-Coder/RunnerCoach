@@ -1704,6 +1704,15 @@ class _Handler(SimpleHTTPRequestHandler):
                         r = G.transfer(gid, as_int(values.get("uid")))
                         msg = "已转让" if r.get("ok") else (r.get("error") or "转让失败")
                         back = f"/groups/{gid}/settings"
+                    elif act == "role":
+                        # 任命/撤销教练。服务端只让组长调用，这里不重复判。
+                        _role = values.get("role") or "member"
+                        r = G.set_role(gid, as_int(values.get("uid")), _role)
+                        if r.get("ok"):
+                            msg = "已任命为教练" if _role == "coach" else "已撤销教练"
+                        else:
+                            msg = r.get("error") or "改角色失败"
+                        back = f"/groups/{gid}/settings"
                     elif act == "report":
                         r = self._group_report(gid)
                         msg = (f'已上报 {r.get("saved", 0)} 天'

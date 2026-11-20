@@ -813,6 +813,51 @@ def main() -> int:
     finally:
         groups._now = _orig_now
 
+    # ---------------- 教练角色
+    print("\n8. 教练角色")
+    # 建赛事有「每组每天 5 个」限流，前面几段已经用完了
+    for _k in [k for k in groups._RATE if k[1] == "challenge"]:
+        groups._RATE.pop(_k, None)
+    _co = login("coach@example.com", "教练甲")
+    req("POST", f"/v1/group/{gid}/joinmode", {"mode": "open"}, a)
+    _code2 = (req("GET", f"/v1/group/{gid}", None, a)[1].get("group") or {}).get("invite_code")
+    st, r = req("POST", "/v1/group/join", {"code": _code2}, _co)
+    check("教练账号入组", st == 200, f"{st} {r}")
+    _mem2 = (req("GET", f"/v1/group/{gid}", None, a)[1].get("group") or {}).get("members") or []
+    _aid = next((int(x["user_id"]) for x in _mem2 if x.get("is_me")), 0)
+    _did = next((int(x["user_id"]) for x in _mem2
+                 if str(x.get("alias")) == "教练甲"), 0)
+    check("拿到两个 id", bool(_aid) and bool(_did), f"a={_aid} d={_did}")
+
+    st, r = req("POST", f"/v1/group/{gid}/role",
+                {"user_id": _did, "role": "coach"}, a)
+    check("组长任命教练", st == 200 and r.get("role") == "coach", f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/role",
+                {"user_id": _did, "role": "boss"}, a)
+    check("非法角色被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/role",
+                {"user_id": _aid, "role": "member"}, a)
+    check("不能改自己的角色（409）", st == 409, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/challenge/create",
+                {"title": "教练排的周末长距离", "kind": "distance", "target": 20000,
+                 "start_date": "2026-11-16", "end_date": "2026-11-22",
+                 "today": "2026-11-18"}, _co)
+    check("教练能建赛事", st == 200, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/audit", None, _co)
+    check("教练能看审计", st == 200, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/member/{_aid}/remove", None, _co)
+    check("教练不能踢人（403）", st == 403, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/decide",
+                {"user_id": _did, "ok": True}, _co)
+    check("教练不能审批加入（403）", st == 403, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/role",
+                {"user_id": _aid, "role": "member"}, _co)
+    check("教练不能改别人角色（403）", st == 403, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/role",
+                {"user_id": _did, "role": "member"}, a)
+    check("组长撤销教练", st == 200, f"{st} {r}")
+
     # 隐私：关共享的人既不显示、也不能被评论
     st, r = req("POST", f"/v1/group/{gid}/share", {"share": "off"}, b)
     st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, a)
