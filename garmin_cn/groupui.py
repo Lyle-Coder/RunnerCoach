@@ -1768,6 +1768,95 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
                      f' + 加分 {float(_xb):g}')
             _got = sum(1 for sh in (_se.get("shirts") or [])
                        if str(sh.get("name") or "") in _mine_names)
+            # ---- 分数明细：这 50.6 分是哪几项凑出来的
+            # 服务端把每项的得分（parts）和权重（weights）都下发，页面只负责
+            # 摆。写死权重的后果是「改了规则页面还在说旧话」，那比不解释更糟。
+            _pt = _me.get("parts") or {}
+            _wt = _se.get("weights") or {}
+            _mx = _se.get("max") or {}
+
+            def _num(field: str, fmt: str) -> str:
+                v = _me.get(field)
+                try:
+                    return fmt % float(v or 0)
+                except (TypeError, ValueError):
+                    return "—"
+
+            def _top(field: str, fmt: str) -> str:
+                v = _mx.get(field)
+                try:
+                    return fmt % float(v or 0)
+                except (TypeError, ValueError):
+                    return "—"
+
+            _items = [
+                ("跑量", "km", "km", _num("km", "%.1f"), _top("km", "%.1f") + " km"),
+                ("出勤", "days", "days", _num("days", "%.0f"), _top("days", "%.0f") + " 天"),
+                ("爬升", "elev", "elev", _num("elev", "%.0f"), _top("elev", "%.0f") + " m"),
+                # 进步是比值：0.08 要显示成 +8%
+                ("进步", "progress", "progress",
+                 f'{float(_me.get("progress") or 0) * 100:+.0f}%',
+                 f'{float(_mx.get("progress") or 0) * 100:+.0f}%'),
+                ("连跑", "streak", "streak", _num("streak", "%.0f"),
+                 _top("streak", "%.0f") + " 天"),
+            ]
+            _sp = ""
+            for _label, _field, _wkey, _mine_txt, _top_txt in _items:
+                _w = float(_wt.get(_wkey) or 0)
+                _s = float(_pt.get(_field) or 0)
+                _p = min(100.0, _s / _w * 100) if _w else 0.0
+                _unit = "km" if _field == "km" else (
+                    "m" if _field == "elev" else ("天" if _field in ("days", "streak") else ""))
+                _sp += (f'<div class="sp"><div class="sp-h"><span>{_label}</span>'
+                        f'<b>{_s:g}<i> / {_w:g} 分</i></b></div>'
+                        f'<div class="bar"><i style="width:{_p:.0f}%"></i></div>'
+                        f'<div class="sp-s">我 {esc(_mine_txt + (" " + _unit if _unit else ""))}'
+                        f' · 组里最高 {esc(_top_txt)}</div></div>')
+            _bn = float(_pt.get("bonus") or 0)
+            _bp = min(100.0, _bn / float(_xb) * 100) if _xb else 0.0
+            _sp += (f'<div class="sp"><div class="sp-h"><span>加分</span>'
+                    f'<b>{_bn:g}<i> / {float(_xb):g} 分</i></b></div>'
+                    f'<div class="bar{" done" if _bn > 0 else ""}">'
+                    f'<i style="width:{_bp:.0f}%"></i></div>'
+                    f'<div class="sp-s">让分赛与预言给的加分'
+                    f'（具体值见下面的「这三个怎么算」）</div></div>')
+
+            # ---- 称号：为什么是「同行者」
+            _tlist = ""
+            for _t in (_se.get("titles") or []):
+                _tn = str(_t.get("name") or "")
+                _is_me_t = _tn and _tn == _tt
+                _tlist += (f'<div class="kvline"><span>{esc(_tn)}</span><b>'
+                           f'{esc(str(_t.get("hint") or ""))}'
+                           + ('<i> · 你</i>' if _is_me_t else "") + '</b></div>')
+            # 称号的判定有优先级（同行者 > 远征队长 > 先锋 > 行者），
+            # 所以「我为什么是这个」不能只说门槛，要说命中的那一条。
+            _why = {
+                "同行者": f'全组这周都动了，你也已经参与 {int(_me.get("weeks") or 1)} 周',
+                "远征队长": f'本周综合分第 {_rk} 名，在全组前 10%',
+                "先锋": f'本周综合分第 {_rk} 名，在全组前 30%',
+                "行者": f'已经参与 {int(_me.get("weeks") or 1)} 周',
+            }.get(_tt, "")
+            _how = (f'<details class="scorehow" data-k="scorehow">'
+                    f'<summary>这个分数和称号是怎么来的'
+                    '<span class="fx">›</span></summary>'
+                    f'<div class="shbody">'
+                    f'<p class="note">名次按综合分从高到低排，同分并列。'
+                    f'分数是<b>组内相对分</b>：每一项都拿你和组里最高的人比，'
+                    f'所以换一批队友、换一周，同样的跑量算出来也不一样——'
+                    f'它只用来排这个组的名次，不是能力评级。</p>'
+                    f'<p class="note">满分 {float(_bm):g} 是五项权重之和，'
+                    f'不是扣分制；加分另算，最多 {float(_xb):g} 分。</p>'
+                    + _sp
+                    + '<div class="sp-t">称号</div>'
+                    + (f'<p class="note">你现在是「<b>{esc(_tt)}</b>」——'
+                       f'{esc(_why)}。称号只取最高的一个，不叠加。</p>'
+                       if _tt else
+                       '<p class="note">这周还没有称号：综合分不在前 30%，'
+                       '参与也还没满 3 周。</p>')
+                    + (_tlist or "")
+                    + '</div></details>')
+
             score_card = (
                 f'<section class="scorecard">'
                 f'<div class="sc-top"><div class="sc-l">'
@@ -1780,7 +1869,8 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
                 f'<div class="sc-note">{esc(_note)}</div>'
                 f'<a class="sc-shirts" href="/groups/{gid}/shirts">'
                 f'<span class="sc-badges">{_badges}</span>'
-                f'<span class="sc-more">荣誉 {_got}/6 ›</span></a></section>')
+                f'<span class="sc-more">荣誉 {_got}/6 ›</span></a>'
+                + _how + '</section>')
     shirt_row = ""
 
     # ---- 本周玩法：目标 / 让分赛 / 预言
