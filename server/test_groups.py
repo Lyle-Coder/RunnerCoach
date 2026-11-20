@@ -1013,9 +1013,12 @@ def main() -> int:
 
     _db = sqlite3.connect(str(_dbp))
     try:
+        # 测试库不一定初始化了远征模块，只查真实存在的表
+        _have = {r[0] for r in _db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
         _left = sum(int(_db.execute(f"SELECT COUNT(*) FROM {_t} WHERE group_id=?",
                                     (_pg,)).fetchone()[0])
-                    for _t in groups.PURGE_TABLES)
+                    for _t in groups.PURGE_TABLES if _t in _have)
         _gleft = int(_db.execute("SELECT COUNT(*) FROM groups WHERE id=?",
                                  (_pg,)).fetchone()[0])
     finally:
