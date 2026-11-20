@@ -36,8 +36,15 @@ CAD_LO, CAD_HI = 120.0, 235.0
 STRIDE_LO, STRIDE_HI = 55.0, 240.0
 # 落库时序点数上限（1Hz 全量对 42km 是 3000+ 点，压到 600 足够画图）
 SERIES_POINTS = 600
-# 轨迹点数上限
-TRACK_POINTS = 420
+# 轨迹点数上限。原来是 420，但**抽稀方式错了**：按索引等分（每 N 个取 1），
+# 曲线被拉直——同一条 4.7 km 的跑步，420 个等分点连起来只有 3.1 km，
+# 形状已经不是他跑的那条路了（用户反馈「离真实形状差很远」）。
+# 现在改成 Douglas-Peucker 保拐点抽稀，上限提到 900；典型跑步 500–900 点，
+# 42 km 马拉松按 1Hz 也压得住。
+TRACK_POINTS = 900
+# 抽稀容差：占 bbox 长边的比例。0.15% 在 390px 宽的卡片上不到 0.6px，
+# 肉眼分辨不出，但能把 3000 点的原始轨迹压到几百点。
+TRACK_TOL = 0.0015
 
 
 # ---------------------------------------------------------------- 时序解析
@@ -273,14 +280,64 @@ def _parse_gmt(s: str | None) -> float | None:
 
 
 # ---------------------------------------------------------------- 轨迹
+def _dp_keep(xs: list[float], ys: list[float], tol: float) -> list[int]:
+    """Douglas-Peucker：返回要保留的下标。
+
+    和「每 N 个取 1」的区别：等分抽稀不管几何形状，一段 3 km 的直路和
+    15 个连续的发夹弯会被同样对待——弯被切掉，形状就假了。DP 按「离弦
+    多远」决定去留，拐点全留着、直路只留两端。
+
+    用显式栈而不是递归：一条 3000 点的轨迹递归深度可能到几百，Python 默认
+    递归上限 1000 看着够，但真撞上就抛异常，没必要冒这个险。
+    """
+    n = len(xs)
+    if n < 3:
+        return list(range(n))
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        i, j = stack.pop()
+        if j <= i + 1:
+            continue
+        x0, y0, x1, y1 = xs[i], ys[i], xs[j], ys[j]
+        dx, dy = x1 - x0, y1 - y0
+        seg = math.hypot(dx, dy)
+        best, idx = 0.0, -1
+        for k in range(i + 1, j):
+            if seg <= 1e-9:
+                d = math.hypot(xs[k] - x0, ys[k] - y0)
+            else:
+                d = abs(dy * (xs[k] - x0) - dx * (ys[k] - y0)) / seg
+            if d > best:
+                best, idx = d, k
+        if best > tol and idx > 0:
+            keep[idx] = True
+            stack.append((i, idx))
+            stack.append((idx, j))
+    return [i for i, k in enumerate(keep) if k]
+
+
 def build_track(details: dict, *, keep: int = TRACK_POINTS) -> list[list[float]]:
     poly = ((details.get("geoPolylineDTO") or {}).get("polyline")) or []
     pts = [[p["lat"], p["lon"]] for p in poly
            if p.get("valid", True) and p.get("lat") is not None and p.get("lon") is not None]
-    if len(pts) > keep:
-        step = len(pts) / keep
-        pts = [pts[min(int(i * step), len(pts) - 1)] for i in range(keep)]
-    return pts
+    if len(pts) <= keep:
+        return pts
+    # 先按几何形状抽稀（保拐点），压不下来再按累计长度等距抽——
+    # 两条都保形，和原来的「按索引等分」不是一回事。
+    lat0 = sum(p[0] for p in pts) / len(pts)
+    kx = 111320.0 * abs(math.cos(math.radians(lat0)))
+    xs = [p[1] * kx for p in pts]
+    ys = [p[0] * 110540.0 for p in pts]
+    span = max(max(xs) - min(xs), max(ys) - min(ys))
+    idx = _dp_keep(xs, ys, max(1.0, span * TRACK_TOL))
+    thin = [pts[i] for i in idx]
+    if len(thin) <= keep:
+        return thin
+    # 极端情况（一路全是弯）再按弧长等距取 keep 个
+    step = len(thin) / keep
+    return [thin[min(int(i * step), len(thin) - 1)] for i in range(keep)]
 
 
 def projector(track: list[list[float]], w: float, h: float, pad: float = 6.0):

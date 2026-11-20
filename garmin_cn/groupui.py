@@ -987,8 +987,8 @@ def feed_page(token: str, gid: int, message: str = "", act: int = 0) -> str:
             + sec("大家最近", items)
             + (f'<p class="note">另有 {hidden} 人关闭了共享，不出现在这里。</p>'
                if hidden else "")
-            + '<p class="note">轨迹是这次路线的真实形状（抽稀成 120 个点）：'
-              '没有底图、不标起终点、不含经纬度——看得到怎么跑的，看不出跑在哪条街。'
+            + '<p class="note">轨迹就是这次跑过的路线本身：没有底图、不标起终点、'
+              '不含经纬度——看得到怎么跑的，看不出跑在哪条街。'
               '配速是按距离÷时长算的，不是上传的原始配速。</p>')
     return page("GROUP", "动态", f"{len(rows)} 条", body,
                 foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
