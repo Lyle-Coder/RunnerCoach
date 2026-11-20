@@ -673,6 +673,30 @@ def api_set_nickname(row: sqlite3.Row, body: dict) -> dict:
     return {"ok": True, "nickname": nick}
 
 
+def api_delete_account(row: sqlite3.Row, body: dict) -> dict:
+    """注销账号：删设备、清空登录标识、删掉小组里的数据。
+
+    为什么不是物理删 users 行：订单和流水要留痕（哪怕内测期没有付费）。
+    但**账号本身必须消失**——把 phone 换成不可反查的占位、昵称清空、
+    所有设备令牌作废，用户拿原手机号再登录会是一个全新的空账号。
+    """
+    if str(body.get("confirm") or "") != "1":
+        raise Gate(400, "要注销得先勾确认")
+    uid = int(row["user_id"])
+    # 小组那边先过闸：组长且组里还有人 → 409，前端会把这句显示出来
+    import groups as G
+    try:
+        G.purge_user(uid)
+    except G.GroupError as e:
+        raise Gate(e.code, e.message) from None
+    with db() as c:
+        c.execute("UPDATE devices SET revoked=1 WHERE user_id=?", (uid,))
+        c.execute("DELETE FROM usage_log WHERE user_id=?", (uid,))
+        c.execute("UPDATE users SET phone=?, nickname='', revoked=1, balance=0 WHERE id=?",
+                  (f"deleted-{uid}@deleted.invalid", uid))
+    return {"ok": True}
+
+
 def api_redeem(row: sqlite3.Row, body: dict) -> dict:
     code = str(body.get("code") or "").strip().upper()
     if not code:
@@ -1384,6 +1408,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(api_device(row, body))
             if self.path == "/v1/me/nickname":
                 return self._json(api_set_nickname(_auth(self.headers), body))
+            if self.path == "/v1/account/delete":
+                return self._json(api_delete_account(_auth(self.headers), body))
             if self.path == "/v1/redeem":
                 return self._json(api_redeem(_auth(self.headers), body))
             if self.path == "/v1/orders":

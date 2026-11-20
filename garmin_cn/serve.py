@@ -205,6 +205,10 @@ class _Handler(SimpleHTTPRequestHandler):
                 # 动态页已经并进组页（用户要求：底部接着数据流，滑回顶部就是小组）。
                 # 旧链接（收藏、以前发的）落到对应的组页并锚到动态区。
                 return self._see_other(f"/groups/{int(seg[0])}#feed")
+            if len(seg) == 2 and seg[0].isdigit() and seg[1] == "audit":
+                return self._html(groupui.audit_page(tok, int(seg[0]), msg))
+            if len(seg) == 2 and seg[0].isdigit() and seg[1] == "export.csv":
+                return self._group_csv(int(seg[0]))
             if len(seg) == 2 and seg[0].isdigit() and seg[1] == "board":
                 # 完整榜单：周/月口径在这一页里切，不再回组页重载
                 _r = "month" if (q.get("range") or [""])[0] == "month" else "week"
@@ -1448,7 +1452,10 @@ class _Handler(SimpleHTTPRequestHandler):
                 raise PermissionError("页面已过期，请重新打开")
             gid = int(vals.get("gid") or 0)
             act = u.path.rstrip("/").split("/")[-1]
-            if act == "fork":
+            if u.path.rstrip("/").endswith("/camp/upgrade"):
+                # 营地在远征页里，但数据存在小组库
+                r = G.camp_upgrade(gid)
+            elif act == "fork":
                 r = G.run_fork(gid, vals.get("option") or "")
             elif act == "event":
                 r = G.run_event(gid, int(vals.get("slot") or 0),
@@ -1485,6 +1492,39 @@ class _Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
         self.close_connection = True
+
+    def _group_csv(self, gid: int) -> None:
+        """本周每人一行，给组长导到表格里看。数据只出本机，不上传。"""
+        from . import group as G
+
+        today = dt.date.today().isoformat()
+        b = G.board(gid, "week", today)
+        if not b.get("ok"):
+            return self._json({"ok": False, "error": b.get("error") or "拉不到榜单"}, 404)
+        try:
+            # 每人的本周目标在 /week 的 goal_rows 里（/season 只给「我」的那一个）
+            _wk = G.week(gid, today)
+            _goal = ({int(r["user_id"]): float(r.get("km") or 0)
+                      for r in (_wk.get("goal_rows") or [])} if _wk.get("ok") else {})
+        except Exception:      # noqa: BLE001 - 导出不该因为目标读不到就失败
+            _goal = {}
+        _from, _to = str(b.get("from") or ""), str(b.get("to") or "")
+        lines = ["昵称,本周里程 km,天数,次数,计划完成率,本周目标 km,目标完成度"]
+        for x in (b.get("rows") or []):
+            _km = float(x.get("distance_m") or 0) / 1000.0
+            _g = _goal.get(int(x.get("user_id") or 0)) or None
+            _rate = x.get("plan_rate")
+            lines.append(",".join([
+                '"%s"' % str(x.get("alias") or "").replace('"', '""'),
+                f"{_km:.1f}", str(int(x.get("days") or 0)), str(int(x.get("acts") or 0)),
+                (f"{float(_rate) * 100:.0f}%" if _rate is not None else ""),
+                (f"{float(_g):g}" if _g else ""),
+                (f"{min(100.0, _km / float(_g) * 100):.0f}%" if _g else ""),
+            ]))
+        if b.get("hidden"):
+            lines.append('"#另有 %d 人关闭了共享，未列入"' % int(b["hidden"]))
+        name = f"group-{gid}-{_from}-{_to}.csv"
+        return self._csv("\n".join(lines), name)
 
     def _group_report(self, gid: int) -> dict:
         """手动上报一次。首次加入发 30 天，之后 14 天。
@@ -1596,6 +1636,14 @@ class _Handler(SimpleHTTPRequestHandler):
                 elif act == "logout":
                     AC.logout()
                     return self._see_other("/account")
+                elif act == "delete":
+                    # 注销是不可逆的：表单要勾确认，服务端也只认 confirm=1
+                    if (values.get("confirm") or "") != "1":
+                        raise ValueError("注销要先勾确认")
+                    r = AC.delete_account()
+                    if r.get("ok"):
+                        return self._see_other("/me")
+                    msg, back = r.get("error") or "注销失败", "/account"
                 else:
                     raise ValueError("不支持的操作")
             else:
@@ -1612,6 +1660,11 @@ class _Handler(SimpleHTTPRequestHandler):
                 elif second == "join":
                     r = G.join(values.get("code"), values.get("alias"))
                     if r.get("ok"):
+                        # 需要批准的组：申请已发出但还不是成员，送去组页会看到
+                        # 「你不是这个组的成员」，所以回列表并把话说清。
+                        if r.get("pending"):
+                            return self._see_other(
+                                "/groups?list=1&msg=" + quote("申请已发出，等组长批准"))
                         return self._see_other(f"/groups/{r['group']['id']}")
                     msg = r.get("error") or "加入失败"
                     back = "/groups?list=1"
@@ -1741,6 +1794,19 @@ class _Handler(SimpleHTTPRequestHandler):
                                 f"/groups/{gid}?open={_aid}"
                                 + (f"&msg={quote(msg)}" if msg and not r.get("ok") else "")
                                 + f"#a{_aid}")
+                    elif act == "joinmode":
+                        _m = values.get("mode") or "open"
+                        r = G.set_join_mode(gid, _m)
+                        msg = ("已改成「需我批准」" if _m == "approve" else "已改成「扫码即入」") \
+                            if r.get("ok") else (r.get("error") or "保存失败")
+                        back = f"/groups/{gid}/settings"
+                    elif act == "decide":
+                        _u = as_int(values.get("uid"))
+                        _ok = (values.get("ok") or "") == "1"
+                        r = G.decide(gid, _u, _ok)
+                        msg = ("已批准" if _ok else "已拒绝") if r.get("ok") \
+                            else (r.get("error") or "处理失败")
+                        back = f"/groups/{gid}/settings"
                     elif act == "rotate":
                         r = G.rotate(gid)
                         msg = (f'新邀请码 {r["invite_code"]}' if r.get("ok")
@@ -1881,6 +1947,21 @@ class _Handler(SimpleHTTPRequestHandler):
         body = html.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+
+    def _csv(self, text: str, filename: str) -> None:
+        """下载一个 CSV。带 BOM：Excel 直接打开中文不乱码。"""
+        body = ("\ufeff" + text).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition",
+                         f"attachment; filename=\"{filename}\"")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()

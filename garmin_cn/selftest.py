@@ -1438,7 +1438,7 @@ def run() -> int:
         return {"ok": True, "group": {
             "id": 1, "name": "测试队", "intro": "", "owner_id": 1,
             "max_members": 20, "member_count": 2, "created_at": 0,
-            "role": "owner", "invite_code": "ABCD2345",
+            "role": "owner", "invite_code": "ABCD2345", "camp_level": 3,
             "me": {"alias": "我", "share": "summary"},
             "members": [{"user_id": 1, "alias": "我", "role": "owner",
                          "share": "summary", "is_me": True},
@@ -1449,9 +1449,9 @@ def run() -> int:
         _GP.detail = _fake_detail
         _GP.board = lambda gid, rng="week", today=None: {
             "ok": True, "range": rng, "rows": [
-                {"alias": "队友", "is_me": False, "distance_m": 12000,
+                {"user_id": 2, "alias": "队友", "is_me": False, "distance_m": 12000,
                  "days": 3, "acts": 3, "explorer": 12},
-                {"alias": "我", "is_me": True, "distance_m": 9000,
+                {"user_id": 1, "alias": "我", "is_me": True, "distance_m": 9000,
                  "days": 2, "acts": 2, "explorer": 3}],
             "hidden": 0,
             "summary": {"members": 2, "shown": 2, "hidden": 0,
@@ -1579,7 +1579,7 @@ def run() -> int:
         _GP.board = lambda gid, rng="week", today=None: {
             "ok": True, "range": rng, "hidden": 0,
             "from": "2026-11-16", "to": "2026-11-22",
-            "rows": [{"alias": ("我" if i == 12 else f"队员{i}"), "is_me": i == 12,
+            "rows": [{"user_id": i, "alias": ("我" if i == 12 else f"队员{i}"), "is_me": i == 12,
                       "distance_m": 30000 - i * 1000, "days": 3, "acts": 3,
                       "explorer": 0} for i in range(1, 13)],
             "summary": {"members": 12, "shown": 12, "hidden": 0,
@@ -1633,6 +1633,11 @@ def run() -> int:
         "管理员在赛事详情里没有提前结束的入口"
     # 昵称 / 共享 / 邀请码 / 退出全搬进「小组设置」了，组页只留一个页头齿轮。
     # 用户原话：「放在最下面太突兀」。
+    # 营地等级只由客户端拼后缀，Lv1 不显示
+    assert _GU._gname({"name": "队", "camp_level": 3}) == "队 · Lv3 营地"
+    assert _GU._gname({"name": "队", "camp_level": 1}) == "队"
+    assert "队 · Lv3 营地" == _GU._gname({"name": "队", "camp_level": "3"})
+    assert "· Lv3 营地" in _gh, "组页标题没拼营地等级"
     assert 'class="hact"' in _gh and "/settings" in _gh, "组页页头没有设置入口"
     assert ">昵称<" not in _gh, "昵称表单又回到组页正文里了"
     assert "邀请码与管理" not in _gh, "组管理又回到组页正文里了"
@@ -1652,6 +1657,9 @@ def run() -> int:
     # 设置页本身要有这些东西，否则就是「搬走了也找不回来」
     # 假数据里我是组长：所以看到的是「转让组长」而不是「退出小组」——
     # 组长不能直接退，得先转让，这条口径在服务端也是这么实现的
+    # 组长工具与加入审批：设置页要有入口，不然功能等于没做
+    for _need in ("操作记录", "/audit", "导出本周数据", "export.csv", ">加入<"):
+        assert _need in _set, f"设置页缺「{_need}」"
     for _need in (">昵称<", ">共享<", ">上报<", "邀请码", "转让组长"):
         assert _need in _set, f"设置页缺「{_need}」"
     assert "你是组长" in _set, "组长在设置页没看到「先转让才能退出」的提示"
@@ -1715,6 +1723,10 @@ def run() -> int:
     # 夹具里队友 12 格、我 3 格，所以只该有 1 枚。
     assert _gh.count('title="探索徽章"') == 1, \
         f"榜上的探索徽章图标数量不对：{_gh.count('title="探索徽章"')}"
+    # 同组同名：衫必须按 user_id 挂。按 alias 挂时两个「小王」会拿到同一个图标。
+    _mk = {2: "A", "小王": "WRONG"}
+    assert _GU._rank_marks({"user_id": 2, "alias": "小王"}, _mk, 5).startswith("A"), \
+        "徽章按名字匹配了（同组同名会挂错人）"
     # 功能入口：一排并列的图标，不再散在各处。
     # 「六件衫」不在这一排——核心数据卡的徽章行（六件衫 N/6 ›）就是它的入口，
     # 同一屏两个去同页的按钮属于重复。这里顺带守着「不要再加回来」。
@@ -5445,7 +5457,7 @@ def run() -> int:
         "开屏两层背景的渐变色值漂移了"
     # 发版守卫：versionCode 只能往上走，防止改包号时漏掉这一处或回退。
     # 每次发版要同步改这里（本次 1.5.11 → 164）。
-    assert 'versionCode = 164' in (
+    assert 'versionCode = 165' in (
         ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     # 1.3.0 回归：REQ_ATTACH 与 REQ_CP_IMG 都写成 1006。
