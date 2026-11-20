@@ -200,7 +200,7 @@ def note_map(store, gid: int, on: bool) -> None:
 
 
 def report_group(store, gid: int, today: str | None = None,
-                 first: bool = False) -> dict:
+                 first: bool = False, client=None) -> dict:
     """构造一批并尝试立刻发送。失败就留在队列里，等下次前台补。"""
     days = 30 if first else 14
     payload = {"days": build_days(store, today, days)}
@@ -217,7 +217,7 @@ def report_group(store, gid: int, today: str | None = None,
                 mm = EX.week_cell_meters(store, today)
                 if mm:
                     push_cells(gid, list(mm), mm, today)
-            acts = build_acts(store, today)
+            acts = build_acts(store, today, client=client)
             if acts:
                 push_acts(gid, acts, today)
         except Exception:      # noqa: BLE001
@@ -479,7 +479,14 @@ def _shape(track) -> str:
                    for x, y in zip(xs, ys))
 
 
-def build_acts(store, today: str | None = None, days: int = 14) -> list[dict]:
+# 一次上报最多补抓几条活动明细。明细是**按需懒抓**的（打开详情才抓），
+# 所以骑行、走路这类不常点开的活动经常没有轨迹。补抓要发网络请求，一条
+# 0.5–1 秒，太多了「立即上报」会等很久；8 条约 6 秒，剩下的下次再补。
+ACT_FETCH_MAX = 8
+
+
+def build_acts(store, today: str | None = None, days: int = 14,
+               client=None) -> list[dict]:
     """把最近的活动压成概要。
 
     `sid` 是活动 id 的短哈希：服务端靠它去重，但它反查不出是哪条活动，
@@ -508,6 +515,23 @@ def build_acts(store, today: str | None = None, days: int = 14) -> list[dict]:
                 except (ValueError, TypeError, AttributeError):
                     t = []
                 shapes[str(d["activity_id"])] = _shape(t)
+
+    # 没有明细的活动（骑行、走路这些不常点开详情的）补抓一次，否则动态里
+    # 它们永远是「无轨迹」。只在调用方给了 client 时做——离线也应该能上报里程。
+    if client is not None:
+        need = [str(r["activity_id"]) for r in rows
+                if r["activity_id"] and str(r["activity_id"]) not in shapes
+                and float(r["distance_m"] or 0) > 0]
+        if need:
+            from . import activity as act
+
+            for aid in need[:ACT_FETCH_MAX]:
+                try:
+                    got = act.ensure(store, client, aid) or {}
+                except Exception:      # noqa: BLE001 - 抓不到就留空，别拖垮上报
+                    shapes[aid] = ""
+                    continue
+                shapes[aid] = _shape(got.get("track") or [])
     out = []
     for r in rows:
         aid = str(r["activity_id"] or "")

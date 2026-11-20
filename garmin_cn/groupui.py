@@ -344,8 +344,8 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
             '<button class="btn sm" type="submit">存</button></div></form>'
             f'<form action="/__group/{gid}/report" method="post">{_tok(token)}'
             '<div class="setrow"><span>上报</span>'
-            '<span class="note" style="flex:1 1 auto;margin:0">同步时自动上报，'
-            '这里是不想等的时候用</span>'
+            '<span class="note" style="flex:1 1 auto;margin:0">同步时自动上报；'
+            '缺轨迹的活动会顺带补抓，可能等几秒</span>'
             '<button class="btn sm" type="submit">立即</button></div></form>')
 
     grp = ""
