@@ -1489,8 +1489,10 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
         lap_html = interval_bands(iv, th, egg=egg)
         sets_total = sum(b["sets"] for b in bands if not b.get("rest"))
         work_b0 = next((b for b in bands if not b.get("rest")), {})
-        if work_b0.get("name") == "爬升":
-            # 爬楼课：按「组数 + 累计爬升」讲，距离和配速在这类课上没有意义
+        if work_b0.get("name") == "爬升" and th["is_run"]:
+            # 「爬升课」= 以爬升区分工作与恢复的**往复**课（爬楼、楼梯机、跑坡重复）。
+            # 只对跑步类生效：徒步（非 run）同样可能切出爬升结构，但它有真实配速，
+            # 不该被套上爬楼版式。骑行不会走到这里（bike 分支里 iv 是 None）。
             stair = True
             lap_sub = (f'{sets_total} 组爬升 · 累计 +{work_b0.get("gain_m") or 0:.0f} m')
         elif len(bands) > 2:
@@ -1588,7 +1590,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
                  (dur_txt(stair_per_dur), "单组用时", 0),
                  (dur_txt(stair_recover), "组间恢复", 0),
                  (f"{cad_avg:.0f}" if cad_avg else "—", "步频 spm", 0)]
-        tech_title = "爬楼效率"
+        tech_title = "爬升效率"
         tech_cells = [(f"{stair_rate:.1f}", "爬升 m/min"),
                       (f"{stair_per_gain:.0f}", "单组爬升 m"),
                       (f"{hr_avg:.0f}" if hr_avg else "—", "平均心率 bpm"),

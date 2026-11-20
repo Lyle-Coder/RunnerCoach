@@ -3008,6 +3008,9 @@ def run() -> int:
     assert 'fill="url(#pfill)"' in _c1, "正常曲线图没有配速面积"
     assert 'fill="url(#pfill)"' not in _c2, "关掉配速后还在画配速面积"
     assert _c2.count("<text") < _c1.count("<text"), "关掉配速后刻度没减少"
+    # 11) 爬楼版式只对跑步类生效：徒步/骑行有真实配速，不能被套上爬楼口径
+    assert 'work_b0.get("name") == "爬升" and th["is_run"]' in _ac_src, \
+        "爬楼版式没有限定运动类型，徒步/骑行会被误降级"
     # 列表行：标题从单行省略改成最多两行，参数本来就换行
     assert "display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2" \
         in _ui_src, \
