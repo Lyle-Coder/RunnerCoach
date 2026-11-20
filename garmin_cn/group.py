@@ -450,6 +450,33 @@ def map_data(gid: int, today: str | None = None) -> dict:
     return _call("GET", f"/v1/group/{int(gid)}/map{q}")
 
 
+def share_route(gid: int, act_id: str, title: str, distance_m: int,
+                date: str, points: list) -> dict:
+    """把一条活动的完整轨迹发给同组。
+
+    这是唯一一条上传真实经纬度的通路（`push_cells` 只传网格编号）。
+    由用户在页面上勾了「知道会包含位置」才会调到这里。
+    """
+    return _call("POST", f"/v1/group/{int(gid)}/route",
+                 {"act_id": act_id, "title": title, "distance_m": int(distance_m),
+                  "date": date, "points": points})
+
+
+def unshare_route(gid: int, rid: int) -> dict:
+    """撤回一条路线。删了就没了。"""
+    return _call("POST", f"/v1/group/{int(gid)}/route/{int(rid)}/del", {})
+
+
+def routes(gid: int) -> dict:
+    """组内已分享的路线清单（不含轨迹点）。"""
+    return _call("GET", f"/v1/group/{int(gid)}/routes")
+
+
+def route(gid: int, rid: int) -> dict:
+    """单条路线 + 轨迹点。"""
+    return _call("GET", f"/v1/group/{int(gid)}/route/{int(rid)}")
+
+
 def news(gid: int, since: int = 0) -> dict:
     """自 `since` 以来跟我有关的新东西（别人评论我的动态、新赛事）。
 
