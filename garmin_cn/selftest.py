@@ -1054,6 +1054,15 @@ def run() -> int:
     finally:
         GG.detail = _real_detail
 
+    # Store 只有 conn，没有 close()。写成 store.close() 会抛 AttributeError，
+    # 而且两处都**有兜底**，看起来只是「设置没生效」，很难联想到是这个。
+    # 跳过自己：下面这两行字符串本身就会被扫到
+    _gfiles = {f.name: f.read_text(encoding="utf-8")
+               for f in (ROOT / "garmin_cn").glob("*.py") if f.name != "selftest.py"}
+    _badclose = [n for n, t in _gfiles.items()
+                 if "_st.close()" in t or "store.close()" in t]
+    assert not _badclose, f"Store 没有 close()，应写 .conn.close()：{_badclose}"
+
     # ---------------- 路线分享（单条折线） ----------------
     # 投影必须和足迹页同一套，否则同一片路网上「格子在这、线在那」。
     _rpts = [[31.20 + i * 0.0001, 121.50 + i * 0.0001] for i in range(50)]
