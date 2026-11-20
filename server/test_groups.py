@@ -620,6 +620,25 @@ def main() -> int:
     check("详情接口能单独取一条",
           st == 200 and len(r.get("rows") or []) == 1, f"{st} {r}")
 
+    # 评论的编辑 / 删除：只能动自己的
+    _mine = [x for x in (r["rows"][0]["recent"] or []) if x["mine"]]
+    _other = [x for x in (r["rows"][0]["recent"] or []) if not x["mine"]]
+    check("feed 里自己的评论标了 mine", bool(_mine) and bool(_other), str(r["rows"][0]["recent"]))
+    _cid = int(_mine[0]["id"])
+    st, r = req("POST", f"/v1/group/{gid}/comment_edit",
+                {"id": _cid, "text": "改过了", "emoji": ""}, a)
+    check("改自己的评论", st == 200 and r.get("text") == "改过了", f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/comment_edit",
+                {"id": int(_other[0]["id"]), "text": "篡改"}, a)
+    check("改别人的评论（404，且不确认存在）", st == 404, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/comment_del", {"id": int(_other[0]["id"])}, a)
+    check("删别人的评论（404）", st == 404, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/comment_del", {"id": _cid}, a)
+    check("删自己的评论", st == 200, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18&act={_aid}", None, a)
+    check("删完不在列表里",
+          all(int(x["id"]) != _cid for x in r["rows"][0]["recent"]), str(r["rows"][0]))
+
     # 隐私：关共享的人既不显示、也不能被评论
     st, r = req("POST", f"/v1/group/{gid}/share", {"share": "off"}, b)
     st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, a)
