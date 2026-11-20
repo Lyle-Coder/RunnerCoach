@@ -1250,10 +1250,12 @@ def api_acts(me, gid: int, body: dict) -> dict:
     return {"ok": True, "saved": len(rows)}
 
 
-SHAPE_MAX_LEN = 2000
+SHAPE_MAX_LEN = 8000
 SHAPE_SCALE = 1000
-# 3–200 个点，每个 0..1000（0.1% 精度）。服务端不信客户端，形状不对就当没有。
-_SHAPE_RE = re.compile(r"\d{1,4},\d{1,4}(?:;\d{1,4},\d{1,4}){2,199}")
+# 3–700 个点，每个 0..1000（0.1% 精度）。服务端不信客户端，形状不对就当没有。
+# 上限定 700 而不是刚好 600：客户端是「不超 600 不抽稀」，留点余量给以后的
+# 采样率调整，别因为差一个点就把整条轨迹丢掉。
+_SHAPE_RE = re.compile(r"\d{1,4},\d{1,4}(?:;\d{1,4},\d{1,4}){2,699}")
 
 
 def _clean_shape(v) -> str:

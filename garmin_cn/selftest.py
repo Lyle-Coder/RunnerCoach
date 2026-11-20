@@ -1761,7 +1761,7 @@ def run() -> int:
     _ring = [[31.0 + 0.002 * _m.cos(i / 40 * 2 * _m.pi) / 1.0,
               121.0 + 0.002 * _m.sin(i / 40 * 2 * _m.pi)] for i in range(41)]
     _sp = _GP._shape(_ring)
-    assert _sp.count(";") + 1 == min(_GP.SHAPE_POINTS, len(_ring)), "剪影点数不对"
+    assert _sp.count(";") + 1 == min(_GP.SHAPE_MAX_POINTS, len(_ring)), "轨迹点数不对"
     _xy = [tuple(int(v) for v in seg.split(",")) for seg in _sp.split(";")]
     assert all(0 <= x <= _GP.SHAPE_SCALE and 0 <= y <= _GP.SHAPE_SCALE
                for x, y in _xy), "剪影坐标越界"
