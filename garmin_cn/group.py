@@ -444,6 +444,16 @@ def map_data(gid: int, today: str | None = None) -> dict:
     return _call("GET", f"/v1/group/{int(gid)}/map{q}")
 
 
+def news(gid: int, since: int = 0) -> dict:
+    """自 `since` 以来跟我有关的新东西（别人评论我的动态、新赛事）。
+
+    只给后台通知用，不带正文和剪影。`since=0` 时服务端只回当前时间戳，
+    用来给新设备取一个起点，不会补一屏历史。
+    """
+    q = f"?since={int(since)}" if since else ""
+    return _call("GET", f"/v1/group/{int(gid)}/news{q}")
+
+
 # ---------------------------------------------------------------- 动态
 # 只传概要。活动名称、轨迹、配速、心率一概不上——这一栏是「今天谁出门了」，
 # 不是活动详情页，组页也就不能出图。

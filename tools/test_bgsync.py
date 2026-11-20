@@ -30,6 +30,8 @@ BGSYNC_KT = (AND / "java" / "mm" / "runnercoach" / "app" / "BgSync.kt").read_tex
     encoding="utf-8")
 SYNCJOB_KT = (AND / "java" / "mm" / "runnercoach" / "app" / "SyncJob.kt").read_text(
     encoding="utf-8")
+NOTIFY_KT = (AND / "java" / "mm" / "runnercoach" / "app" / "Notify.kt").read_text(
+    encoding="utf-8")
 MAIN_KT = (AND / "java" / "mm" / "runnercoach" / "app" / "MainActivity.kt").read_text(
     encoding="utf-8")
 BG_PY = (ROOT / "garmin_cn" / "bg.py").read_text(encoding="utf-8")
@@ -104,6 +106,43 @@ class PythonTest(unittest.TestCase):
         self.assertIn("KEY_AT", BG_PY)
         self.assertNotRegex(BG_PY, r"return \{[^}]*error[^}]*\}\s*\n\s*stamp",
                             "失败路径不该落节流时间")
+
+
+class NotifyTest(unittest.TestCase):
+    """小组通知这条链：bg.news → SyncJob → Notify → 点通知回到那个组。
+
+    每一环单独看都没错，少一环的表现是「后台跑了、通知没出现」或者
+    「通知出现了、点了没反应」，都很难从现象反推。
+    """
+
+    def test_channel_and_permission(self):
+        self.assertIn("CH = \"group_news\"", NOTIFY_KT, "通知渠道名变了要一起改")
+        self.assertIn("IMPORTANCE_DEFAULT", NOTIFY_KT,
+                      "渠道重要度低于 DEFAULT 就不会弹出来，等于没通知")
+        self.assertIn("POST_NOTIFICATIONS", NOTIFY_KT,
+                      "13+ 没权限时 notify 会被静默丢弃，必须自己先查")
+
+    def test_grouped_by_group(self):
+        self.assertIn("byGid", NOTIFY_KT,
+                      "不按组汇总会按事件一条一条弹，11 人的组一天能刷满通知栏")
+        self.assertIn("notify(gid", NOTIFY_KT,
+                      "通知 id 用 gid：同组只留最新一条，不然会堆成一列")
+
+    def test_click_opens_group(self):
+        self.assertIn("putExtra(\"gid\"", NOTIFY_KT, "通知里没带组 id")
+        self.assertIn("getIntExtra(\"gid\"", MAIN_KT, "MainActivity 没读组 id")
+        self.assertIn("openGroup(", MAIN_KT, "读了 gid 却没跳转")
+
+    def test_emitted_from_sync_job(self):
+        self.assertIn("Notify.emit", SYNCJOB_KT,
+                      "补传跑完没发通知，news 白拉了")
+        self.assertIn("\"news\"", SYNCJOB_KT, "没从 Python 结果里取 news 字段")
+
+    def test_python_side(self):
+        self.assertIn("KEY_NEWS", BG_PY, "通知游标没地方存")
+        self.assertIn("on_my_act", BG_PY, "评论「是不是在我动态下」没传给原生")
+        # 第一次只取起点：装完就弹一屏三个月前的评论，用户会直接关通知
+        self.assertIn("if since:", BG_PY, "第一次拉取就返回了历史条目")
 
 
 class BehaviourTest(unittest.TestCase):
