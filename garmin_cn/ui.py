@@ -765,35 +765,31 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .ac-d{flex:0 0 auto;margin-left:auto;font-size:var(--fs-micro,11px);
   color:var(--faint);white-space:nowrap}
 /* 主数字：距离。这一屏只有一个 32 的字（和核心数据卡的分数同档） */
-.ac-km{margin-top:8px;font-size:var(--fs-dsp,32px);font-weight:600;color:var(--ink);
+.ac-km{font-size:var(--fs-dsp,32px);font-weight:600;color:var(--ink);
   line-height:1;letter-spacing:-1px;font-variant-numeric:tabular-nums}
 .ac-km i{font-style:normal;font-size:var(--fs-cap,12px);font-weight:400;
   color:var(--ink-3);margin-left:4px;letter-spacing:0}
-/* 距离标尺：0 → 半马，**绝对刻度**，所有卡片横向可比。
-   不给它固定上限的话，每条按自己缩放，「12.4 km」和「2.1 km」的条一样长。 */
-.ac-scale{position:relative;height:3px;margin:13px 0 0;border-radius:2px;
-  background:var(--line)}
-.ac-scale>i{position:absolute;top:-3.5px;width:10px;height:10px;border-radius:50%;
-  background:var(--brand);box-shadow:0 0 0 2px var(--surface);
-  transform:translateX(-50%)}
-.ac-scale>u{position:absolute;top:0;width:1px;height:3px;background:var(--line-strong)}
-.ac-tk{display:flex;justify-content:space-between;margin-top:5px;
-  font-size:var(--fs-micro,11px);color:var(--faint);
+/* 剪影 + 数据：左图右字。图 72 是「能看清形状」的下限，
+   再小就只剩一团墨点；右侧两行（大数字 + 元信息）刚好和图等高。 */
+.ac-mid{display:flex;align-items:center;gap:12px;margin-top:12px}
+/* 轨迹剪影：浅底方块 + 成员色折线。底色比卡片亮一档，线才浮得出来 */
+.ac-tr{width:72px;height:72px;flex:0 0 auto;border-radius:var(--r-2);
+  background:var(--surface-2);border:1px solid var(--line2);
+  padding:6px;box-sizing:border-box}
+.ac-tr polyline{fill:none;stroke-width:2.6;stroke-linejoin:round;stroke-linecap:round}
+/* 没有 GPS 的活动（室内/器械）或旧数据：占位方块，写「无轨迹」而不是画假线。
+   画一条装饰性曲线会让人以为那是他的路线。 */
+/* 占位用虚线框：视觉上像「这里本该有张图」，而不是一个空方块 */
+.ac-ph{width:72px;height:72px;flex:0 0 auto;border-radius:var(--r-2);
+  background:transparent;border:1px dashed var(--line-strong);
+  display:flex;align-items:center;justify-content:center;
+  font-size:var(--fs-micro,11px);color:var(--muted)}
+.ac-body{flex:1 1 auto;min-width:0}
+/* 元信息一行：时长 · 平均配速 · 爬升。放不下就省略，不折行——
+   折行会让同一屏里卡片高度参差。 */
+.ac-sub{margin:7px 0 0;font-size:var(--fs-cap,12px);color:var(--ink-3);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-variant-numeric:tabular-nums}
-/* 三项数据：时长 / 平均配速 / 爬升。配速是 distance÷duration 算的，
-   不是上传的原始配速——文案上别写「配速数据」 */
-.ac-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;
-  margin-top:12px}
-/* 没有距离的活动只给两格（类型 / 爬升），三列会空出一格 */
-.ac-3.two{grid-template-columns:repeat(2,minmax(0,1fr))}
-/* 没距离时用来代替距离标尺的一行说明 */
-.ac-note{margin:11px 0 0;font-size:var(--fs-cap,12px);color:var(--ink-3)}
-.ac-3>div{min-width:0}
-.ac-3 b{display:block;font-size:var(--fs-body,14px);font-weight:600;
-  color:var(--ink2);font-variant-numeric:tabular-nums;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ac-3 span{display:block;margin-top:2px;font-size:var(--fs-micro,11px);
-  color:var(--ink-3)}
 /* 最新三条评论：昵称淡一点、内容亮一点，一行一条，超出省略 */
 .ac-c{margin-top:12px;padding-top:10px;border-top:1px solid var(--line2)}
 .ac-c p{margin:0 0 5px;font-size:var(--fs-cap,12px);color:var(--ink2);
