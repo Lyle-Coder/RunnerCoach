@@ -30,13 +30,16 @@ from . import account
 # 不然一个骑 100 km 的人会把跑团榜刷成笑话。
 RUN_TYPES = ("running", "trail_running", "treadmill_running")
 
-# 剪影规格。**120 点是「不像折线多边形」的下限**：
-# 24 点时环形路线看着还行，但长距离折返/多段路线会被画成棱角分明的多边形，
-# 用户反馈「太抽象」。120 点后曲线自然（46 km 的轨迹约 900 字节）。
-# 归一化边长 1000 给 0.1% 的精度——24 点时 rounding 到 1% 也会把细小的弯抹掉。
-SHAPE_POINTS = 120
+# 轨迹规格。**不抽稀，把所有点都带上**——上游 track 本身已经是降采样过的
+# （本地 75 条活动全部 ≤ 420 点），我们再按 120 点切一刀等于二次压缩：
+# 同一条 4.7 km 的轨迹，420 点还原出来的路径长度 3.1 km，抽到 120 点后
+# 直线化得更厉害，用户一眼就看出「不像我跑的那条路」。
+#
+# 上限 600 只是防呆（马拉松 3 小时按 10 秒采样约 1000 点），超了才抽稀。
+# 归一化边长 1000 给 0.1% 的精度。
+SHAPE_MAX_POINTS = 600
 SHAPE_SCALE = 1000
-SHAPE_MAX_LEN = 2000         # 服务端也按这个上限校验
+SHAPE_MAX_LEN = 6000         # 服务端也按这个上限校验（约 600 点 × 9 字节）
 BACKOFF = (60, 300, 1800, 7200)
 MAX_TRIES = 8
 
@@ -412,8 +415,8 @@ def _shape(track) -> str:
 
     三步：
     1. 丢掉非法点（0,0 是佳明没定位时的占位值，留着会把形状压成一条线）；
-    2. 按**累计长度**均匀抽 SHAPE_POINTS（120）个点——按索引抽的话，慢速段点密、
-       快速段点稀，同一个圈会画成歪的；
+    2. **原样保留所有点**（上游 track 已经降采样过，不再二次压缩）；
+       只有超过 SHAPE_MAX_POINTS 的超长轨迹才按累计长度均匀抽稀；
     3. 等比缩放到长边 = SHAPE_SCALE（1000），短边按比例（**不能各自拉伸**，
        那会把圆形跑道画成正方形）。
 
@@ -444,14 +447,20 @@ def _shape(track) -> str:
     if total <= 1.0:          # 全程不到 1 米，等于没动
         return ""
 
-    n = min(SHAPE_POINTS, len(pts))
-    picked: list[tuple[float, float]] = []
-    j = 0
-    for k in range(n):
-        target = total * k / (n - 1)
-        while j < len(acc) - 1 and acc[j] < target:
-            j += 1
-        picked.append(pts[j])
+    if len(pts) <= SHAPE_MAX_POINTS:
+        # 不抽稀：上游给多少点就用多少点，形状原样保留
+        picked = pts
+    else:
+        # 只有超长轨迹才按累计长度均匀抽稀（不是按索引——慢速段点密，
+        # 按索引抽会把圈画歪）
+        n = SHAPE_MAX_POINTS
+        picked = []
+        j = 0
+        for k in range(n):
+            target = total * k / (n - 1)
+            while j < len(acc) - 1 and acc[j] < target:
+                j += 1
+            picked.append(pts[j])
 
     ys = [(p[0] - pts[0][0]) * 111320.0 for p in picked]
     xs = [(p[1] - pts[0][1]) * 111320.0 * coslat for p in picked]
