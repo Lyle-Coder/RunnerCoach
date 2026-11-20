@@ -191,6 +191,7 @@ def _group_pages(tmp: Path) -> dict[str, Path]:
         pages = {
             "小组列表": GU.groups_page("TOK", force_list=True),
             "小组详情": GU.group_page("TOK", 1),
+            "完整榜单": GU.board_page("TOK", 1),
             "本周荣誉": GU.shirts_page("TOK", 1),
             "小组设置": GU.settings_page("TOK", 1),
         }

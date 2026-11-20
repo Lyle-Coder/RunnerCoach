@@ -582,16 +582,22 @@ def comment_del(gid: int, cid: int) -> dict:
     return _call("POST", f"/v1/group/{int(gid)}/comment_del", {"id": int(cid)})
 
 
-def set_goal(gid: int, km: float, predict: int | None = None,
-             today: str | None = None) -> dict:
+def set_goal(gid: int, km: float | None = None, predict: int | None = None,
+             today: str | None = None, touch_predict: bool = False) -> dict:
     """报本周目标；顺手可以把预言一起投了。
 
     两个动作合成一个请求，是因为它们发生在同一个念头里（「这周跑多少 /
     谁会完不成」）。分成两步，第二步永远没人做。
+
+    `km=None` = 只改预言（服务端允许 km 空着）。`touch_predict=True` 时
+    即使 `predict` 是 None 也会把键发过去——服务端把「空值」读成「撤掉
+    这周的预言」，这是唯一能取消投票的方式。
     """
-    body: dict = {"km": float(km)}
-    if predict:
-        body["predict"] = int(predict)
+    body: dict = {}
+    if km is not None:
+        body["km"] = float(km)
+    if predict or touch_predict:
+        body["predict"] = int(predict) if predict else ""
     if today:
         body["today"] = today
     return _call("POST", f"/v1/group/{int(gid)}/goal", body)

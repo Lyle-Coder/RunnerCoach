@@ -1536,6 +1536,22 @@ def run() -> int:
         _fdp = _GU.feed_page("TOK", 1)
         _fdo = _GU.feed_page("TOK", 1, "", 9)
         _set = _GU.settings_page("TOK", 1)
+        # 完整榜单页：周/月两个口径各渲一次（月榜不该挂衫）
+        _bdw = _GU.board_page("TOK", 1)
+        _bdm = _GU.board_page("TOK", 1, "", "month")
+        # 评论 303 回来时要锚到这条并默认展开评论区
+        _ghf = _GU.group_page("TOK", 1, "", 0, 9)
+        # 超过 10 人：截到前 10 + 补「⋯ + 我」+ 完整榜单入口
+        _GP.board = lambda gid, rng="week", today=None: {
+            "ok": True, "range": rng, "hidden": 0,
+            "from": "2026-11-16", "to": "2026-11-22",
+            "rows": [{"alias": ("我" if i == 12 else f"队员{i}"), "is_me": i == 12,
+                      "distance_m": 30000 - i * 1000, "days": 3, "acts": 3,
+                      "explorer": 0} for i in range(1, 13)],
+            "summary": {"members": 12, "shown": 12, "hidden": 0,
+                        "total_distance_m": 300000}}
+        _ghb = _GU.group_page("TOK", 1)
+        _bdb = _GU.board_page("TOK", 1)
     finally:
         _GP.detail, _GP.board, _GP.challenge_list = _gd, _gb, _gc
         _GP.week = _gw
@@ -1558,8 +1574,15 @@ def run() -> int:
     assert "<details class=\"fold\" open" not in _gh, "折叠块默认就展开了"
     # 成员不许和榜单排两遍：榜单里有名字，就不该再有「成员」区块
     assert "sec-head\"><h2>成员" not in _gh, "成员又单独占了一块（和榜单重复）"
-    # 月榜入口必须是真链接，不是 `if False` 的死开关
-    assert "?range=month" in _gh, "月榜入口又变成死开关了"
+    # 组页榜单只放前 10，完整榜单在**另一个页面**。周/月互切也搬去那页了：
+    # 在这个 200KB 的页面上重载一次只为换个聚合口径，动态会重刷、位置会丢。
+    assert f"/groups/1/board" in _gh, "组页没有进完整榜单的入口"
+    assert 'class="seg"' in _bdw and "?range=month" in _bdw, "榜单页没有周/月切换"
+    assert "本月" in _bdm and "本周" in _bdw, "榜单页标题没写清是周还是月"
+    assert "月榜只排里程" in _bdm, "月榜没交代为什么没有衫"
+    assert 'class="mk"' not in _bdm, "月榜又挂上了按周结算的衫/徽章"
+    assert 'class="mk"' in _bdw, "周榜名字后面没有徽章"
+    assert 'class="rank me"' in _bdw, "完整榜单里没标出我自己"
     # 昵称能在页面上直接改
     # 设置页本身要有这些东西，否则就是「搬走了也找不回来」
     # 假数据里我是组长：所以看到的是「转让组长」而不是「退出小组」——
@@ -1590,14 +1613,28 @@ def run() -> int:
 
     # ---- 结对 / 预言：仍是「标签 + 内容」两列对齐
     assert 'class="kvrows"' in _gh, "结对/预言没有用对齐表格"
-    for _k in ("结对", "预言"):
+    for _k in ("周期", "结对", "预言"):
         assert f'<span class="k">{_k}</span>' in _gh, f"「{_k}」那行没有标签列"
+    # 周期必须写出来：用户原话「甚至不知道时间范围是什么」
+    assert "周日 24:00 截止" in _gh, "没写这周什么时候截止"
     assert "目标 30" in _gh, "本周目标没在页面上显示"
     assert "我 30" in _gh, "结对让分没显示出来"
+    assert "他 75" in _gh and "多背" in _gh, "让分只给了数字，没说多背多少"
     assert "完不成" in _gh, "我投的预言没回显"
     assert 'name="predict"' in _gh, "没有预言选择框"
+    # 「怎么算的」：玩法规则要能自己读到，不能靠猜
+    assert "这三个怎么算" in _gh, "没有玩法说明入口"
+    for _h in ("定目标", "让分赛", "预言"):
+        assert f"<b>{_h}</b>" in _gh, f"玩法说明缺「{_h}」"
+    assert "周一 00:00 到周日 24:00" in _gh, "玩法说明没写结算周期"
     # 目标入口是 details：summary 那行常驻，表单点开才出现
-    assert '<details class="goalrow">' in _gh, "目标入口不是可展开的"
+    assert '<details class="goalrow"' in _gh and 'data-k="goal"' in _gh, \
+        "目标入口不是可展开的（或没留还原状态的 key）"
+    # 评论区的折叠块要带稳定 key，发完评论回来才知道该展开哪一条
+    assert 'data-k="cm9"' in _gh, "动态卡片没给评论区留还原 key"
+    assert 'id="a9"' in _gh, "动态卡片没有可锚定的 id"
+    assert ('<details class="ac-cm" data-k="cm9" open>' in _ghf), \
+        "发完评论回来，那条的评论区没有默认展开"
     # 探索徽章不占衫：board 里够 5 格才在名字后面挂一枚虚线方框图标。
     # 夹具里队友 12 格、我 3 格，所以只该有 1 枚。
     assert _gh.count('title="探索徽章"') == 1, \
@@ -1645,6 +1682,19 @@ def run() -> int:
     assert "黄衫·里程王" in _gh, "衫行只写了「黄衫 阿狗」，没说是哪个榜"
     assert "红衫·计划完成王" in _gh, "长榜名（计划完成王）没显示出来"
     assert "/shirts" in _gh and "荣誉" in _gh, "组页没有进本周荣誉的入口"
+
+    # ---- 榜单截断：组里 12 人时组页只排前 10，我排第 12 也要看得见
+    _ib = _ghb.find("<h2>本周榜</h2>")
+    _jib = _ghb.find("<h2>赛事</h2>")
+    _blk = _ghb[_ib:_jib] if _ib >= 0 and _jib > _ib else ""
+    assert _blk.count('class="no"') == 11, \
+        f"组页榜单应只显示前 10 + 我自己，实际 {_blk.count('class=\"no\"')} 行"
+    assert 'class="rk-gap"' in _blk, "截断处没有省略号，看着像只排了 10 名"
+    assert "完整榜单" in _blk and "/groups/1/board" in _blk, "没有完整榜单入口"
+    assert 'class="rank me"' in _blk, "我在 10 名之外时没把自己补到榜上"
+    # 12 人的完整页要全排出来，一个人都不能少
+    assert _bdb.count('class="no"') == 12, \
+        f"完整榜单少排了人：{_bdb.count('class=\"no\"')} 行"
 
     _shp_html = _shp
     assert "六项称号" in _shp_html, "荣誉页没渲染出来"
