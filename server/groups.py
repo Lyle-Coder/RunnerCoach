@@ -1366,7 +1366,12 @@ def api_feed(me, gid: int, query: dict) -> dict:
 
 
 def api_comment(me, gid: int, body: dict) -> dict:
-    """给一条动态留一句话或一个表情。两样至少要有一个。"""
+    """给一条动态留一句话。
+
+    表情**内嵌在 text 里**（一次可以好几个、能和文字连成一句），所以正常
+    只要 text 非空就行。`emoji` 参数留着兼容旧客户端：老版本把表情单独放在
+    这一列，仍按白名单校验；新版本不传它，表情都进了 text。
+    """
     uid = int(me["user_id"])
     try:
         act_id = int(body.get("act"))
@@ -1410,7 +1415,11 @@ def _my_comment(c, gid: int, uid: int, cid: int):
 
 
 def api_comment_edit(me, gid: int, body: dict) -> dict:
-    """改自己的评论。只能改自己的：别人的评论连「存在」都不确认。"""
+    """改自己的评论。只能改自己的：别人的评论连「存在」都不确认。
+
+    表情同样在 text 里改（见 api_comment）：编辑框里本来就带着原文本，
+    用户在里面增删表情即可，不再需要单独的 emoji 字段。
+    """
     uid = int(me["user_id"])
     try:
         cid = int(body.get("id"))

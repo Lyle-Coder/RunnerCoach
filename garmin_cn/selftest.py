@@ -1509,9 +1509,9 @@ def run() -> int:
                       "kind": "run", "kind_name": "跑步", "distance_m": 12000,
                       "duration_s": 3600, "elevation_m": 60, "comments": 1,
                       "recent": [{"id": 31, "user_id": 1, "alias": "我",
-                                  "mine": True, "text": "可以", "emoji": ""},
+                                  "mine": True, "text": "跑得不错👍🔥", "emoji": ""},
                                  {"id": 32, "user_id": 2, "alias": "队友",
-                                  "mine": False, "text": "牛", "emoji": ""}]}]}
+                                  "mine": False, "text": "牛", "emoji": "🎉"}]}]}
         # P2 的「本周」块：目标 + 结对 + 预言。不 mock 会去连真服务器，
         # 虽然失败很快，但每次自检都白等一次连接。
         _GP.week = lambda gid, today=None: {
@@ -1760,14 +1760,28 @@ def run() -> int:
     # 卡片不再是链接（里面有表单），评论折叠在卡内
     assert "/feed?act=9" not in _fdp, "动态卡片还是链接，点输入框会跳页"
     assert 'class="ac-cm"' in _fdp, "动态列表里没有评论折叠"
-    assert 'name="emoji"' in _fdo and 'name="text"' in _fdo, "详情页没有表情/留言入口"
-    # 自己的评论才有「改 / 删」，且折在 › 里（防误触）。夹具里 id=31 是 mine。
+    assert 'data-ins="👍"' in _fdo and 'name="text"' in _fdo, \
+        "详情页没有表情插入 / 留言入口"
+    # 表情内嵌：不再是独立的 emoji 提交字段，而是插进文字的按钮
+    assert 'name="emoji"' not in _fdo, "表情还是独立的提交字段（应内嵌到文字里）"
+    assert 'data-say="1"' in _fdo, "输入框没有标记 data-say，表情插不进光标"
+    # 内嵌表情原样出现在正文里（「跑得不错👍🔥」），不能被转义弄坏
+    assert "跑得不错👍🔥" in _fdo, "内嵌表情的评论没正常渲染"
+    # 旧数据（表情单独存 emoji 列）要拼回文字：id=32 是 emoji=🎉 + text=牛
+    assert "🎉牛" in _fdo, "旧数据的 emoji 列没拼回正文"
+    # 自己的评论才有「改 / 删」，且折在铅笔里（防误触）。夹具里 id=31 是 mine。
     assert _fdo.count('class="cm-more"') == 1, "自己的评论没有操作入口（或别人的也有）"
+    assert "编辑这条评论" in _fdo, "编辑区没有标题，用户不知道点开的是什么"
     assert "comment_edit" in _fdo and "comment_del" not in _fdo, \
         "评论操作表单不对（改删应共用一张表单，用 op 区分）"
     assert 'name="op" value="save"' in _fdo and 'name="op" value="del"' in _fdo, \
         "改和删没有用 op 区分"
     assert "confirm(" in _fdo, "删除没有二次确认"
+    # 编辑区也要能插表情：编辑表单里得有 data-say + 表情按钮
+    _edit_seg = _fdo.split("编辑这条评论", 1)[1].split("</details>", 1)[0]
+    assert 'data-say="1"' in _edit_seg and 'data-ins="👍"' in _edit_seg, \
+        "编辑评论时不能插入表情"
+    assert 'value="跑得不错👍🔥"' in _edit_seg, "编辑框没预填原有内容（含表情）"
     # 现在会**算**配速（距离÷时长），所以文案不能再写「没有配速」——
     # 那是不实陈述。要写清「配速是算的」「没有轨迹、没有位置」。
     # 剪影算法：形状归一化、去掉 (0,0) 占位点、异常输入不抛
