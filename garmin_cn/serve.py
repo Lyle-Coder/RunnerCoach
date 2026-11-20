@@ -209,6 +209,10 @@ class _Handler(SimpleHTTPRequestHandler):
                 # 完整榜单：周/月口径在这一页里切，不再回组页重载
                 _r = "month" if (q.get("range") or [""])[0] == "month" else "week"
                 return self._html(groupui.board_page(tok, int(seg[0]), msg, _r))
+            if len(seg) == 3 and seg[0].isdigit() and seg[1] == "challenge" \
+                    and seg[2].isdigit():
+                # 单个赛事的完成度榜：谁跑了多少、谁已达标的那个页面
+                return self._html(groupui.challenge_page(tok, int(seg[0]), int(seg[2]), msg))
             if len(seg) == 1 and seg[0].isdigit():
                 # 老链接的 ?range=month（组页曾支持月榜）统一送到榜单页：
                 # 组页只做本周榜，月口径归 /board 管。

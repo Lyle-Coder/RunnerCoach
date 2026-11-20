@@ -1428,6 +1428,7 @@ def run() -> int:
     from garmin_cn import groupui as _GU
 
     _gd, _gb, _gc = _GP.detail, _GP.board, _GP.challenge_list
+    _gcg = getattr(_GP, 'challenge_get', None)
     _gw = getattr(_GP, "week", None)
     _gs = getattr(_GP, "season", None)
     _gm = getattr(_GP, "map_data", None)
@@ -1455,7 +1456,22 @@ def run() -> int:
             "hidden": 0,
             "summary": {"members": 2, "shown": 2, "hidden": 0,
                         "total_distance_m": 21000}}
-        _GP.challenge_list = lambda gid, today=None: {"ok": True, "challenges": []}
+        # 一条进行中的赛事：组页那张卡要能点进「谁排第几」
+        _GP.challenge_list = lambda gid, today=None: {"ok": True, "challenges": [
+            {"id": 7, "title": "本周 25 公里", "kind": "distance", "target": 25000,
+             "current": 31000, "pct": 100.0, "status": "running",
+             "from": "2026-11-16", "to": "2026-11-22", "unit": "km"}]}
+        # 赛事详情：每人一行，已达成的人挂达成日
+        _GP.challenge_get = lambda gid, cid, today=None: {
+            "ok": True, "hidden": 1,
+            "challenge": {"id": 7, "title": "本周 25 公里", "kind": "distance",
+                          "target": 25000, "current": 31000, "pct": 100.0,
+                          "from": "2026-11-16", "to": "2026-11-22",
+                          "status": "running", "unit": "km"},
+            "rows": [{"alias": "我", "is_me": True, "current": 25000,
+                      "pct": 100.0, "done_at": "2026-11-18"},
+                     {"alias": "队友", "is_me": False, "current": 6000,
+                      "pct": 24.0, "done_at": None}]}
         # 六件衫：带榜名、口径、前 3 名。不 mock 的话组页那一行整块不显示，
         # 下面关于「点点是什么」的断言就测了个空。
         _shirt = lambda i, n, t, c, f, h, top: {
@@ -1543,6 +1559,8 @@ def run() -> int:
         _ghf = _GU.group_page("TOK", 1, "", 0, 9)
         # 建赛事的提示要落在赛事区块里，而不是只挂在页首（用户看不见）
         _ghc = _GU.group_page("TOK", 1, "同时进行的赛事已达 3 个", 0, 0, "chal")
+        # 赛事详情：每人一行 + 达成日 + 管理员能提前结束
+        _chp = _GU.challenge_page("TOK", 1, 7)
         # 超过 10 人：截到前 10 + 补「⋯ + 我」+ 完整榜单入口
         _GP.board = lambda gid, rng="week", today=None: {
             "ok": True, "range": rng, "hidden": 0,
@@ -1556,6 +1574,7 @@ def run() -> int:
         _bdb = _GU.board_page("TOK", 1)
     finally:
         _GP.detail, _GP.board, _GP.challenge_list = _gd, _gb, _gc
+        _GP.challenge_get = _gcg
         _GP.week = _gw
         _GP.season = _gs
         _GP.map_data = _gm
@@ -1587,6 +1606,17 @@ def run() -> int:
         "建赛事的失败提示没落在赛事区块里"
     assert _ghc.count("同时进行的赛事已达 3 个") == 1, "同一条提示渲染了两遍"
     assert 'class="nt"' in _ghc, "失败提示用了成功的绿色样式"
+
+    # ---- 赛事详情：组页只给全组合计，谁跑了多少要能点进去看
+    assert 'class="chal" href="/groups/1/challenge/7"' in _gh, \
+        "组页的赛事卡不能点进完成度榜"
+    assert "25.0<i> / 25.0 km</i>" in _chp, "赛事详情没按「当前/目标」显示成绩"
+    assert "6.0<i> / 25.0 km</i>" in _chp, "队友的成绩没显示"
+    assert "✓ 11-18" in _chp, "已达成的人没标达成日期"
+    assert 'class="rank me"' in _chp, "赛事详情里没高亮我自己"
+    assert "另有 1 人关闭了共享" in _chp, "关闭共享的人没交代"
+    assert "提前结束这个赛事" in _chp and "/challenge/7/close" in _chp, \
+        "管理员在赛事详情里没有提前结束的入口"
     # 昵称 / 共享 / 邀请码 / 退出全搬进「小组设置」了，组页只留一个页头齿轮。
     # 用户原话：「放在最下面太突兀」。
     assert 'class="hact"' in _gh and "/settings" in _gh, "组页页头没有设置入口"

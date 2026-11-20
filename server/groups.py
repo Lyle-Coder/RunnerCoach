@@ -1985,7 +1985,14 @@ def api_challenge_get(me, gid: int, cid: int, query: dict) -> dict:
         })
     # 已达成按达成日期升序，未达成按完成率降序
     rows.sort(key=lambda x: (x["done_at"] is None, x["done_at"] or "", -x["pct"]))
-    return {"ok": True, "challenge": _challenge_view(ch, today), "rows": rows, "hidden": hidden}
+    # 全组进度也一起给：详情页要做头部（总进度条 + 百分比），而速度类不能拿
+    # 每人配速求平均——那是「平均的平均」，得用总时长 / 总距离现算。
+    if kind == "speed":
+        total = _chal_cur(kind, sum(dist.values()), sum(dur.values()), 0, 0, 0)
+    else:
+        total = int(sum(acc.values()))
+    return {"ok": True, "challenge": _challenge_view(ch, today, total),
+            "rows": rows, "hidden": hidden}
 
 
 def api_challenge_close(me, gid: int, cid: int) -> dict:

@@ -424,10 +424,17 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
   color:var(--ink-3);font-size:12px;letter-spacing:2px}
 /* 「完整榜单」这类区块末尾的唯一动作：占满一行，和上面的榜单同宽 */
 .btn.full{display:flex;width:100%;box-sizing:border-box}
-.chal{padding:10px 0;border-bottom:1px solid var(--line2)}
+.chal{padding:10px 0;border-bottom:1px solid var(--line2);display:block;
+  color:inherit;text-decoration:none}
 .chal:last-child{border-bottom:0}
-.chal .t{font-size:14px;font-weight:600;color:var(--ink)}
+.chal:active{opacity:.85}
+.chal .t{font-size:14px;font-weight:600;color:var(--ink);display:flex;
+  align-items:center;gap:8px}
+/* 赛事卡整张可点：右侧 › 是唯一的「这里能进去」的线索 */
+.chal .t .chev{margin-left:auto;color:var(--ink-3);font-size:15px;line-height:1}
 .chal .m{font-size:11px;color:var(--muted);margin-top:3px}
+/* 赛事详情里「已达成」的日期：绿、小、不换行，挂在名字后面 */
+.rank .done{font-size:var(--fs-micro,11px);color:var(--ok);white-space:nowrap}
 .bar{height:5px;border-radius:3px;background:var(--line2);margin-top:7px;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--brand);border-radius:3px}
 .bar.done i{background:var(--ok)}
