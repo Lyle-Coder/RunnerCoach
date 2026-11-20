@@ -2304,8 +2304,12 @@ def api_rotate(me, gid: int) -> dict:
 # 彻底删除时要清的表。表名是常量白名单，不接受任何外部输入拼接。
 PURGE_TABLES = (
     "group_daily", "group_act", "group_comment", "group_route", "group_cell",
-    "group_audit", "group_goal", "group_pair", "group_predict", "group_run_camp",
-    "group_challenges", "group_members",
+    "group_audit", "group_goal", "group_pair", "group_predict", "group_challenges",
+    "group_members",
+    # 远征与营地：这几张在 expedition.py 里建，同样带 group_id。
+    # 漏了它们的话「彻底删除」只删掉一半——榜单没了、远征记录还躺在库里。
+    "group_run_season", "group_run_member", "group_run_event", "group_run_trial",
+    "group_run_buff", "group_run_camp",
 )
 
 
@@ -2348,8 +2352,12 @@ def api_purge(me, gid: int, body: dict) -> dict:
         if confirm != str(g["name"]):
             # 把组名写进提示里：只说「对不上」，用户不知道要输什么
             raise GroupError(400, "确认框里要一字不差地输入「" + str(g["name"]) + "」")
+        # 老库/未初始化远征模块的库里可能缺表，先取一次实际存在的
+        have = {r["name"] for r in c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
         for t in PURGE_TABLES:
-            c.execute(f"DELETE FROM {t} WHERE group_id=?", (gid,))
+            if t in have:
+                c.execute(f"DELETE FROM {t} WHERE group_id=?", (gid,))
         c.execute("DELETE FROM groups WHERE id=?", (gid,))
     return {"ok": True, "purged": gid}
 
