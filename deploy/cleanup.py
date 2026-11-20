@@ -160,12 +160,40 @@ def clean_journal(dry: bool, size: str, log: list[str]) -> None:
         log.append(f"journald：跳过（{type(e).__name__}）")
 
 
+def clean_group_data(dry_run: bool, log: list[str]) -> None:
+    """组数据的保留期清理（日汇总 / 动态 / 评论 / 路线 / 审计 / 格子）。
+
+    和产物清理挤在同一个 04:10 窗口里：两个脚本同时写同一个 sqlite 库会
+    `database is locked`，串在一个进程里最省事。
+
+    清理规则在 `server/groups.py` 的 `RETENTION_DAYS`，这里不重复定义——
+    两个地方各写一份保留期，迟早会有一条对不上。
+    """
+    try:
+        sys.path.insert(0, str(APP_DIR))
+        import groups  # noqa: PLC0415  在函数里导入：APP_DIR 要先就位
+
+        r = groups.cleanup(dry_run=dry_run)
+        rows = r.get("rows") or {}
+        total = sum(int(v or 0) for v in rows.values())
+        if not total:
+            log.append("组数据：没有超期记录")
+            return
+        for k, v in rows.items():
+            if v:
+                log.append(f"组数据 {k}：{'预计删' if dry_run else '已删'} {v} 行")
+    except Exception as e:      # noqa: BLE001 - 组数据清理失败不该连累产物清理
+        log.append(f"组数据：清理失败 {type(e).__name__}: {e}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--keep-apk", type=int, default=KEEP_APK)
     ap.add_argument("--keep-code", type=int, default=KEEP_CODE_PER_BASE)
     ap.add_argument("--keep-days", type=int, default=KEEP_BAK_DAYS)
+    ap.add_argument("--skip-groups", action="store_true",
+                    help="不清理组数据（只处理发版产物）")
     a = ap.parse_args()
 
     pct = _disk_pct()
@@ -184,6 +212,8 @@ def main() -> int:
     freed += clean_apk(a.dry_run, keep_apk, log)
     freed += clean_backup(a.dry_run, a.keep_days, log)
     clean_journal(a.dry_run, journal_max, log)
+    if not a.skip_groups:
+        clean_group_data(a.dry_run, log)
 
     log.append(f"{'预计释放' if a.dry_run else '已释放'} {freed / 1048576:.1f} MB")
     print("\n".join(log))
