@@ -1822,8 +1822,12 @@ NEWS_LIMIT = 5          # 通知里每类最多给几条：通知栏不需要 20
 def api_news(me, gid: int, query: dict) -> dict:
     """自 `since` 以来**跟我有关**的新东西，给后台通知用。
 
-    只回三类：别人评论了我的动态、别人在我参与过的动态下发言、组里新建了赛事。
-    别人的日常动态**不算**，否则 11 个人的组一天几十条，通知栏会变成瀑布流。
+    回四类：别人评论了我的动态、别人在我参与过的动态下发言、组里新建了赛事、
+    队友今天跑了。前两类是「有人跟我说话」，后两类是「组里发生了什么」。
+
+    队友跑步**只报今天的**：补传会把十几天的历史动态一起插进来，用 created_at
+    判断的话，用户第一次打开会被十几条「队友跑了」淹没。按活动日期等于今天
+    过滤，补历史就自然不会触发。
 
     刻意做得很轻：不带动态正文和轨迹剪影。后台每 6 小时替所有组拉一次，
     响应大一点就是长期白烧流量。所以只给「谁、干了什么、什么时候、说了几个字」。
@@ -1842,7 +1846,7 @@ def api_news(me, gid: int, query: dict) -> dict:
         _require_member(c, gid, uid)
         if since <= 0:
             return {"ok": True, "now": now, "since": now,
-                    "comments": [], "challenges": []}
+                    "comments": [], "challenges": [], "acts": []}
 
         # 跟我有关 = 评论落在我发的动态上，或者落在我评论过的动态上。
         # 第二个条件用 EXISTS 而不是再查一遍评论表：同一条动态下我评过 5 次
@@ -1873,6 +1877,22 @@ def api_news(me, gid: int, query: dict) -> dict:
             " ORDER BY ch.created_at DESC LIMIT ?",
             (gid, since, uid, NEWS_LIMIT)).fetchall()
 
+        # 队友今天的跑步。按 (人, 日期) 归一条：同一个人一天跑两次只报一次。
+        # 关了共享的人不报——他们本来就不在榜单和动态里。
+        # 这条必须在 with 里：db() 退出就把连接关了。
+        today = _today(None).isoformat()
+        acts = c.execute(
+            "SELECT a.user_id, a.date, MAX(a.distance_m) AS d, MAX(a.created_at) AS t,"
+            "       COUNT(*) AS n,"
+            "       COALESCE(NULLIF(m.alias, ''), '队友') AS alias"
+            "  FROM group_act a"
+            "  JOIN group_members m ON m.group_id = a.group_id AND m.user_id = a.user_id"
+            " WHERE a.group_id=? AND a.created_at > ? AND a.user_id <> ?"
+            "   AND a.date = ? AND m.status = 'active'"
+            "   AND (m.share_level IS NULL OR m.share_level = 'summary')"
+            " GROUP BY a.user_id, a.date ORDER BY t DESC LIMIT ?",
+            (gid, since, uid, today, NEWS_LIMIT)).fetchall()
+
     comments = [{
         "id": int(r["id"]), "act_id": int(r["act_id"]),
         "by": str(r["alias"]), "at": int(r["created_at"]),
@@ -1886,8 +1906,13 @@ def api_news(me, gid: int, query: dict) -> dict:
         "kind": str(r["kind"]), "by": str(r["alias"]),
         "at": int(r["created_at"]),
     } for r in chs]
-    return {"ok": True, "now": now, "since": since,
-            "comments": comments, "challenges": challenges}
+    return {"ok": True, "now": now, "since": since, "comments": comments,
+            "challenges": challenges,
+            "acts": [{
+                "user_id": int(r["user_id"]), "by": str(r["alias"]),
+                "date": str(r["date"]), "distance_m": int(r["d"] or 0),
+                "acts": int(r["n"] or 0), "at": int(r["t"] or 0),
+            } for r in acts]}
 
 
 def api_comment(me, gid: int, body: dict) -> dict:
