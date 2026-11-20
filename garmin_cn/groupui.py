@@ -44,10 +44,16 @@ def _with_copy(html: str) -> str:
     return html.replace("</body>", _COPY_JS + "</body>", 1)
 
 
+# 服务端把失败原因原样拼进 ?msg= 回来（「目标要在 1000–1000000 之间」这种
+# 句子不含「失败」二字），只按三个词判色会把警告渲染成绿色的成功提示。
+_BAD_WORDS = ("失败", "错误", "不能", "要在", "格式", "已达", "超出", "超过",
+              "不支持", "过期", "无效", "找不到", "先填", "先勾", "不在")
+
+
 def _msg(message: str) -> str:
     if not message:
         return ""
-    tone = "nt" if "失败" in message or "错误" in message or "不能" in message else "nt ok"
+    tone = "nt" if any(w in message for w in _BAD_WORDS) else "nt ok"
     return f'<div class="{tone}">{esc(message)}</div>'
 
 
@@ -165,6 +171,10 @@ KEEP_JS = (
     'var d=document.querySelector(\'details[data-k="\'+o[i]+\'"]\');if(d)d.open=true;}'
     'var y=null;try{y=sessionStorage.getItem(Y);}catch(e){}'
     'if(y===null)return;try{sessionStorage.removeItem(Y);}catch(e){}'
+    # 带 msg 回来 = 上一步有结果要说（多为失败原因）。那句提示渲染在页首，
+    # 这时再还原到原来的滚动位置，人就看不见它了——表现成「点了没反应」。
+    # 所以有 msg 时不还原，让浏览器按 URL 里的 #anchor 落到对应的区块。
+    'if(/[?&]msg=/.test(location.search))return;'
     'var n=parseInt(y,10)||0;window.scrollTo(0,n);'
     'window.addEventListener("load",function(){window.scrollTo(0,n);});}'
     'function save(){'
@@ -188,10 +198,12 @@ CHAL_JS = (
     'function sync(s){'
     'var f=s.form||(s.closest&&s.closest("form"));if(!f)return;'
     'var o=s.options[s.selectedIndex];if(!o)return;'
+    # option 上存的是 data-u / data-p（不是 data-unit）：标签和 option 用同一个
+    # 属性名时，querySelector("[data-unit]") 会先命中 option，把选项文字改坏。
     'var u=f.querySelector("[data-unit]");'
-    'if(u)u.textContent=o.getAttribute("data-unit")||"";'
+    'if(u)u.textContent=o.getAttribute("data-u")||"";'
     'var i=f.querySelector("[data-target]");'
-    'if(i)i.placeholder=o.getAttribute("data-ph")||"";}'
+    'if(i)i.placeholder=o.getAttribute("data-p")||"";}'
     'document.addEventListener("change",function(ev){'
     'var s=ev.target;'
     'if(s&&s.matches&&s.matches(\'select[name=kind]\'))sync(s);});'
@@ -1391,15 +1403,21 @@ def _rank_marks(x: dict, marks_of: dict[str, str], min_cells: int) -> str:
 
 
 def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
-               focus: int = 0) -> str:
+               focus: int = 0, at: str = "") -> str:
     """组页：我的名次 → 本周玩法 → 本周榜（前 10）→ 赛事 → 动态。
 
     `focus` 是刚从这条动态发完评论回来时要展开评论区的活动 id。
+    `at` 是「这句提示属于哪一块」（`chal` = 赛事）。组页很长，提示渲染在
+    页首的话，在页面中部点「建赛事」的人根本看不到——看起来就是没反应。
     """
     from . import group as G
 
     today = dt.date.today().isoformat()
     msg = _msg(message)
+    # 赛事相关的提示直接落在赛事区块里（页首就不再重复一遍）
+    chal_msg = msg if at == "chal" else ""
+    if chal_msg:
+        msg = ""
     # 一次拿齐四块（detail / board / challenges / season）。老服务端没有
     # /home 就退回逐个请求——四次握手约 0.5 秒，能省则省。
     _h = {}
@@ -1528,6 +1546,11 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
         # 类型一变，单位跟着变：只写「目标（米/次）」的话，选「爬升」还得
         # 自己猜是不是米、选「配速」更猜不到要填 330 这种秒数。
         # 每种类型的单位/示例挂在 option 上，选择时同步到标签和 placeholder。
+        #
+        # 属性名**不能**用 data-unit / data-ph：`form.querySelector("[data-unit]")`
+        # 会按文档序返回第一个匹配，而第一个匹配是 <option data-unit>——
+        # 于是选一次类型，「累计里程」这个选项的文字就被改成了「米」。
+        # option 用 data-u / data-p，标签和输入框才用 data-unit / data-target。
         _kinds = [
             ("distance", "累计里程", "米", "20000", "20000 = 20 km"),
             ("acts", "累计次数", "次", "12", "练了几次，不分长短"),
@@ -1536,9 +1559,17 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
             ("speed", "平均配速", "秒/km", "330", "330 = 5'30\"/km，越小越难"),
         ]
         _opts = "".join(
-            f'<option value="{k}" data-unit="{u}" data-ph="{ph}">{n}</option>'
-            for k, n, u, ph, _h in _kinds)
+            f'<option value="{k}" data-u="{u}" data-p="{ph}">{n}</option>'
+            for k, n, u, ph, _x in _kinds)
         _hint = "；".join(f'{n}填{h}' for _k, n, _u, _ph, h in _kinds)
+        # 结束日给个默认值（本周日）：留空直接点「建赛事」会被服务端按
+        # 「end_date 格式不对」拒掉，而那句提示在页首、用户停在页面中部，
+        # 看起来就是「点了没反应」。
+        try:
+            _d0 = dt.date.fromisoformat(today)
+            _end0 = (_d0 + dt.timedelta(days=6 - _d0.weekday())).isoformat()
+        except ValueError:
+            _end0 = ""
         chal_form = (f'<form action="/__group/{gid}/challenge" method="post">{_tok(token)}'
                      '<div class="card">'
                      '<div class="kvline"><span>标题</span><b>'
@@ -1551,7 +1582,7 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
                      '<div class="kvline"><span>开始日</span><b>'
                      f'<input type="text" name="start_date" value="{esc(today)}" placeholder="YYYY-MM-DD"></b></div>'
                      '<div class="kvline"><span>结束日</span><b>'
-                     '<input type="text" name="end_date" placeholder="YYYY-MM-DD"></b></div>'
+                     f'<input type="text" name="end_date" value="{esc(_end0)}" placeholder="YYYY-MM-DD"></b></div>'
                      '</div><p class="note">' + esc(_hint) + '。'
                      '周期最长 90 天，开始日不能早于 7 天前。</p>'
                      '<div class="pager"><button class="btn" type="submit">建赛事</button></div>'
@@ -1568,9 +1599,11 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
              '<span aria-hidden="true">⚙</span></a>').format(gid)
 
     # 建赛事也是折叠：一个月用一次的表单不该常驻占掉半屏。
+    # data-k 是给 KEEP_JS 用的：提交后 303 回来要还是展开的，否则用户
+    # 建完/建失败看到的都是一行「建一个赛事」，像点击根本没生效。
     chal_fold = ""
     if chal_form:
-        chal_fold = ('<details class="fold"><summary>建一个赛事'
+        chal_fold = ('<details class="fold" data-k="chal"><summary>建一个赛事'
                      '<span class="fx">›</span></summary>' + chal_form + '</details>')
 
     # 页头胶囊只说一件新事：全组本周跑了多少。
@@ -1910,7 +1943,8 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
     body = (msg
             + head
             + sec("本周榜", '<div class="flat">' + rank_rows + '</div>', more=more)
-            + sec("赛事", '<div class="flat">' + ch_rows + '</div>' + chal_fold)
+            + sec("赛事", chal_msg + '<div class="flat">' + ch_rows + '</div>' + chal_fold,
+                  anchor="chal")
             + feed_sec
             + SAY_JS + KEEP_JS)
     return _with_copy(page(

@@ -1541,6 +1541,8 @@ def run() -> int:
         _bdm = _GU.board_page("TOK", 1, "", "month")
         # 评论 303 回来时要锚到这条并默认展开评论区
         _ghf = _GU.group_page("TOK", 1, "", 0, 9)
+        # 建赛事的提示要落在赛事区块里，而不是只挂在页首（用户看不见）
+        _ghc = _GU.group_page("TOK", 1, "同时进行的赛事已达 3 个", 0, 0, "chal")
         # 超过 10 人：截到前 10 + 补「⋯ + 我」+ 完整榜单入口
         _GP.board = lambda gid, rng="week", today=None: {
             "ok": True, "range": rng, "hidden": 0,
@@ -1566,6 +1568,25 @@ def run() -> int:
     assert _gh.count('class="flat"') >= 2, "榜单/赛事又被套上卡片盒子了"
     # 低频表单折叠：建赛事、管理
     assert "建一个赛事" in _gh and "<details" in _gh, "建赛事表单又常驻展开了"
+    # 建赛事表单：提交后要还是展开的（data-k），结束日要有默认值——
+    # 结束日空着直接点提交会被服务端按「格式不对」拒掉，而那句提示在页首，
+    # 用户在页面中部只看到「点了没反应」。
+    assert '<details class="fold" data-k="chal">' in _gh, "建赛事表单没记住展开状态"
+    _end_v = re.search(r'name="end_date" value="([^"]*)"', _gh)
+    assert _end_v and re.match(r"\d{4}-\d{2}-\d{2}$", _end_v.group(1)), \
+        f"结束日没有默认值：{_end_v.group(1) if _end_v else '缺失'}"
+    # 五种赛事类型都要能选，且单位/示例挂在 option 上（不是和标签抢同一个属性名）
+    for _kv in ('value="elevation"', 'value="explore"', 'value="speed"'):
+        assert _kv in _gh, f"建赛事缺类型 {_kv}"
+    assert 'data-u="秒/km"' in _gh and 'data-ph=' not in _gh, \
+        "option 的单位属性又叫回 data-unit 了（会把选项文字改坏）"
+    # 建赛事的失败提示必须在「赛事」这一块里：组页很长，错误挂在页首
+    # 就等于没提示（用户以为按钮坏了）。
+    _i_chal = _ghc.find('<h2>赛事</h2>')
+    assert _i_chal > 0 and "同时进行的赛事已达 3 个" in _ghc[_i_chal:], \
+        "建赛事的失败提示没落在赛事区块里"
+    assert _ghc.count("同时进行的赛事已达 3 个") == 1, "同一条提示渲染了两遍"
+    assert 'class="nt"' in _ghc, "失败提示用了成功的绿色样式"
     # 昵称 / 共享 / 邀请码 / 退出全搬进「小组设置」了，组页只留一个页头齿轮。
     # 用户原话：「放在最下面太突兀」。
     assert 'class="hact"' in _gh and "/settings" in _gh, "组页页头没有设置入口"
