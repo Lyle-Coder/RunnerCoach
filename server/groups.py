@@ -2268,6 +2268,58 @@ def api_rotate(me, gid: int) -> dict:
     return {"ok": True, "invite_code": code}
 
 
+# 彻底删除时要清的表。表名是常量白名单，不接受任何外部输入拼接。
+PURGE_TABLES = (
+    "group_daily", "group_act", "group_comment", "group_route", "group_cell",
+    "group_audit", "group_goal", "group_pair", "group_predict", "group_run_camp",
+    "group_challenges", "group_members",
+)
+
+
+def api_archived(me) -> dict:
+    """我作为组长、已经解散的组。
+
+    App 的组列表只查 `archived=0`，所以这些组在手机上完全看不到——
+    它们的唯一出口就是在这里彻底删掉。
+    """
+    uid = int(me["user_id"])
+    with db() as c:
+        rows = c.execute(
+            "SELECT g.id, g.name,"
+            "       (SELECT COUNT(*) FROM group_members x WHERE x.group_id=g.id) AS n"
+            "  FROM groups g WHERE g.owner_id=? AND g.archived=1"
+            " ORDER BY g.id DESC", (uid,)).fetchall()
+    return {"ok": True, "groups": [{
+        "id": int(r["id"]), "name": str(r["name"]),
+        "members": int(r["n"] or 0)} for r in rows]}
+
+
+def api_purge(me, gid: int, body: dict) -> dict:
+    """彻底删除一个已解散的组：所有 group_* 行 + groups 行，删了没有恢复。
+
+    三道门槛，缺一不可：
+    - 只有 owner 能删（解散后组长身份还留着）
+    - 只有 `archived=1` 能删：活跃组必须先解散，避免手滑删掉正在用的组
+    - 必须把组名原样传回来确认：这一步不是形式，删完什么都不会剩
+    """
+    uid = int(me["user_id"])
+    confirm = str(body.get("confirm") or "").strip()
+    with db() as c:
+        g = c.execute("SELECT * FROM groups WHERE id=?", (gid,)).fetchone()
+        if not g:
+            raise GroupError(404, "没有这个组")
+        if int(g["owner_id"]) != uid:
+            raise GroupError(403, "只有组长能删除")
+        if int(g["archived"] or 0) != 1:
+            raise GroupError(409, "先解散再删除")
+        if confirm != str(g["name"]):
+            raise GroupError(400, "组名对不上")
+        for t in PURGE_TABLES:
+            c.execute(f"DELETE FROM {t} WHERE group_id=?", (gid,))
+        c.execute("DELETE FROM groups WHERE id=?", (gid,))
+    return {"ok": True, "purged": gid}
+
+
 def api_set_role(me, gid: int, body: dict) -> dict:
     """任命或撤销教练 / 管理员。只有组长能改。
 
@@ -2654,7 +2706,9 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_join(me, body, ip), 200
         if head == "list" and method == "GET":
             return api_list(me), 200
-        if head in ("create", "join", "list"):
+        if head == "archived" and method == "GET":
+            return api_archived(me), 200
+        if head in ("create", "join", "list", "archived"):
             raise GroupError(405, "方法不对")
 
         try:
@@ -2728,6 +2782,8 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_transfer(me, gid, body), 200
         if action == "role" and method == "POST":
             return api_set_role(me, gid, body), 200
+        if action == "purge" and method == "POST":
+            return api_purge(me, gid, body), 200
         if action == "archive" and method == "POST":
             return api_archive(me, gid, body), 200
         if action == "invite" and len(tail) >= 2 and tail[1] == "rotate" and method == "POST":
