@@ -1452,9 +1452,15 @@ class _Handler(SimpleHTTPRequestHandler):
             vals = {k: v[0] for k, v in
                     parse_qs(self.rfile.read(n).decode("utf-8"),
                              keep_blank_values=True).items()}
+            # gid 要**在令牌校验之前**解出来：令牌过期时也得能回到远征页
+            # 显示提示，否则因为 gid 还是 0 会被踢到组列表 —— 那看起来同样像
+            # 「点了一下、什么都没发生」，只是换了个页面。
+            try:
+                gid = int(vals.get("gid") or 0)
+            except (TypeError, ValueError):
+                gid = 0
             if not token or not hmac.compare_digest(vals.get("token", ""), token):
                 raise PermissionError("页面已过期，请重新打开")
-            gid = int(vals.get("gid") or 0)
             act = u.path.rstrip("/").split("/")[-1]
             if u.path.rstrip("/").endswith("/camp/upgrade"):
                 # 营地在远征页里，但数据存在小组库

@@ -707,11 +707,18 @@ def run_page(token: str, message: str = "", data: dict | None = None,
 
     js = ("<script>var TK=" + json.dumps(token) + ";"
           "var GID=" + json.dumps(int(gid)) + ";"
-          # gid 必须一起提交：服务端靠它找组，缺了就是 0，任何操作都失败。
-          "function post(p,d){var f=new FormData();f.append('token',TK);"
+          # 必须用 URLSearchParams 发 urlencoded，**不能用裸 FormData**。
+          # FormData 作为 body 时浏览器发的是 multipart/form-data，而服务端
+          # `_run_post` 用 parse_qs 解析——那只能读 urlencoded。实测 multipart
+          # 会被解析成一堆垃圾键，token 读不到，服务端当场判「页面已过期」，
+          # 请求根本到不了业务逻辑，更不会去请求云端。表现就是所有按钮点下去
+          # 毫无反应（连报错都没有），因为失败也是一次 reload。
+          "function post(p,d){var f=new URLSearchParams();f.append('token',TK);"
           "f.append('gid',String(GID));"
           "for(var k in d){f.append(k,d[k]);}"
-          "fetch(p,{method:'POST',body:f,credentials:'same-origin'})"
+          "fetch(p,{method:'POST',body:f.toString(),"
+          "headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},"
+          "credentials:'same-origin'})"
           # 服务端 303 回跳会带上 msg。跟到最终地址再跳过去，失败原因才看得见；
           # 原来无条件 reload，地址栏还是旧的，msg 直接丢掉，用户只看到页面闪一下。
           ".then(function(r){location.href=(r&&r.url)||location.href;})"
