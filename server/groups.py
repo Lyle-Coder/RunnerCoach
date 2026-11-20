@@ -2346,7 +2346,8 @@ def api_purge(me, gid: int, body: dict) -> dict:
         if int(g["archived"] or 0) != 1:
             raise GroupError(409, "先解散再删除")
         if confirm != str(g["name"]):
-            raise GroupError(400, "组名对不上")
+            # 把组名写进提示里：只说「对不上」，用户不知道要输什么
+            raise GroupError(400, "确认框里要一字不差地输入「" + str(g["name"]) + "」")
         for t in PURGE_TABLES:
             c.execute(f"DELETE FROM {t} WHERE group_id=?", (gid,))
         c.execute("DELETE FROM groups WHERE id=?", (gid,))
