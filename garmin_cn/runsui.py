@@ -644,6 +644,7 @@ def run_page(token: str, message: str = "", data: dict | None = None,
            '<p class="note">报一个低于计划的量，这周按它算格数。只能调小。</p>'
            f'<form action="/__run/target" method="post" style="margin-top:6px">'
            f'<input type="hidden" name="token" value="{esc(token)}">'
+           f'<input type="hidden" name="gid" value="{int(gid)}">'
            '<div class="kvline"><span>改成</span><b>'
            '<input type="number" inputmode="decimal" name="km" min="0" max="200"'
            ' step="1" placeholder="km"></b></div>'
@@ -675,6 +676,7 @@ def run_page(token: str, message: str = "", data: dict | None = None,
             if _nxt.get("afford"):
                 _up += (f'<form action="/__run/camp/upgrade" method="post">'
                         f'<input type="hidden" name="token" value="{esc(token)}">'
+                        f'<input type="hidden" name="gid" value="{int(gid)}">'
                         '<div class="pager"><button class="btn sm primary" type="submit">'
                         '升级营地</button></div></form>')
         else:
@@ -704,11 +706,16 @@ def run_page(token: str, message: str = "", data: dict | None = None,
             + stuck + tgt + camp_card + recap)
 
     js = ("<script>var TK=" + json.dumps(token) + ";"
+          "var GID=" + json.dumps(int(gid)) + ";"
+          # gid 必须一起提交：服务端靠它找组，缺了就是 0，任何操作都失败。
           "function post(p,d){var f=new FormData();f.append('token',TK);"
+          "f.append('gid',String(GID));"
           "for(var k in d){f.append(k,d[k]);}"
           "fetch(p,{method:'POST',body:f,credentials:'same-origin'})"
-          ".then(function(){location.reload()})"
-          ".catch(function(){location.reload()});}"
+          # 服务端 303 回跳会带上 msg。跟到最终地址再跳过去，失败原因才看得见；
+          # 原来无条件 reload，地址栏还是旧的，msg 直接丢掉，用户只看到页面闪一下。
+          ".then(function(r){location.href=(r&&r.url)||location.href;})"
+          ".catch(function(){location.reload();});}"
           "function rcPick(s,o){post('/__run/event',{slot:String(s),option:o});}"
           "function rcFork(o){post('/__run/fork',{option:o});}"
           "function rcTrial(i,d){post('/__run/trial',{trial_id:i,done:d?'1':'0'});}"
