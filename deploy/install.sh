@@ -36,6 +36,8 @@ echo "→ 拷贝程序"
 for f in app.py groups.py expedition.py tick.py ranking.py bingo.py; do
   [ -f "server/$f" ] && cp -f "server/$f" "$APP/$f"
 done
+# 运维脚本：发版产物清理（每天 04:10 由 runnercoach-cleanup.timer 调）
+[ -f deploy/cleanup.py ] && install -m 755 deploy/cleanup.py "$APP/cleanup.py"
 if [ -d server/content ]; then
   cp -rf server/content "$APP/"
 fi
