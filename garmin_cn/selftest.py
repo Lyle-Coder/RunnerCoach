@@ -2971,6 +2971,34 @@ def run() -> int:
     assert _ac_h.count('class="st k2"') == 2 and _ac_h.count('class="st k3"') == 3, \
         "hero 六格又变成同一级字号了"
     assert 'class="st wd k3"' in _ac_h, "文字型取值（主要益处）没有降档"
+
+    # ---- 活动图 P1（1.6.1）----
+    # 7) x 轴按公里：11 km 的图应给 0/2/4/6/8/10 六个刻度
+    _pts = [{"t": 1000 + i * 30, "dist": i * 110.0} for i in range(101)]
+    _mk = _AC._km_marks(_pts, 1000, 3000)
+    assert _mk and _mk[0] == (0.0, "0") and [l for _, l in _mk][-1] == "10km", str(_mk)
+    # 距离缺失或不单调时不给公里刻度（退回时间轴，不编假公里数）
+    assert _AC._km_marks([{"t": i, "dist": None} for i in range(20)], 0, 20) is None
+    _bad = [{"t": i, "dist": (i * 100 if i < 50 else 5000 - i * 100)} for i in range(100)]
+    assert _AC._km_marks(_bad, 0, 100) is None, "距离不单调时仍在标公里"
+    # 8) 分圈：最快/最慢行内标记，且零头段不参与评选
+    _laps = [
+        {"idx": 1, "dist_m": 1000, "dur_s": 300, "pace_s": 300, "hr_avg": 140, "cad": 180},
+        {"idx": 2, "dist_m": 1000, "dur_s": 320, "pace_s": 320, "hr_avg": 145, "cad": 180},
+        {"idx": 3, "dist_m": 1000, "dur_s": 290, "pace_s": 290, "hr_avg": 150, "cad": 180},
+        {"idx": 4, "dist_m": 400, "dur_s": 100, "pace_s": 250, "hr_avg": 155,
+         "cad": 180, "is_partial": True},
+    ]
+    _lh = _AC.lap_rows(_laps)
+    assert _lh.count('class="lrow fast"') == 1 and _lh.count('class="lrow slow"') == 1, \
+        "最快/最慢段没有行内标记"
+    assert 'class="lrow partial"' in _lh, "零头段不再淡化"
+    assert "最快段 4'50\"" in _lh, f"最快段没排除零头段：{_lh[-160:]}"
+    # 9) 漂移结论排在数据前面
+    _dt = _AC._drift_txt({"hr_first": 139, "hr_second": 153,
+                          "pace_first": 322, "pace_second": 307}, {}, None)
+    assert _dt.startswith("心率漂移"), f"漂移结论没有前置：{_dt[:40]}"
+    assert "前 5'22\"/139" in _dt, "漂移数据行被改坏了"
     # 列表行：标题从单行省略改成最多两行，参数本来就换行
     assert "display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2" \
         in _ui_src, \
