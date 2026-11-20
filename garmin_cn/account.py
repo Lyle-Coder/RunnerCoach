@@ -80,6 +80,22 @@ def logout() -> dict:
     return {"ok": True}
 
 
+def delete_account() -> dict:
+    """注销账号：服务端删数据 + 本地清令牌。
+
+    服务端做完之后这个令牌就失效了，所以不管返回什么都要把本地令牌清掉
+    ——留下来只会让下一次请求一直 401。
+    """
+    ok, d = request("POST", "/v1/account/delete", {"confirm": "1"})
+    if ok and isinstance(d, dict) and d.get("ok"):
+        logout()
+        return {"ok": True}
+    if ok:
+        return d if isinstance(d, dict) else {"ok": False, "error": "注销失败"}
+    # 组长且组里还有人时服务端回 409，这时**不能**清令牌（他还得去转让）
+    return d if isinstance(d, dict) else {"ok": False, "error": "注销失败"}
+
+
 # ---------------------------------------------------------------- 请求
 def _base() -> str:
     env = os.environ.get(ENV_BASE)
