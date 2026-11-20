@@ -1006,6 +1006,57 @@ def main() -> int:
     check("所有 group_* 行都清掉了", _left == 0, f"还剩 {_left} 行")
     check("groups 行也没了", _gleft == 0, f"还剩 {_gleft} 行")
 
+    # ---------------- 解散 / 退出的数据清理
+    print("\n12. 解散与退出时的数据清理")
+    _u1 = login("clean1@example.com", "清理甲")
+    _u2 = login("clean2@example.com", "清理乙")
+    st, r = req("POST", "/v1/group/create", {"name": "清理测试队"}, _u1)
+    _cg = int(r["group"]["id"])
+    check("清理队友建组", st == 200, f"{st} {r}")
+    _c3 = (req("GET", f"/v1/group/{_cg}", None, _u1)[1].get("group") or {}).get("invite_code")
+    st, r = req("POST", "/v1/group/join", {"code": _c3}, _u2)
+    check("乙加入", st == 200, f"{st} {r}")
+    _mem3 = (req("GET", f"/v1/group/{_cg}", None, _u1)[1].get("group") or {}).get("members") or []
+    _u2id = next((int(x["user_id"]) for x in _mem3
+                  if str(x.get("alias")) == "清理乙"), 0)
+    check("拿到乙的 id", bool(_u2id), str(_mem3))
+
+    req("POST", f"/v1/group/{_cg}/report",
+        {"days": [{"date": dt.date.today().isoformat(), "distance_m": 6000,
+                   "duration_s": 1800, "acts": 1}]}, _u2)
+    req("POST", f"/v1/group/{_cg}/route",
+        {"act_id": "x1", "title": "乙的路", "distance_m": 6000, "points": _pts()}, _u2)
+    st, r = req("GET", f"/v1/group/{_cg}/routes", None, _u1)
+    check("乙的路线在列表里", len(r.get("rows") or []) == 1, str(r))
+
+    st, r = req("POST", f"/v1/group/{_cg}/leave", None, _u2)
+    check("乙退出", st == 200, f"{st} {r}")
+    _db = sqlite3.connect(str(_dbp))
+    try:
+        _rows = sum(int(_db.execute(
+            f"SELECT COUNT(*) FROM {_t} WHERE group_id=? AND user_id=?",
+            (_cg, _u2id)).fetchone()[0])
+            for _t in ("group_daily", "group_act", "group_cell",
+                       "group_route", "group_comment"))
+    finally:
+        _db.close()
+    check("退出后明细清空", _rows == 0, f"还剩 {_rows} 行")
+    st, r = req("GET", f"/v1/group/{_cg}/routes", None, _u1)
+    check("退出后路线不再显示", not (r.get("rows") or []), str(r))
+
+    st, r = req("POST", f"/v1/group/{_cg}/archive", {"confirm": "1"}, _u1)
+    check("解散", st == 200, f"{st} {r}")
+    _db = sqlite3.connect(str(_dbp))
+    try:
+        _na = int(_db.execute(
+            "SELECT COUNT(*) FROM group_members WHERE group_id=? AND status='active'",
+            (_cg,)).fetchone()[0])
+    finally:
+        _db.close()
+    check("解散后成员不再是 active", _na == 0, f"还剩 {_na} 个")
+    st, r = req("POST", "/v1/group/create", {"name": "解散后的新队"}, _u1)
+    check("解散后能再建组（名额已释放）", st == 200, f"{st} {r}")
+
     # 隐私：关共享的人既不显示、也不能被评论
     st, r = req("POST", f"/v1/group/{gid}/share", {"share": "off"}, b)
     st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, a)
