@@ -219,7 +219,8 @@ class _Handler(SimpleHTTPRequestHandler):
                     _fc = int((q.get("open") or ["0"])[0] or 0)
                 except ValueError:
                     _fn, _fc = 0, 0
-                return self._html(groupui.group_page(tok, int(seg[0]), msg, _fn, _fc))
+                return self._html(groupui.group_page(
+                    tok, int(seg[0]), msg, _fn, _fc, (q.get("at") or [""])[0]))
             return self._json({"ok": False, "error": "没有这个页面"}, 404)
         if u.path == "/sports":
             if not self._is_loopback():
@@ -1712,7 +1713,7 @@ class _Handler(SimpleHTTPRequestHandler):
                             return self._see_other(
                                 f"/groups/{gid}?open={_aid}#a{_aid}")
                         msg = r.get("error") or "发不出去"
-                        back = f"/groups/{gid}?open={_aid}"
+                        back = f"/groups/{gid}?open={_aid}#a{_aid}"
                     elif act in ("comment_edit", "comment_del"):
                         # 改和删共用一张表单（按钮带 op=save / del），所以这里
                         # 先看 op 再决定走哪条。只能动自己的：服务端按 user_id
@@ -1741,23 +1742,38 @@ class _Handler(SimpleHTTPRequestHandler):
                         msg = (f'新邀请码 {r["invite_code"]}' if r.get("ok")
                                else (r.get("error") or "换码失败"))
                     elif act == "challenge":
+                        # 建/结束赛事都锚回「赛事」这一块，并让错误提示就落在
+                        # 那个区块里（?at=chal）：表单在页面中部，提示却渲染
+                        # 在页首——不这么做的话，建失败看起来就是「点了没反应」。
+                        back = f"/groups/{gid}?at=chal#chal"
                         if len(parts) > 3 and parts[3].isdigit() and parts[-1] == "close":
                             r = G.challenge_close(gid, int(parts[3]))
-                            msg = "已结束" if r.get("ok") else (r.get("error") or "结束失败")
+                            msg = "已结束" if r.get("ok") else (
+                                "结束赛事失败：" + str(r.get("error") or "未知原因"))
                         else:
                             r = G.challenge_create(
                                 gid, values.get("title"), values.get("kind") or "distance",
                                 as_int(values.get("target")),
                                 values.get("start_date") or "", values.get("end_date") or "")
-                            msg = "已建赛事" if r.get("ok") else (r.get("error") or "建赛事失败")
+                            # 前缀写「建赛事失败」而不是只给原因：`_msg` 按关键词
+                            # 判红绿，光靠「标题 1–30 个字」这种句子会被渲染成
+                            # 绿色的成功提示。
+                            msg = "已建赛事" if r.get("ok") else (
+                                "建赛事失败：" + str(r.get("error") or "未知原因"))
                     else:
                         raise ValueError("不支持的操作")
         except (ValueError, TypeError) as e:
             msg = str(e)
         except Exception as e:  # noqa: BLE001 - 网络异常不能让页面白屏
             msg = f"{type(e).__name__}: {e}"
+        # back 可能带 #锚点（比如 #chal）：msg 必须拼在 # 前面，
+        # 否则 query 会变成 fragment 的一部分，服务端和 JS 都读不到。
+        frag = ""
+        if "#" in back:
+            back, frag = back.split("#", 1)
+            frag = "#" + frag
         sep = "&" if "?" in back else "?"
-        return self._see_other(f"{back}{sep}msg=" + quote(msg or ""))
+        return self._see_other(f"{back}{sep}msg=" + quote(msg or "") + frag)
 
     def _plan_post(self, u) -> None:
         """计划的写接口：保存 / 生成 / 确认 / 放弃 / 推送 / 撤销 / 开关。
