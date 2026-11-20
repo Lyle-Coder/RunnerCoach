@@ -198,10 +198,21 @@ def fetch(pages: int = PAGES, per_page: int = PER_PAGE,
     rows, stat = [], {"open": 0, "upcoming": 0, "skipped": 0, "pages": 0, "error": ""}
     for page in range(1, pages + 1):
         url = LIST.format(page=page, per=per_page)
-        try:
-            html = go(url)
-        except Exception as e:                 # noqa: BLE001 网络问题一律降级
-            stat["error"] = f"第 {page} 页：{e}"
+        # 第 1 页最关键：它失败等于这次什么都没抓到，而失败多半是切网、对端
+        # 掐连接（Errno 103 Software caused connection abort）这类瞬时问题，
+        # 隔 2 秒再试一次基本能过。后面几页失败只是少几条，不重试，
+        # 本来就慢的抓取不该再拖长。
+        html = ""
+        for attempt in range(2 if page == 1 else 1):
+            try:
+                html = go(url)
+                stat["error"] = ""
+                break
+            except Exception as e:             # noqa: BLE001 网络问题一律降级
+                stat["error"] = f"第 {page} 页：{e}"
+                if attempt == 0 and page == 1:
+                    time.sleep(2.0)
+        if stat["error"]:
             break
         one, sk = parse_list(html, today)
         for k in ("open", "upcoming", "skipped"):
