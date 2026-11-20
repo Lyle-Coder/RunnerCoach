@@ -1250,9 +1250,10 @@ def api_acts(me, gid: int, body: dict) -> dict:
     return {"ok": True, "saved": len(rows)}
 
 
-SHAPE_MAX_LEN = 400
-# 3–24 个点，每个 0..100。服务端不信客户端，形状不对就当没有。
-_SHAPE_RE = re.compile(r"\d{1,3},\d{1,3}(?:;\d{1,3},\d{1,3}){2,23}")
+SHAPE_MAX_LEN = 2000
+SHAPE_SCALE = 1000
+# 3–200 个点，每个 0..1000（0.1% 精度）。服务端不信客户端，形状不对就当没有。
+_SHAPE_RE = re.compile(r"\d{1,4},\d{1,4}(?:;\d{1,4},\d{1,4}){2,199}")
 
 
 def _clean_shape(v) -> str:
@@ -1262,7 +1263,7 @@ def _clean_shape(v) -> str:
         return ""
     for seg in s.split(";"):
         x, y = seg.split(",")
-        if not (0 <= int(x) <= 100 and 0 <= int(y) <= 100):
+        if not (0 <= int(x) <= SHAPE_SCALE and 0 <= int(y) <= SHAPE_SCALE):
             return ""
     return s
 

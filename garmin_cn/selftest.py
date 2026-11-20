@@ -1761,18 +1761,20 @@ def run() -> int:
     _ring = [[31.0 + 0.002 * _m.cos(i / 40 * 2 * _m.pi) / 1.0,
               121.0 + 0.002 * _m.sin(i / 40 * 2 * _m.pi)] for i in range(41)]
     _sp = _GP._shape(_ring)
-    assert _sp.count(";") + 1 == _GP.SHAPE_POINTS, "剪影点数不对"
+    assert _sp.count(";") + 1 == min(_GP.SHAPE_POINTS, len(_ring)), "剪影点数不对"
     _xy = [tuple(int(v) for v in seg.split(",")) for seg in _sp.split(";")]
-    assert all(0 <= x <= 100 and 0 <= y <= 100 for x, y in _xy), "剪影坐标越界"
-    # 圆形轨迹归一化后应该接近正方形（长边 100、短边也接近 100）
-    assert min(max(x for x, _ in _xy), max(y for _, y in _xy)) >= 85, \
+    assert all(0 <= x <= _GP.SHAPE_SCALE and 0 <= y <= _GP.SHAPE_SCALE
+               for x, y in _xy), "剪影坐标越界"
+    # 圆形轨迹归一化后应该接近正方形（长边 = SHAPE_SCALE，短边也接近它）
+    assert min(max(x for x, _ in _xy), max(y for _, y in _xy)) >= _GP.SHAPE_SCALE * 0.85, \
         "圆形轨迹被拉成了扁的，等比缩放坏了"
     assert _GP._shape([]) == "" and _GP._shape([[0, 0]] * 10) == "", \
         "没轨迹时剪影该是空串"
     assert "0,0;0,0" not in _sp, "剪影里还留着占位点"
     assert "配速是按距离÷时长算的" in _fdp, "动态页没写清配速是算出来的"
     # 剪影是脱敏形状，文案必须说清「不含坐标/位置」，否则等于隐瞒上传了什么
-    assert "不含经纬度、起终点和位置" in _fdp, "动态页没写清剪影不含坐标"
+    assert "不含经纬度" in _fdp and "没有底图" in _fdp, \
+        "动态页没写清轨迹不含坐标、没有底图"
     # 最新三条评论要在卡片里露出来（原来只露一个「N 条」的数字）
     assert 'class="ac-c"' in _fdp, "动态卡片没有评论区"
 
