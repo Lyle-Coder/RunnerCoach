@@ -682,6 +682,30 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
    小圆上又和白衫糊成一片（1/6 看着像 6 件全有）。 */
 .sc-badges .jsh{width:26px;height:26px}
 .sc-more{font-size:var(--fs-micro,11px);color:var(--brand-ink);white-space:nowrap}
+/* 分数与称号的说明：挂在核心卡底部，一点就展开。
+   用户看到「50.6 分」和「同行者」两样东西，页面上没有任何地方能确认
+   它们是怎么来的——这行入口就是给这两个疑问的。 */
+.scorehow{margin-top:8px;border-top:1px solid var(--line)}
+.scorehow>summary{list-style:none;cursor:pointer;display:flex;align-items:center;
+  gap:8px;min-height:44px;font-size:var(--fs-cap,12px);color:var(--brand-ink)}
+.scorehow>summary::-webkit-details-marker{display:none}
+.scorehow>summary .fx{margin-left:auto;color:var(--muted);transition:transform .15s}
+.scorehow[open]>summary .fx{transform:rotate(90deg)}
+.scorehow .shbody{padding:2px 0 6px}
+/* 一项一份分数：名称 + 得分/权重，下面一条「我 vs 满分」的小条，
+   再下面一行原始数据（我 25.6 km · 最高 42.1 km）——没有最后这行，
+   「12.3/30」还是算不出为什么。 */
+.sp{padding:9px 0;border-bottom:1px solid var(--line2)}
+.sp:last-child{border-bottom:0}
+.sp-h{display:flex;align-items:baseline;justify-content:space-between;gap:10px;
+  font-size:var(--fs-cap,12px);color:var(--ink-2)}
+.sp-h b{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+.sp-h b i{font-style:normal;font-weight:400;color:var(--ink-3);
+  font-size:var(--fs-micro,11px)}
+.sp .bar{margin-top:6px}
+.sp-s{margin-top:4px;font-size:var(--fs-micro,11px);color:var(--muted)}
+.sp-t{margin:12px 0 4px;font-size:var(--fs-cap,12px);font-weight:600;
+  color:var(--ink-2)}
 
 /* ---- 目标入口行 ----
    56px、整行可点。48px 是个尴尬的高度：它既不是「列表行 64」，也不是

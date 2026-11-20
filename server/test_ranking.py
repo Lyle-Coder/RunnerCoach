@@ -108,6 +108,24 @@ def main() -> int:
     check("第二个人分数更低", p2["score"] < p1["score"], f"{p2['score']}")
     check("base_max 报 90（让分/预言那 10 分还没做）", out["base_max"] == 90.0, str(out["base_max"]))
 
+    # 分项：页面要拿它解释「这 50 六分是怎么来的」，所以每一项都要能对上总分。
+    check("分项之和 = 总分",
+          abs(sum(p2["parts"].values()) - p2["score"]) < 0.11,
+          f"{p2['parts']} vs {p2['score']}")
+    check("每一项都有，不多不少",
+          set(p2["parts"]) == {"km", "days", "elev", "progress", "streak", "bonus"},
+          str(sorted(p2["parts"])))
+    _m = {"km": 20, "days": 4, "elev": 100, "progress": 0.1, "streak": 3}
+    _mx = {"km": 40, "days": 5, "elev": 500, "progress": 0.2, "streak": 5}
+    _pt = R.score_parts(_m, _mx, 2.0)
+    check("跑量按「我 / 组里最高」折算", abs(_pt["km"] - 15.0) < 0.05, str(_pt))
+    check("加分是单独一项，不混进权重", _pt["bonus"] == 2.0, str(_pt))
+    check("全组都没数据时每项都是 0",
+          set(R.score_parts({}, {}, 0).values()) == {0.0}, str(R.score_parts({}, {}, 0)))
+    check("权重与称号说明一起下发，页面不用写死",
+          out["weights"]["km"] == R.W_KM and len(out["titles"]) == 4
+          and out["all_active"] is True, f"{out['weights']} {len(out['titles'])}")
+
     print("\n5. 并列名次")
     items = [{"alias": "a", "score": 95}, {"alias": "b", "score": 95},
              {"alias": "c", "score": 70}, {"alias": "d", "score": 70},
