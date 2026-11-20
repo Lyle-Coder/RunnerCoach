@@ -194,6 +194,63 @@ def main() -> int:
     st, r = req("GET", f"/v1/group/{gid}/board?range=bad&today=2026-11-17", None, b)
     check("非法 range 被拒（400）", st == 400, f"{st} {r}")
 
+    # ---------------- 综合榜（骑行 4:1 折算）
+    # 用独立的组和用户测，避免改动上面主组的数据（后面赛事用例还在用那份里程）
+    print("\n4b. 综合榜")
+    _cu = login("rider@test.local", "骑行者")
+    st, r = req("POST", "/v1/group/create", {"name": "综合榜测试队"}, _cu)
+    check("综合榜测试组建好", st == 200, f"{st} {r}")
+    _rg = int(r["group"]["id"])
+    # 同一天：跑步 10 km + 骑行 40 km → 综合 10 + 10 = 20 km
+    st, r = req("POST", f"/v1/group/{_rg}/report",
+                {"days": [{"date": "2026-11-17", "distance_m": 10000,
+                           "ride_m": 40000, "duration_s": 3000, "acts": 2}]}, _cu)
+    check("带 ride_m 的上报被接受", st == 200, f"{st} {r}")
+
+    st, r = req("GET", f"/v1/group/{_rg}/board?range=month&by=comp&today=2026-11-17",
+                None, _cu)
+    check("综合榜 200", st == 200, f"{st} {r}")
+    _row = (r.get("rows") or [{}])[0]
+    check("综合 = 跑步 + 骑行/4（10+10=20）",
+          _row.get("distance_m") == 10000 and _row.get("ride_m") == 40000
+          and _row.get("comp_m") == 20000, str(_row))
+    check("返回里带 by", r.get("by") == "comp", str(r.get("by")))
+    _sm = r.get("summary") or {}
+    check("汇总：综合与骑行总量都对得上",
+          _sm.get("total_comp_m") == 20000 and _sm.get("total_ride_m") == 40000,
+          str(_sm))
+
+    # 里程榜必须不受骑行影响：衫、徽章、赛季积分都按跑步算
+    st, r = req("GET", f"/v1/group/{_rg}/board?range=month&today=2026-11-17", None, _cu)
+    _row = (r.get("rows") or [{}])[0]
+    check("里程榜只算跑步（还是 10 km）",
+          _row.get("distance_m") == 10000, str(_row))
+
+    st, r = req("GET", f"/v1/group/{_rg}/board?range=week&by=comp&today=2026-11-17",
+                None, _cu)
+    check("综合榜只有月榜（周榜 400）", st == 400, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{_rg}/board?range=month&by=xx&today=2026-11-17",
+                None, _cu)
+    check("非法 by 被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{_rg}/report",
+                {"days": [{"date": "2026-11-17", "ride_m": -1}]}, _cu)
+    check("负的骑行被拒（400）", st == 400, f"{st} {r}")
+    # 老客户端不传 ride_m：综合应退化成跑步，而不是报错或缺字段。
+    # 必须用**从没传过 ride_m 的新用户**，否则同一个人历史行里的骑行还在。
+    _ou = login("oldclient@test.local", "老客户端")
+    st, r = req("POST", "/v1/group/create", {"name": "老客户端队"}, _ou)
+    _og = int(r["group"]["id"])
+    st, r = req("POST", f"/v1/group/{_og}/report",
+                {"days": [{"date": "2026-11-18", "distance_m": 5000,
+                           "duration_s": 1500, "acts": 1}]}, _ou)
+    check("不带 ride_m 的上报仍被接受", st == 200, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{_og}/board?range=month&by=comp&today=2026-11-18",
+                None, _ou)
+    _row3 = (r.get("rows") or [{}])[0]
+    check("不传 ride_m 时综合等于跑步（老客户端兼容）",
+          _row3.get("ride_m") == 0
+          and _row3.get("comp_m") == _row3.get("distance_m") == 5000, str(_row3))
+
     # ---------------- 赛事
     print("\n5. 组内赛事")
     st, r = req("POST", f"/v1/group/{gid}/challenge/create",

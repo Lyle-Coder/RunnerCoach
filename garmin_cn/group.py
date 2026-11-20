@@ -76,9 +76,13 @@ def build_days(store, today: str | None = None, days: int = 14) -> list[dict]:
         if not d:
             continue
         a = agg.setdefault(d, {"distance_m": 0.0, "duration_s": 0.0, "elevation_m": 0.0,
-                               "acts": 0, "ran": False})
+                               "ride_m": 0.0, "acts": 0, "ran": False})
         a["acts"] += 1
         a["duration_s"] += float(r["duration_s"] or 0)
+        # 骑行单独记一列：`distance_m` 只装跑步，两者不重叠。
+        # 综合榜才会去折算（骑行 4 km = 1 km），跑步榜和衫的口径完全不受影响。
+        if _kind(r["type"]) == "ride":
+            a["ride_m"] += float(r["distance_m"] or 0)
         if _is_run(r["type"]):
             a["distance_m"] += float(r["distance_m"] or 0)
             # 爬升只算跑步类：骑车一趟 1000 m 爬升会把这件衫变成自行车榜，
@@ -109,6 +113,8 @@ def build_days(store, today: str | None = None, days: int = 14) -> list[dict]:
             "duration_s": int(round(a.get("duration_s") or 0)),
             "acts": int(a.get("acts") or 0),
             "elevation_m": int(round(a.get("elevation_m") or 0)),
+            # 骑行里程：只有综合榜用。老服务端会忽略这个字段，不影响其他功能。
+            "ride_m": int(round(a.get("ride_m") or 0)),
             # 0 = 这天没踩到新路面（跑了老路也算 0），不是「没数据」。
             # 老版本客户端不传这个字段，服务端按 0 处理，两者在徽章上等价。
             "explorer": int(new_cells.get(d) or 0),
@@ -709,8 +715,12 @@ def set_goal(gid: int, km: float | None = None, predict: int | None = None,
     return _call("POST", f"/v1/group/{int(gid)}/goal", body)
 
 
-def board(gid: int, rng: str = "week", today: str | None = None) -> dict:
+def board(gid: int, rng: str = "week", today: str | None = None,
+          by: str = "dist") -> dict:
+    """榜单。`by=comp` 是月榜的综合榜（骑行按 4:1 折算）。"""
     q = f"?range={rng}"
+    if by and by != "dist":
+        q += f"&by={by}"
     if today:
         q += f"&today={today}"
     return _call("GET", f"/v1/group/{int(gid)}/board{q}")
