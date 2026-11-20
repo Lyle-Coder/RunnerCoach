@@ -238,7 +238,11 @@ def note_map(store, gid: int, on: bool) -> None:
 def report_group(store, gid: int, today: str | None = None,
                  first: bool = False, client=None) -> dict:
     """构造一批并尝试立刻发送。失败就留在队列里，等下次前台补。"""
-    days = 30 if first else 14
+    # 一直报 30 天，不再区分首次/增量。
+    # 原因：月榜要覆盖整个自然月，而 14 天在月中之后够不到月头；一旦某个
+    # 字段是后来才加的（比如 ride_m），只有 30 天窗口才能把当月补齐。
+    # 30 行的日汇总只有几 KB，比一次请求本身的开销还小。
+    days = 30
     payload = {"days": build_days(store, today, days)}
     box = Outbox(store)
     box.put(gid, payload)
