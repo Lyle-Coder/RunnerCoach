@@ -45,6 +45,7 @@ import html
 import json
 import math
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -190,10 +191,49 @@ def dur_txt(sec, zero: str = "—") -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def _hcell(v: str, u: str, wd: int = 0) -> str:
-    """hero 右侧的一格。wd=1 表示值是文字（如「主要益处」），字号要降一档。"""
-    cls = "st wd" if wd else "st"
+def _hcell(v: str, u: str, wd: int = 0, tier: str = "") -> str:
+    """hero 右侧的一格。
+
+    `wd=1` 表示值是文字（如「主要益处」），字号要降一档。
+    `tier` 是这一格的视觉等级：k2 = 本次训练的两个锚点（用时 / 平均心率），
+    k3 = 辅助指标。六格同字号时用户扫不出主次，一眼看过去全是数字。
+    """
+    cls = " ".join(x for x in ("st", "wd" if wd else "", tier) if x)
     return f'<div class="{cls}"><b>{v}</b><span>{u}</span></div>'
+
+
+# 课表里的强度码：`W3 周二 2×10min@T`。只认这一个来源——
+# 从配速反推会把爬楼（8'39"）判成「很慢的有氧」，错的定性比不写更糟。
+_INTENSITY_RE = re.compile(r"@\s*([EMTIR])\b")
+_INTENSITY_TXT = {"E": ("E", "有氧"), "M": ("M", "马拉松"),
+                  "T": ("T", "阈值"), "I": ("I", "间歇"),
+                  "R": ("R", "重复")}
+
+
+def _plan_intensity(date_txt: str) -> tuple[str, str] | None:
+    """当天课表的强度码，返回 (码, 中文)。没有课表就没有——不猜。
+
+    读 plan.json 而不是活动名：活动名是用户自己命名的，有的写 @E 有的不写，
+    而且改写历史活动名之后就对不上了。课表是安排，活动是结果，拿安排解释结果
+    才是对的顺序。
+    """
+    if not date_txt:
+        return None
+    home = os.environ.get("GARMIN_HOME")
+    base = Path(home).expanduser() if home else Path(__file__).resolve().parent.parent
+    p = base / "data" / "plan.json"
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:      # noqa: BLE001 - 没课表是常态，不该让出图失败
+        return None
+    for w in data.get("week") or []:
+        if not isinstance(w, dict) or str(w.get("date") or "")[:10] != date_txt:
+            continue
+        for it in w.get("items") or []:
+            m = _INTENSITY_RE.search(str((it or {}).get("name") or ""))
+            if m:
+                return _INTENSITY_TXT[m.group(1)]
+    return None
 
 
 WIND_CN = {
@@ -581,11 +621,27 @@ def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
     if not valid_p:
         label = "无速度数据" if th["kind"] == "speed" else "无配速数据"
         return f'<div class="empty" style="width:{w}px;height:{h}px">{label}</div>'
-    # 纵向范围取 2%~98% 分位，再各留 6% 余量：既不压扁，也不会把超出的值
-    # 夹成一根根「方块」。超出的部分由 clipPath 裁掉。
+    # 纵向范围用 1.5×IQR 定界，不用 2%~98% 分位。
+    # 分位会被「一段几分钟的慢速起跑」拉宽：11 km 那张曾把轴拉到 4'52"–7'49"，
+    # 后面 50 分钟全挤在顶部 1/4，E 跑最该看的「后半程稳不稳」反而看不见。
+    # 超出范围的点**不删也不夹**，走下面的 None 分支断开——原始数据一条不少，
+    # 图上也能看出「这里有一段超出量程」。
     sv = sorted(valid_p)
-    p_lo = sv[int(len(sv) * 0.02)]          # 最快
-    p_hi = sv[min(len(sv) - 1, int(len(sv) * 0.98))]   # 最慢
+    q1 = sv[int(len(sv) * 0.25)]
+    q3 = sv[int(len(sv) * 0.75)]
+    iqr = max(1.0, q3 - q1)
+    p_lo = max(sv[0], q1 - 1.5 * iqr)      # 最快
+    p_hi = min(sv[-1], q3 + 1.5 * iqr)     # 最慢
+    # IQR 很窄时会切掉太多点（曲线全是缺口），退回 5%–95% 兜底
+    if sum(1 for v in sv if v < p_lo or v > p_hi) > len(sv) * 0.20:
+        p_lo = sv[int(len(sv) * 0.05)]
+        p_hi = sv[min(len(sv) - 1, int(len(sv) * 0.95))]
+    # 量程上限不超过中位数的 2.2 倍。爬楼、室内这类含长时间停顿的活动，
+    # p95 仍是几十分钟/km，轴一拉到那里，正常段就被压成一条直线。
+    # 注意这仍然只是「可视范围」：超出的点断开，数据一个不删。
+    _med = sv[len(sv) // 2]
+    if _med > 0 and p_hi > _med * 2.2:
+        p_hi = _med * 2.2
     if p_hi - p_lo < 20:
         mid = (p_hi + p_lo) / 2
         p_lo, p_hi = mid - 10, mid + 10
@@ -612,18 +668,26 @@ def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
     # 上下泳道：上配速、下心率。叠在一张图里双轴会互相干扰，分开读更清楚。
     # 有海拔且起伏显著时再切出第三条窄带（40% / 24% / 26%），
     # 否则保持原来的两泳道比例——平路跑不该为一条直线让出高度。
+    # 泳道之间按**像素**留 22px，不按比例：比例会随卡高缩水，有海拔那版
+    # 0.38 / 0.42 只差 4%（约 8px），配速轴最下的刻度和心率轴最上的刻度
+    # 直接糊在一起（爬楼那张的「49'57"」和「179」就是撞的）。
+    band_gap = 30.0
     if use_ele:
-        # 三条泳道。心率带压到 18%：它本来就只有两三档刻度，占太多高度没用；
-        # 让出来给海拔带（30%），锯齿的层数才数得清。
-        # 关键是心率带底和海拔带顶要留出 ~22px，否则两边的刻度文字会叠在一起
-        # （实测差 9px 时「106」和「428m」直接糊成一团）。
-        p_top, p_h = top_pad, plot_h * 0.38
-        h_top, h_h = top_pad + plot_h * 0.42, plot_h * 0.18
-        e_top, e_h = top_pad + plot_h * 0.70, plot_h * 0.30
+        # 三条泳道：配速 / 心率 / 海拔。心率带最窄——它本来就只有两三档刻度，
+        # 让出来的高度给海拔，锯齿的层数才数得清。
+        free = plot_h - band_gap * 2
+        p_h = free * 0.46
+        h_h = free * 0.22
+        e_h = free - p_h - h_h
+        p_top = top_pad
+        h_top = p_top + p_h + band_gap
+        e_top = h_top + h_h + band_gap
     else:
-        p_top, p_h = top_pad, plot_h * 0.54
-        # 心率泳道整体上提一点：最低那档刻度别和底部时间轴挤在一起
-        h_top, h_h = top_pad + plot_h * 0.64, plot_h * 0.32
+        free = plot_h - band_gap
+        p_h = free * 0.60
+        h_h = free - p_h
+        p_top = top_pad
+        h_top = p_top + p_h + band_gap
         e_top = e_h = 0.0
     xs, ys, hy, ey = [], [], [], []
     for p, pc, hr, el in zip(run, paces, hrs, eles):
@@ -661,18 +725,22 @@ def chart_svg(points: list, w: int, h: int, theme: dict | None = None) -> str:
             ticks.append(f'<line x1="{x:.0f}" y1="{top_pad}" x2="{x:.0f}" y2="{top_pad + plot_h}" '
                          f'stroke="{LINE}" stroke-width="1" stroke-dasharray="3 5"/>')
 
-    # 纵向刻度：三档 + 淡横线，两根轴都在左边，靠颜色区分归属（蓝=配速 橙=心率）
+    # 纵向刻度只标两端，中间留一条**不带字**的淡线做参照。
+    # 三档时左侧会变成「4'52" / 6'21" / 7'49"」一列长文本，加上心率三档，
+    # 六行小字挤在 62px 宽里，比没有刻度还难读。
     guides = []
-    for pace in (p_lo, (p_lo + p_hi) / 2, p_hi):
+    for pace in (p_lo, p_hi):
         y = p_top + (pace - lo) / (hi - lo or 1) * p_h
         guides.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0 + pw}" y2="{y:.1f}" '
                       f'stroke="{LINE}" stroke-width="1" stroke-dasharray="2 6"/>')
         guides.append(f'<text x="{x0 - 12:.0f}" y="{y + 5:.1f}" class="axl" text-anchor="end" '
                       f'fill="{th["acc"]}">{vlab(pace)}</text>')
+    _mid_pace = (p_lo + p_hi) / 2
+    _my = p_top + (_mid_pace - lo) / (hi - lo or 1) * p_h
+    guides.append(f'<line x1="{x0}" y1="{_my:.1f}" x2="{x0 + pw}" y2="{_my:.1f}" '
+                  f'stroke="{LINE}" stroke-width="1" stroke-dasharray="2 6"/>')
     if hr_valid:
-        # 有海拔带时心率只标两档：三档在 40px 的带里会跟海拔刻度撞
-        hr_ticks = (hr_hi, hr_lo) if use_ele else (hr_hi, (hr_hi + hr_lo) / 2, hr_lo)
-        for val in hr_ticks:
+        for val in (hr_hi, hr_lo):
             y = h_top + (hr_hi - val) / (hr_hi - hr_lo or 1) * h_h
             guides.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0 + pw}" y2="{y:.1f}" '
                           f'stroke="{LINE}" stroke-width="1" stroke-dasharray="2 6"/>')
@@ -756,6 +824,30 @@ def zone_times(raw: dict, prefix: str) -> list[float]:
     return [num(raw.get(key + str(i))) or 0.0 for i in range(1, 6)]
 
 
+def _zone_note(times: list[float], coros: bool = False) -> str:
+    """一句分布结论。只陈述分布事实，不评价训练质量。
+
+    「72% 在 Z3」还是数字，用户得自己判断好坏；「集中在 Z3（72%）· 阈值以上 0%」
+    是可以直接读的结论。不写「练得不错」这类评价：那要看当天课表强度，
+    而课表不一定有，猜错的定性比不写更糟。
+    """
+    total = sum(times) or 1
+    pct = [t / total * 100 for t in times]
+    order = sorted(range(len(pct)), key=lambda i: -pct[i])
+    top = order[0]
+    if pct[top] >= 45:
+        head = f"集中在 Z{top + 1}（{pct[top]:.0f}%）"
+    else:
+        # 没有单档过半时，说占比最大的两档，别写「分布在 Z1–Z3」——
+        # 下面明明有 Z4，一句话和明细互相矛盾。
+        a, b = sorted(order[:2])
+        head = f"Z{a + 1}+Z{b + 1} 合计 {pct[a] + pct[b]:.0f}%"
+    # 阈值以上：佳明是 Z4+Z5，高驰六区的 Z5+Z6
+    high = sum(pct[4:]) if coros else pct[3] + pct[4]
+    tail = "阈值以上 0%" if high < 1 else f"阈值以上 {high:.0f}%"
+    return f"{head} · {tail}"
+
+
 def zone_block(times: list[float], title: str, unit_label: str = "", *,
                coros: bool = False, descriptions: list[str] | None = None) -> str:
     """心率分区条。
@@ -781,8 +873,16 @@ def zone_block(times: list[float], title: str, unit_label: str = "", *,
         if pct < 0.4:
             continue
         bar.append(f'<i style="width:{pct:.2f}%;background:{colors[i]}"></i>')
+    # 尾部连续为 0 的档合并成一行：Z4、Z5 都是 0:00 0% 时，两行只是把「没有」
+    # 说了两遍，还占掉 60px。那 60px 用来写结论句更值。
+    tail = 0
+    for t in reversed(times):
+        if t > 0:
+            break
+        tail += 1
+    cut = len(times) - tail if tail >= 2 else len(times)
     rows = []
-    for i, t in enumerate(times):
+    for i, t in enumerate(times[:cut]):
         pct = t / total * 100
         rows.append(
             f'<div class="zrow">'
@@ -792,10 +892,20 @@ def zone_block(times: list[float], title: str, unit_label: str = "", *,
             f'<span class="zval">{dur_txt(t, "0:00")}</span>'
             f'<span class="zpct" style="color:{colors[i]}">{pct:.0f}%</span>'
             f'</div>')
+    if cut < len(times):
+        rows.append(
+            f'<div class="zrow zmute">'
+            f'<span class="zdot" style="background:{colors[cut]}"></span>'
+            f'<span class="zname">Z{cut + 1}–Z{len(times)}</span>'
+            f'<span class="zbar"></span>'
+            f'<span class="zval">0:00</span>'
+            f'<span class="zpct">0%</span>'
+            f'</div>')
     return f"""
 <div class="zblock{' zcoros' if coros else ''}">
   <div class="zhead">{esc(title)}<span>{esc(unit_label)}</span></div>
   <div class="zbar-stack">{''.join(bar)}</div>
+  <div class="znote">{esc(_zone_note(times, coros))}</div>
   {''.join(rows)}
 </div>"""
 
@@ -1203,6 +1313,9 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
         wd = "周" + "一二三四五六日"[dt.date.fromisoformat(date_txt).weekday()]
     except Exception:
         pass
+    # 右上角原来固定写「跑步」：整张图都是跑步，这一格等于把已知的事再说一遍。
+    # 换成课表的强度码之后，同样的位置提供「这堂课要跑什么」这个新信息。
+    inten = _plan_intensity(date_txt) if th["is_run"] else None
     is_coros = detail.get("source") == "coros"
     hr_z = ([z["seconds"] for z in detail.get("hr_zones") or []]
             if is_coros else zone_times(raw, "hr"))
@@ -1403,7 +1516,28 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
     if kind == "duration":
         # 力量课这类主指标本身就是时长，右侧再来一格「用时」就是同一个数写两遍
         head3[0] = (f"{kcal:.0f}", "千卡", 0)
-    stat_html = ''.join(_hcell(*c) for c in head3 + stat2)
+    # 六格分两级：用时和平均心率是这次训练的两个锚点（跑了多久、心率落在哪），
+    # 其余是辅助。原来六格同字号同灰度，扫屏分不出先看哪个——有氧课最该配对
+    # 看的就是「配速 + 心率」，心率却排在第二行最后一格。
+    if th["is_run"]:
+        hero_cells = [
+            (head3[0][0], head3[0][1], 0, "k2"),
+            (f"{hr_avg:.0f}" if hr_avg else "—", "平均心率 bpm", 0, "k2"),
+            (head3[1][0], head3[1][1], 0, "k3"),
+            (stat2[0][0], stat2[0][1], 0, "k3"),
+            (stat2[1][0], stat2[1][1], 0, "k3"),
+            (head3[2][0], head3[2][1], 1, "k3"),
+        ]
+    else:
+        hero_cells = [
+            (head3[0][0], head3[0][1], 0, "k3"),
+            (head3[1][0], head3[1][1], 0, "k3"),
+            (head3[2][0], head3[2][1], 1, "k3"),
+            (stat2[0][0], stat2[0][1], 0, "k3"),
+            (stat2[1][0], stat2[1][1], 0, "k3"),
+            (stat2[2][0], stat2[2][1], 0, "k2"),
+        ]
+    stat_html = ''.join(_hcell(*c) for c in hero_cells)
     tech_html = ''.join(f'<div class="t"><b>{v}</b><span>{u}</span></div>' for v, u in tech_cells)
     # 主题变量必须排在 _CSS 之后：两处都写 :root，靠后的一条才生效
     css = _CSS + (f":root{{--acc:{th['acc']};--acc2:{th['acc2']};--grad2:{th['grad2']};"
@@ -1425,6 +1559,14 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
                       f'<div class="hval">{dist_km:.2f}</div>'
                       '<div class="hsub2">公里</div></div>')
 
+    # 角标内容先拼成变量：模板里再嵌 f-string 会用到同名引号，
+    # 手机端 Chaquopy 的 Python 版本未必支持（3.12 才放开）。
+    if inten:
+        htag_cls, htag_html = "htag zone", (f'<b>{esc(inten[0])}</b>'
+                                           f'<em>{esc(inten[1])}</em>')
+    else:
+        htag_cls, htag_html = "htag", esc(th["tag"])
+
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width={W},initial-scale=1,viewport-fit=cover">
@@ -1437,7 +1579,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
       <div class="hname">{esc(title or row.get("name"))}</div>
       <div class="hsub">{esc(date_txt)} {esc(wd)}{time_txt}{(' · ' + esc(weather_txt)) if weather_txt else ''}</div>
     </div>
-    <div class="htag">{esc(th['tag'])}</div>
+    <div class="{htag_cls}">{htag_html}</div>
   </div>
 
   <div class="hero">
@@ -1539,9 +1681,14 @@ def _drift_txt(drift: dict, s: dict, theme: dict | None = None) -> str:
     else:
         trend = "配速加快" if dp < -3 else ("配速放慢" if dp > 3 else "配速持平")
         f_txt = pace_txt
+    # 「心率持平 0 bpm」是句病句：都说持平了，后面那个 0 只是把同一件事写两遍
+    if abs(dh) <= 3:
+        htxt = "心率持平"
+    else:
+        htxt = f'心率{"上浮" if dh > 0 else "回落"} {abs(dh)} bpm'
     return (f'前 {f_txt(drift["pace_first"])}/{drift["hr_first"]}bpm → '
             f'后 {f_txt(drift["pace_second"])}/{drift["hr_second"]}bpm<br>'
-            f'{trend}，心率{"上浮" if dh > 3 else ("回落" if dh < -3 else "持平")} {abs(dh)} bpm')
+            f'{trend}，{htxt}')
 
 
 _CSS = """
@@ -1577,6 +1724,11 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .htag{flex:none;white-space:nowrap;font-size:19px;color:var(--tagfg);
   border:1px solid var(--tagbd);background:var(--tagbg);
   padding:7px 16px;border-radius:24px}
+/* 强度码角标：字母大、中文小，靠字号差表达「E 才是代号，有氧是解释」。
+   和原来的「跑步」标签同一位置、同一尺寸台阶，不改变抬头高度。 */
+.htag.zone{display:flex;align-items:baseline;gap:7px;padding:3px 17px 5px}
+.htag.zone b{font-size:27px;font-weight:800;letter-spacing:.5px;line-height:1.15}
+.htag.zone em{font-style:normal;font-size:16px;opacity:.78}
 /* hero 内部一律按 --hs 缩放：左上大数字宽度随距离/配速的位数变化，
    42.54 + 3:14:53 这种长值会把右上六格挤到换行（「步幅 cm」折成两行）。
    截图前用一小段脚本量一次 scrollWidth，撑了就调小 --hs，见页尾 autofit。 */
@@ -1598,11 +1750,17 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .st b{display:block;font-size:calc(37px * var(--hs,1));font-weight:700;line-height:1.1;
   letter-spacing:-.5px}
 .st span{font-size:calc(19px * var(--hs,1));color:#939FAD;white-space:nowrap}
+/* 两级：k2 = 本次训练的两个锚点（用时 / 平均心率），k3 = 辅助指标。
+   同一排里字号差 1.4 倍，扫屏时先看到「跑了多久、心率多少」。
+   原来六格同字号同灰度，有氧课最该配对看的配速和心率反而离得最远。 */
+.st.k2 b{font-size:calc(44px * var(--hs,1))}
+.st.k3 b{font-size:calc(32px * var(--hs,1))}
+.st.k3 span{font-size:calc(17px * var(--hs,1))}
 /* 文字型取值（主要益处）降一档字号：4 个字按 37px 排会把整列撑开。
    nowrap 必须有——"乳酸阈值"折成两行会把行高顶起来，下面那一行被挤出卡片。
    line-height 按 37×1.1 反算，保证行盒高度和数字格一致，基线不会跳。 */
-.st.wd b{font-size:calc(28px * var(--hs,1));letter-spacing:0;line-height:1.454;
-  white-space:nowrap}
+.st.wd b{font-size:calc(30px * var(--hs,1));font-weight:600;letter-spacing:0;
+  line-height:1.36;white-space:nowrap}
 .mid{display:flex;gap:16px;height:310px}
 .card{background:#121E2C;border:1px solid #23364A;border-radius:18px;padding:20px 24px}
 .trk{width:var(--trk-w);display:flex;flex-direction:column;padding:18px 22px}
@@ -1646,7 +1804,13 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 /* 心率与功率共用同一条堆叠条：同宽、同粗、同圆角，两卡并排才不显得错位 */
 .zbar-stack{display:flex;height:22px;border-radius:7px;overflow:hidden;background:#10161C}
 .zbar-stack i{display:block}
-.zrow{display:flex;align-items:center;gap:10px;margin-top:11px}
+/* 分区结论：一句分布事实，夹在条和明细之间。字号比明细大一档、颜色比灰字亮
+   一档，让它是「读完条之后的一句话」而不是又一行数据。 */
+.znote{font-size:18px;color:#A9B8C9;margin-top:8px;line-height:1.4;
+  font-variant-numeric:tabular-nums}
+.zrow{display:flex;align-items:center;gap:10px;margin-top:10px}
+.zrow.zmute{opacity:.5}
+.zrow.zmute .zname{font-weight:400}
 .zdot{width:12px;height:12px;border-radius:3px;flex:none}
 .zname{width:86px;font-size:20px;color:#D3DBE4;flex:none;white-space:nowrap}
 .zname em{font-style:normal;font-size:15px;color:#76838F;margin-left:5px;

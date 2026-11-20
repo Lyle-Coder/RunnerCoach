@@ -2940,6 +2940,35 @@ def run() -> int:
         "标题行又允许回绕了，右侧标签会掉到下一行"
     assert ".htag{flex:none;white-space:nowrap" in _ac_src, \
         "标签会被长标题压缩/换行"
+
+    # ---- 活动图 P0（1.6.1）：曲线量程 / 分区结论 / hero 层级 / 强度角标 ----
+    # 1) 配速轴用 1.5×IQR 定界。曾用 2%~98% 分位，被前几分钟的慢速起跑拉到
+    #    4'52"–7'49"，后面 50 分钟全挤在顶部 1/4，E 跑最该看的稳定性看不见。
+    assert "q1 - 1.5 * iqr" in _ac_src and "_med * 2.2" in _ac_src, \
+        "配速轴又退回按极值定界了（会被慢速段压扁）"
+    # 2) 泳道按像素留空隙。按比例时 0.38/0.42 只差 8px，两条轴的刻度会叠字。
+    assert "band_gap = 30.0" in _ac_src, "泳道间隔又变回按比例了"
+    # 3) 分区结论只陈述分布，不评价训练质量（评价要看课表，课表不一定有）
+    assert _AC._zone_note([180, 800, 2500, 0, 0]) == "集中在 Z3（72%） · 阈值以上 0%"
+    assert "Z2+Z3" in _AC._zone_note([180, 1150, 1000, 470, 0]), \
+        "没有单档过半时没说占比最大的两档，一句结论会和明细打架"
+    # 4) 尾部连续为 0 的档合并成一行，省下来的高度给结论句
+    assert _AC.zone_block([180, 800, 2500, 0, 0], "心率分区").count('class="zrow') == 4, \
+        "Z4/Z5 都为 0 时没有合并，同一件事写了两遍"
+    assert _AC.zone_block([180, 1550, 1150, 470, 0], "心率分区").count('class="zrow') == 5, \
+        "只有最后一档为 0 时不该合并"
+    # 5) 强度码只认课表，不猜：没有课表必须返回 None，退回运动类型
+    assert _AC._plan_intensity("1999-01-01") is None, "没课表却猜出了强度码"
+    # 6) hero 六格分两级：k2 = 用时/平均心率，k3 = 其余
+    _ac_row = {"type": "running", "distance_m": 11000, "duration_s": 3487,
+               "date": "2026-11-18", "start_ts": "2026-11-18T17:25:00",
+               "avg_hr": 146}
+    _ac_det = {"summary": {"cad_avg": 189, "stride_avg": 101},
+               "laps": [], "series": {"points": []}}
+    _ac_h = _AC.build_html(_ac_row, _ac_det, None, None, None)
+    assert _ac_h.count('class="st k2"') == 2 and _ac_h.count('class="st k3"') == 3, \
+        "hero 六格又变成同一级字号了"
+    assert 'class="st wd k3"' in _ac_h, "文字型取值（主要益处）没有降档"
     # 列表行：标题从单行省略改成最多两行，参数本来就换行
     assert "display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2" \
         in _ui_src, \
