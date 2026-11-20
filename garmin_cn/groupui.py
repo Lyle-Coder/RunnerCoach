@@ -444,8 +444,8 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
                 + sec("我的小组", cards)
                 # force_list 时默认展开：用户是从「加入另一个组」点进来的，
                 # 再折一次等于告诉他「这里没有」。
-                + ('<details class="fold fold-lg" open>' if force_list
-                   else '<details class="fold">')
+                + ('<details class="fold fold-lg fold-gap" open>' if force_list
+                   else '<details class="fold fold-gap">')
                 + ('<summary>再加入一个组' if blocked
                    else '<summary>再加入一个，或者自己建一个')
                 + '<span class="fx">›</span></summary>'
@@ -556,8 +556,10 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
             '加入别的组，或者新建一个</span><span class="chev">›</span></a>')
 
     body = (_msg(message)
-            + sec("我的", '<div class="flat">' + mine + '</div>')
-            + sec("组", '<div class="flat">' + grp + '</div>')
+            # 两块各自一张卡：之前所有行直接铺在页面上，只有 1px 分隔线，
+            # 输入框又都是圆角带边框的小块，一列下来像一串粘住的控件。
+            + sec("我的", '<div class="card">' + mine + '</div>')
+            + sec("组", '<div class="card">' + grp + '</div>')
             + '<p class="note">只收每日里程合计和活动概要，不上传轨迹点、'
               '配速和位置。</p>')
     return _with_copy(page(
