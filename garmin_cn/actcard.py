@@ -45,7 +45,6 @@ import html
 import json
 import math
 import os
-import re
 import subprocess
 from pathlib import Path
 
@@ -200,40 +199,6 @@ def _hcell(v: str, u: str, wd: int = 0, tier: str = "") -> str:
     """
     cls = " ".join(x for x in ("st", "wd" if wd else "", tier) if x)
     return f'<div class="{cls}"><b>{v}</b><span>{u}</span></div>'
-
-
-# 课表里的强度码：`W3 周二 2×10min@T`。只认这一个来源——
-# 从配速反推会把爬楼（8'39"）判成「很慢的有氧」，错的定性比不写更糟。
-_INTENSITY_RE = re.compile(r"@\s*([EMTIR])\b")
-_INTENSITY_TXT = {"E": ("E", "有氧"), "M": ("M", "马拉松"),
-                  "T": ("T", "阈值"), "I": ("I", "间歇"),
-                  "R": ("R", "重复")}
-
-
-def _plan_intensity(date_txt: str) -> tuple[str, str] | None:
-    """当天课表的强度码，返回 (码, 中文)。没有课表就没有——不猜。
-
-    读 plan.json 而不是活动名：活动名是用户自己命名的，有的写 @E 有的不写，
-    而且改写历史活动名之后就对不上了。课表是安排，活动是结果，拿安排解释结果
-    才是对的顺序。
-    """
-    if not date_txt:
-        return None
-    home = os.environ.get("GARMIN_HOME")
-    base = Path(home).expanduser() if home else Path(__file__).resolve().parent.parent
-    p = base / "data" / "plan.json"
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:      # noqa: BLE001 - 没课表是常态，不该让出图失败
-        return None
-    for w in data.get("week") or []:
-        if not isinstance(w, dict) or str(w.get("date") or "")[:10] != date_txt:
-            continue
-        for it in w.get("items") or []:
-            m = _INTENSITY_RE.search(str((it or {}).get("name") or ""))
-            if m:
-                return _INTENSITY_TXT[m.group(1)]
-    return None
 
 
 WIND_CN = {
@@ -1313,9 +1278,6 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
         wd = "周" + "一二三四五六日"[dt.date.fromisoformat(date_txt).weekday()]
     except Exception:
         pass
-    # 右上角原来固定写「跑步」：整张图都是跑步，这一格等于把已知的事再说一遍。
-    # 换成课表的强度码之后，同样的位置提供「这堂课要跑什么」这个新信息。
-    inten = _plan_intensity(date_txt) if th["is_run"] else None
     is_coros = detail.get("source") == "coros"
     hr_z = ([z["seconds"] for z in detail.get("hr_zones") or []]
             if is_coros else zone_times(raw, "hr"))
@@ -1559,13 +1521,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
                       f'<div class="hval">{dist_km:.2f}</div>'
                       '<div class="hsub2">公里</div></div>')
 
-    # 角标内容先拼成变量：模板里再嵌 f-string 会用到同名引号，
-    # 手机端 Chaquopy 的 Python 版本未必支持（3.12 才放开）。
-    if inten:
-        htag_cls, htag_html = "htag zone", (f'<b>{esc(inten[0])}</b>'
-                                           f'<em>{esc(inten[1])}</em>')
-    else:
-        htag_cls, htag_html = "htag", esc(th["tag"])
+    htag_html = esc(th["tag"])
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -1579,7 +1535,7 @@ def build_html(row: dict, detail: dict, photo: str | None = None,
       <div class="hname">{esc(title or row.get("name"))}</div>
       <div class="hsub">{esc(date_txt)} {esc(wd)}{time_txt}{(' · ' + esc(weather_txt)) if weather_txt else ''}</div>
     </div>
-    <div class="{htag_cls}">{htag_html}</div>
+    <div class="htag">{htag_html}</div>
   </div>
 
   <div class="hero">
@@ -1724,11 +1680,6 @@ body{width:var(--page-w);overflow:hidden;background:#0F1319;
 .htag{flex:none;white-space:nowrap;font-size:19px;color:var(--tagfg);
   border:1px solid var(--tagbd);background:var(--tagbg);
   padding:7px 16px;border-radius:24px}
-/* 强度码角标：字母大、中文小，靠字号差表达「E 才是代号，有氧是解释」。
-   和原来的「跑步」标签同一位置、同一尺寸台阶，不改变抬头高度。 */
-.htag.zone{display:flex;align-items:baseline;gap:7px;padding:3px 17px 5px}
-.htag.zone b{font-size:27px;font-weight:800;letter-spacing:.5px;line-height:1.15}
-.htag.zone em{font-style:normal;font-size:16px;opacity:.78}
 /* hero 内部一律按 --hs 缩放：左上大数字宽度随距离/配速的位数变化，
    42.54 + 3:14:53 这种长值会把右上六格挤到换行（「步幅 cm」折成两行）。
    截图前用一小段脚本量一次 scrollWidth，撑了就调小 --hs，见页尾 autofit。 */
