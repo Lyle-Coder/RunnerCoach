@@ -810,6 +810,23 @@ def main() -> int:
         st, r = req("GET", f"/v1/group/{gid}/news?since={_base}", None, a)
         check("自己建的赛事不通知自己",
               not (r.get("challenges") or []), str(r))
+
+        # 队友今天跑了：只报今天的，补传历史不触发
+        _d0 = dt.date.today().isoformat()
+        req("POST", f"/v1/group/{gid}/acts",
+            {"acts": [{"sid": "aaaa0000bbbb0001", "date": _d0, "kind": "run",
+                       "distance_m": 7000, "duration_s": 2100}], "today": _d0}, b)
+        st, r = req("GET", f"/v1/group/{gid}/news?since={_base}", None, a)
+        _nacts = r.get("acts") or []
+        check("队友今天跑了会进 news",
+              len(_nacts) == 1 and _nacts[0]["distance_m"] == 7000, str(r))
+        check("补传的历史活动不触发（前面造了 11-16/17/18 的）",
+              len(_nacts) == 1, str(_nacts))
+        req("POST", f"/v1/group/{gid}/acts",
+            {"acts": [{"sid": "bbbb0000cccc0002", "date": _d0, "kind": "run",
+                       "distance_m": 5000, "duration_s": 1500}], "today": _d0}, a)
+        st, r = req("GET", f"/v1/group/{gid}/news?since={_base}", None, a)
+        check("自己跑的不通知自己", len(r.get("acts") or []) == 1, str(r))
     finally:
         groups._now = _orig_now
 
