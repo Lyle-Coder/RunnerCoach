@@ -53,6 +53,18 @@ FUTURE_DAYS = 0
 
 MAX_MEMBERS_MIN, MAX_MEMBERS_MAX = 2, 200
 MAX_GROUPS_PER_USER = 3        # 一个人最多同时加入 3 个组
+PENDING_MAX = 20               # 一个组最多积压 20 条加入申请（不占人数上限）
+# 营地的数值口径见 docs/用户组设计.md 11.4。休整点：每人每周最多 4 点，
+# 团队池按 40 × 有效成员封顶，升级成本按人均 × 人数缩放（大组升级不该更快）。
+VIGOR_WEEK_MAX = 4
+CAMP_POOL_PER_MEMBER = 40
+CAMP_LEVELS = [
+    ("宿营", "初始补给 +1", 1),
+    ("侦察", "开局揭示前 2 格", 3),
+    ("医师", "恢复期成员不占缺勤", 5),
+    ("驮马", "每日贡献上限 +1 km", 7),
+    ("传令", "事件从 3 选 1 变 4 选 1", 10),
+]
 REPORT_MAX_DAYS = 31           # 一次最多报 31 天（首次加入补 30 天足够）
 DAY_DIST_MAX_M = 200_000       # 单日 200 km，超过直接拒（不是判作弊，是防脏数据）
 DAY_DUR_MAX_S = 24 * 3600
@@ -273,6 +285,13 @@ def init_db() -> None:
 
         -- 评论：一句话 + 一个表情。表情只收白名单里的几个，
         -- 不然这里会变成贴图区，审核和存储都失控。
+        CREATE TABLE IF NOT EXISTS group_run_camp(
+          group_id   INTEGER PRIMARY KEY,
+          level      INTEGER NOT NULL DEFAULT 1,
+          spent      INTEGER NOT NULL DEFAULT 0,   -- 已花掉的休整点
+          updated_at INTEGER NOT NULL DEFAULT 0
+        );
+
         CREATE TABLE IF NOT EXISTS group_comment(
           id         INTEGER PRIMARY KEY,
           group_id   INTEGER NOT NULL,
@@ -309,6 +328,17 @@ def init_db() -> None:
         if "shape" not in acols:
             c.execute("ALTER TABLE group_act ADD COLUMN shape TEXT"
                       " NOT NULL DEFAULT ''")
+        # 1.6.0 起组长可选「加入需批准」。默认 open：老组不该因为加了个字段
+        # 就突然把队友挡在门外。
+        # 1.6.0 起日报带休整点（0/1），营地池按「累计获得 - 已花」算
+        dcols = {r["name"] for r in c.execute("PRAGMA table_info(group_daily)")}
+        if "vigor" not in dcols:
+            c.execute("ALTER TABLE group_daily ADD COLUMN vigor INTEGER"
+                      " NOT NULL DEFAULT 0")
+        gcols = {r["name"] for r in c.execute("PRAGMA table_info(groups)")}
+        if "join_mode" not in gcols:
+            c.execute("ALTER TABLE groups ADD COLUMN join_mode TEXT"
+                      " NOT NULL DEFAULT 'open'")
 
 
 # ---------------------------------------------------------------- 工具
@@ -438,12 +468,18 @@ def _group_brief(g, role: str = "", members: int = 0) -> dict:
     `member_count` 才是人数。`members` 这个键只留给详情页的成员列表——
     两个接口同一个键一个存数字一个存数组，客户端一定会踩。
     """
-    return {
+    out = {
         "id": g["id"], "name": g["name"], "intro": g["intro"],
         "owner_id": g["owner_id"], "max_members": g["max_members"],
         "member_count": members, "created_at": g["created_at"],
         "role": role,
     }
+    # 老库没有这一列时按 open 处理，不让客户端因为缺字段而崩
+    try:
+        out["join_mode"] = str(g["join_mode"] or "open")
+    except (IndexError, KeyError):
+        out["join_mode"] = "open"
+    return out
 
 
 def _member_view(m, me_id: int) -> dict:
@@ -536,15 +572,174 @@ def api_join(me, body: dict, ip: str) -> dict:
 
         alias = _clean_alias(body.get("alias"), me["phone"],
                              me["nickname"] if "nickname" in me.keys() else "")
-        if m:
-            c.execute("UPDATE group_members SET status='active', alias=?, joined_at=? "
-                      "WHERE group_id=? AND user_id=?", (alias, _now(), gid, uid))
+        # 加入需批准：先挂 pending，组长批了才算进组。pending 不占人数上限
+        # （否则一个人反复申请就能把组撑满），但也不能无限堆。
+        pending = str(g["join_mode"] or "open") == "approve"
+        if pending:
+            waiting = c.execute(
+                "SELECT COUNT(*) FROM group_members WHERE group_id=? AND status='pending'",
+                (gid,)).fetchone()[0]
+            if waiting >= PENDING_MAX:
+                raise GroupError(409, "等待批准的申请太多了，让组长先处理一下")
+            status = "pending"
         else:
-            c.execute("INSERT INTO group_members(group_id,user_id,role,alias,joined_at)"
-                      " VALUES(?,?,?,?,?)", (gid, uid, "member", alias, _now()))
-        _audit(c, gid, uid, "join")
-        members = active + 1
-    return {"ok": True, "already": False, "group": _group_brief(g, "member", members)}
+            status = "active"
+        if m:
+            c.execute("UPDATE group_members SET status=?, alias=?, joined_at=?"
+                      " WHERE group_id=? AND user_id=?", (status, alias, _now(), gid, uid))
+        else:
+            c.execute("INSERT INTO group_members(group_id,user_id,role,alias,joined_at,status)"
+                      " VALUES(?,?,?,?,?,?)", (gid, uid, "member", alias, _now(), status))
+        _audit(c, gid, uid, "apply" if pending else "join")
+        members = active + (0 if pending else 1)
+    return {"ok": True, "already": False, "pending": pending,
+            "group": _group_brief(g, "member", members)}
+
+
+def api_pending(me, gid: int) -> dict:
+    """待批准的申请（只有 owner/admin 看得到）。"""
+    uid = int(me["user_id"])
+    with db() as c:
+        _require_admin(c, gid, uid)
+        rows = c.execute("SELECT user_id, alias, joined_at FROM group_members"
+                         " WHERE group_id=? AND status='pending' ORDER BY joined_at",
+                         (gid,)).fetchall()
+    return {"ok": True,
+            "pending": [{"user_id": int(r["user_id"]), "alias": r["alias"],
+                         "at": int(r["joined_at"])} for r in rows]}
+
+
+def api_decide(me, gid: int, target: int, ok: bool) -> dict:
+    """组长批准 / 拒绝一条加入申请。"""
+    uid = int(me["user_id"])
+    target = int(target)
+    with db() as c:
+        _require_admin(c, gid, uid)
+        m = _member(c, gid, target)
+        if not m or m["status"] != "pending":
+            raise GroupError(404, "没有这条申请")
+        if ok:
+            g = _group(c, gid)
+            active = c.execute("SELECT COUNT(*) FROM group_members"
+                               " WHERE group_id=? AND status='active'", (gid,)).fetchone()[0]
+            if active >= g["max_members"]:
+                raise GroupError(409, f"这个组满了（{g['max_members']} 人）")
+            c.execute("UPDATE group_members SET status='active', joined_at=?"
+                      " WHERE group_id=? AND user_id=?", (_now(), gid, target))
+        else:
+            c.execute("DELETE FROM group_members WHERE group_id=? AND user_id=?",
+                      (gid, target))
+        _audit(c, gid, uid, "approve" if ok else "reject", target)
+    return {"ok": True}
+
+
+def _camp_state(c, gid: int) -> dict:
+    """在一个已有连接上读营地。别在这里再开 db()——升级走的是写事务，
+    嵌套开连接会撞 database is locked。"""
+    gid = int(gid)
+    mem = c.execute("SELECT COUNT(*) FROM group_members"
+                    " WHERE group_id=? AND status='active'", (gid,)).fetchone()[0]
+    mem = max(1, int(mem))
+    row = c.execute("SELECT level, spent FROM group_run_camp WHERE group_id=?",
+                    (gid,)).fetchone()
+    level = int(row["level"]) if row else 1
+    spent = int(row["spent"]) if row else 0
+    earned = int(c.execute("SELECT COALESCE(SUM(vigor),0) FROM group_daily"
+                           " WHERE group_id=?", (gid,)).fetchone()[0])
+    cap = CAMP_POOL_PER_MEMBER * mem
+    gross = earned - spent
+    if gross > cap:
+        # 溢出即丢弃：写回 spent，下次读到就是满池
+        c.execute("INSERT INTO group_run_camp(group_id,level,spent,updated_at)"
+                  " VALUES(?,?,?,?) ON CONFLICT(group_id) DO UPDATE SET"
+                  " spent=excluded.spent, updated_at=excluded.updated_at",
+                  (gid, level, earned - cap, _now()))
+        spent = earned - cap
+        gross = cap
+    pool = max(0, gross)
+    level = max(1, min(len(CAMP_LEVELS), level))
+    nxt = CAMP_LEVELS[level] if level < len(CAMP_LEVELS) else None
+    cost = (nxt[2] * mem) if nxt else 0
+    return {
+        "level": level,
+        "name": CAMP_LEVELS[level - 1][0],
+        "effect": CAMP_LEVELS[level - 1][1],
+        "pool": pool, "cap": cap, "earned": earned, "spent": spent,
+        "members": mem,
+        "next": ({"name": nxt[0], "effect": nxt[1], "cost": cost,
+                  "afford": pool >= cost} if nxt else None),
+        "levels": [{"lv": i + 1, "name": n[0], "effect": n[1],
+                    "cost": n[2] * mem, "got": i + 1 <= level}
+                   for i, n in enumerate(CAMP_LEVELS)],
+    }
+
+
+def camp_state(gid: int) -> dict:
+    """营地当前状态（只读入口）。账本 = 累计获得 - 已花，池按 40 × 人数封顶。"""
+    with db() as c:
+        return _camp_state(c, gid)
+
+
+def api_camp_upgrade(me, gid: int) -> dict:
+    """花休整点升一级营地。只有 owner/admin 能点（钱的入口只给管理者）。"""
+    uid = int(me["user_id"])
+    with db() as c:
+        _require_admin(c, gid, uid)
+        st = _camp_state(c, gid)      # 同一个连接：先结算溢出，再扣点
+        nxt = st.get("next")
+        if not nxt:
+            raise GroupError(409, "营地已经满级")
+        if st["pool"] < nxt["cost"]:
+            raise GroupError(409, f"休整点不够（还差 {nxt['cost'] - st['pool']} 点）")
+        c.execute("INSERT INTO group_run_camp(group_id,level,spent,updated_at)"
+                  " VALUES(?,?,?,?) ON CONFLICT(group_id) DO UPDATE SET"
+                  " level=excluded.level, spent=excluded.spent,"
+                  " updated_at=excluded.updated_at",
+                  (gid, st["level"] + 1, st["spent"] + nxt["cost"], _now()))
+        _audit(c, gid, uid, "camp_upgrade", st["level"] + 1)
+    return {"ok": True, "camp": camp_state(gid)}
+
+
+def api_audit(me, gid: int, query: dict) -> dict:
+    """最近的操作记录（只有 owner/admin 能看）。
+
+    审计表只存 id 和动作名，展示用的昵称在这里补一次——成员退出后
+    JOIN 不到，就退回显示「已退出的人」。
+    """
+    uid = int(me["user_id"])
+    try:
+        limit = max(1, min(200, int((query.get("limit") or ["50"])[0])))
+    except (TypeError, ValueError):
+        limit = 50
+    with db() as c:
+        _require_admin(c, gid, uid)
+        rows = c.execute(
+            "SELECT a.actor_id, a.action, a.target_id, a.ts, m.alias AS actor_alias,"
+            "       t.alias AS target_alias"
+            "  FROM group_audit a"
+            "  LEFT JOIN group_members m ON m.group_id=a.group_id AND m.user_id=a.actor_id"
+            "  LEFT JOIN group_members t ON t.group_id=a.group_id AND t.user_id=a.target_id"
+            " WHERE a.group_id=? ORDER BY a.id DESC LIMIT ?", (gid, limit)).fetchall()
+        me_uid = uid
+    return {"ok": True, "rows": [{
+        "actor": r["actor_alias"] or "已退出的人",
+        "actor_id": int(r["actor_id"]),
+        "action": r["action"],
+        "target": (r["target_alias"] or "") if r["target_id"] else "",
+        "at": int(r["ts"]),
+        "me": int(r["actor_id"]) == me_uid,
+    } for r in rows]}
+
+
+def api_set_join_mode(me, gid: int, mode: str) -> dict:
+    """切换「加入需批准」。只有组长/管理员能改。"""
+    uid = int(me["user_id"])
+    mode = "approve" if str(mode) == "approve" else "open"
+    with db() as c:
+        _require_admin(c, gid, uid)
+        c.execute("UPDATE groups SET join_mode=? WHERE id=?", (mode, gid))
+        _audit(c, gid, uid, "join_mode", mode)
+    return {"ok": True, "join_mode": mode}
 
 
 def api_me_update(me, gid: int, body: dict) -> dict:
@@ -609,6 +804,8 @@ def api_list(me) -> dict:
                 g["invite_code"] = r["invite_code"]
             # 本周名次：列表页直接显示，不用点进去才知道自己第几
             g["week"] = _week_rank(c, int(r["id"]), uid)
+            # 营地等级：组名后缀「· Lv3 营地」由客户端拼，不写进 groups.name
+            g["camp_level"] = int(_camp_state(c, int(r["id"])).get("level") or 1)
             out.append(g)
 
     # 每组再补一份「我在这组的成就」：拿到几件衫、有没有探索徽章、目标完成到哪。
@@ -651,10 +848,20 @@ def api_get(me, gid: int) -> dict:
             "SELECT * FROM group_members WHERE group_id=? AND status='active'"
             " ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, joined_at",
             (gid,)).fetchall()
+        pend = (c.execute("SELECT user_id, alias, joined_at FROM group_members"
+                          " WHERE group_id=? AND status='pending' ORDER BY joined_at",
+                          (gid,)).fetchall()
+                if my["role"] in ("owner", "admin") else [])
+        # 连接还活着的时候读：db() 退出后连接就关了
+        _lv = int(_camp_state(c, gid).get("level") or 1)
     out = _group_brief(g, my["role"], len(rows))
+    out["camp_level"] = _lv
     # 邀请码只给管理角色：普通成员拿到就能无限拉人，等于绕过了组长审批
     if my["role"] in ("owner", "admin"):
         out["invite_code"] = g["invite_code"]
+        # 待批准的申请只给管理角色：普通成员不该看到谁在申请
+        out["pending"] = [{"user_id": int(r["user_id"]), "alias": r["alias"],
+                           "at": int(r["joined_at"])} for r in pend]
     out["me"] = {"alias": my["alias"], "share": my["share_level"]}
     out["members"] = [_member_view(r, uid) for r in rows]
     return {"ok": True, "group": out}
@@ -746,6 +953,9 @@ def api_report(me, gid: int, body: dict) -> dict:
             acts = int(d.get("acts") or 0)
             elev = int(d.get("elevation_m") or 0)
             expl = int(d.get("explorer") or 0)
+            # 休整点：0/1。每周上限 4 在后面按「本周已存 + 本次」截断，
+            # 不让一次补传 30 天就把团队池灌满。
+            vigor = 1 if int(d.get("vigor") or 0) > 0 else 0
         except (TypeError, ValueError):
             raise GroupError(400, f"{day} 的数值不合法")
         if not 0 <= dist <= DAY_DIST_MAX_M:
@@ -774,16 +984,36 @@ def api_report(me, gid: int, body: dict) -> dict:
         if expl > DAY_EXPLORER_MAX:
             expl = DAY_EXPLORER_MAX
             clamped_explorer += 1
-        rows.append((gid, uid, day, dist, dur, acts, elev, expl, plan, _now()))
+        rows.append((gid, uid, day, dist, dur, acts, elev, expl, plan, _now(), vigor))
 
     with db() as c:
         m = _require_member(c, gid, uid)
         if m["share_level"] == "off":
             # 关掉共享的意图就是「别再收我的数据」。写进去再藏起来是自欺欺人。
             return {"ok": True, "saved": 0, "skipped": len(rows), "share": "off"}
+        # 休整点每周上限 4：按周汇总「库里已有 + 这次要加的」，超出部分清零。
+        # 不清的话，一次补传 30 天就能把团队池灌满。
+        if any(r[10] for r in rows):
+            _byw: dict[tuple, list[int]] = {}
+            for i, r in enumerate(rows):
+                if not r[10]:
+                    continue
+                _d = dt.date.fromisoformat(r[2])
+                _wf, _wt = _week(_d)
+                _byw.setdefault((int(r[1]), _wf.isoformat(), _wt.isoformat()),
+                                []).append(i)
+            for (u, wf_s, wt_s), idxs in _byw.items():
+                already = c.execute(
+                    "SELECT COALESCE(SUM(vigor),0) FROM group_daily"
+                    " WHERE group_id=? AND user_id=? AND date BETWEEN ? AND ?",
+                    (gid, u, wf_s, wt_s)).fetchone()[0]
+                room = max(0, VIGOR_WEEK_MAX - int(already))
+                for i in idxs[room:]:
+                    rows[i] = rows[i][:10] + (0,)
+
         c.executemany("""
-            INSERT INTO group_daily(group_id,user_id,date,distance_m,duration_s,acts,elevation_m,explorer,plan_done,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO group_daily(group_id,user_id,date,distance_m,duration_s,acts,elevation_m,explorer,plan_done,updated_at,vigor)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(group_id,user_id,date) DO UPDATE SET
                 distance_m=excluded.distance_m,
                 duration_s=excluded.duration_s,
@@ -791,7 +1021,8 @@ def api_report(me, gid: int, body: dict) -> dict:
                 elevation_m=excluded.elevation_m,
                 explorer=excluded.explorer,
                 plan_done=excluded.plan_done,
-                updated_at=excluded.updated_at
+                updated_at=excluded.updated_at,
+                vigor=excluded.vigor
         """, rows)
     out = {"ok": True, "saved": len(rows), "skipped": 0, "share": m["share_level"]}
     # 说出来，不静默改数：客户端传了不合理的爬升或格数，用户该知道被截了。
@@ -1678,6 +1909,9 @@ def api_board(me, gid: int, query: dict) -> dict:
         a = by.get(int(m["user_id"]))
         plan_total = int(a["plan_total"] or 0) if a else 0
         rows.append({
+            # user_id 必带：客户端要用它挂「穿了哪几件衫」「探索徽章」。
+            # 原来只给 alias，组里两个人叫「小王」时徽章会挂到错的人头上。
+            "user_id": int(m["user_id"]),
             "alias": m["alias"],
             "is_me": int(m["user_id"]) == uid,
             "distance_m": int(a["dist"] or 0) if a else 0,
@@ -1704,6 +1938,49 @@ def api_board(me, gid: int, query: dict) -> dict:
 
 
 # ---------------------------------------------------------------- 成员管理
+def purge_user(uid: int) -> dict:
+    """把一个人在本服务端的全部小组痕迹删干净（账号注销时调用）。
+
+    注销是**不可逆**的，所以先过两道闸：
+    1. 他还是某个组的组长、且组里还有别的活跃成员 → 拒绝，让他先转让
+       （直接删会让那个组永远没有组长，谁也管不了）；
+    2. 组里只剩他一个人 → 把组归档，而不是留一个空组占着邀请码。
+
+    删的内容：成员行、日报、评论、目标、预言、对子、格子、活动概要。
+    审计表保留（只存 id，不含昵称和里程），用于事后查「谁解散过组」。
+    """
+    uid = int(uid)
+    out = {"groups_left": 0, "archived": 0}
+    with db() as c:
+        owned = c.execute("SELECT group_id FROM group_members WHERE user_id=?"
+                          " AND status='active' AND role='owner'", (uid,)).fetchall()
+        for r in owned:
+            gid = int(r["group_id"])
+            others = c.execute(
+                "SELECT COUNT(*) FROM group_members WHERE group_id=? AND status='active'"
+                " AND user_id<>?", (gid, uid)).fetchone()[0]
+            if others:
+                raise GroupError(
+                    409, "你还是这个组的组长，先把组长转给别人（或解散这个组）再注销账号")
+            c.execute("UPDATE groups SET archived=1 WHERE id=?", (gid,))
+            out["archived"] += 1
+        for r in c.execute("SELECT group_id FROM group_members WHERE user_id=?", (uid,)).fetchall():
+            gid = int(r["group_id"])
+            c.execute("DELETE FROM group_members WHERE group_id=? AND user_id=?", (gid, uid))
+            c.execute("DELETE FROM group_daily WHERE group_id=? AND user_id=?", (gid, uid))
+            c.execute("DELETE FROM group_goal WHERE group_id=? AND user_id=?", (gid, uid))
+            c.execute("DELETE FROM group_predict WHERE group_id=? AND (user_id=? OR target_uid=?)",
+                      (gid, uid, uid))
+            c.execute("DELETE FROM group_pair WHERE group_id=? AND (small_uid=? OR big_uid=?)",
+                      (gid, uid, uid))
+            c.execute("DELETE FROM group_cell WHERE group_id=? AND user_id=?", (gid, uid))
+            c.execute("DELETE FROM group_act WHERE group_id=? AND user_id=?", (gid, uid))
+            c.execute("DELETE FROM group_comment WHERE group_id=? AND user_id=?", (gid, uid))
+            out["groups_left"] += 1
+        # 别处引用我的评论/活动（我是被评论的对象，评论本身不删——那是别人说的话）
+    return out
+
+
 def api_leave(me, gid: int) -> dict:
     uid = int(me["user_id"])
     with db() as c:
@@ -2096,6 +2373,24 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_archive(me, gid, body), 200
         if action == "invite" and len(tail) >= 2 and tail[1] == "rotate" and method == "POST":
             return api_rotate(me, gid), 200
+        if action == "camp" and len(tail) >= 2 and tail[1] == "upgrade" and method == "POST":
+            return api_camp_upgrade(me, gid), 200
+        if action == "camp" and method == "GET":
+            with db() as c:
+                _require_member(c, gid, int(me["user_id"]))
+            return camp_state(gid), 200
+        if action == "audit" and method == "GET":
+            return api_audit(me, gid, query), 200
+        if action == "joinmode" and method == "POST":
+            return api_set_join_mode(me, gid, str(body.get("mode") or "open")), 200
+        if action == "pending" and method == "GET":
+            return api_pending(me, gid), 200
+        if action == "decide" and method == "POST":
+            try:
+                target = int(body.get("user_id") or 0)
+            except (TypeError, ValueError):
+                raise GroupError(400, "成员 id 不合法")
+            return api_decide(me, gid, target, bool(body.get("ok"))), 200
         if action == "member" and len(tail) >= 3 and tail[2] == "remove" and method == "POST":
             try:
                 target = int(tail[1])

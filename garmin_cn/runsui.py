@@ -148,6 +148,19 @@ CSS = """
 .lev.claimed{color:var(--faint)}
 .lev.failed{color:#F58C90}
 
+/* ---------- 营地 ---------- */
+/* 五行等级表：名字 / 效果 / 代价。已解锁的整行提亮，未解锁的用灰——
+   比「只列当前等级」能看出「还差几级」。 */
+.cp-l{display:flex;align-items:baseline;gap:8px;padding:8px 0;
+  border-bottom:1px solid var(--line2);font-size:12px;color:var(--muted)}
+.cp-l:last-of-type{border-bottom:0}
+.cp-l.got{color:var(--ink-2)}
+.cp-l .cp-n{flex:0 0 78px;font-weight:600;white-space:nowrap}
+.cp-l.got .cp-n{color:var(--ink)}
+.cp-l .cp-e{flex:1 1 auto;min-width:0}
+.cp-l .cp-c{flex:0 0 auto;font-size:11px;color:var(--ink-3);white-space:nowrap}
+.cp-l.got .cp-c{color:var(--ok)}
+
 /* ---------- 受困 ---------- */
 .stuck{margin-top:14px;padding:13px 14px;border-radius:14px;
   background:rgba(242,85,90,.08);border:1px solid rgba(242,85,90,.26)}
@@ -635,6 +648,46 @@ def run_page(token: str, message: str = "", data: dict | None = None,
            '<div class="pager"><button class="btn" type="submit">保存</button></div>'
            "</form></div>")
 
+    # ---- 营地（局外养成）
+    camp = data.get("camp") or {}
+    camp_card = ""
+    if camp:
+        _lv = int(camp.get("level") or 1)
+        _pool = int(camp.get("pool") or 0)
+        _cap = int(camp.get("cap") or 0)
+        _nxt = camp.get("next") or {}
+        _rows = ""
+        for l in (camp.get("levels") or []):
+            _got = bool(l.get("got"))
+            _rows += (f'<div class="cp-l{" got" if _got else ""}">'
+                      f'<span class="cp-n">Lv{int(l.get("lv") or 0)} {esc(l.get("name"))}</span>'
+                      f'<span class="cp-e">{esc(l.get("effect"))}</span>'
+                      f'<span class="cp-c">{"已解锁" if _got else str(int(l.get("cost") or 0)) + " 点"}</span>'
+                      '</div>')
+        _up = ""
+        if _nxt:
+            _up = (f'<p class="note">升到 {esc(_nxt.get("name"))}（{esc(_nxt.get("effect"))}）'
+                   f'要 {int(_nxt.get("cost") or 0)} 点'
+                   + ("" if _nxt.get("afford") else "，还不够")
+                   + '</p>')
+            if _nxt.get("afford"):
+                _up += (f'<form action="/__run/camp/upgrade" method="post">'
+                        f'<input type="hidden" name="token" value="{esc(token)}">'
+                        '<div class="pager"><button class="btn sm primary" type="submit">'
+                        '升级营地</button></div></form>')
+        else:
+            _up = '<p class="note">营地已满级。</p>'
+        camp_card = (f'<div class="card" style="margin-top:18px">'
+                     '<div class="kvline"><span>营地</span>'
+                     f'<b>Lv{_lv} {esc(camp.get("name"))}</b></div>'
+                     f'<div class="kvline"><span>休整点</span><b>{_pool}'
+                     f'<i> / {_cap}</i></b></div>'
+                     '<div class="bar"><i style="width:'
+                     f'{(min(100.0, _pool / _cap * 100) if _cap else 0):.0f}%"></i></div>'
+                     '<p class="note">按计划休息一天且当天没练，加 1 点；'
+                     '每人每周最多 4 点，全组共用一个池。</p>'
+                     + ''.join(_rows) + _up + '</div>')
+
     msg = f'<div class="note-box">{esc(message)}</div>' if message else ""
     # 上一季：一句话，放最后。它是回忆不是任务，不占上面任何位置。
     last = s.get("last") or {}
@@ -645,7 +698,8 @@ def run_page(token: str, message: str = "", data: dict | None = None,
                  f' <b>{float(last.get("team") or 0):g}</b> 格</div>')
     # 增益紧贴状态条：它和「士气/补给/行程」一样是「你现在身上有什么」，
     # 放到事件卡下面就会被当成某一条事件的注解。
-    body = msg + bar + buff_chips(mine.get("buffs") or []) + route + cards + stuck + tgt + recap
+    body = (msg + bar + buff_chips(mine.get("buffs") or []) + route + cards
+            + stuck + tgt + camp_card + recap)
 
     js = ("<script>var TK=" + json.dumps(token) + ";"
           "function post(p,d){var f=new FormData();f.append('token',TK);"

@@ -210,6 +210,19 @@ CHAL_JS = (
     '})();</script>')
 
 
+def _gname(g: dict) -> str:
+    """组名 + 营地后缀。等级写进 groups.name 就再也拆不出来了，所以客户端拼。
+
+    Lv1 是默认值（宿营），不加后缀——刚建的组不该顶着一串等级。
+    """
+    n = str(g.get("name") or "")
+    try:
+        lv = int(g.get("camp_level") or 1)
+    except (TypeError, ValueError):
+        lv = 1
+    return f'{n} · Lv{lv} 营地' if lv >= 2 else n
+
+
 def _km(m: int | float | None) -> str:
     v = float(m or 0) / 1000
     return f"{v:.1f}" if v < 100 else f"{v:.0f}"
@@ -240,7 +253,19 @@ def account_page(token: str, message: str = "", account: str = "",
                       '<div class="tinyline">建组、入组时默认用它；组里还可以单独改。</div>'
                       '</div>')
                 + f'<form action="/__account/logout" method="post">{_tok(token)}'
-                  '<div class="pager"><button class="btn" type="submit">退出登录</button></div></form>')
+                  '<div class="pager"><button class="btn" type="submit">退出登录</button></div></form>'
+                # 注销：隐私说明里承诺「随时能删」，页面上就必须有入口。
+                # 折起来 + 勾选 + 二次确认，和「解散小组」同一套处理。
+                + '<details class="fold fold-gap"><summary>注销账号'
+                  '<span class="fx">›</span></summary><div class="foldbody">'
+                  '<p class="note">账号立即失效，你在各小组的里程、评论、目标全部删除，'
+                  '邮箱/手机号清空，不能恢复。</p>'
+                  f'<form action="/__account/delete" method="post">{_tok(token)}'
+                  '<label class="ckline"><input type="checkbox" name="confirm" value="1">'
+                  ' 我知道注销不能恢复</label>'
+                  '<div class="pager"><button class="btn danger" type="submit" '
+                  'onclick="return confirm(\'注销账号？这个动作不能撤销\')">注销</button>'
+                  '</div></form></div></details>')
         return page("ACCOUNT", "账号", "已登录", body,
                     foot="登录令牌只存在这台手机里，不会上传到别处。",
                     back=("返回我的", "/me"))
@@ -385,7 +410,7 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
 
         cards += (f'<a class="gcard" href="/groups/{int(g["id"])}">'
                   '<div class="gc-h">'
-                  f'<span class="gc-n">{esc(g.get("name"))}</span>'
+                  f'<span class="gc-n">{esc(_gname(g))}</span>'
                   f'<span class="pill ghost">{esc(role)}</span>'
                   '<span class="chev">›</span></div>'
                   f'<p class="gc-m">{esc(meta)}</p>'
@@ -515,6 +540,26 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
                 '<button class="btn sm" type="submit">换一个</button></form></div>')
     # 转让：只有组长能转，而且是可逆的（转回来就行），所以放在普通设置里，
     # 解散这种不可逆的没放——它该有自己的二次确认流程，不该和改昵称并排。
+    # 加入方式 + 待批准申请（只有管理角色看得到）
+    if is_admin:
+        _jm = str(g.get("join_mode") or "open")
+        grp += (f'<form action="/__group/{gid}/joinmode" method="post">{_tok(token)}'
+                '<div class="setrow"><span>加入</span>'
+                '<select name="mode" aria-label="加入方式">'
+                f'<option value="open"{" selected" if _jm == "open" else ""}>扫码即入</option>'
+                f'<option value="approve"{" selected" if _jm == "approve" else ""}>需我批准</option>'
+                '</select><button class="btn sm" type="submit">存</button></div></form>')
+        _pend = g.get("pending") or []
+        if _pend:
+            grp += (f'<p class="note">{len(_pend)} 人申请加入</p>')
+            for _p in _pend:
+                grp += (f'<form action="/__group/{gid}/decide" method="post" class="setrow">'
+                        + _tok(token)
+                        + f'<input type="hidden" name="uid" value="{int(_p["user_id"])}">'
+                        f'<span style="flex:1 1 auto">{esc(_p.get("alias"))}</span>'
+                        '<button class="btn sm primary" name="ok" value="1" type="submit">批准</button>'
+                        '<button class="btn sm" name="ok" value="0" type="submit">拒绝</button>'
+                        '</form>')
     if is_owner:
         _opts = "".join(
             f'<option value="{int(m["user_id"])}">{esc(m["alias"])}</option>'
@@ -543,6 +588,16 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
                 ' value="1"> 我知道解散不能撤销</label>'
                 '<div class="pager"><button class="btn sm danger" type="submit">'
                 '解散</button></div></form></div></details>')
+    if is_admin:
+        # 组长工具：谁做了什么、这一周的数据能不能导出来对账
+        grp += (f'<a class="setrow" href="/groups/{gid}/audit">'
+                '<span>操作记录</span>'
+                '<span class="note" style="flex:1 1 auto;margin:0">谁改了设置、谁加入退出'
+                '</span><span class="chev">›</span></a>')
+        grp += (f'<a class="setrow" href="/groups/{gid}/export.csv">'
+                '<span>导出本周数据</span>'
+                '<span class="note" style="flex:1 1 auto;margin:0">每人一行，CSV'
+                '</span><span class="chev">›</span></a>')
     grp += (f'<a class="setrow" href="/groups/{gid}/map">'
             '<span>路线共享</span>'
             '<span class="note" style="flex:1 1 auto;margin:0">'
@@ -1494,13 +1549,20 @@ def _rank_row(i: int, x: dict, marks: str = "") -> str:
             f'<span class="km">{_km(x.get("distance_m"))}<i>km</i></span></div>')
 
 
-def _rank_marks(x: dict, marks_of: dict[str, str], min_cells: int) -> str:
+def _rank_marks(x: dict, marks_of: dict[int, str], min_cells: int) -> str:
     """名字后面挂的图形：穿了哪几件衫 + 有没有探索徽章。
 
     只对**周**榜有意义（衫和徽章都是按周结算的），月榜一律不挂——
     挂上去会被读成「这个月的衫」，那是错的。
+
+    索引键用 user_id，不用 alias：组里两个人重名是常事，按名字匹配会把
+    衫挂到另一个人头上（老服务端不返回 user_id，这时退回按名字）。
     """
-    m = marks_of.get(str(x.get("alias") or ""), "")
+    uid = x.get("user_id")
+    if uid is None:
+        m = marks_of.get(str(x.get("alias") or ""), "")  # type: ignore[arg-type]
+    else:
+        m = marks_of.get(int(uid), "")
     if int(x.get("explorer") or 0) >= min_cells:
         m += _explore_icon("jr", "探索徽章")
     return m
@@ -1574,14 +1636,15 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
     # season.shirts 里给（圆点衫），按 id 查一次。
     _pat_of = {str(s2.get("id") or ""): str(s2.get("pattern") or "")
                for s2 in (_se.get("shirts") or [])}
-    _marks_of: dict[str, str] = {}
+    _marks_of: dict = {}
     for _p in (_se.get("people") or []):
         _one = ""
         for _x in (_p.get("shirts") or []):
             _one += _jersey(str(_x.get("color") or ""),
                             _pat_of.get(str(_x.get("id") or ""), ""), True, "jr",
                             f'{_x.get("name") or ""}·{_x.get("title") or ""}')
-        _marks_of[str(_p.get("alias") or "")] = _one
+        _marks_of[int(_p.get("user_id") or 0)] = _one
+        _marks_of[str(_p.get("alias") or "")] = _one   # 老服务端没有 user_id 时兜底
     _min_cells = int(((_se.get("explore") or {}).get("min_cells")) or 5)
 
     # 本周榜。名字后面**只挂图标**：穿了哪几件衫（衣服）+ 有没有探索徽章
@@ -2139,12 +2202,57 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
             + feed_sec
             + SAY_JS + KEEP_JS)
     return _with_copy(page(
-        "GROUP", g.get("name") or "小组",
+        "GROUP", _gname(g) or "小组",
         f'{int(g.get("member_count") or 0)} 人 · '
         + {"owner": "我是组长", "admin": "我是管理员"}.get(role, "我是成员"),
         body, chips, action=_gear,
         foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
         back=("全部小组", "/groups?list=1")))
+
+
+# 审计动作 → 人话。表里存的是英文动作名，直接显示 action 没人看得懂。
+_AUDIT_TXT = {
+    "create": "建了组", "join": "加入", "apply": "申请加入", "leave": "退出",
+    "remove": "踢出", "transfer": "转让组长", "archive": "解散了组",
+    "rotate": "换了邀请码", "share": "改了共享设置", "alias": "改了昵称",
+    "report": "上报了数据", "challenge_create": "建了赛事",
+    "challenge_close": "结束了赛事", "approve": "批准加入", "reject": "拒绝加入",
+    "join_mode": "改了加入方式", "goal": "改了目标", "mapshare": "改了路线共享",
+}
+
+
+def audit_page(token: str, gid: int, message: str = "") -> str:
+    """最近的操作记录。只给 owner/admin 看，普通成员进来会被告知没有权限。"""
+    from . import group as G
+
+    r = G.audit(gid, 50)
+    if not r.get("ok"):
+        body = (_msg(message)
+                + f'<div class="card"><p class="note">'
+                  f'{esc(r.get("error") or "打不开操作记录")}</p>'
+                  f'<div class="pager"><a class="btn" href="/groups/{gid}/settings">'
+                  '返回设置</a></div></div>')
+        return page("GROUP", "操作记录", "", body,
+                    back=("返回设置", f"/groups/{gid}/settings"))
+
+    rows = ""
+    for x in (r.get("rows") or []):
+        _at = dt.datetime.fromtimestamp(int(x.get("at") or 0))
+        _txt = _AUDIT_TXT.get(str(x.get("action") or ""), str(x.get("action") or ""))
+        _tgt = str(x.get("target") or "")
+        _line = f'<b>{esc(x.get("actor"))}</b>{esc(_txt)}'
+        if _tgt:
+            _line += f'<s>·</s>{esc(_tgt)}'
+        rows += (f'<div class="kvline"><span>{_at.strftime("%m-%d %H:%M")}</span>'
+                 f'<b>{_line}</b></div>')
+    if not rows:
+        rows = '<p class="note">还没有记录。</p>'
+
+    body = (_msg(message)
+            + sec("最近 50 条", '<div class="card">' + rows + '</div>')
+            + '<p class="note">只记录谁做了什么，不含里程明细。</p>')
+    return page("GROUP", "操作记录", f'{len(r.get("rows") or [])} 条', body,
+                back=("返回设置", f"/groups/{gid}/settings"))
 
 
 def board_page(token: str, gid: int, message: str = "", rng: str = "week") -> str:
@@ -2184,7 +2292,7 @@ def board_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     _tot = float((b.get("summary") or {}).get("total_distance_m") or 0) / 1000.0
 
     # 周榜才挂衫和探索徽章。取不到 season 就整块降级（不挂图标而已）。
-    _marks_of: dict[str, str] = {}
+    _marks_of: dict = {}
     _min_cells = 5
     if rng == "week":
         try:
@@ -2199,7 +2307,8 @@ def board_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                 _one += _jersey(str(_x.get("color") or ""),
                                 _pat_of.get(str(_x.get("id") or ""), ""), True, "jr",
                                 f'{_x.get("name") or ""}·{_x.get("title") or ""}')
-            _marks_of[str(_p.get("alias") or "")] = _one
+            _marks_of[int(_p.get("user_id") or 0)] = _one
+        _marks_of[str(_p.get("alias") or "")] = _one   # 老服务端没有 user_id 时兜底
         _min_cells = int(((_se.get("explore") or {}).get("min_cells")) or 5)
 
     rank_rows = "".join(_rank_row(i, x, _rank_marks(x, _marks_of, _min_cells)

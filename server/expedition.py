@@ -1072,6 +1072,8 @@ def api_state(me, gid: int, query: dict) -> dict:
         "stranded": [{"user_id": int(r["user_id"]), "since": int(r["stranded_at"] or 0),
                       "rescue_by": r["rescue_by"]} for r in stranded],
         "members": len(uids),
+        # 营地（局外养成）：等级只增不减，休整点账本 = 累计获得 - 已花。
+        "camp": G.camp_state(gid),
     }
 
 

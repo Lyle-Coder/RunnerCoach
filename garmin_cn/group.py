@@ -87,6 +87,9 @@ def build_days(store, today: str | None = None, days: int = 14) -> list[dict]:
             a["ran"] = True
 
     plan = _plan_flags(s, e, agg)
+    # 休整点：课表说「今天休息」且当天确实没动。服务端按每周 ≤4 截断，
+    # 客户端只负责如实上报这一天算不算。
+    rest = _plan_rest(s, e, agg)
     # 探索徽章：先扫轨迹落格（增量，只扫没扫过的），再取窗口内每日新增格数。
     # 只在本机算，上报的只有这个整数——格子 ID 不出手机。
     from . import explore as EX
@@ -110,6 +113,7 @@ def build_days(store, today: str | None = None, days: int = 14) -> list[dict]:
             # 老版本客户端不传这个字段，服务端按 0 处理，两者在徽章上等价。
             "explorer": int(new_cells.get(d) or 0),
             "plan_done": plan.get(d),
+            "vigor": 1 if d in rest else 0,
         })
     return out
 
@@ -136,6 +140,32 @@ def _plan_flags(start: str, end: str, agg: dict) -> dict[str, bool | None]:
         if not items:
             continue                      # 休息日：不进分母
         out[d] = bool((agg.get(d) or {}).get("ran"))
+    return out
+
+
+def _plan_rest(start: str, end: str, agg: dict) -> set[str]:
+    """课表里明确写了休息、当天又确实没动的那些天。
+
+    只认**课表里有这一天但 items 为空**的情况。没有快照的日子不算：
+    「不知道那天该不该休息」和「安排了休息」是两件事，后者才配拿休整点。
+    """
+    p = _home() / "data" / "plan.json"
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:      # noqa: BLE001
+        return set()
+    out: set[str] = set()
+    for w in (data.get("week") or []):
+        if not isinstance(w, dict):
+            continue
+        d = str(w.get("date") or "")[:10]
+        if not d or not (start <= d <= end):
+            continue
+        if w.get("items"):
+            continue                      # 有课的日不算休息
+        if int((agg.get(d) or {}).get("acts") or 0) > 0:
+            continue                      # 安排了休息但去跑了，不给点
+        out.add(d)
     return out
 
 
@@ -322,6 +352,28 @@ def transfer(gid: int, uid: int) -> dict:
 
 def archive(gid: int) -> dict:
     return _call("POST", f"/v1/group/{int(gid)}/archive", {"confirm": "1"})
+
+
+def camp_upgrade(gid: int, today: str | None = None) -> dict:
+    return _call("POST", f"/v1/group/{int(gid)}/camp/upgrade", {})
+
+
+def audit(gid: int, limit: int = 50) -> dict:
+    return _call("GET", f"/v1/group/{int(gid)}/audit?limit={int(limit)}")
+
+
+def set_join_mode(gid: int, mode: str) -> dict:
+    """加入需批准：mode = "approve" / "open"。"""
+    return _call("POST", f"/v1/group/{int(gid)}/joinmode", {"mode": mode})
+
+
+def pending(gid: int) -> dict:
+    return _call("GET", f"/v1/group/{int(gid)}/pending")
+
+
+def decide(gid: int, uid: int, ok: bool) -> dict:
+    return _call("POST", f"/v1/group/{int(gid)}/decide",
+                 {"user_id": int(uid), "ok": bool(ok)})
 
 
 def set_share(gid: int, share: str) -> dict:
