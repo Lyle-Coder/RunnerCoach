@@ -199,6 +199,7 @@ _API = {
     "keep_status", "keep_login", "keep_logout", "keep_sync",
     "meal_today", "meal_add", "meal_estimate",
     "calendar_list",
+    "bg_catch_up", "bg_status",
 }
 
 # 模型接口配置（App「设置」写入）：未来的 AI 点评等功能从这里读。
@@ -4122,6 +4123,31 @@ def recent(limit: int = 20) -> dict:
                           "mtime": int(p.stat().st_mtime), "size": p.stat().st_size})
     items.sort(key=lambda x: -x["mtime"])
     return {"ok": True, "items": items[:limit]}
+
+
+# ---------------------------------------------------------------- 后台补传
+def bg_catch_up(force: bool = False) -> dict:
+    """把本地库里还没传上去的组数据补发一次。
+
+    两个调用方：原生 JobService（每 6 小时 + 回前台 nudge）和
+    「诊断日志」里的手动触发（force=True 跳过 20 分钟节流）。
+    不碰佳明账号，见 `bg` 模块头部的说明。
+    """
+    from . import bg
+
+    return bg.catch_up(force=bool(force))
+
+
+def bg_status() -> dict:
+    """上次补传跑到什么时候、结果如何。只读本地 meta。"""
+    from . import bg
+    from .store import Store
+
+    store = Store(DB)
+    try:
+        return bg.status(store)
+    finally:
+        store.conn.close()
 
 
 # ---------------------------------------------------------------- 自测
