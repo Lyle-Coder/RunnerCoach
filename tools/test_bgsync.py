@@ -138,6 +138,13 @@ class NotifyTest(unittest.TestCase):
                       "补传跑完没发通知，news 白拉了")
         self.assertIn("\"news\"", SYNCJOB_KT, "没从 Python 结果里取 news 字段")
 
+    def test_teammate_run(self):
+        self.assertIn('"act" ->', NOTIFY_KT,
+                      "队友跑步没有通知文案分支，会被归到兜底那句")
+        self.assertIn('Locale.US', NOTIFY_KT,
+                      "没用固定 Locale，某些区域设置会把小数点写成逗号")
+        self.assertIn('"km"', BG_PY, "没把里程传给原生")
+
     def test_python_side(self):
         self.assertIn("KEY_NEWS", BG_PY, "通知游标没地方存")
         self.assertIn("on_my_act", BG_PY, "评论「是不是在我动态下」没传给原生")
