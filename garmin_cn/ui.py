@@ -165,6 +165,9 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
   border:1px solid var(--line);border-radius:var(--r);padding:16px;
   box-shadow:var(--shadow);position:relative;overflow:hidden}
 .card.flat{background:transparent;border-style:dashed;box-shadow:none}
+/* 相邻两张卡必须留 12：设置页里「加入表单 + 原因提示」曾经是两张边框相贴，
+   看上去像一张画坏了的卡。 */
+.card+.card{margin-top:12px}
 .card.flat::after{display:none}
 .card.brand{background:
   radial-gradient(340px 190px at 84% -10%, rgba(59,130,246,.32), transparent 70%),
@@ -360,7 +363,7 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
    原来是一行一条（组名 + 一句「本周第 N/M 名」）。三个组叠在一起是三条
    同构的细线，看完只知道「我有三个组」，不知道每个组里我过得怎么样。
    一组一卡，卡上回答三件事：这个组多大、我在里面第几、我在这儿拿到了什么。 */
-.gcard{display:block;padding:13px 14px;margin-bottom:10px;text-decoration:none;
+.gcard{display:block;padding:16px;margin-bottom:12px;text-decoration:none;
   color:inherit;background:var(--surface);border:1px solid var(--line);
   border-radius:var(--r-3)}
 .gcard:last-child{margin-bottom:0}
@@ -377,7 +380,7 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .gc-me .rk{font-size:var(--fs-body,14px);font-weight:600;color:var(--ink);
   white-space:nowrap}
 .gc-me .rk i{font-style:normal;font-weight:400;font-size:var(--fs-micro,11px);
-  color:var(--ink-3);margin-left:4px}
+  color:var(--ink-3);margin-left:6px}
 .gc-me .km{margin-left:auto;font-size:var(--fs-title,16px);font-weight:600;
   color:var(--brand-ink);font-variant-numeric:tabular-nums}
 .gc-me .km i{font-style:normal;font-size:var(--fs-micro,11px);font-weight:400;
@@ -446,7 +449,12 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .flat{padding:2px 0 2px 11px}
 /* 折叠：一年用一次的（建赛事、换邀请码）默认收起，行本身当标题用。
    summary 去掉默认三角，换成右侧一个会转的 ›，展开与否一眼能看出来。 */
-.fold{border-top:1px solid var(--line2);margin-top:6px}
+.fold{border-top:1px solid var(--line2);margin-top:12px}
+/* 卡片后面紧跟的折叠入口（组列表底部的「再加入一个组」）要再让开一点：
+   12 是卡与卡的距离，卡片和「下一块」之间该是 20。 */
+.fold-gap{margin-top:20px}
+/* 卡后面紧跟一句说明时别贴着卡边 */
+.card+.note{margin-top:12px}
 .fold>summary{list-style:none;cursor:pointer;display:flex;align-items:center;
   gap:8px;min-height:44px;font-size:12px;color:var(--brand-ink)}
 .fold>summary::-webkit-details-marker{display:none}
@@ -526,7 +534,9 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .gap .gx{font-size:11px;color:var(--ink-3)}
 .gap[open] .gx{opacity:0}
 .gap .gi{padding:6px 13px;font-size:11px;color:var(--ink-3)}
-.setrow{display:flex;align-items:center;gap:10px;min-height:44px;
+/* 设置行按 §4.7 的列表行节奏：64 高、行间一条发丝线。
+   原来是 44——和按钮同高，一列下来控件几乎连成一串，看着像贴住的卡片。 */
+.setrow{display:flex;align-items:center;gap:10px;min-height:64px;
   border-bottom:1px solid var(--line2)}
 .setrow:last-of-type{border-bottom:0}
 /* 标签列固定 52px：「转让组长」「路线共享」都是四字，44px 会折成两行。
@@ -534,7 +544,8 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .setrow>span{font-size:12px;color:var(--muted)}
 .setrow>span:first-child{flex:0 0 52px;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
-.setrow input,.setrow select{flex:1 1 auto;min-width:0;min-height:44px}
+.setrow input,.setrow select{flex:1 1 auto;min-width:0;min-height:44px;
+  max-width:240px}
 /* 组页的表单输入：32px 是浏览器默认，手机上又细又难点。统一 44。 */
 .kvline input,.kvline select{min-height:44px;min-width:0}
 .setrow>.btn,.setrow>button{flex:0 0 auto}

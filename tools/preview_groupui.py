@@ -221,9 +221,39 @@ def main() -> int:
     from garmin_cn import group as G
     from garmin_cn import groupui as GU
 
+    from garmin_cn import account as AC
+    AC.state = lambda: {"logged_in": True, "label": "laoli@example.com"}  # type: ignore
+    AC.me = lambda: {"ok": True, "nickname": "老李"}                      # type: ignore
     G.detail = lambda gid: DETAIL                     # type: ignore[assignment]
     G.board = lambda gid, rng="week", today=None: BOARD   # type: ignore[assignment]
     G.challenge_list = lambda gid, today=None: CHALLENGES  # type: ignore[assignment]
+    G.groups = lambda: {"ok": True, "groups": [  # type: ignore[assignment]
+        {"id": 1, "name": "周末拉练队", "role": "owner", "member_count": 4,
+         "week": {"rank": 2, "total": 4, "km": 38.1},
+         "honors": {"rank": 2, "total": 4, "total_km": 93.2, "goal_km": 39,
+                    "shirts": [{"name": "黄衫", "title": "里程王", "color": "#E8C43A", "got": False},
+                               {"name": "绿衫", "title": "出勤王", "color": "#3FA76A", "got": True},
+                               {"name": "圆点衫", "title": "爬升王", "color": "#D8DEE9",
+                                "pattern": "dots", "got": False},
+                               {"name": "白衫", "title": "进步王", "color": "#F2F5FA", "got": False},
+                               {"name": "红衫", "title": "计划完成王", "color": "#D9534F", "got": False},
+                               {"name": "蓝衫", "title": "连续王", "color": "#4C8DF6", "got": True}],
+                    "explorer": 7, "explore_min": 5}},
+        {"id": 2, "name": "公司跑团", "role": "member", "member_count": 18,
+         "week": {"rank": 11, "total": 18, "km": 12.4},
+         "honors": {"rank": 11, "total": 18, "total_km": 612.8, "goal_km": None,
+                    "shirts": [{"name": "黄衫", "title": "里程王", "color": "#E8C43A", "got": False},
+                               {"name": "绿衫", "title": "出勤王", "color": "#3FA76A", "got": False},
+                               {"name": "圆点衫", "title": "爬升王", "color": "#D8DEE9",
+                                "pattern": "dots", "got": False},
+                               {"name": "白衫", "title": "进步王", "color": "#F2F5FA", "got": False},
+                               {"name": "红衫", "title": "计划完成王", "color": "#D9534F", "got": False},
+                               {"name": "蓝衫", "title": "连续王", "color": "#4C8DF6", "got": False}],
+                    "explorer": 0, "explore_min": 5}},
+        {"id": 3, "name": "小区夜跑", "role": "member", "member_count": 2,
+         "week": {"rank": 1, "total": 2, "km": 6.0},
+         "honors": {"rank": 1, "total": 2, "total_km": 6.0, "goal_km": None,
+                    "shirts": [], "explorer": 0, "explore_min": 5}}]}
     G.challenge_get = lambda gid, cid, today=None: {        # type: ignore[assignment]
         "ok": True, "hidden": 1,
         "challenge": next(c for c in CHALLENGES["challenges"] if c["id"] == cid),
@@ -287,7 +317,8 @@ def main() -> int:
                          ("feedone", GU.feed_page("TOK", GID, "", 3)),
                          ("board", GU.board_page("TOK", GID)),
                          ("boardmonth", GU.board_page("TOK", GID, "", "month")),
-                         ("challenge", GU.challenge_page("TOK", GID, 1))):
+                         ("challenge", GU.challenge_page("TOK", GID, 1)),
+                         ("groups", GU.groups_page("TOK", "", force_list=True))):
         for prefix, sub in (("/content/", "garmin_cn/content"),):
             _html = _html.replace(f'"{prefix}', f'"{ (ROOT / sub).as_uri()}/')
         _html = _html.replace("</body>", '<style>html{background:#05080d}'
