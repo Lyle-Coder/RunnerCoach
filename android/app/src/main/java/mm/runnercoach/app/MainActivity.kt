@@ -134,6 +134,9 @@ class MainActivity : Activity() {
     /** 系统「用 RunnerCoach 打开 GPX」传进来的文件；等服务起来后再导入。 */
     private var pendingGpx: Uri? = null
 
+    /** 点通知进来时要跳的组；服务没起来时先存着（0 = 没有）。 */
+    private var pendingGid = 0
+
     /** 附件要落到哪一场：按钮上带着 slug，不回落到「下一场」 */
     private var pendingAttachSlug: String? = null
     // 页面里 <input type=file> 的回调，选完照片要把 Uri 交回去，否则 WebView 一直等
@@ -147,6 +150,8 @@ class MainActivity : Activity() {
         // 从文件管理器 / 微信「其他应用打开」进来时，intent 已经带着 GPX 了；
         // 本地服务还没起，先记下来，bootServer 完成后再导入。
         pendingGpx = gpxFrom(intent)
+        // 点「小组通知」进来时带着组 id，同样等服务起来再跳
+        pendingGid = intent.getIntExtra("gid", 0)
 
         // Python 侧的数据目录：APK 里的代码在只读 assets，必须指到 filesDir。
         // 一定要在 Python.start() 之前设好，所以放在最前面。
@@ -381,6 +386,12 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // 点小组通知进来时带着组 id。与 GPX 不会同时出现，先判 gid。
+        val g = intent?.getIntExtra("gid", 0) ?: 0
+        if (g > 0) {
+            openGroup(g)
+            return
+        }
         val u = gpxFrom(intent) ?: return
         if (port > 0) importGpx(u) else pendingGpx = u
     }
@@ -496,6 +507,19 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         if (this::web.isInitialized) web.destroy()
         super.onDestroy()
+    }
+
+    /**
+     * 点「小组通知」进来：直接进那个组，而不是停在今日页让用户自己找。
+     *
+     * 服务还没起来就把 gid 存着（`pendingGid`），bootServer 完成后补跳。
+     */
+    private fun openGroup(gid: Int) {
+        if (port <= 0) {
+            pendingGid = gid
+            return
+        }
+        ui { web.loadUrl("http://127.0.0.1:" + port + "/groups/" + gid) }
     }
 
     /**
@@ -895,6 +919,12 @@ class MainActivity : Activity() {
             pendingGpx = null
             importGpx(u)
         }
+        // 点通知进来的：服务刚起来，直接送到那个组
+        if (pendingGid > 0) {
+            val g = pendingGid
+            pendingGid = 0
+            openGroup(g)
+        }
 
         // 首次装完是空库，直接把登录框弹出来，别让人对着一页「还没有东西」猜
         val s = apiCall("status")
@@ -908,6 +938,30 @@ class MainActivity : Activity() {
         // 后台补传：周期任务兜底（6 小时一次）。已排过就什么都不做，
         // 所以每次启动都调是安全的——它同时负责「job 被系统清掉后重排」。
         BgSync.schedule(this)
+        // 小组通知要 Android 13 的通知权限。延迟 8 秒避开首屏和登录框，
+        // 只问一次：反复弹窗比没有通知更烦人。
+        ui { web.postDelayed({ askNotifyPermission() }, 8000) }
+    }
+
+    /**
+     * 问一次通知权限。
+     *
+     * 只在第一次问（SharedPreferences 记一笔）：用户拒绝了就是不想收，
+     * 再问第二次只会让人反感。没有权限时系统会静默丢弃通知，
+     * 所以这里不处理「拒绝」也要有下文——Notification 那边会打一行 log。
+     */
+    private fun askNotifyPermission() {
+        if (android.os.Build.VERSION.SDK_INT < 33) return
+        if (Notify.allowed(this)) return
+        val sp = getSharedPreferences("rc_notify", MODE_PRIVATE)
+        if (sp.getBoolean("asked", false)) return
+        sp.edit().putBoolean("asked", true).apply()
+        try {
+            requestPermissions(
+                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFY)
+        } catch (t: Throwable) {
+            Log.w(TAG, "通知权限申请失败", t)
+        }
     }
 
     private fun setStatus(s: JSONObject) {
@@ -5611,6 +5665,8 @@ class MainActivity : Activity() {
         const val REQ_FILE_CHOOSER = 1007
         /** 系统日历读写权限申请 */
         const val REQ_CALENDAR = 1008
+        /** 通知权限（Android 13+）。没授权时通知会被系统静默丢弃，不报错。 */
+        const val REQ_NOTIFY = 1010
         /** 高德地图包名：直接唤起导航要用，Android 11+ 还需在 Manifest 声明 <queries> */
         const val AMAP_PKG = "com.autonavi.minimap"
 

@@ -759,6 +759,60 @@ def main() -> int:
     check("删完不在列表里",
           all(int(x["id"]) != _cid for x in r["rows"][0]["recent"]), str(r["rows"][0]))
 
+    # ---------------- 通知源（/news）
+    print("\n7. 通知源")
+    # 这一段全在断言「since 之后」，而整套测试在同一秒内跑完：真实时间下
+    # created_at 会和 since 撞秒，`>` 判定就漏。让 groups 的时钟每次调用
+    # 走 10 秒，边界才干净。
+    _orig_now = groups._now
+    # 起点必须比前面几组用例造的数据更晚：那些数据是真实时间写的，
+    # 时钟要是从头开始，`at > since` 会把它们全带进来。
+    _clock = [_orig_now() + 100]
+
+    def _tick() -> int:
+        _clock[0] += 10
+        return _clock[0]
+
+    groups._now = _tick
+    try:
+        # 前面几段用例已经把这组的「每天 5 个赛事」额度用完了
+        for _k in [k for k in groups._RATE if k[1] == "challenge"]:
+            groups._RATE.pop(_k, None)
+        st, r = req("GET", f"/v1/group/{gid}/news?since=0", None, a)
+        check("since=0 只回时间戳，不补历史",
+              st == 200 and not r.get("comments") and not r.get("challenges"), f"{st} {r}")
+        _base = int(r.get("now") or 0)
+
+        st, r = req("POST", f"/v1/group/{gid}/comment",
+                    {"act": _aid, "text": "今晚一起跑？"}, b)
+        st, r = req("GET", f"/v1/group/{gid}/news?since={_base}", None, a)
+        _c = r.get("comments") or []
+        check("别人评论我的动态会进 news",
+              len(_c) == 1 and _c[0].get("on_my_act") is True, str(r))
+        check("news 只给摘要，不带正文和剪影",
+              "rows" not in r and all("shape" not in x for x in _c), str(list(r)))
+        check("评论正文截断到 40 字",
+              bool(_c) and len(_c[0]["text"]) <= 40, str(_c))
+
+        st, r = req("POST", f"/v1/group/{gid}/comment",
+                    {"act": _aid, "text": "我自己回自己"}, a)
+        st, r = req("GET", f"/v1/group/{gid}/news?since={_base}", None, a)
+        check("自己发的评论不通知自己", len(r.get("comments") or []) == 1, str(r))
+
+        st, _cr = req("POST", f"/v1/group/{gid}/challenge/create",
+                      {"title": "周末拉个长距离", "kind": "distance", "target": 30000,
+                       "start_date": "2026-11-16", "end_date": "2026-11-22",
+                       "today": "2026-11-18"}, a)
+        check("建赛事成功（通知的前置）", st == 200, f"{st} {_cr}")
+        st, r = req("GET", f"/v1/group/{gid}/news?since={_base}", None, b)
+        check("新赛事通知给其他成员",
+              len(r.get("challenges") or []) == 1, str(r))
+        st, r = req("GET", f"/v1/group/{gid}/news?since={_base}", None, a)
+        check("自己建的赛事不通知自己",
+              not (r.get("challenges") or []), str(r))
+    finally:
+        groups._now = _orig_now
+
     # 隐私：关共享的人既不显示、也不能被评论
     st, r = req("POST", f"/v1/group/{gid}/share", {"share": "off"}, b)
     st, r = req("GET", f"/v1/group/{gid}/feed?today=2026-11-18", None, a)
