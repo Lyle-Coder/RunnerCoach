@@ -567,7 +567,7 @@ def verdict(st: dict, ctl_delta: float | None = None) -> tuple[str, str]:
     if pct <= -0.8:
         if up:
             return (f"一周 {pct:+.1f}%，同时负荷在涨：能量摄入可能跟不上，"
-                    f"留意疲劳、晨脉升高、配速掉——这是 RED-S 的早期组合", "warn")
+                    f"留意疲劳、晨脉升高、配速下降，这是 RED-S 的早期组合", "warn")
         return (f"一周 {pct:+.1f}%，主动减重节奏里算偏快（建议 ≤0.5~0.7%/周），"
                 f"注意蛋白质与力量训练，别掉肌肉", "watch")
     if pct >= 0.8:

@@ -480,8 +480,7 @@ EMPTY = {
     },
     "nogroup": {
         "title": "你还没有队",
-        "prose": "一个人也能跑。只是这一段路是按全队每周目标折算的——"
-                 "没有队，就没有这一段。",
+        "prose": "这一段路按全队每周目标折算，需要先有队。",
         "why": "建一个队，或者拿邀请码加入。",
         "cta": ("去建队或加入", "/groups"),
     },
@@ -612,8 +611,8 @@ def run_page(token: str, message: str = "", data: dict | None = None,
     stranded = data.get("stranded") or []
     if status == "stranded":
         stuck = ('<div class="stuck"><div class="t">你被困住了</div>'
-                 '<div class="d">补给见底又走了冒险的那条路。这一周不产格，'
-                 "等队友来救——24 小时内有人到，这一趟就还能算。</div></div>")
+                 '<div class="d">补给见底，走了冒险的路线。这周不产格，'
+                 "等队友来救；24 小时内有人到就算数。</div></div>")
     elif stranded:
         stuck = ('<div class="stuck"><div class="t">有人困在路上了</div>'
                  f'<div class="d">{len(stranded)} 人在等你。去接他要花掉自己'
@@ -627,8 +626,7 @@ def run_page(token: str, message: str = "", data: dict | None = None,
     tgt = (f'<div class="card" style="margin-top:18px">'
            '<div class="kvline"><span>本周目标</span>'
            f'<b>{wt:g} km</b></div>'
-           '<p class="note">报一个低于计划的量，这周按它算格数——'
-           "减量周不该因为跑得少就走不动。只能调小。</p>"
+           '<p class="note">报一个低于计划的量，这周按它算格数。只能调小。</p>'
            f'<form action="/__run/target" method="post" style="margin-top:6px">'
            f'<input type="hidden" name="token" value="{esc(token)}">'
            '<div class="kvline"><span>改成</span><b>'
@@ -971,8 +969,8 @@ def _people_block(people: list, km: float, hidden: int) -> str:
     """
     if not people:
         return ('<div class="psect"><div class="psh"><span>这一季，谁走了多少</span></div>'
-                '<p class="note">这一段没有任何里程记录——'
-                '要么队里只有你一个人，要么大家都关掉了共享。</p></div>')
+                '<p class="note">这一段没有里程记录。可能只有你一个人，'
+                '或大家都关了共享。</p></div>')
 
     rows = ""
     for p in people:

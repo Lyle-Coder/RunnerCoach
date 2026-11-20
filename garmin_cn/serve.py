@@ -651,7 +651,7 @@ class _Handler(SimpleHTTPRequestHandler):
         base = re.sub(r"[^\w.\-\u4e00-\u9fa5 ]+", "_", base).strip() or "附件"
         ext = os.path.splitext(base)[1].lower()
         if ext not in E.ATTACH_EXT:
-            return self._json({"ok": False, "error": "不收这种文件：%s" % (ext or "无扩展名")}, 400)
+            return self._json({"ok": False, "error": "不支持这个文件类型：%s" % (ext or "无扩展名")}, 400)
         stem = os.path.splitext(base)[0]
         dst = E._dir(ev["slug"]) / base
         k = 2
@@ -1025,7 +1025,7 @@ class _Handler(SimpleHTTPRequestHandler):
                 if not r["ok"]:
                     raise ValueError(r["error"])
                 return self._back(ev["slug"], anchor="import",
-                                  ok="已沿用 %d 段 —— 核对改线后，在「调整 → CP 表」里改"
+                                  ok="已沿用 %d 段。核对改线后在「调整 → CP 表」改"
                                      % r["n_segments"])
             # /__event/import：粘贴规程文字
             ev = E.load_event(slug)
@@ -1036,9 +1036,9 @@ class _Handler(SimpleHTTPRequestHandler):
             r = I.apply(ev, draft, by="user")
             if not r["ok"]:
                 bad = "；".join(i["msg"] for i in I.errors(r["issues"])[:2])
-                raise ValueError("数据没通过校验，未写入 —— " + bad)
+                raise ValueError("数据没通过校验，未写入：" + bad)
             return self._back(ev["slug"], anchor="import",
-                              ok="已导入 %d 个 CP —— 往下滑核对「赛况与余量」里的余量"
+                              ok="已导入 %d 个 CP。往下核对「赛况与余量」"
                                  % r["n_segments"])
         except ValueError as e:
             return self._back(slug, err=str(e), anchor="import")
@@ -1095,7 +1095,7 @@ class _Handler(SimpleHTTPRequestHandler):
                          "实在认不出就手动贴文字。"}, 400)
         if r["problems"]:
             return self._json({"ok": False,
-                               "error": "识别结果没通过校验，未写入 —— "
+                               "error": "识别结果没通过校验，未写入："
                                         + "；".join(r["problems"][:2])}, 400)
 
         try:
@@ -1105,7 +1105,7 @@ class _Handler(SimpleHTTPRequestHandler):
         if not out.get("ok"):
             bad = "；".join(i["msg"] for i in I.errors(out.get("issues") or [])[:2])
             return self._json({"ok": False,
-                               "error": "数据没通过校验，未写入 —— " + (bad or "未知原因")}, 400)
+                               "error": "数据没通过校验，未写入：" + (bad or "未知原因")}, 400)
         return self._json({"ok": True, "n": out.get("n_segments") or len(r["segments"]),
                            "model": r.get("model") or "",
                            "km": r["segments"][-1]["km"]})

@@ -581,7 +581,7 @@ class CorosCloud:
         out = self._req("POST", "/activity/detail/download", form=form)
         url = ((out.get("data") or {}).get("fileUrl")) or ""
         if not url:
-            raise CorosError("高驰没给下载链接（该活动类型可能不支持这种文件）")
+            raise CorosError("高驰没有提供下载链接，这个类型可能不支持")
         req = urllib.request.Request(url, headers={"User-Agent": UA})
         try:
             with urllib.request.urlopen(req, timeout=40) as r:

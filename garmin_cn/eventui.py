@@ -607,10 +607,9 @@ def _booking_html(slug: str, hid: str) -> str:
     head = ('<div class="sub2"><b>该订了</b> · 按比赛日 '
             f'<b>{race_txt}</b> 倒推：航班 {rules["flight"]} 天 / '
             f'高铁 {rules["train"]} 天 / 住宿 {rules["stay"]} 天。'
-            '到点由<b>系统日历</b>推送通知，不用打开 App。'
-            '<b>填好对应类型的行程就自动视为已订</b>，提醒和日历事件一起停；'
-            '本地比赛不坐飞机这类情况，直接点「不用提醒」也行。'
-            '错过了也留在这里，不会悄悄消失。</div>')
+            '到点由<b>系统日历</b>提醒，不用打开 App。'
+            '<b>填好对应类型的行程即视为已订</b>，提醒和日历一起停。'
+            '不坐飞机就点「不用提醒」。</div>')
     return ('<div class="card">' + head + "".join(rows)
             + '<div class="pager"><div class="btn" data-act="calendarSync">'
               '同步到系统日历</div></div>' + "</div>")
