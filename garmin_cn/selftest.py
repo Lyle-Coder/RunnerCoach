@@ -3011,6 +3011,25 @@ def run() -> int:
     # 11) 爬楼版式只对跑步类生效：徒步/骑行有真实配速，不能被套上爬楼口径
     assert 'work_b0.get("name") == "爬升" and th["is_run"]' in _ac_src, \
         "爬楼版式没有限定运动类型，徒步/骑行会被误降级"
+    # 12) 越野不被误判成爬楼：轨迹横跨 2 km 以上就不走降级版式
+    _far = [[34.12 + i * 0.001, 108.83 + i * 0.001] for i in range(20)]
+    assert _AC._track_span_m(_far) > 2000, "跨度算错了，越野会被当成爬楼"
+    assert _AC._track_span_m([]) == 0.0, "空轨迹应返回 0"
+    _near = [[34.1200 + i * 0.00002, 108.8300] for i in range(20)]
+    assert _AC._track_span_m(_near) < 2000, "楼里的轨迹被算大了"
+    # 13) 爬楼课的走势图第二条带是心率，不是步幅
+    _spts = [{"t": 1000 + i * 10, "spd": 2.6, "hr": 130 + i % 9, "cad": 188,
+              "stride": 91, "dist": i * 26.0} for i in range(60)]
+    _sp_stair = _AC.spark_svg(_spts, 400, 140, _AC.theme_for("running"), stair=True)
+    _sp_run = _AC.spark_svg(_spts, 400, 140, _AC.theme_for("running"))
+    assert "心率" in _sp_stair and "步幅" not in _sp_stair, "爬楼走势图还在画步幅"
+    assert "步幅" in _sp_run, "普通跑步的步幅被误删"
+    # 爬楼平均速度只有 1.9 m/s，2.2 的门槛会把整段滤掉，这里要能画出来
+    _slow = [{"t": 1000 + i * 10, "spd": 1.9, "hr": 130 + i % 9, "cad": 188,
+              "stride": 91, "dist": i * 19.0} for i in range(60)]
+    assert "无步态时序" not in _AC.spark_svg(
+        _slow, 400, 140, _AC.theme_for("running"), stair=True), \
+        "慢速爬楼的走势图又被速度门槛滤空了"
     # 列表行：标题从单行省略改成最多两行，参数本来就换行
     assert "display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2" \
         in _ui_src, \
