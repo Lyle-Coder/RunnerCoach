@@ -210,9 +210,10 @@ class _Handler(SimpleHTTPRequestHandler):
             if len(seg) == 2 and seg[0].isdigit() and seg[1] == "export.csv":
                 return self._group_csv(int(seg[0]))
             if len(seg) == 2 and seg[0].isdigit() and seg[1] == "board":
-                # 完整榜单：周/月口径在这一页里切，不再回组页重载
+                # 完整榜单：周/月口径在这一页里切；月榜还有里程/综合两套排序
                 _r = "month" if (q.get("range") or [""])[0] == "month" else "week"
-                return self._html(groupui.board_page(tok, int(seg[0]), msg, _r))
+                _by = "comp" if (q.get("by") or [""])[0] == "comp" else "dist"
+                return self._html(groupui.board_page(tok, int(seg[0]), msg, _r, _by))
             if len(seg) == 3 and seg[0].isdigit() and seg[1] == "route" \
                     and seg[2].isdigit():
                 # 单条路线：点开才取坐标，清单不带点

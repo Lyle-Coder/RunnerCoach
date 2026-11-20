@@ -1827,12 +1827,14 @@ FEED_PAGE = 20
 BOARD_TOP = 10
 
 
-def _rank_row(i: int, x: dict, marks: str = "") -> str:
+def _rank_row(i: int, x: dict, marks: str = "", value_m=None) -> str:
     cls = "rank me" if x.get("is_me") else "rank"
     mk = f'<span class="mk">{marks}</span>' if marks else ""
+    # value_m：综合榜要显示综合距离，不能用 distance_m（那只是跑步）
+    _v = x.get("distance_m") if value_m is None else value_m
     return (f'<div class="{cls}"><span class="no">{i}</span>'
             f'<span class="nm">{esc(x.get("alias"))}</span>{mk}'
-            f'<span class="km">{_km(x.get("distance_m"))}<i>km</i></span></div>')
+            f'<span class="km">{_km(_v)}<i>km</i></span></div>')
 
 
 def _rank_marks(x: dict, marks_of: dict[int, str], min_cells: int) -> str:
@@ -2542,7 +2544,8 @@ def audit_page(token: str, gid: int, message: str = "") -> str:
                 back=("返回设置", f"/groups/{gid}/settings"))
 
 
-def board_page(token: str, gid: int, message: str = "", rng: str = "week") -> str:
+def board_page(token: str, gid: int, message: str = "", rng: str = "week",
+               by: str = "dist") -> str:
     """完整榜单（周 / 月两个口径）。
 
     为什么单开一页，而不是继续把完整榜塞在组页：
@@ -2558,6 +2561,9 @@ def board_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
 
     today = dt.date.today().isoformat()
     rng = "month" if rng == "month" else "week"
+    # 综合榜只有月榜有。周榜要挂衫和探索徽章，再加一种排序会让
+    # 「本周谁是第一」变得说不清。
+    by = "comp" if (rng == "month" and by == "comp") else "dist"
     d = G.detail(gid)
     if not d.get("ok"):
         body = (_msg(message)
@@ -2567,7 +2573,7 @@ def board_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
     g = d["group"]
     _n = int(g.get("member_count") or 0)
 
-    b = G.board(gid, rng, today)
+    b = G.board(gid, rng, today, by)
     if not b.get("ok"):
         body = (_msg(message)
                 + f'<div class="card"><p class="note">{esc(b.get("error") or "拉不到榜单")}</p>'
@@ -2576,7 +2582,10 @@ def board_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
 
     rows = b.get("rows") or []
     _from, _to = str(b.get("from") or "")[5:], str(b.get("to") or "")[5:]
-    _tot = float((b.get("summary") or {}).get("total_distance_m") or 0) / 1000.0
+    _sum = b.get("summary") or {}
+    _tot = float((_sum.get("total_comp_m") if by == "comp"
+                  else _sum.get("total_distance_m")) or 0) / 1000.0
+    _ride_tot = float(_sum.get("total_ride_m") or 0) / 1000.0
 
     # 周榜才挂衫和探索徽章。取不到 season 就整块降级（不挂图标而已）。
     _marks_of: dict = {}
@@ -2595,12 +2604,27 @@ def board_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
                                 _pat_of.get(str(_x.get("id") or ""), ""), True, "jr",
                                 f'{_x.get("name") or ""}·{_x.get("title") or ""}')
             _marks_of[int(_p.get("user_id") or 0)] = _one
-        _marks_of[str(_p.get("alias") or "")] = _one   # 老服务端没有 user_id 时兜底
+            # 老服务端不返回 user_id，退回按名字挂——所以这条要在循环里，
+            # 每人挂自己的。原来写在循环外，只挂了最后一个人，而且
+            # `people` 为空时 `_p` 未定义，整个周榜页会 500。
+            _marks_of[str(_p.get("alias") or "")] = _one
         _min_cells = int(((_se.get("explore") or {}).get("min_cells")) or 5)
 
-    rank_rows = "".join(_rank_row(i, x, _rank_marks(x, _marks_of, _min_cells)
-                                  if rng == "week" else "")
-                        for i, x in enumerate(rows, 1))
+    if by == "comp":
+        # 综合榜：主数字是综合距离，名字后面跟一句分项——
+        # 只说「综合 68」而不给「跑 42 / 骑 96」，用户会以为骑行没算进去。
+        def _split_note(x: dict) -> str:
+            _rk = float(x.get("ride_m") or 0) / 1000.0
+            if _rk <= 0:
+                return ""
+            return f'跑 {_km(x.get("distance_m"))} · 骑 {_rk:g}'
+
+        rank_rows = "".join(_rank_row(i, x, _split_note(x), x.get("comp_m"))
+                            for i, x in enumerate(rows, 1))
+    else:
+        rank_rows = "".join(_rank_row(i, x, _rank_marks(x, _marks_of, _min_cells)
+                                      if rng == "week" else "")
+                            for i, x in enumerate(rows, 1))
     if not rank_rows:
         rank_rows = ('<p class="note">'
                      + ("本月还没有人上报。" if rng == "month" else "本周还没有人上报。")
@@ -2610,7 +2634,9 @@ def board_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
         rank_rows += f'<p class="note">另有 {hidden} 人关闭了共享，不参与排名。</p>'
 
     _mine = next((i for i, x in enumerate(rows, 1) if x.get("is_me")), 0)
-    _my_km = float(next((x.get("distance_m") for x in rows if x.get("is_me")), 0) or 0) / 1000.0
+    _my_m = next(((x.get("comp_m") if by == "comp" else x.get("distance_m"))
+                  for x in rows if x.get("is_me")), 0) or 0
+    _my_km = float(_my_m) / 1000.0
     _me_line = ""
     if _mine:
         _me_line = (f'<div class="kvrows"><span class="k">我</span>'
@@ -2625,22 +2651,40 @@ def board_page(token: str, gid: int, message: str = "", rng: str = "week") -> st
            + '>本周</a>'
            f'<a href="/groups/{gid}/board?range=month"'
            + (' class="ok"' if rng == "month" else "") + '>本月</a></div>')
+    # 月榜才有的第二层：里程（只跑步）/ 综合（骑行按 4:1 折算）。
+    # 周榜不给这一层——周榜上的衫和徽章都是按跑步口径结算的，混进来会自相矛盾。
+    if rng == "month":
+        tab += (f'<div class="seg">'
+                f'<a href="/groups/{gid}/board?range=month"'
+                + (' class="ok"' if by == "dist" else "") + '>里程</a>'
+                f'<a href="/groups/{gid}/board?range=month&by=comp"'
+                + (' class="ok"' if by == "comp" else "") + '>综合</a></div>')
 
     _span = ("本周" if rng == "week" else "本月") + f" {_from} – {_to}"
     _span += "（周一–周日）" if rng == "week" else "（自然月）"
-    note = ('<p class="note">月榜只排里程。衫（里程王 / 爬升王…）和探索徽章'
-            '都是按周结算的，月初到月末攒的那几件不在这一页。</p>'
-            if rng == "month" else
-            '<p class="note">按里程排；里程一样时，跑的天数多的在前。</p>')
+    if by == "comp":
+        _span += f" · 全组综合 {_tot:g} km"
+        if _ride_tot > 0:
+            _span += f"（其中骑行 {_ride_tot:g} km，按 4:1 折）"
+        note = ('<p class="note">综合距离 = 跑步 + 骑行 ÷ 4。'
+                '这个折算只在综合榜用：衫、探索徽章和赛季积分仍按跑步算。</p>')
+    elif rng == "month":
+        _span += f" · 全组 {_tot:g} km"
+        note = ('<p class="note">月榜只排里程。衫（里程王 / 爬升王…）和探索徽章'
+                '都是按周结算的，月初到月末攒的那几件不在这一页。</p>')
+    else:
+        _span += f" · 全组 {_tot:g} km"
+        note = '<p class="note">按里程排；里程一样时，跑的天数多的在前。</p>'
 
     _more = ("本周荣誉", f"/groups/{gid}/shirts") if rng == "week" else ""
     body = (_msg(message)
             + tab
-            + f'<p class="note">{esc(_span)} · 全组 {_tot:g} km</p>'
+            + f'<p class="note">{esc(_span)}</p>'
             + _me_line
             + sec("完整榜单", note + '<div class="flat">' + rank_rows + '</div>',
                   more=_more))
     return page("GROUP", "完整榜单",
-                f'{_n} 人 · ' + ("本周" if rng == "week" else "本月"), body,
+                f'{_n} 人 · ' + ("本周" if rng == "week"
+                                 else ("本月综合" if by == "comp" else "本月")), body,
                 foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
                 back=("返回小组", f"/groups/{gid}"))
