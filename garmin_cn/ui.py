@@ -418,6 +418,12 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .rank .km i{font-style:normal;font-size:var(--fs-micro,11px);font-weight:400;
   color:var(--ink-3);margin-left:2px}
 .rank.me{background:var(--brand-soft);border-radius:10px;margin:0 -8px;padding:0 8px}
+/* 榜单被截到前 10 时，我和前 10 之间那一行省略号：不是数据，是「这里断了」。
+   不给它 56px 行高，否则空出一块，看着像缺了第 11 名。 */
+.rk-gap{display:flex;align-items:center;justify-content:center;height:24px;
+  color:var(--ink-3);font-size:12px;letter-spacing:2px}
+/* 「完整榜单」这类区块末尾的唯一动作：占满一行，和上面的榜单同宽 */
+.btn.full{display:flex;width:100%;box-sizing:border-box}
 .chal{padding:10px 0;border-bottom:1px solid var(--line2)}
 .chal:last-child{border-bottom:0}
 .chal .t{font-size:14px;font-weight:600;color:var(--ink)}

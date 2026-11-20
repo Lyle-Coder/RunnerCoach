@@ -205,13 +205,21 @@ class _Handler(SimpleHTTPRequestHandler):
                 # 动态页已经并进组页（用户要求：底部接着数据流，滑回顶部就是小组）。
                 # 旧链接（收藏、以前发的）落到对应的组页并锚到动态区。
                 return self._see_other(f"/groups/{int(seg[0])}#feed")
+            if len(seg) == 2 and seg[0].isdigit() and seg[1] == "board":
+                # 完整榜单：周/月口径在这一页里切，不再回组页重载
+                _r = "month" if (q.get("range") or [""])[0] == "month" else "week"
+                return self._html(groupui.board_page(tok, int(seg[0]), msg, _r))
             if len(seg) == 1 and seg[0].isdigit():
-                rng = "month" if (q.get("range") or [""])[0] == "month" else "week"
+                # 老链接的 ?range=month（组页曾支持月榜）统一送到榜单页：
+                # 组页只做本周榜，月口径归 /board 管。
+                if (q.get("range") or [""])[0] == "month":
+                    return self._see_other(f"/groups/{int(seg[0])}/board?range=month")
                 try:
                     _fn = int((q.get("feed") or ["0"])[0] or 0)
+                    _fc = int((q.get("open") or ["0"])[0] or 0)
                 except ValueError:
-                    _fn = 0
-                return self._html(groupui.group_page(tok, int(seg[0]), msg, rng, _fn))
+                    _fn, _fc = 0, 0
+                return self._html(groupui.group_page(tok, int(seg[0]), msg, _fn, _fc))
             return self._json({"ok": False, "error": "没有这个页面"}, 404)
         if u.path == "/sports":
             if not self._is_loopback():
@@ -1644,18 +1652,29 @@ class _Handler(SimpleHTTPRequestHandler):
                                if r.get("ok") else (r.get("error") or "上报失败，已排队"))
                         back = f"/groups/{gid}/settings"
                     elif act == "goal":
-                        # 目标为空就当没填，不要拿 0 去撞服务端的范围校验
+                        # 目标是可选的：空着就是「只改预言」。以前这里硬要求
+                        # 填 km，于是「我只想猜别人」这件事根本做不了。
                         raw = (values.get("km") or "").strip()
-                        if not raw:
-                            raise ValueError("先填个目标里程（km）")
-                        try:
-                            km = float(raw)
-                        except ValueError:
-                            raise ValueError("目标要是数字，单位 km") from None
+                        km = None
+                        if raw:
+                            try:
+                                km = float(raw)
+                            except ValueError:
+                                raise ValueError("目标要是数字，单位 km") from None
                         pred = (values.get("predict") or "").strip()
-                        r = G.set_goal(gid, km, int(pred) if pred.isdigit() else None)
-                        msg = (f"本周目标 {r.get('km'):g} km" if r.get("ok")
-                               else (r.get("error") or "报目标失败"))
+                        _p = int(pred) if pred.isdigit() else None
+                        r = G.set_goal(gid, km, _p, touch_predict=True)
+                        if not r.get("ok"):
+                            msg = r.get("error") or "保存失败"
+                        elif km is not None and _p:
+                            msg = f"本周目标 {r.get('km'):g} km，预言已记下"
+                        elif km is not None:
+                            msg = f"本周目标 {r.get('km'):g} km"
+                        elif _p:
+                            msg = "预言已记下"
+                        else:
+                            # 目标没改、也没选人 = 撤掉这周的预言（或本来就空）
+                            msg = "已保存"
                     elif act == "mapshare":
                         from . import appapi as _A
                         from .store import Store as _Store
@@ -1685,8 +1704,15 @@ class _Handler(SimpleHTTPRequestHandler):
                         r = G.comment(gid, _aid,
                                       values.get("text") or "", values.get("emoji") or "")
                         if r.get("ok"):
-                            return self._see_other(f"/groups/{gid}/feed?act={_aid}")
+                            # 回到**这条动态**，不是组页顶部：动态已经并进组页，
+                            # 原来跳 `/feed` 会被 303 到 `#feed`，等于重新加载
+                            # 整页——刚打的那条评论连同所有展开的卡片一起收起。
+                            # `?open=` 让服务端把这条的评论区默认展开，滚到哪
+                            # 由 KEEP_JS 记住的位置决定。
+                            return self._see_other(
+                                f"/groups/{gid}?open={_aid}#a{_aid}")
                         msg = r.get("error") or "发不出去"
+                        back = f"/groups/{gid}?open={_aid}"
                     elif act in ("comment_edit", "comment_del"):
                         # 改和删共用一张表单（按钮带 op=save / del），所以这里
                         # 先看 op 再决定走哪条。只能动自己的：服务端按 user_id
@@ -1707,8 +1733,9 @@ class _Handler(SimpleHTTPRequestHandler):
                         # 改完/删完回原动态，别把人扔回列表
                         if _aid:
                             return self._see_other(
-                                f"/groups/{gid}/feed?act={_aid}"
-                                + (f"&msg={quote(msg)}" if msg and not r.get("ok") else ""))
+                                f"/groups/{gid}?open={_aid}"
+                                + (f"&msg={quote(msg)}" if msg and not r.get("ok") else "")
+                                + f"#a{_aid}")
                     elif act == "rotate":
                         r = G.rotate(gid)
                         msg = (f'新邀请码 {r["invite_code"]}' if r.get("ok")

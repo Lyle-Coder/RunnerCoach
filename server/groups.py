@@ -67,6 +67,19 @@ CHALLENGE_MAX_DAYS = 90
 CHALLENGE_MAX_RUNNING = 3
 CHALLENGE_DIST_MIN, CHALLENGE_DIST_MAX = 1_000, 1_000_000    # 1–1000 km
 CHALLENGE_ACTS_MIN, CHALLENGE_ACTS_MAX = 1, 200
+CHALLENGE_ELEV_MIN, CHALLENGE_ELEV_MAX = 100, 300_000        # 累计爬升 100 m–300 km
+CHALLENGE_CELL_MIN, CHALLENGE_CELL_MAX = 5, 5_000            # 新踩格子数
+# 速度赛事比的是「全组平均配速」，target 存秒/公里（5'30" = 330）。
+# 下限 2'30" 是防手滑（填 30 会变成「必须 30 秒一公里」，永远达不成）。
+CHALLENGE_PACE_MIN, CHALLENGE_PACE_MAX = 150, 900
+# kind → (下限字段, 上限字段, 中文单位)
+CHALLENGE_KINDS = {
+    "distance": (CHALLENGE_DIST_MIN, CHALLENGE_DIST_MAX, "km"),
+    "acts": (CHALLENGE_ACTS_MIN, CHALLENGE_ACTS_MAX, "次"),
+    "elevation": (CHALLENGE_ELEV_MIN, CHALLENGE_ELEV_MAX, "m"),
+    "explore": (CHALLENGE_CELL_MIN, CHALLENGE_CELL_MAX, "格"),
+    "speed": (CHALLENGE_PACE_MIN, CHALLENGE_PACE_MAX, "秒/km"),
+}
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -865,32 +878,52 @@ def api_goal(me, gid: int, body: dict) -> dict:
     一次请求干两件事，是因为它们本来就发生在同一个动作里：周一早上你
     想「这周跑 50」，顺手就想「谁会完不成」。分成两个接口，第二个永远
     没人点。
+
+    **km 可以空着**：那是「只改预言」。原来的实现是 km 必填，于是
+    「我只想猜别人、不想定目标」和「目标没变、只想换个人猜」这两件很
+    自然的事都做不了——用户反馈的「好像不能猜别人的目标」就是这个。
+
+    `predict` 这个键**在不在**决定改不改预言：不在 = 不动；在且为空 =
+    撤掉这周的预言；在且是人 = 投/改。
     """
     uid = int(me["user_id"])
     today = _today(body.get("today"))
     wf, _wt = _week(today)
-    try:
-        km = float(body.get("km"))
-    except (TypeError, ValueError):
-        raise GroupError(400, "目标要是数字，单位 km")
-    if not GOAL_MIN_KM <= km <= GOAL_MAX_KM:
-        raise GroupError(400, f"目标要在 {GOAL_MIN_KM:g}–{GOAL_MAX_KM:g} km 之间")
 
+    km = None
+    raw = body.get("km")
+    if raw not in (None, ""):
+        try:
+            km = float(raw)
+        except (TypeError, ValueError):
+            raise GroupError(400, "目标要是数字，单位 km")
+        if not GOAL_MIN_KM <= km <= GOAL_MAX_KM:
+            raise GroupError(400, f"目标要在 {GOAL_MIN_KM:g}–{GOAL_MAX_KM:g} km 之间")
+
+    pred_given = "predict" in body
     predict = body.get("predict")
+    if km is None and not pred_given:
+        raise GroupError(400, "填个本周目标，或者选一个要猜的人")
+
     with db() as c:
         _group(c, gid)
         m = _require_member(c, gid, uid)
         if m["share_level"] == "off":
             raise GroupError(409, "你关闭了共享，报目标也不会有人看到")
-        c.execute("""
-            INSERT INTO group_goal(group_id,user_id,week_start,km,source,created_at)
-            VALUES(?,?,?,?,?,?)
-            ON CONFLICT(group_id,user_id,week_start) DO UPDATE SET
-                km=excluded.km, created_at=excluded.created_at
-        """, (gid, uid, wf.isoformat(), km,
-              str(body.get("source") or "manual"), _now()))
+        if km is not None:
+            c.execute("""
+                INSERT INTO group_goal(group_id,user_id,week_start,km,source,created_at)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(group_id,user_id,week_start) DO UPDATE SET
+                    km=excluded.km, created_at=excluded.created_at
+            """, (gid, uid, wf.isoformat(), km,
+                  str(body.get("source") or "manual"), _now()))
 
-        if predict not in (None, "", 0):
+        if pred_given and predict in (None, "", 0, "0", "none"):
+            # 撤掉预言：不写 NULL，直接删行，week 里就不会回显别人的名字
+            c.execute("DELETE FROM group_predict WHERE group_id=? AND week_start=? AND user_id=?",
+                      (gid, wf.isoformat(), uid))
+        elif pred_given:
             try:
                 target = int(predict)
             except (TypeError, ValueError):
@@ -902,8 +935,12 @@ def api_goal(me, gid: int, body: dict) -> dict:
                            " AND status='active'", (gid, target)).fetchone()
             if not tm:
                 raise GroupError(400, "这个人不在组里")
-            if target not in _goals(c, gid, wf):
+            tg = _goals(c, gid, wf)
+            if target not in tg:
                 raise GroupError(400, "他还没报本周目标，没法判他完没完成")
+            if float(tg[target]) < ranking.PAIR_MIN_KM:
+                raise GroupError(400, f"他的目标不到 {ranking.PAIR_MIN_KM:g} km，"
+                                      "没有「完不成」这回事")
             c.execute("""
                 INSERT INTO group_predict(group_id,week_start,user_id,target_uid,created_at)
                 VALUES(?,?,?,?,?)
@@ -917,7 +954,8 @@ def api_goal(me, gid: int, body: dict) -> dict:
         pred = c.execute("SELECT target_uid FROM group_predict"
                          " WHERE group_id=? AND week_start=? AND user_id=?",
                          (gid, wf.isoformat(), uid)).fetchone()
-    return {"ok": True, "week_start": wf.isoformat(), "km": round(km, 1),
+    return {"ok": True, "week_start": wf.isoformat(),
+            "km": round(km, 1) if km is not None else goals.get(uid),
             "pairs": len(pairs), "goals": len(goals),
             "predict": int(pred["target_uid"]) if pred else None}
 
@@ -973,7 +1011,9 @@ def api_week(me, gid: int, query: dict) -> dict:
                       "big": {"user_id": b_u, "alias": alias.get(b_u, ""),
                               "km": round(b_km, 1), "target": round(b_target, 1),
                               "actual": actual.get(b_u, 0.0)},
-                      "even": even})
+                      "even": even,
+                      # 让出去多少：页面要写「他多背 15 km」，不是让他自己减
+                      "handicap_km": round(max(0.0, b_target - b_km), 1)})
     # 结果用纯函数算，和 api_season 里给分的口径必须是同一份
     flat = [{"slot": p["slot"], "small_uid": p["small"]["user_id"],
              "big_uid": p["big"]["user_id"],
@@ -1006,13 +1046,24 @@ def api_week(me, gid: int, query: dict) -> dict:
                                       target_alias=alias.get(int(r["target_uid"]), ""))
                                  for r in pres["rows"]]},
             "bonus": pres["bonus"],
+            # 让分规则下发：页面要解释「他为什么多了 15 km」，写死的数字
+            # 一旦和服务端算的不一样，用户会当成 bug。
+            "pair_rule": {"min_km": ranking.PAIR_MIN_KM,
+                          "gap": ranking.PAIR_GAP_MIN,
+                          "handicap": ranking.BIG_HANDICAP,
+                          "cap": ranking.BIG_CAP,
+                          "predict_hit": ranking.PREDICT_HIT,
+                          "predict_face": ranking.PREDICT_UNDERESTIMATED},
             "goal_rows": [{"user_id": u, "alias": alias.get(u, ""), "km": round(k, 1)}
                           for u, k in sorted(goals.items(), key=lambda x: -x[1])],
-            "targets": [{"user_id": int(m["user_id"]), "alias": m["alias"]}
+            # 可猜的人：报了 ≥5 km 目标、共享开着、不是自己。带 km 一起下发，
+            # 下拉里直接显示「阿狗 40 km」——只有名字的话，猜谁全靠猜。
+            "targets": [{"user_id": int(m["user_id"]), "alias": m["alias"],
+                         "km": round(float(goals[int(m["user_id"])]), 1)}
                         for m in mem
                         if int(m["user_id"]) != uid
                         and (m["share_level"] or "summary") == "summary"
-                        and int(m["user_id"]) in goals]}
+                        and float(goals.get(int(m["user_id"])) or 0) >= ranking.PAIR_MIN_KM]}
 
 
 def api_bingo(me, gid: int, query: dict) -> dict:
@@ -1736,6 +1787,39 @@ def api_archive(me, gid: int, body: dict) -> dict:
 
 
 # ---------------------------------------------------------------- 赛事
+# 五种赛事共用一条聚合 SQL：把区间内的距离 / 时长 / 次数 / 爬升 / 格子
+# 一起 SUM 出来，再按 kind 取对应的那个。速度不能直接 SUM（它是比值），
+# 要拿 dist + dur 现算，所以干脆五个量都取。
+def _chal_cur(kind: str, dist: float, dur: float, acts: float,
+              elev: float, expl: float) -> int:
+    """把一次聚合结果换算成这个 kind 的「当前值」，单位与 target 一致。
+
+    speed 的当前值是**全组平均配速**（秒/公里），不是某个人的配速：赛事
+    是「全组一起完成」，按加权平均算才不会被一个人的慢跑拖垮整组，也不会
+    被一个 3 公里的快跑刷出假成绩。
+    """
+    if kind == "distance":
+        return int(dist or 0)
+    if kind == "acts":
+        return int(acts or 0)
+    if kind == "elevation":
+        return int(elev or 0)
+    if kind == "explore":
+        return int(expl or 0)
+    if kind == "speed":
+        d = float(dist or 0)
+        return int(round(float(dur or 0) * 1000 / d)) if d > 0 else 0
+    return 0
+
+
+def _chal_pct(kind: str, target: float, cur: float) -> float:
+    """完成度。速度是「越小越好」，所以分子分母调个个儿。"""
+    target, cur = float(target or 0), float(cur or 0)
+    if kind == "speed":
+        return min(100.0, round(target * 100 / cur, 1)) if cur > 0 else 0.0
+    return min(100.0, round(cur * 100 / target, 1)) if target > 0 else 0.0
+
+
 def _challenge_view(ch, today: dt.date, current: int | None = None) -> dict:
     closed = ch["closed_at"] is not None
     ended = str(ch["end_date"]) < today.isoformat()
@@ -1744,12 +1828,14 @@ def _challenge_view(ch, today: dt.date, current: int | None = None) -> dict:
         "id": ch["id"], "title": ch["title"], "kind": ch["kind"],
         "target": ch["target"], "from": ch["start_date"], "to": ch["end_date"],
         "status": status, "created_by": ch["created_by"],
+        # 单位下发，页面不用为每一种类型各写一份换算表
+        "unit": CHALLENGE_KINDS.get(str(ch["kind"]), (0, 0, ""))[2],
     }
     if current is not None:
         out["current"] = current
         # 分母为 0 时也要返回小数：`else 0` 是 int，而正常路径是 float，
         # 同一个字段两种类型会让客户端强类型模型直接崩。
-        out["pct"] = min(100.0, round(current * 100 / ch["target"], 1)) if ch["target"] else 0.0
+        out["pct"] = _chal_pct(str(ch["kind"]), ch["target"], current)
     return out
 
 
@@ -1759,16 +1845,15 @@ def api_challenge_create(me, gid: int, body: dict) -> dict:
     if not 1 <= len(title) <= 30:
         raise GroupError(400, "标题 1–30 个字")
     kind = str(body.get("kind") or "").strip()
-    if kind not in ("distance", "acts"):
-        raise GroupError(400, "kind 只能是 distance 或 acts")
+    if kind not in CHALLENGE_KINDS:
+        raise GroupError(400, "kind 只能是 " + " / ".join(CHALLENGE_KINDS))
     try:
         target = int(body.get("target"))
     except (TypeError, ValueError):
         raise GroupError(400, "target 要是整数")
-    lo, hi = ((CHALLENGE_DIST_MIN, CHALLENGE_DIST_MAX) if kind == "distance"
-              else (CHALLENGE_ACTS_MIN, CHALLENGE_ACTS_MAX))
+    lo, hi, unit = CHALLENGE_KINDS[kind]
     if not lo <= target <= hi:
-        raise GroupError(400, f"目标要在 {lo}–{hi} 之间")
+        raise GroupError(400, f"目标要在 {lo}–{hi} 之间（单位 {unit}）")
 
     today = _today(body.get("today"))
     start = _date(body.get("start_date"), "start_date")
@@ -1810,23 +1895,36 @@ def api_challenge_list(me, gid: int, query: dict) -> dict:
             SELECT * FROM group_challenges WHERE group_id=? AND archived=0
             ORDER BY (closed_at IS NULL AND end_date >= ?) DESC, id DESC
         """, (gid, today.isoformat())).fetchall()
-        # 每个赛事的全组进度，一次查完再分组，避免 N+1
+        # 每个赛事的全组进度，一次查完再分组，避免 N+1。
+        # 五种 kind 需要的五个量一起 SUM（速度要 dist+dur 现算），
+        # 只统计还在组里、共享开着的人——关掉共享的人不该被算进「全组」。
         prog = c.execute("""
-            SELECT challenge_id, SUM(cur) AS cur FROM (
-              SELECT ch.id AS challenge_id,
-                     COALESCE((SELECT SUM(CASE WHEN ch.kind='distance' THEN d.distance_m
-                                               ELSE d.acts END)
-                                 FROM group_daily d JOIN group_members m
-                                   ON m.group_id=d.group_id AND m.user_id=d.user_id
-                                  AND m.status='active' AND m.share_level='summary'
-                                WHERE d.group_id=ch.group_id
-                                  AND d.date BETWEEN ch.start_date AND ch.end_date), 0) AS cur
-                FROM group_challenges ch WHERE ch.group_id=? AND ch.archived=0
-            ) GROUP BY challenge_id
+            SELECT ch.id AS challenge_id,
+                   COALESCE(SUM(d.distance_m), 0) AS dist,
+                   COALESCE(SUM(d.duration_s), 0) AS dur,
+                   COALESCE(SUM(d.acts), 0) AS acts,
+                   COALESCE(SUM(d.elevation_m), 0) AS elev,
+                   COALESCE(SUM(d.explorer), 0) AS expl
+              FROM group_challenges ch
+              LEFT JOIN group_daily d
+                     ON d.group_id = ch.group_id
+                    AND d.date BETWEEN ch.start_date AND ch.end_date
+                    AND d.user_id IN (SELECT user_id FROM group_members
+                                       WHERE group_id = ch.group_id
+                                         AND status = 'active'
+                                         AND share_level = 'summary')
+             WHERE ch.group_id=? AND ch.archived=0
+             GROUP BY ch.id
         """, (gid,)).fetchall()
-    cur_by = {int(r["challenge_id"]): int(r["cur"] or 0) for r in prog}
-    return {"ok": True,
-            "challenges": [_challenge_view(r, today, cur_by.get(int(r["id"]), 0)) for r in rows]}
+    by = {int(r["challenge_id"]): r for r in prog}
+    out = []
+    for r in rows:
+        agg = by.get(int(r["id"]))
+        cur = _chal_cur(str(r["kind"]), agg["dist"] if agg else 0,
+                        agg["dur"] if agg else 0, agg["acts"] if agg else 0,
+                        agg["elev"] if agg else 0, agg["expl"] if agg else 0)
+        out.append(_challenge_view(r, today, cur))
+    return {"ok": True, "challenges": out}
 
 
 def api_challenge_get(me, gid: int, cid: int, query: dict) -> dict:
@@ -1841,20 +1939,34 @@ def api_challenge_get(me, gid: int, cid: int, query: dict) -> dict:
         members = c.execute("SELECT * FROM group_members WHERE group_id=? AND status='active'",
                             (gid,)).fetchall()
         raw = c.execute("""
-            SELECT user_id, date, distance_m, acts FROM group_daily
+            SELECT user_id, date, distance_m, duration_s, acts, elevation_m, explorer
+            FROM group_daily
             WHERE group_id=? AND date BETWEEN ? AND ?
             ORDER BY user_id, date
         """, (gid, ch["start_date"], ch["end_date"])).fetchall()
 
-    col = "distance_m" if ch["kind"] == "distance" else "acts"
+    kind = str(ch["kind"])
     target = int(ch["target"])
-    acc: dict[int, int] = {}
+    acc: dict[int, float] = {}       # 累加类（里程/次数/爬升/格子）
+    dist: dict[int, float] = {}      # 速度：累计距离
+    dur: dict[int, float] = {}       # 速度：累计时长
     done_at: dict[int, str] = {}
+    # 每种 kind 累加哪一列，只在这一处写一遍
+    _col = {"distance": "distance_m", "acts": "acts",
+            "elevation": "elevation_m", "explore": "explorer"}
     for r in raw:
         u = int(r["user_id"])
-        acc[u] = acc.get(u, 0) + int(r[col] or 0)
-        # 首次达标日：按日累计第一次 >= 目标的那天
-        if u not in done_at and acc[u] >= target:
+        if kind == "speed":
+            # 逐日累计：速度的「当前配速」是累计配速，不是单日配速，
+            # 所以达标日要按当天累计后重算，不能直接比单日值。
+            dist[u] = dist.get(u, 0.0) + float(r["distance_m"] or 0)
+            dur[u] = dur.get(u, 0.0) + float(r["duration_s"] or 0)
+            cur = _chal_cur(kind, dist[u], dur[u], 0, 0, 0)
+        else:
+            acc[u] = acc.get(u, 0.0) + float(r[_col.get(kind, "distance_m")] or 0)
+            cur = int(acc[u])
+        # 首次达标日：按累计第一次「够」的那天
+        if u not in done_at and _chal_pct(kind, target, cur) >= 100:
             done_at[u] = r["date"]
 
     rows, hidden = [], 0
@@ -1863,11 +1975,12 @@ def api_challenge_get(me, gid: int, cid: int, query: dict) -> dict:
             hidden += 1
             continue
         u = int(m["user_id"])
-        cur = acc.get(u, 0)
+        cur = (_chal_cur(kind, dist.get(u, 0.0), dur.get(u, 0.0), 0, 0, 0)
+               if kind == "speed" else int(acc.get(u, 0)))
         rows.append({
             "alias": m["alias"], "is_me": u == uid,
             "current": cur,
-            "pct": min(100.0, round(cur * 100 / target, 1)) if target else 0.0,
+            "pct": _chal_pct(kind, target, cur),
             "done_at": done_at.get(u),
         })
     # 已达成按达成日期升序，未达成按完成率降序
