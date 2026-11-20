@@ -1743,17 +1743,36 @@ def run() -> int:
 
     # 动态：组页只给最近几条 + 入口；详情页有表情按钮和留言框
     assert "大家的动态" in _gh and f"/groups/1/feed" in _gh, "组页没有动态区"
-    # 动态从「一行一条」改成「一条一卡」：大字距离 + 半马标尺 + 三项 + 三条评论
+    # 动态从「一行一条」改成「一条一卡」：剪影 + 大字距离 + 元信息 + 三条评论
     assert 'class="acard"' in _gh, "组页动态没有按卡片渲染"
-    assert 'class="ac-scale"' in _gh, "动态卡片没有距离标尺"
-    assert 'class="ac-3"' in _gh, "动态卡片没有时长/配速/爬升三格"
+    assert 'class="ac-mid"' in _gh, "动态卡片没有剪影区"
+    # 有剪影画折线，没剪影画「无轨迹」占位——两种都得在，不能拿装饰线冒充路线
+    assert ('class="ac-tr"' in _gh) or ('class="ac-ph"' in _gh), \
+        "动态卡片既没有剪影也没有占位"
+    assert 'class="ac-km"' in _gh and 'class="ac-sub"' in _gh, \
+        "动态卡片没有距离大字 / 元信息行"
     assert "大家最近" in _fdp and "跑步" in _fdp, "动态列表页没渲染出来"
     assert "/feed?act=9" in _fdp, "动态列表没有进详情页的链接"
     assert 'name="emoji"' in _fdo and 'name="text"' in _fdo, "详情页没有表情/留言入口"
     # 现在会**算**配速（距离÷时长），所以文案不能再写「没有配速」——
     # 那是不实陈述。要写清「配速是算的」「没有轨迹、没有位置」。
+    # 剪影算法：形状归一化、去掉 (0,0) 占位点、异常输入不抛
+    import math as _m
+    _ring = [[31.0 + 0.002 * _m.cos(i / 40 * 2 * _m.pi) / 1.0,
+              121.0 + 0.002 * _m.sin(i / 40 * 2 * _m.pi)] for i in range(41)]
+    _sp = _GP._shape(_ring)
+    assert _sp.count(";") + 1 == _GP.SHAPE_POINTS, "剪影点数不对"
+    _xy = [tuple(int(v) for v in seg.split(",")) for seg in _sp.split(";")]
+    assert all(0 <= x <= 100 and 0 <= y <= 100 for x, y in _xy), "剪影坐标越界"
+    # 圆形轨迹归一化后应该接近正方形（长边 100、短边也接近 100）
+    assert min(max(x for x, _ in _xy), max(y for _, y in _xy)) >= 85, \
+        "圆形轨迹被拉成了扁的，等比缩放坏了"
+    assert _GP._shape([]) == "" and _GP._shape([[0, 0]] * 10) == "", \
+        "没轨迹时剪影该是空串"
+    assert "0,0;0,0" not in _sp, "剪影里还留着占位点"
     assert "配速是按距离÷时长算的" in _fdp, "动态页没写清配速是算出来的"
-    assert "没有轨迹、没有位置" in _fdp, "动态页没写明不上传轨迹/位置"
+    # 剪影是脱敏形状，文案必须说清「不含坐标/位置」，否则等于隐瞒上传了什么
+    assert "不含经纬度、起终点和位置" in _fdp, "动态页没写清剪影不含坐标"
     # 最新三条评论要在卡片里露出来（原来只露一个「N 条」的数字）
     assert 'class="ac-c"' in _fdp, "动态卡片没有评论区"
 

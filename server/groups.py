@@ -251,6 +251,8 @@ def init_db() -> None:
           distance_m  INTEGER NOT NULL DEFAULT 0,
           duration_s  INTEGER NOT NULL DEFAULT 0,
           elevation_m INTEGER NOT NULL DEFAULT 0,
+          -- 脱敏剪影："x,y;x,y;..."，0..100 的相对坐标，不含经纬度
+          shape       TEXT NOT NULL DEFAULT '',
           created_at  INTEGER NOT NULL,
           UNIQUE(group_id, user_id, sid)
         );
@@ -288,6 +290,12 @@ def init_db() -> None:
         if "meters" not in ccols:
             c.execute("ALTER TABLE group_cell ADD COLUMN meters INTEGER"
                       " NOT NULL DEFAULT 0")
+        # 1.5.11 起动态带轨迹剪影。老行是空串 =「那几天还没有这个字段」，
+        # 客户端按「没有剪影」处理（显示类型占位图），不回填、不编造。
+        acols = {r["name"] for r in c.execute("PRAGMA table_info(group_act)")}
+        if "shape" not in acols:
+            c.execute("ALTER TABLE group_act ADD COLUMN shape TEXT"
+                      " NOT NULL DEFAULT ''")
 
 
 # ---------------------------------------------------------------- 工具
@@ -1215,7 +1223,8 @@ def api_acts(me, gid: int, body: dict) -> dict:
         # 爬升密度防刷，和日报表同一个上限
         if dist > 0:
             elev = min(elev, int(dist / 1000.0 * _ELEV_PER_KM_MAX))
-        rows.append((gid, uid, sid, d.isoformat(), kind, dist, dur, elev, _now()))
+        rows.append((gid, uid, sid, d.isoformat(), kind, dist, dur, elev,
+                     _clean_shape(a.get("shape")), _now()))
 
     with db() as c:
         m = _require_member(c, gid, uid)
@@ -1224,17 +1233,38 @@ def api_acts(me, gid: int, body: dict) -> dict:
         if rows:
             c.executemany("""
                 INSERT INTO group_act(group_id,user_id,sid,date,kind,distance_m,
-                                      duration_s,elevation_m,created_at)
-                VALUES(?,?,?,?,?,?,?,?,?)
+                                      duration_s,elevation_m,shape,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(group_id,user_id,sid) DO UPDATE SET
                     date=excluded.date, kind=excluded.kind,
                     distance_m=excluded.distance_m, duration_s=excluded.duration_s,
-                    elevation_m=excluded.elevation_m
+                    elevation_m=excluded.elevation_m,
+                    -- 空剪影不要覆盖已有的：客户端丢了明细、或某次只补了
+                    -- 概要，都会让 shape 变空。已有的图比没有强。
+                    shape=CASE WHEN excluded.shape='' THEN group_act.shape
+                               ELSE excluded.shape END
             """, rows)
         # 只留 30 天：这是「最近怎么样」的信息流，不是档案库
         cutoff = (today - dt.timedelta(days=30)).isoformat()
         c.execute("DELETE FROM group_act WHERE group_id=? AND date < ?", (gid, cutoff))
     return {"ok": True, "saved": len(rows)}
+
+
+SHAPE_MAX_LEN = 400
+# 3–24 个点，每个 0..100。服务端不信客户端，形状不对就当没有。
+_SHAPE_RE = re.compile(r"\d{1,3},\d{1,3}(?:;\d{1,3},\d{1,3}){2,23}")
+
+
+def _clean_shape(v) -> str:
+    """校验客户端上来的剪影。不合法就当没有——宁可缺图，不要画出乱七八糟的线。"""
+    s = str(v or "").strip()[:SHAPE_MAX_LEN]
+    if not s or not _SHAPE_RE.fullmatch(s):
+        return ""
+    for seg in s.split(";"):
+        x, y = seg.split(",")
+        if not (0 <= int(x) <= 100 and 0 <= int(y) <= 100):
+            return ""
+    return s
 
 
 def _kind_name(k: str) -> str:
@@ -1267,12 +1297,14 @@ def api_feed(me, gid: int, query: dict) -> dict:
                 if (m["share_level"] or "summary") == "summary"}
         if only is not None:
             acts = c.execute(
-                "SELECT id, user_id, date, kind, distance_m, duration_s, elevation_m"
-                " FROM group_act WHERE group_id=? AND id=?", (gid, only)).fetchall()
+                "SELECT id, user_id, date, kind, distance_m, duration_s, elevation_m,"
+                " shape FROM group_act WHERE group_id=? AND id=?",
+                (gid, only)).fetchall()
         else:
             acts = c.execute(
-                "SELECT id, user_id, date, kind, distance_m, duration_s, elevation_m"
-                " FROM group_act WHERE group_id=? ORDER BY date DESC, id DESC LIMIT ?",
+                "SELECT id, user_id, date, kind, distance_m, duration_s, elevation_m,"
+                " shape FROM group_act WHERE group_id=?"
+                " ORDER BY date DESC, id DESC LIMIT ?",
                 (gid, FEED_LIMIT)).fetchall()
         ids = [int(r["id"]) for r in acts]
         cmts: dict[int, list] = {}
@@ -1315,6 +1347,8 @@ def api_feed(me, gid: int, query: dict) -> dict:
             "distance_m": int(r["distance_m"] or 0),
             "duration_s": int(r["duration_s"] or 0),
             "elevation_m": int(r["elevation_m"] or 0),
+            # 空串 = 没有 GPS 或旧数据，客户端画类型占位图
+            "shape": str(r["shape"] or ""),
             "comments": counts.get(a, 0),
             "recent": [dict(x, alias=alias.get(int(x["user_id"]), ""))
                        for x in cmts.get(a, [])],
