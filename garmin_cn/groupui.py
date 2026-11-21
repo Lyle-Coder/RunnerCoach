@@ -1036,10 +1036,15 @@ def _route_block(token: str, gid: int, today: str) -> str:
 
     body = ""
     if mine:
+        # 自己分享的那条也必须能点进详情：批注入口在详情页里，
+        # 原来这行只有「撤回」按钮、标题不是链接，作者反而进不去自己的路线。
         _lines = "".join(
             f'<div class="kvline"><span>{esc(str(x.get("date") or "")[5:])}</span>'
-            f'<b>{esc(x.get("title") or "路线")}'
-            f'<s>·</s>{float(x.get("distance_m") or 0) / 1000:.1f} km</b>'
+            f'<b><a href="/groups/{gid}/route/{int(x.get("id") or 0)}" '
+            f'style="color:inherit;text-decoration:none">'
+            f'{esc(x.get("title") or "路线")}'
+            f'<s>·</s>{float(x.get("distance_m") or 0) / 1000:.1f} km'
+            '<span style="color:#8a93a3;margin-left:4px">›</span></a></b>'
             f'<form action="/__group/{gid}/route_del" method="post" style="margin:0">'
             + _tok(token)
             + f'<input type="hidden" name="rid" value="{int(x.get("id") or 0)}">'
