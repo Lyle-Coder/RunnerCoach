@@ -1446,8 +1446,10 @@ def _upcoming_html(days: int = 30, limit: int = 3) -> str:
 def _reading_card(limit: int = 8) -> str:
     """首页最底部的「延伸阅读」：内容一行、换行、破折号接数据源。
 
-    多条轮播（每 6 秒换一条），靠一段内联 JS 切 class，不发请求、不重排。
-    内容取不到就整块不出现——首页不能因为一块可选内容变空。
+    多条轮播（每 6 秒自动换一条），**也可以点一下换下一条**：
+    自动轮播的问题是「刚看到一半就被换走」，或者想回头看上一条却要等一整圈。
+    点击切换后重置计时器，刚点完不会立刻又被自动换掉。
+    不发请求、不重排，内容取不到就整块不出现——首页不能因为一块可选内容变空。
     """
     try:
         from . import reading as RD
@@ -1457,6 +1459,7 @@ def _reading_card(limit: int = 8) -> str:
         return ""
     if not items:
         return ""
+
     def _line(it: dict) -> str:
         # 术语的正文就是一句解释，直接用；赛事光有「报名剩 5 天 · 12月06日」
         # 不知道是哪场比赛，必须把名称带到前面。
@@ -1469,15 +1472,27 @@ def _reading_card(limit: int = 8) -> str:
         f'<p class="rdt">{esc(_line(it))}</p>'
         f'<p class="rds">—— {esc(it["src"])}</p></div>'
         for i, it in enumerate(items))
+    # 「轻点换一条」默认 hidden：只有一条时不该出现这个提示（点了没反应更差）。
+    # JS 确认有多条之后才显示它。
     return ('<section class="rc-panel rc-rd-panel" id="rc-read">'
             '<div class="rc-panel-hd"><span class="rc-eyebrow lvl3">延伸阅读</span>'
-            '</div>'
+            '<span class="rc-rd-more" hidden>轻点换一条</span></div>'
             f'<div class="rc-rd">{slides}</div></section>'
             '<script>(function(){var b=document.getElementById("rc-read");'
             'if(!b)return;var s=b.querySelectorAll(".rdi");'
-            'if(s.length<2)return;var i=0;'
-            'setInterval(function(){s[i].classList.remove("on");'
-            'i=(i+1)%s.length;s[i].classList.add("on");},6000);})();</script>')
+            'if(s.length<2)return;'
+            'var tip=b.querySelector(".rc-rd-more");if(tip)tip.hidden=false;'
+            'var i=0,t=null;'
+            # 只加 multi：cursor:pointer 和禁止选中都在 CSS 里，只有多条时才生效。
+            'b.classList.add("multi");'
+            'function next(){s[i].classList.remove("on");'
+            'i=(i+1)%s.length;s[i].classList.add("on");}'
+            'function tick(){t=setInterval(next,6000);}'
+            'function go(){next();if(t)clearInterval(t);tick();}'
+            'b.addEventListener("click",go);'
+            'b.addEventListener("keydown",function(e){'
+            'if(e.key==="Enter"||e.key===" "){e.preventDefault();go();}});'
+            'tick();})();</script>')
 
 
 def home_page() -> str:
