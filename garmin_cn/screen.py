@@ -187,6 +187,11 @@ _BASE = """
 .rc-rd .rdi.on{display:block}
 .rc-rd .rdt{margin:0;font-size:14px;line-height:1.6;color:var(--ink,#E8F0FB)}
 .rc-rd .rds{margin:5px 0 0;font-size:12px;color:var(--faint,#7689A2)}
+/* 可点击切换：只有 JS 确认有多条时才加 .multi，单条时不该出现手型光标，
+   也不该顶着「轻点换一条」的提示却点了没反应。 */
+.rc-rd-panel.multi{cursor:pointer;-webkit-user-select:none;user-select:none}
+.rc-rd-panel.multi:active{opacity:.86}
+.rc-rd-more{font-size:11px;color:var(--faint,#7689A2);opacity:.8;margin-left:auto}
 .rc-week-hd{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
 .rc-week-hd .big-num{font-size:24px;line-height:1.15}
 .rc-week-hd .big-num small{font-size:12px;font-weight:500;margin-left:4px;

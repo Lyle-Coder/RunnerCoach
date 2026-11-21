@@ -3885,6 +3885,16 @@ def run() -> int:
     _its = _RD2.items(6)
     assert len(_its) == len({x["id"] for x in _its}), "首页轮播里出现了重复条目"
 
+    # 首页「延伸阅读」可以点着换下一条：纯自动轮播有两个毛病——刚看到一半
+    # 就被换走，想回头看上一条还得等一整圈。这里守三件事：绑了 click、
+    # 点完重置计时（否则刚点完立刻又被自动换掉）、单条时提示不出现。
+    _rcard = _UIX._reading_card()
+    assert 'addEventListener("click"' in _rcard, "延伸阅读没绑点击切换"
+    assert "clearInterval" in _rcard, "点完没重置计时器，会刚点完就被换走"
+    assert "轻点换一条" in _rcard and "hidden" in _rcard, \
+        "「轻点换一条」应默认隐藏，由 JS 确认多条后再显示"
+    assert "s.length<2" in _rcard, "只有一条时不该绑事件，也不该显示提示"
+
     # ---- 赛事：只展示报名窗口内的 --------------------------------------
     import json as _js3
 
