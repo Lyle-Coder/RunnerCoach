@@ -143,6 +143,48 @@ class _Handler(SimpleHTTPRequestHandler):
         return ip in ("127.0.0.1", "::1", "localhost")
 
     def do_GET(self) -> None:  # noqa: N802
+        """GET 的最外层兜底。
+
+        原来任何一处渲染异常都会让连接**没有任何响应就断掉**，WebView 收到
+        `net::ERR_EMPTY_RESPONSE`，用户看到的是一整片黑，连「哪一页错了」
+        都没有。排查时只能靠猜（月榜黑屏那次就是这样，云端一条请求都没有，
+        因为崩在发请求之前）。
+
+        现在统一转成一个 500 页面，并把 traceback 打到 stderr（logcat 可见）。
+        """
+        try:
+            self._do_GET()
+        except (BrokenPipeError, ConnectionResetError):
+            pass                      # 用户切走/刷新，不是错误
+        except Exception as e:        # noqa: BLE001 - 兜底就是兜所有
+            self._error_page(e)
+
+    def _error_page(self, e: BaseException) -> None:
+        import traceback
+        from html import escape as _esc
+
+        traceback.print_exc()
+        try:
+            body = ("<!doctype html><meta charset=utf-8>"
+                    "<meta name=viewport content='width=device-width,initial-scale=1'>"
+                    "<body style='font-family:system-ui;padding:30px 20px;"
+                    "line-height:1.75;color:#dbe3ee;background:#0d1117'>"
+                    "<h3 style='margin:0 0 10px'>这个页面没能打开</h3>"
+                    "<p style='color:#8a93a3;margin:0 0 16px;"
+                    "word-break:break-word;font-size:13px'>"
+                    + _esc(f"{type(e).__name__}: {e}")[:400]
+                    + "</p><p><a href='/' style='color:#e8b06a'>回首页</a></p></body>")
+            b = body.encode("utf-8")
+            self.send_response(500)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(b)
+        except Exception:             # noqa: BLE001 - 响应已经发出去了就没法补救
+            pass
+
+    def _do_GET(self) -> None:
         u = urlparse(self.path)
         if u.path in self._AI_PAGES:
             if not self._is_loopback():
