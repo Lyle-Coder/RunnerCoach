@@ -1156,6 +1156,10 @@ def run() -> int:
     assert "toDataURL" in _rpg, "照片没在前端压缩"
     assert "/__route/note" in _gserv, "批注写接口缺失"
     assert "note_image" in _gserv, "批注照片没有本地代理"
+    # 自己分享的那条必须能点进详情：批注入口在详情页，清单行若只是 div + 撤回
+    # 按钮，作者反而进不去自己的路线（实测踩到：用户以为「没有加批注按钮」）。
+    assert '/groups/{gid}/route/{int(x.get("id") or 0)}' in _rpg, \
+        "自己分享的路线点不进详情"
 
     # 路线要能导出 GPX：组内共享的坐标只有这一个出口（以前只能看不能带走）
     assert "_gpx_xml" in _gserv and '"route"' in _gserv and ".gpx" in _gserv, \
