@@ -25,6 +25,8 @@
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import datetime as dt
 import json
 import os
@@ -329,6 +331,24 @@ def init_db() -> None:
           UNIQUE(group_id, user_id, act_id)
         );
         CREATE INDEX IF NOT EXISTS idx_groute ON group_route(group_id, id);
+
+        -- 路线批注：作者在路线图上钉一个点，可带一张照片和一段文字。
+        -- 位置用 0..1 的相对坐标，不用经纬度：批注钉在**渲染出来的那张地图**上，
+        -- 而底图是按点集重新取景的，存经纬度会在换底图后飘到别处。
+        CREATE TABLE IF NOT EXISTS group_route_note(
+          id         INTEGER PRIMARY KEY,
+          group_id   INTEGER NOT NULL,
+          route_id   INTEGER NOT NULL,
+          user_id    INTEGER NOT NULL,
+          x          REAL NOT NULL DEFAULT 0.5,
+          y          REAL NOT NULL DEFAULT 0.5,
+          text       TEXT NOT NULL DEFAULT '',
+          -- 照片存文件名（相对 ROUTE_IMG_DIR），不存 BLOB：
+          -- 放进 SQLite 会让备份、VACUUM、每条查询都跟着变重。
+          image      TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_grnote ON group_route_note(route_id, id);
         """)
         # 老库补列。SQLite 的 ADD COLUMN 支持带默认值，已有行会拿到 0；
         # 不做数据回填——0 就是「那几天还没有这个字段」，回填成别的值是编数据。
@@ -1404,6 +1424,12 @@ CELL_RE = re.compile(r"^-?\d{1,6}:-?\d{1,6}$")
 ROUTE_MIN_M = 3000        # 短于 3 km 的路线不值得分享：小圈绕来绕去没有参考价值
 ROUTE_MAX_POINTS = 800    # 800 点约 12 KB，画一条线够用；再多只是浪费流量
 ROUTE_PER_USER = 5        # 每人每组最多 5 条，否则「我的路线」会变成相册
+# 批注：一条路线最多几条、单图多大、存哪。
+# 图从客户端上传前已经用 canvas 压到 ~900px / JPEG 0.72（约 100 KB），
+# 这里再兜一道 400 KB：客户端被改坏也不能往服务器灌原图。
+NOTE_PER_ROUTE = 9
+NOTE_IMG_MAX = 400 * 1024
+ROUTE_IMG_DIR = Path(GROUPS_DB).parent / "route_img"
 
 
 def _clean_points(raw) -> list[list[float]]:
@@ -1479,7 +1505,19 @@ def api_route_del(me, gid: int, rid: int) -> dict:
                       (rid, gid)).fetchone()
         if not r or int(r["user_id"]) != uid:
             raise GroupError(404, "没有这条路线")
+        # 批注和照片一起走：路线撤回了，钉在上面的照片还留着就说不通了。
+        _imgs = [str(x["image"] or "") for x in c.execute(
+            "SELECT image FROM group_route_note WHERE route_id=? AND group_id=?",
+            (rid, gid)).fetchall()]
+        c.execute("DELETE FROM group_route_note WHERE route_id=? AND group_id=?",
+                  (rid, gid))
         c.execute("DELETE FROM group_route WHERE id=?", (rid,))
+    for _f in _imgs:
+        if _f:
+            try:
+                (ROUTE_IMG_DIR / _f).unlink(missing_ok=True)
+            except OSError:
+                pass
     return {"ok": True}
 
 
@@ -1507,6 +1545,127 @@ def api_routes(me, gid: int, query: dict) -> dict:
     } for r in rows]}
 
 
+def _note_view(r) -> dict:
+    return {"id": int(r["id"]), "x": round(float(r["x"] or 0), 4),
+            "y": round(float(r["y"] or 0), 4),
+            "text": str(r["text"] or ""),
+            "has_img": bool(str(r["image"] or ""))}
+
+
+def api_route_note_add(me, gid: int, rid: int, body: dict) -> dict:
+    """给路线钉一条批注。**只有这条路线的作者能钉。**
+
+    让组内其他人也能加的话，这里会变成公共留言板，和「作者推荐的跑法」
+    是两回事。评论已经有 feed / comment 那套了，不必在这里再开一个。
+    """
+    uid = int(me["user_id"])
+    text = str(body.get("text") or "").strip()[:200]
+    img_b64 = str(body.get("image") or "").strip()
+    try:
+        x = float(body.get("x"))
+        y = float(body.get("y"))
+    except (TypeError, ValueError):
+        raise GroupError(400, "批注位置不合法") from None
+    if not (0 <= x <= 1 and 0 <= y <= 1):
+        raise GroupError(400, "批注位置不合法")
+    if not text and not img_b64:
+        raise GroupError(400, "批注要么写点字，要么放张照片")
+
+    raw = b""
+    if img_b64:
+        # 前端 canvas.toDataURL 给的是 data:image/jpeg;base64,xxx，去掉前缀
+        if img_b64.startswith("data:"):
+            img_b64 = img_b64.split(",", 1)[-1]
+        try:
+            raw = base64.b64decode(img_b64, validate=True)
+        except (binascii.Error, ValueError):
+            raise GroupError(400, "照片格式不对") from None
+        if len(raw) > NOTE_IMG_MAX:
+            raise GroupError(413, "照片太大，换一张压缩过的")
+        # 必须真是 JPEG：将来这张图要直接塞进 <img>，不能让它带上别的类型。
+        # 校验魔数，不认扩展名：扩展名是客户端说了算的。
+        if not raw.startswith(b"\xff\xd8\xff"):
+            raise GroupError(400, "照片必须是 JPEG")
+
+    with db() as c:
+        _require_member(c, gid, uid)
+        r = c.execute("SELECT user_id FROM group_route WHERE id=? AND group_id=?",
+                      (rid, gid)).fetchone()
+        if not r:
+            raise GroupError(404, "没有这条路线")
+        if int(r["user_id"]) != uid:
+            raise GroupError(403, "只有这条路线的作者能加批注")
+        n = int(c.execute("SELECT COUNT(*) n FROM group_route_note WHERE route_id=?",
+                          (rid,)).fetchone()["n"])
+        if n >= NOTE_PER_ROUTE:
+            raise GroupError(409, f"一条路线最多 {NOTE_PER_ROUTE} 条批注")
+        cur = c.execute(
+            "INSERT INTO group_route_note(group_id,route_id,user_id,x,y,text,image,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (gid, rid, uid, x, y, text, "", _now()))
+        nid = int(cur.lastrowid or 0)
+
+    if raw and nid:
+        try:
+            ROUTE_IMG_DIR.mkdir(parents=True, exist_ok=True)
+            fname = f"{nid}.jpg"
+            (ROUTE_IMG_DIR / fname).write_bytes(raw)
+            with db() as c:
+                c.execute("UPDATE group_route_note SET image=? WHERE id=?",
+                          (fname, nid))
+        except OSError as e:
+            # 照片没存住就把批注撤掉：否则界面上会留一个「有图但打不开」，
+            # 用户以为传上去了。
+            with db() as c:
+                c.execute("DELETE FROM group_route_note WHERE id=?", (nid,))
+            raise GroupError(500, f"照片保存失败：{e}") from None
+    return {"ok": True, "id": nid}
+
+
+def api_route_note_del(me, gid: int, rid: int, nid: int) -> dict:
+    """删一条批注。只有作者能删（别人根本没有添加入口）。"""
+    uid = int(me["user_id"])
+    fname = ""
+    with db() as c:
+        _require_member(c, gid, uid)
+        r = c.execute("SELECT user_id, image FROM group_route_note"
+                      " WHERE id=? AND route_id=? AND group_id=?",
+                      (nid, rid, gid)).fetchone()
+        if not r or int(r["user_id"]) != uid:
+            raise GroupError(404, "没有这条批注")
+        fname = str(r["image"] or "")
+        c.execute("DELETE FROM group_route_note WHERE id=?", (nid,))
+    if fname:
+        try:
+            (ROUTE_IMG_DIR / fname).unlink(missing_ok=True)
+        except OSError:
+            pass                  # 文件删不掉不该让「删除」失败
+    return {"ok": True}
+
+
+def note_image(me, gid: int, rid: int, nid: int) -> tuple:
+    """批注照片的二进制。**只有组内成员能取。**
+
+    这是本项目第一份「照片 + 位置」的组合数据，比里程敏感得多，
+    因此走成员校验，不做公开链接。
+    """
+    uid = int(me["user_id"])
+    fname = ""
+    with db() as c:
+        _require_member(c, gid, uid)
+        r = c.execute("SELECT image FROM group_route_note"
+                      " WHERE id=? AND route_id=? AND group_id=?",
+                      (nid, rid, gid)).fetchone()
+        fname = str((r["image"] if r else "") or "")
+    if not fname:
+        raise GroupError(404, "这条批注没有照片")
+    p = ROUTE_IMG_DIR / fname
+    try:
+        return p.read_bytes(), "image/jpeg"
+    except OSError:
+        raise GroupError(404, "照片不见了") from None
+
+
 def api_route_get(me, gid: int, rid: int) -> dict:
     """单条路线 + 轨迹点。点开才取，取到就能直接铺到地图上。"""
     uid = int(me["user_id"])
@@ -1520,6 +1679,9 @@ def api_route_get(me, gid: int, rid: int) -> dict:
             " WHERE r.id=? AND r.group_id=?", (rid, gid)).fetchone()
         if not r:
             raise GroupError(404, "没有这条路线")
+        notes = c.execute(
+            "SELECT id,x,y,text,image FROM group_route_note"
+            " WHERE route_id=? AND group_id=? ORDER BY id", (rid, gid)).fetchall()
     try:
         pts = json.loads(r["points"])
     except (TypeError, ValueError):
@@ -1528,6 +1690,9 @@ def api_route_get(me, gid: int, rid: int) -> dict:
         "id": int(r["id"]), "alias": str(r["alias"]), "title": str(r["title"]),
         "distance_m": int(r["distance_m"] or 0), "date": str(r["date"]),
         "me": int(r["user_id"]) == uid, "points": pts,
+        # 批注随路线一起下发：钉子要跟着地图一次画出来，单独再请求一次
+        # 会让地图先空一下再长点。
+        "notes": [_note_view(n) for n in notes],
     }}
 
 
@@ -2350,6 +2515,9 @@ PURGE_TABLES = (
     "group_daily", "group_act", "group_comment", "group_route", "group_cell",
     "group_audit", "group_goal", "group_pair", "group_predict", "group_challenges",
     "group_members",
+    # 批注在路线之上，必须先于 group_route 之外单独列出来；
+    # 照片文件另外删（见 api_purge），只删行会留下孤儿文件。
+    "group_route_note",
     # 远征与营地：这几张在 expedition.py 里建，同样带 group_id。
     # 漏了它们的话「彻底删除」只删掉一半——榜单没了、远征记录还躺在库里。
     "group_run_season", "group_run_member", "group_run_event", "group_run_trial",
@@ -2399,10 +2567,22 @@ def api_purge(me, gid: int, body: dict) -> dict:
         # 老库/未初始化远征模块的库里可能缺表，先取一次实际存在的
         have = {r["name"] for r in c.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
+        # 照片文件要在删行之前拿到名字，删完行就查不到了
+        _imgs = []
+        if "group_route_note" in have:
+            _imgs = [str(x["image"] or "") for x in c.execute(
+                "SELECT image FROM group_route_note WHERE group_id=?",
+                (gid,)).fetchall()]
         for t in PURGE_TABLES:
             if t in have:
                 c.execute(f"DELETE FROM {t} WHERE group_id=?", (gid,))
         c.execute("DELETE FROM groups WHERE id=?", (gid,))
+    for _f in _imgs:
+        if _f:
+            try:
+                (ROUTE_IMG_DIR / _f).unlink(missing_ok=True)
+            except OSError:
+                pass
     return {"ok": True, "purged": gid}
 
 
@@ -2844,6 +3024,21 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
                 return api_route_del(me, gid, int(tail[1])), 200
             except ValueError:
                 raise GroupError(400, "路线 id 不合法") from None
+        # 批注：/route/{rid}/note（新建）、/route/{rid}/note/{nid}/del（删除）。
+        # 取图走二进制通道，不在这里（这里只吐 JSON）。
+        if (action == "route" and len(tail) == 3 and tail[2] == "note"
+                and method == "POST"):
+            try:
+                return api_route_note_add(me, gid, int(tail[1]), body), 200
+            except ValueError:
+                raise GroupError(400, "路线 id 不合法") from None
+        if (action == "route" and len(tail) == 5 and tail[2] == "note"
+                and tail[4] == "del" and method == "POST"):
+            try:
+                return api_route_note_del(me, gid, int(tail[1]),
+                                          int(tail[3])), 200
+            except ValueError:
+                raise GroupError(400, "批注 id 不合法") from None
         if action == "cells" and method == "POST":
             return api_cells(me, gid, body), 200
         if action == "acts" and method == "POST":

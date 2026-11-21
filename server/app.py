@@ -1471,6 +1471,28 @@ class Handler(BaseHTTPRequestHandler):
                                    "source": ("server" if CLIENT_PLATFORM_BASE
                                               else "builtin")})
             if self.path.split("?")[0].startswith("/v1/group"):
+                # 批注照片是二进制，不能走 _groups（那条路只吐 JSON）。
+                # 放在前面单列：走 JSON 分发的话只能 base64，多三成流量。
+                _m = re.match(
+                    r"^/v1/group/(\d+)/route/(\d+)/note/(\d+)/img$",
+                    self.path.split("?")[0])
+                if _m:
+                    if group_api is None:
+                        raise Gate(503, f"组功能未启用（{_GROUPS_IMPORT_ERROR}）")
+                    _data, _ctype = group_api.note_image(
+                        _auth(self.headers), int(_m.group(1)),
+                        int(_m.group(2)), int(_m.group(3)))
+                    self.send_response(200)
+                    self.send_header("Content-Type", _ctype)
+                    self.send_header("Content-Length", str(len(_data)))
+                    # 私有缓存：这是组内可见的照片，不该被任何中间层存下来
+                    self.send_header("Cache-Control", "private, max-age=3600")
+                    self.end_headers()
+                    try:
+                        self.wfile.write(_data)
+                    except BrokenPipeError:
+                        pass
+                    return
                 return self._groups("GET")
             _mp = self.path.split("?")[0]
             if (_mp == "/manage" or _mp.startswith("/manage/")

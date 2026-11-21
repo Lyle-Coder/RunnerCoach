@@ -202,3 +202,26 @@ def set_nickname(nickname: str) -> dict:
         return {"ok": False, "error": "昵称不能为空"}
     ok, d = request("POST", "/v1/me/nickname", {"nickname": nick})
     return d if ok else d
+
+
+def request_raw(path: str, *, timeout: int = TIMEOUT) -> tuple:
+    """取二进制响应（批注照片）。返回 `(ok, data, ctype)`。
+
+    不复用 `request()`：那个会把响应 decode 成文本再 `json.loads`，
+    图片走一趟就废了（而且 decode 会把 JPEG 变成替换字符）。
+    """
+    _TLS.install()
+    base = _base()
+    if not base:
+        return False, b"", ""
+    tok = token()
+    if not tok:
+        return False, b"", ""
+    req = urllib.request.Request(base + path, method="GET")
+    req.add_header("Authorization", f"Bearer {tok}")
+    req.add_header("X-Platform-Token", tok)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return True, r.read(), r.headers.get("Content-Type") or "image/jpeg"
+    except Exception:      # noqa: BLE001 - 取不到就当没有，页面不该因此报错
+        return False, b"", ""

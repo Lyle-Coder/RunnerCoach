@@ -1148,6 +1148,15 @@ def run() -> int:
     assert "def _do_GET" in _gserv and "_error_page" in _gserv, \
         "GET 缺最外层异常兜底：页面崩了会变成空响应（黑屏）"
 
+    # 路线批注：作者能加（可带照片），其他人只能看。照片必须在前端压过，
+    # 不压的话手机原图 4 MB 直接上行，一条批注要传十几秒。
+    _rpg = (ROOT / "garmin_cn/groupui.py").read_text(encoding="utf-8")
+    assert "_notes_block" in _rpg and "rt-pin" in _rpg, "路线页没有批注钉子"
+    assert 'id="rt-add"' in _rpg, "作者看不到加批注入口"
+    assert "toDataURL" in _rpg, "照片没在前端压缩"
+    assert "/__route/note" in _gserv, "批注写接口缺失"
+    assert "note_image" in _gserv, "批注照片没有本地代理"
+
     # 路线要能导出 GPX：组内共享的坐标只有这一个出口（以前只能看不能带走）
     assert "_gpx_xml" in _gserv and '"route"' in _gserv and ".gpx" in _gserv, \
         "共享路线没有 GPX 导出"
