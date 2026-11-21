@@ -15,6 +15,7 @@ import datetime as dt
 import http.client
 import json
 import os
+import base64
 import sqlite3
 import shutil
 import sys
@@ -986,6 +987,89 @@ def main() -> int:
                 {"act_id": "m9", "title": "第六条", "distance_m": 5000,
                  "points": _pts()}, a)
     check(f"超过 {groups.ROUTE_PER_USER} 条被拒（409）", st == 409, f"{st} {r}")
+
+    # 同一批路线已经占满名额，这里只取一条来测批注
+    st, r = req("GET", f"/v1/group/{gid}/routes", None, a)
+    _nrid = int((r.get("rows") or [{}])[0].get("id") or 0)
+    check("拿到一条路线用于批注", bool(_nrid), str(r)[:120])
+
+    print("\n9b. 路线批注")
+    # 最小合法 JPEG（1×1）。服务端按魔数校验，随便几个字节会被拒。
+    _jpg = base64.b64decode(
+        "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof"
+        "Hh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAAB"
+        "AAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==")
+    _b64 = base64.b64encode(_jpg).decode()
+
+    st, r = req("POST", f"/v1/group/{gid}/route/{_nrid}/note",
+                {"x": 0.4, "y": 0.6, "text": "这个弯道注意车", "image": _b64}, b)
+    check("非作者不能加批注（403）", st == 403, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/route/{_nrid}/note",
+                {"x": 0.4, "y": 0.6, "text": "这个弯道注意车", "image": _b64}, a)
+    check("作者加一条带图批注", st == 200 and r.get("id"), f"{st} {r}")
+    _nid = int(r.get("id") or 0)
+
+    st, r = req("GET", f"/v1/group/{gid}/route/{_nrid}", None, b)
+    _ns = (r.get("route") or {}).get("notes") or []
+    check("批注随路线一起下发", len(_ns) == 1, str(_ns))
+    check("带位置、正文、有图标记",
+          bool(_ns) and abs(float(_ns[0]["x"]) - 0.4) < 0.01
+          and _ns[0]["has_img"] and _ns[0]["text"] == "这个弯道注意车",
+          str(_ns[:1]))
+
+    # 照片走二进制通道：组内可取，且必须是 JPEG
+    import http.client as _hc
+
+    _c2 = _hc.HTTPConnection("127.0.0.1", PORT, timeout=15)
+    _c2.request("GET", f"/v1/group/{gid}/route/{_nrid}/note/{_nid}/img",
+                headers={"Authorization": f"Bearer {b}"})
+    _rs = _c2.getresponse()
+    _raw2 = _rs.read()
+    _ct2 = _rs.headers.get("Content-Type")
+    _c2.close()
+    check("组员能取到批注照片",
+          _rs.status == 200 and _ct2 == "image/jpeg"
+          and _raw2.startswith(b"\xff\xd8\xff"),
+          f"{_rs.status} {_ct2} {len(_raw2)}")
+
+    st, r = req("POST", f"/v1/group/{gid}/route/{_nrid}/note",
+                {"x": 0.5, "y": 0.5, "text": "x",
+                 "image": "data:image/png;base64,AAAA"}, a)
+    check("非 JPEG 被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/route/{_nrid}/note",
+                {"x": 2, "y": 0.5, "text": "位置越界"}, a)
+    check("位置越界被拒（400）", st == 400, f"{st} {r}")
+    st, r = req("POST", f"/v1/group/{gid}/route/{_nrid}/note",
+                {"x": 0.5, "y": 0.5}, a)
+    check("空批注被拒（400）", st == 400, f"{st} {r}")
+
+    for _i in range(groups.NOTE_PER_ROUTE - 1):
+        req("POST", f"/v1/group/{gid}/route/{_nrid}/note",
+            {"x": round(0.05 * (_i + 1), 3), "y": 0.5,
+             "text": f"第 {_i + 2} 条"}, a)
+    st, r = req("POST", f"/v1/group/{gid}/route/{_nrid}/note",
+                {"x": 0.5, "y": 0.5, "text": "超出上限"}, a)
+    check(f"超过 {groups.NOTE_PER_ROUTE} 条被拒（409）", st == 409, f"{st} {r}")
+
+    st, r = req("POST", f"/v1/group/{gid}/route/{_nrid}/note/{_nid}/del", None, a)
+    check("作者删除批注", st == 200, f"{st} {r}")
+    st, r = req("GET", f"/v1/group/{gid}/route/{_nrid}", None, a)
+    check("删除后不在列表里",
+          all(int(x["id"]) != _nid
+              for x in ((r.get("route") or {}).get("notes") or [])),
+          str(r)[:160])
+
+    st, r = req("POST", f"/v1/group/{gid}/route/{_nrid}/del", None, a)
+    check("作者撤回路线", st == 200, f"{st} {r}")
+    _db2 = sqlite3.connect(str(groups.GROUPS_DB))
+    try:
+        _left2 = _db2.execute(
+            "SELECT COUNT(*) FROM group_route_note WHERE route_id=?",
+            (_nrid,)).fetchone()[0]
+    finally:
+        _db2.close()
+    check("撤回路线后批注一并清掉", _left2 == 0, f"还剩 {_left2}")
 
     # ---------------- 数据保留
     print("\n10. 数据保留")

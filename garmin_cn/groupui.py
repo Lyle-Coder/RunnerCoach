@@ -1085,8 +1085,140 @@ def _route_block(token: str, gid: int, today: str) -> str:
     return body
 
 
+RT_CSS = """
+.rt-wrap{position:relative;border-radius:12px;overflow:hidden}
+.rt-pin{position:absolute;transform:translate(-50%,-50%);width:27px;height:27px;
+  border-radius:50%;background:#e8b06a;color:#1a1206;border:2px solid #0d1117;
+  font-size:12px;font-weight:700;line-height:1;padding:0;cursor:pointer;
+  box-shadow:0 2px 8px rgba(0,0,0,.45)}
+.rt-pin:active{transform:translate(-50%,-50%) scale(.94)}
+.rt-sheet{position:fixed;inset:0;z-index:60;background:rgba(4,7,12,.78);
+  display:flex;align-items:center;justify-content:center;padding:18px}
+.rt-sheet[hidden]{display:none}
+.rt-card{background:#151b26;border:1px solid rgba(128,128,128,.2);border-radius:14px;
+  width:100%;max-width:520px;max-height:82vh;overflow:auto;padding:14px}
+.rt-card img{display:block;width:100%;border-radius:10px;margin-bottom:12px}
+.rt-card p{margin:0 0 14px;font-size:15px;line-height:1.7}
+.rt-card .rt-hd{display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:10px;font-size:13px;color:#8a93a3}
+.rt-form{margin-top:14px;border-top:1px solid rgba(128,128,128,.16);padding-top:12px}
+.rt-form textarea{width:100%;min-height:64px;margin:8px 0;padding:10px;
+  border-radius:10px;border:1px solid rgba(128,128,128,.25);background:#0f151f;
+  color:inherit;font:inherit;resize:vertical}
+.rt-form input[type=file]{font-size:13px;margin:4px 0 10px}
+.rt-tip{font-size:13px;color:#8a93a3;margin:0 0 8px}
+"""
+
+
+def _notes_block(gid: int, rid: int, notes: list, author: bool, token: str,
+                 svg: str) -> str:
+    """路线批注：地图上的小圆钉 + 点开看大图和文字。
+
+    视觉参照回放视频里「展示过的照片缩成小图钉在轨迹旁」那套：同一个小圆点
+    语言，只是这里是可点的。位置存 0..1 相对坐标，跟着这张图走。
+    """
+    import json as _js
+
+    pins = ""
+    data = []
+    for i, n in enumerate(notes, 1):
+        x = float(n.get("x") or 0) * 100
+        y = float(n.get("y") or 0) * 100
+        pins += (f'<button class="rt-pin" type="button" data-i="{i}" '
+                 f'style="left:{x:.2f}%;top:{y:.2f}%" '
+                 f'aria-label="第 {i} 条批注">{i}</button>')
+        data.append({"i": i, "text": str(n.get("text") or ""),
+                     "img": (f"/groups/{gid}/route/{rid}/note/{int(n['id'])}/img"
+                             if n.get("has_img") else "")})
+
+    sheet = ('<div class="rt-sheet" id="rt-sheet" hidden><div class="rt-card">'
+             '<div class="rt-hd"><span id="rt-no"></span>'
+             '<button class="ghost" type="button" id="rt-close">关闭</button></div>'
+             '<img id="rt-img" alt="批注照片" hidden>'
+             '<p id="rt-text"></p></div></div>')
+
+    # 作者才有添加入口。表单是隐藏的，点「加批注」展开，
+    # 常驻一整块表单会让「看路线」这件主要的事变重。
+    form = ""
+    if author:
+        form = ('<div class="rt-form">'
+                '<button class="btn sm" type="button" id="rt-add">加批注</button>'
+                '<div id="rt-box" hidden>'
+                '<p class="rt-tip">先在图上点一下选位置，再写一句话（照片可选）</p>'
+                '<div class="kvline"><span>位置</span>'
+                '<b id="rt-pos">还没选</b></div>'
+                '<textarea id="rt-txt" maxlength="200" '
+                'placeholder="这段路的情况或提醒"></textarea>'
+                '<input type="file" id="rt-file" accept="image/*">'
+                '<div class="pager"><button class="btn sm" type="button" '
+                'id="rt-save">保存批注</button></div>'
+                '<p class="rt-tip" id="rt-hint"></p></div></div>')
+
+    js = ("<script>(function(){var D=" + _js.dumps(data, ensure_ascii=False) +
+          ',TK=' + _js.dumps(token) + ',GID=' + str(int(gid)) +
+          ',RID=' + str(int(rid)) + ';'
+          'var sheet=document.getElementById("rt-sheet");'
+          'var img=document.getElementById("rt-img"),tx=document.getElementById("rt-text");'
+          'function open(n){var d=null;for(var k=0;k<D.length;k++){if(D[k].i===n)d=D[k];}'
+          'if(!d)return;document.getElementById("rt-no").textContent="批注 "+n;'
+          'tx.textContent=d.text||"（没有文字）";'
+          'if(d.img){img.hidden=false;img.src=d.img;}else{img.hidden=true;img.removeAttribute("src");}'
+          'sheet.hidden=false;}'
+          'document.querySelectorAll(".rt-pin").forEach(function(b){'
+          'b.addEventListener("click",function(){open(parseInt(b.dataset.i,10));});});'
+          'if(sheet){sheet.addEventListener("click",function(e){'
+          'if(e.target===sheet){sheet.hidden=true;}});'
+          'document.getElementById("rt-close").addEventListener("click",function(){sheet.hidden=true;});}'
+          # ---- 作者：点图选位置 + 压图 + 提交
+          'var add=document.getElementById("rt-add");'
+          'if(!add)return;'
+          'var box=document.getElementById("rt-box"),pos=document.getElementById("rt-pos");'
+          'var wrap=document.querySelector(".rt-wrap"),hint=document.getElementById("rt-hint");'
+          'var X=null,Y=null,B64="",pick=false;'
+          'add.addEventListener("click",function(){pick=true;box.hidden=false;'
+          'add.hidden=true;hint.textContent="在图上点一下选位置";});'
+          'if(wrap){wrap.addEventListener("click",function(e){'
+          'if(!pick)return;var r=wrap.getBoundingClientRect();'
+          'X=Math.min(1,Math.max(0,(e.clientX-r.left)/r.width));'
+          'Y=Math.min(1,Math.max(0,(e.clientY-r.top)/r.height));'
+          'pos.textContent=Math.round(X*100)+"% , "+Math.round(Y*100)+"%";'
+          'hint.textContent="";});}'
+          # 图片在浏览器里压到 900px / JPEG 0.72：手机原图 4 MB 直接上行
+          # 会把上传拖到十几秒，也没必要存那么大
+          'var f=document.getElementById("rt-file");'
+          'if(f){f.addEventListener("change",function(){'
+          'var file=f.files&&f.files[0];if(!file){B64="";return;}'
+          'var fr=new FileReader();fr.onload=function(){'
+          'var im=new Image();im.onload=function(){'
+          'var m=900,s=Math.min(1,m/Math.max(im.width,im.height));'
+          'var c=document.createElement("canvas");'
+          'c.width=Math.round(im.width*s);c.height=Math.round(im.height*s);'
+          'c.getContext("2d").drawImage(im,0,0,c.width,c.height);'
+          'B64=c.toDataURL("image/jpeg",0.72);'
+          'hint.textContent="照片已就绪（"+Math.round(B64.length/1400)+" KB）";};'
+          'im.onerror=function(){hint.textContent="这张图读不出来";B64="";};'
+          'im.src=fr.result;};fr.readAsDataURL(file);});}'
+          'document.getElementById("rt-save").addEventListener("click",function(){'
+          'if(X===null){hint.textContent="先在图上点一下选位置";return;}'
+          'var t=document.getElementById("rt-txt").value.trim();'
+          'if(!t&&!B64){hint.textContent="写一句话，或者放张照片";return;}'
+          'hint.textContent="保存中…";'
+          'fetch("/__route/note",{method:"POST",credentials:"same-origin",'
+          'headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({token:TK,gid:GID,rid:RID,x:X,y:Y,text:t,image:B64})})'
+          '.then(function(r){return r.json();})'
+          '.then(function(d){if(d&&d.ok){location.reload();}'
+          'else{hint.textContent=(d&&d.error)||"保存失败";}})'
+          '.catch(function(){hint.textContent="保存失败，检查网络";});});'
+          "})();</script>")
+
+    body = ('<div class="rt-wrap" id="rt-map">' + svg + pins + '</div>'
+            + sheet)
+    return body, form, js
+
+
 def route_page(token: str, gid: int, rid: int, message: str = "") -> str:
-    """单条路线：地图 + 一条折线。点开才取坐标，清单页不带点。"""
+    """单条路线：地图 + 一条折线 + 批注钉子。点开才取坐标，清单页不带点。"""
     from . import group as G
 
     r = G.route(gid, rid)
@@ -1112,22 +1244,34 @@ def route_page(token: str, gid: int, rid: int, message: str = "") -> str:
 
     km = float(rt.get("distance_m") or 0) / 1000.0
     who = "我" if rt.get("me") else str(rt.get("alias") or "队友")
+    notes = rt.get("notes") or []
+    _author = bool(rt.get("me"))
+    _js = ""
+    if svg:
+        _map, _form, _js = _notes_block(gid, rid, notes, _author, token, svg)
+        _map_html = f'<div class="card">{_map}</div>'
+    else:
+        _map_html = '<div class="card"><p class="note">这条路线没有轨迹点。</p></div>'
+        _form = ""
     body = (_msg(message)
-            + (f'<div class="card">{svg}</div>' if svg
-               else '<div class="card"><p class="note">这条路线没有轨迹点。</p></div>')
+            + _map_html
             + sec("这条路", f'<div class="kvrows">'
                             f'<span class="k">谁</span><span class="v">{esc(who)}</span>'
                             f'<span class="k">时间</span>'
                             f'<span class="v">{esc(str(rt.get("date") or ""))}</span>'
                             f'<span class="k">距离</span>'
                             f'<span class="v">{km:.1f} km</span></div>'
+                            + (_form or "")
                             + (f'<div class="pager" style="margin-top:12px">'
                                f'<a class="btn" '
                                f'href="/groups/{gid}/route/{rid}.gpx">导出 GPX</a>'
                                f'</div>' if len(pts) >= 2 else '')))
-    return page("GROUP", esc(rt.get("title") or "路线"), f"{who} · {km:.1f} km",
-                body, foot="这条路线的坐标只给组内的人看，撤回即删。",
-                back=("返回小组", f"/groups/{gid}"))
+    _html = page("GROUP", esc(rt.get("title") or "路线"), f"{who} · {km:.1f} km",
+                 body, foot="这条路线的坐标只给组内的人看，撤回即删。",
+                 css=(RT_CSS if svg else ""),
+                 back=("返回小组", f"/groups/{gid}"))
+    # 批注脚本要落在 </body> 前：page() 只负责外壳，行为在调用方拼
+    return (_html.replace("</body>", _js + "</body>") if _js else _html)
 
 
 def _shards_html(gid: int, r: dict, shards, people, EX, BM, hashlib) -> str:

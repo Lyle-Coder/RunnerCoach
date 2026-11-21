@@ -288,6 +288,11 @@ class _Handler(SimpleHTTPRequestHandler):
                 _r = "month" if (q.get("range") or [""])[0] == "month" else "week"
                 _by = "comp" if (q.get("by") or [""])[0] == "comp" else "dist"
                 return self._html(groupui.board_page(tok, int(seg[0]), msg, _r, _by))
+            if len(seg) == 6 and seg[0].isdigit() and seg[1] == "route" \
+                    and seg[3] == "note" and seg[5] == "img":
+                # 批注照片：本地代理到云端。不让浏览器直连云端地址：
+                # WebView 面对自签证书会拦掉 <img>，等于每条图都要过一次错误。
+                return self._note_img(int(seg[0]), int(seg[2]), int(seg[4]))
             if len(seg) == 3 and seg[0].isdigit() and seg[1] == "route" \
                     and seg[2].endswith(".gpx"):
                 # 导出：同一条路线存成 GPX。放在 .isdigit() 判断之前，
@@ -1313,6 +1318,9 @@ class _Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         u = urlparse(self.path)
+        if u.path == "/__route/note":
+            # 批注带 base64 照片，body 远大于通用上限，这里自己读
+            return self._route_note_post()
         if u.path.startswith("/__training/"):
             if not self._is_loopback():
                 return self._json({"ok": False, "error": "只允许本机操作"}, 403)
@@ -1574,6 +1582,63 @@ class _Handler(SimpleHTTPRequestHandler):
         back = f"/run?gid={gid}" if gid else "/groups"
         sep = "&" if "?" in back else "?"
         return self._see_other(back + (sep + "msg=" + quote(msg) if msg else ""))
+
+    def _note_img(self, gid: int, rid: int, nid: int) -> None:
+        """批注照片。本地代理到云端，鉴权仍在云端做（组内成员才给）。"""
+        from . import group as G
+
+        ok, data, ctype = G.note_image(gid, rid, nid)
+        if not ok or not data:
+            return self._json({"ok": False, "error": "照片取不到"}, 404)
+        self.send_response(200)
+        self.send_header("Content-Type", ctype or "image/jpeg")
+        self.send_header("Content-Length", str(len(data)))
+        # private：这是组内可见的照片，不该被任何中间缓存留下来
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except BrokenPipeError:
+            pass
+
+    def _route_note_post(self) -> None:
+        """批注的写接口（新建 / 删除）。
+
+        **自己读 body**，不走 `_read_body`：照片以 base64 上送，压过的
+        ~100 KB 图片转成 base64 就是 ~140 KB，超过通用请求体的上限，
+        走那条路会被判「请求过大」。
+        """
+        import json as _js
+
+        from . import group as G
+
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机操作"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if not 0 < n <= 2 * 1024 * 1024:
+            return self._json({"ok": False, "error": "数据过大或为空"}, 413)
+        try:
+            d = _js.loads(self.rfile.read(n).decode("utf-8"))
+            if not isinstance(d, dict):
+                raise ValueError
+        except Exception:      # noqa: BLE001
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        tok = getattr(self.server, "group_token", "")
+        if not tok or not hmac.compare_digest(str(d.get("token") or ""), tok):
+            return self._json({"ok": False, "error": "页面已过期，请重新打开"}, 403)
+        try:
+            gid, rid = int(d.get("gid") or 0), int(d.get("rid") or 0)
+        except (TypeError, ValueError):
+            return self._json({"ok": False, "error": "参数不合法"}, 400)
+        if d.get("op") == "del":
+            r = G.note_del(gid, rid, int(d.get("nid") or 0))
+        else:
+            r = G.note_add(gid, rid, d.get("x") or 0, d.get("y") or 0,
+                           str(d.get("text") or ""), str(d.get("image") or ""))
+        return self._json(r, 200 if r.get("ok") else 400)
 
     def _route_gpx(self, gid: int, rid_s: str) -> None:
         """下载一条组内共享路线的 GPX。

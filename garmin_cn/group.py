@@ -460,6 +460,30 @@ def map_data(gid: int, today: str | None = None) -> dict:
     return _call("GET", f"/v1/group/{int(gid)}/map{q}")
 
 
+def note_add(gid: int, rid: int, x: float, y: float,
+             text: str = "", image_b64: str = "") -> dict:
+    """给路线加一条批注。位置是 0..1 的相对坐标（钉在渲染出的那张图上）。
+
+    只有路线作者能加，服务端会再判一次。
+    """
+    return _call("POST", f"/v1/group/{int(gid)}/route/{int(rid)}/note",
+                 {"x": float(x), "y": float(y),
+                  "text": str(text or ""), "image": str(image_b64 or "")})
+
+
+def note_del(gid: int, rid: int, nid: int) -> dict:
+    return _call("POST",
+                 f"/v1/group/{int(gid)}/route/{int(rid)}/note/{int(nid)}/del", {})
+
+
+def note_image(gid: int, rid: int, nid: int) -> tuple:
+    """批注照片的字节。返回 `(ok, data, ctype)`；拿不到就是 `(False, b"", "")`。"""
+    from . import account as AC
+
+    return AC.request_raw(
+        f"/v1/group/{int(gid)}/route/{int(rid)}/note/{int(nid)}/img")
+
+
 def archived() -> dict:
     """我作为组长、已经解散的组。App 的组列表看不到它们。"""
     return _call("GET", "/v1/group/archived")
