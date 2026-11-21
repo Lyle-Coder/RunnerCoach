@@ -1120,7 +1120,11 @@ def route_page(token: str, gid: int, rid: int, message: str = "") -> str:
                             f'<span class="k">时间</span>'
                             f'<span class="v">{esc(str(rt.get("date") or ""))}</span>'
                             f'<span class="k">距离</span>'
-                            f'<span class="v">{km:.1f} km</span></div>'))
+                            f'<span class="v">{km:.1f} km</span></div>'
+                            + (f'<div class="pager" style="margin-top:12px">'
+                               f'<a class="btn" '
+                               f'href="/groups/{gid}/route/{rid}.gpx">导出 GPX</a>'
+                               f'</div>' if len(pts) >= 2 else '')))
     return page("GROUP", esc(rt.get("title") or "路线"), f"{who} · {km:.1f} km",
                 body, foot="这条路线的坐标只给组内的人看，撤回即删。",
                 back=("返回小组", f"/groups/{gid}"))
