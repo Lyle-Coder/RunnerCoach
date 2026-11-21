@@ -1148,6 +1148,10 @@ def run() -> int:
     assert "def _do_GET" in _gserv and "_error_page" in _gserv, \
         "GET 缺最外层异常兜底：页面崩了会变成空响应（黑屏）"
 
+    # 路线要能导出 GPX：组内共享的坐标只有这一个出口（以前只能看不能带走）
+    assert "_gpx_xml" in _gserv and '"route"' in _gserv and ".gpx" in _gserv, \
+        "共享路线没有 GPX 导出"
+
     _ssrc = (ROOT / "garmin_cn/serve.py").read_text(encoding="utf-8")
     _rblk = _ssrc[_ssrc.index("def _run_post"):]
     _rblk = _rblk[:_rblk.index("def _see_other")]

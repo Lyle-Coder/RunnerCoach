@@ -102,6 +102,38 @@ def _plan_float(v, cap: float = 600.0) -> float:
     return f if 0 < f <= cap else 0.0
 
 
+def _gpx_xml(rt: dict, pts: list) -> str:
+    """把一条组内共享路线拼成 GPX 1.1。
+
+    只写轨迹点，**不写时间与心率**：`group_route.points` 里本来就只有坐标
+    （上传时为隐私只传了坐标），硬塞一个 `T00:00:00Z` 会让导入方以为这是
+    带时序的实录，进而算出错误的配速和分段。
+    """
+    from xml.sax.saxutils import escape as _x
+
+    title = _x(str(rt.get("title") or "路线"))
+    day = str(rt.get("date") or "")[:10]
+    out = ['<?xml version="1.0" encoding="UTF-8"?>',
+           '<gpx version="1.1" creator="RunnerCoach"'
+           ' xmlns="http://www.topografix.com/GPX/1/1"'
+           ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+           ' xsi:schemaLocation="http://www.topografix.com/GPX/1/1'
+           ' http://www.topografix.com/GPX/1/1/gpx.xsd">',
+           "<metadata><name>" + title + "</name>"
+           + (f"<time>{day}T00:00:00Z</time>" if day else "") + "</metadata>",
+           "<trk><name>" + title + "</name><type>running</type><trkseg>"]
+    for p in pts:
+        try:
+            lat, lon = float(p[0]), float(p[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue          # 越界点会让部分软件整条轨迹都打不开
+        out.append(f'<trkpt lat="{lat:.6f}" lon="{lon:.6f}"/>')
+    out.append("</trkseg></trk></gpx>")
+    return "\n".join(out)
+
+
 def _plan_days_from_form(values: dict) -> list[dict]:
     """把编辑页的扁平字段还原成 `[{date, items, rest}, ...]`。
 
@@ -256,6 +288,11 @@ class _Handler(SimpleHTTPRequestHandler):
                 _r = "month" if (q.get("range") or [""])[0] == "month" else "week"
                 _by = "comp" if (q.get("by") or [""])[0] == "comp" else "dist"
                 return self._html(groupui.board_page(tok, int(seg[0]), msg, _r, _by))
+            if len(seg) == 3 and seg[0].isdigit() and seg[1] == "route" \
+                    and seg[2].endswith(".gpx"):
+                # 导出：同一条路线存成 GPX。放在 .isdigit() 判断之前，
+                # 否则 `12.gpx` 进不了数字分支也进不了这里。
+                return self._route_gpx(int(seg[0]), seg[2][:-4])
             if len(seg) == 3 and seg[0].isdigit() and seg[1] == "route" \
                     and seg[2].isdigit():
                 # 单条路线：点开才取坐标，清单不带点
@@ -1537,6 +1574,41 @@ class _Handler(SimpleHTTPRequestHandler):
         back = f"/run?gid={gid}" if gid else "/groups"
         sep = "&" if "?" in back else "?"
         return self._see_other(back + (sep + "msg=" + quote(msg) if msg else ""))
+
+    def _route_gpx(self, gid: int, rid_s: str) -> None:
+        """下载一条组内共享路线的 GPX。
+
+        文件名只用 ASCII：中文名要靠 RFC 5987 的 `filename*`，而 Android
+        WebView 对它的支持不一致，下载后经常变成一串百分号。用日期+id
+        反而更好认。
+        """
+        from . import group as G
+
+        try:
+            rid = int(rid_s)
+        except ValueError:
+            return self._json({"ok": False, "error": "路线 id 不合法"}, 400)
+        r = G.route(gid, rid)
+        if not r.get("ok"):
+            return self._json(
+                {"ok": False, "error": r.get("error") or "打不开这条路线"}, 404)
+        rt = r.get("route") or {}
+        pts = rt.get("points") or []
+        if len(pts) < 2:
+            return self._json({"ok": False, "error": "这条路线没有轨迹点"}, 404)
+        data = _gpx_xml(rt, pts).encode("utf-8")
+        day = str(rt.get("date") or "")[:10] or "route"
+        name = f"RunnerCoach-{day}-{rid}.gpx"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/gpx+xml; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except BrokenPipeError:
+            pass
 
     def _see_other(self, url: str) -> None:
         """PRG 回跳。手机上按返回/下拉刷新不会重复提交上一次操作。"""
