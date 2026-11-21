@@ -961,12 +961,20 @@ def _route_svg(points, bm, color: str = "#4EA1FF",
 
     d = " ".join(("M" if i == 0 else "L") + f"{x:.1f} {y:.1f}"
                  for i, (x, y) in enumerate(xy(la, lo) for la, lo in points))
+    # 轨迹的百分比坐标，给批注吸附用：点图时找最近的一个点，钉子就落在路上，
+    # 而不是飘在旁边。抽稀到约 200 个——吸附不需要亚米精度，而 5000 个点
+    # 会让页面多几十 KB。
+    _px_all = [xy(la, lo) for la, lo in points]
+    _step = max(1, len(_px_all) // 200)
+    _line = ";".join(f"{x / W * 100:.2f},{y / H * 100:.2f}"
+                     for x, y in _px_all[::_step])
     bg = (f'<image href="/basemap/{esc(bm["png"].name)}" x="0" y="0" '
           f'width="{iw}" height="{ih}" preserveAspectRatio="none" '
           f'style="filter:brightness(.58) saturate(.66) contrast(1.04)" '
           f'transform="translate({tx:.2f},{ty:.2f}) scale({s:.4f})"/>' if bm else
           '<rect x="0" y="0" width="100%" height="100%" fill="#0E1621"/>')
     return (f'<svg class="gmap" viewBox="0 0 {W} {H}" '
+            f'data-line="{_line}" '
             f'xmlns="http://www.w3.org/2000/svg" role="img" aria-label="这条路线的轨迹">'
             '<defs><clipPath id="rtclip">'
             f'<rect x="0" y="0" width="{W}" height="{H}" rx="12"/></clipPath></defs>'
@@ -1097,6 +1105,12 @@ RT_CSS = """
   font-size:12px;font-weight:700;line-height:1;padding:0;cursor:pointer;
   box-shadow:0 2px 8px rgba(0,0,0,.45)}
 .rt-pin:active{transform:translate(-50%,-50%) scale(.94)}
+/* 有照片的钉子直接用缩略图：一眼看到那儿是什么，比一个数字有用 */
+.rt-pin.isimg{width:38px;height:38px;padding:0;overflow:hidden;background:#0d1117}
+.rt-pin.isimg img{width:100%;height:100%;object-fit:cover;display:block}
+/* 选位置时的预览钉：不能点，只告诉作者「会落在哪」 */
+.rt-pin.ptr{background:#4EA1FF;border-color:#fff;pointer-events:none;
+  box-shadow:0 0 0 3px rgba(78,161,255,.35)}
 .rt-sheet{position:fixed;inset:0;z-index:60;background:rgba(4,7,12,.78);
   display:flex;align-items:center;justify-content:center;padding:18px}
 .rt-sheet[hidden]{display:none}
@@ -1129,9 +1143,18 @@ def _notes_block(gid: int, rid: int, notes: list, author: bool, token: str,
     for i, n in enumerate(notes, 1):
         x = float(n.get("x") or 0) * 100
         y = float(n.get("y") or 0) * 100
-        pins += (f'<button class="rt-pin" type="button" data-i="{i}" '
-                 f'style="left:{x:.2f}%;top:{y:.2f}%" '
-                 f'aria-label="第 {i} 条批注">{i}</button>')
+        # 有照片就用照片本身当钉子（缩略图），没有才退化成编号圆点。
+        # 这才是「小图标注」的样子：一眼看到那儿是什么，而不是一个数字。
+        if n.get("has_img"):
+            pins += (f'<button class="rt-pin isimg" type="button" data-i="{i}" '
+                     f'style="left:{x:.2f}%;top:{y:.2f}%" '
+                     f'aria-label="第 {i} 条批注">'
+                     f'<img src="/groups/{gid}/route/{rid}/note/'
+                     f'{int(n["id"])}/img" alt=""></button>')
+        else:
+            pins += (f'<button class="rt-pin" type="button" data-i="{i}" '
+                     f'style="left:{x:.2f}%;top:{y:.2f}%" '
+                     f'aria-label="第 {i} 条批注">{i}</button>')
         data.append({"i": i, "text": str(n.get("text") or ""),
                      "img": (f"/groups/{gid}/route/{rid}/note/{int(n['id'])}/img"
                              if n.get("has_img") else "")})
@@ -1179,14 +1202,26 @@ def _notes_block(gid: int, rid: int, notes: list, author: bool, token: str,
           'if(!add)return;'
           'var box=document.getElementById("rt-box"),pos=document.getElementById("rt-pos");'
           'var wrap=document.querySelector(".rt-wrap"),hint=document.getElementById("rt-hint");'
-          'var X=null,Y=null,B64="",pick=false;'
+          'var X=null,Y=null,B64="",pick=false,prev=null;'
+          # 吸附用的轨迹点（百分比坐标，服务端抽稀到 ~200 个）
+          'var se=document.querySelector(".rt-wrap svg[data-line]"),LP=[];'
+          'if(se&&se.dataset.line){LP=se.dataset.line.split(";").map(function(s){'
+          'var a=s.split(",");return [parseFloat(a[0]),parseFloat(a[1])];});}'
+          'function snap(x,y){if(!LP.length)return [x,y];var bd=1e9,bx=x,by=y;'
+          'for(var i=0;i<LP.length;i++){var dx=LP[i][0]-x,dy=LP[i][1]-y,d=dx*dx+dy*dy;'
+          'if(d<bd){bd=d;bx=LP[i][0];by=LP[i][1];}}return [bx,by];}'
           'add.addEventListener("click",function(){pick=true;box.hidden=false;'
-          'add.hidden=true;hint.textContent="在图上点一下选位置";});'
+          'add.hidden=true;hint.textContent="在图上点一下，钉子会自动贴到路上";});'
           'if(wrap){wrap.addEventListener("click",function(e){'
           'if(!pick)return;var r=wrap.getBoundingClientRect();'
-          'X=Math.min(1,Math.max(0,(e.clientX-r.left)/r.width));'
-          'Y=Math.min(1,Math.max(0,(e.clientY-r.top)/r.height));'
-          'pos.textContent=Math.round(X*100)+"% , "+Math.round(Y*100)+"%";'
+          'var nx=Math.min(100,Math.max(0,(e.clientX-r.left)/r.width*100));'
+          'var ny=Math.min(100,Math.max(0,(e.clientY-r.top)/r.height*100));'
+          'var sn=snap(nx,ny);nx=sn[0];ny=sn[1];'
+          'X=nx/100;Y=ny/100;'
+          'pos.textContent=Math.round(nx)+"% , "+Math.round(ny)+"%";'
+          'if(!prev){prev=document.createElement("div");'
+          'prev.className="rt-pin ptr";wrap.appendChild(prev);}'
+          'prev.style.left=nx+"%";prev.style.top=ny+"%";'
           'hint.textContent="";});}'
           # 图片在浏览器里压到 900px / JPEG 0.72：手机原图 4 MB 直接上行
           # 会把上传拖到十几秒，也没必要存那么大
@@ -1268,15 +1303,22 @@ def route_page(token: str, gid: int, rid: int, message: str = "") -> str:
                             f'<span class="v">{km:.1f} km</span></div>'
                             + (_form or "")
                             + (f'<div class="pager" style="margin-top:12px">'
-                               f'<a class="btn" '
-                               f'href="/groups/{gid}/route/{rid}.gpx">导出 GPX</a>'
-                               f'</div>' if len(pts) >= 2 else '')))
+                               f'<button class="btn" type="button" '
+                               f'onclick="rcGpx(\'/groups/{gid}/route/{rid}.gpx\')">'
+                               f'导出 GPX</button></div>' if len(pts) >= 2 else '')))
+    # WebView 没有 DownloadListener，`<a href>` 指向带 Content-Disposition 的
+    # 地址会被**静默忽略**（点了毫无反应）。交给系统浏览器打开本地地址，
+    # 由它去下载；桌面浏览器没有 GC，直接跳转即可。
+    _gpx_js = ('<script>window.rcGpx=function(u){'
+               'if(window.GC&&GC.action){GC.action("openUrl:"+u);}'
+               'else{location.href=u;}};</script>')
     _html = page("GROUP", esc(rt.get("title") or "路线"), f"{who} · {km:.1f} km",
                  body, foot="这条路线的坐标只给组内的人看，撤回即删。",
                  css=(RT_CSS if svg else ""),
                  back=("返回小组", f"/groups/{gid}"))
-    # 批注脚本要落在 </body> 前：page() 只负责外壳，行为在调用方拼
-    return (_html.replace("</body>", _js + "</body>") if _js else _html)
+    # 批注脚本和导出脚本都落在 </body> 前：page() 只负责外壳，行为在调用方拼。
+    # 导出脚本即使没有批注也要有（作者没有批注时批注脚本是空的）。
+    return _html.replace("</body>", _js + _gpx_js + "</body>")
 
 
 def _shards_html(gid: int, r: dict, shards, people, EX, BM, hashlib) -> str:
