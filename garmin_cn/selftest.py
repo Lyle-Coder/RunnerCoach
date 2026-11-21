@@ -1141,6 +1141,13 @@ def run() -> int:
     assert "new FormData()" not in _rsrc, \
         "远征页用 FormData 发 body 会变成 multipart，服务端 parse_qs 读不到 token"
     assert "URLSearchParams" in _rsrc, "远征页没发 urlencoded"
+    # GET 必须有最外层兜底。没有的话任何渲染异常都会让连接**空响应**，
+    # WebView 收到 ERR_EMPTY_RESPONSE，用户只看到一片黑，连哪页错了都不知道
+    # （月榜黑屏那次就是这样，云端一条请求都没有，因为崩在发请求之前）。
+    _gserv = (ROOT / "garmin_cn/serve.py").read_text(encoding="utf-8")
+    assert "def _do_GET" in _gserv and "_error_page" in _gserv, \
+        "GET 缺最外层异常兜底：页面崩了会变成空响应（黑屏）"
+
     _ssrc = (ROOT / "garmin_cn/serve.py").read_text(encoding="utf-8")
     _rblk = _ssrc[_ssrc.index("def _run_post"):]
     _rblk = _rblk[:_rblk.index("def _see_other")]
