@@ -1160,6 +1160,13 @@ def run() -> int:
     # 按钮，作者反而进不去自己的路线（实测踩到：用户以为「没有加批注按钮」）。
     assert '/groups/{gid}/route/{int(x.get("id") or 0)}' in _rpg, \
         "自己分享的路线点不进详情"
+    # 有照片的批注要用缩略图当钉子（用户明确要「小图」而不是编号圆点）；
+    # 选位置要吸附到轨迹上，不然钉子会飘在路外。
+    assert 'rt-pin isimg' in _rpg, "有照片的批注没用缩略图当钉子"
+    assert "data-line=" in _rpg, "轨迹坐标没注入，吸附无从谈起"
+    assert "function snap(" in _rpg, "批注位置没做吸附"
+    # GPX 导出：WebView 不处理 Content-Disposition，必须交给系统浏览器
+    assert "rcGpx" in _rpg and "openUrl:" in _rpg, "GPX 导出仍走 <a href>，点了没反应"
 
     # 路线要能导出 GPX：组内共享的坐标只有这一个出口（以前只能看不能带走）
     assert "_gpx_xml" in _gserv and '"route"' in _gserv and ".gpx" in _gserv, \
