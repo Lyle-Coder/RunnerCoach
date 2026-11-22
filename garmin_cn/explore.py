@@ -59,7 +59,7 @@ def cell_of(lat: float, lon: float) -> str:
     return f"{int(math.floor(lat / d))}:{int(math.floor(lon / d))}"
 
 
-def cells_meters(track) -> dict[str, float]:
+def cells_meters(track, total_m: float | None = None) -> dict[str, float]:
     """轨迹 → 每格累计里程（米）。
 
     和 `cells_of_track` 的区别是它只回答「跑没跑过」，这里回答「跑了多少」。
@@ -67,6 +67,10 @@ def cells_meters(track) -> dict[str, float]:
     端点落格再除以二——端点属于哪格是不确定的（一半概率算到邻格），
     而 500 m 的格子比常见的采样间隔（5–10 m）大两个数量级，段中点落格
     不会跨格错位。
+
+    `total_m` 给了就按它做总标定：折线长度只用来决定**各格之间的比例**，
+    总量用设备报的里程。轨迹断一段时折线会短三成，不归一的话格子图的
+    里程和榜单对不上（用户报过「图中数据和上报数据不一致」）。
     """
     out: dict[str, float] = {}
 
@@ -101,6 +105,15 @@ def cells_meters(track) -> dict[str, float]:
             continue
         k = cell_of((la1 + la2) / 2, (lo1 + lo2) / 2)
         out[k] = out.get(k, 0.0) + seg
+    # 按设备距离归一：轨迹折线长度和手表的 distance_m 不是一回事——GPS 断一段
+    # 那条能差三成（实测 4.69 km 的活动轨迹只有 3.11 km）。格子图上写的是
+    # 「这格跑了多少米」，跟榜单对不上就是错的，所以用设备距离做总标定，
+    # 只在**各格之间**保留轨迹的比例。
+    if total_m and out:
+        have = sum(out.values())
+        if have > 0:
+            ratio = float(total_m) / have
+            out = {c: v * ratio for c, v in out.items()}
     return out
 
 
@@ -250,7 +263,8 @@ def week_cell_meters(store, today: str | None = None,
             payload = json.loads(r["payload"] or "{}")
         except (TypeError, ValueError):
             payload = {}
-        for k, v in cells_meters(payload.get("track") or []).items():
+        for k, v in cells_meters(payload.get("track") or [],
+                                 r["distance_m"]).items():
             out[k] = out.get(k, 0.0) + v
     return out
 
