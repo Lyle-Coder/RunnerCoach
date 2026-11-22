@@ -1156,6 +1156,13 @@ def run() -> int:
     assert "toDataURL" in _rpg, "照片没在前端压缩"
     assert "/__route/note" in _gserv, "批注写接口缺失"
     assert "note_image" in _gserv, "批注照片没有本地代理"
+    # 首页要自动拉一次佳明云：onResume 只补传本地，后台只 catch_up，
+    # 两者都不拉佳明——不补这一步，「跑完打开 App 看不到新活动」永远无解。
+    assert '"/__sync/today"' in _gserv and "_auto_sync" in _gserv, \
+        "首页没有自动同步入口"
+    assert "AUTO_SYNC_GAP" in _gserv, "自动同步没有节流"
+    assert "_AUTO_SYNC_JS" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
+        "首页没挂自动同步脚本"
     # 自己分享的那条必须能点进详情：批注入口在详情页，清单行若只是 div + 撤回
     # 按钮，作者反而进不去自己的路线（实测踩到：用户以为「没有加批注按钮」）。
     assert '/groups/{gid}/route/{int(x.get("id") or 0)}' in _rpg, \
