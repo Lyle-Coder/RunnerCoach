@@ -135,6 +135,13 @@ _BASE = """
 
 /* 身体面板 172：2×2，每格 数值 17 + 变化 + 22 高 sparkline */
 .rc-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+/* 今日营养一行：贴在身体面板底部。横屏（大于 900px）隐藏——那边有负荷图和
+   计划，一行小字反而挤，且固定行高不许多出高度。 */
+.rc-nutline{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;padding-top:7px;
+  border-top:1px solid var(--line,rgba(255,255,255,.065));
+  font-size:11px;color:var(--muted,#7C8FA8)}
+.rc-nutline span{white-space:nowrap}
+.rc-nutline i{font-style:normal;color:var(--faint,#7689A2)}
 /* 身体数据 2×2：--surface-2 底、**无边框**。
    原来是「半透明底 + 1px 蓝边」套在大卡里，正是设计语言 §4.3 禁止的
    「卡里套卡」——两层描边叠在一起，边缘会显脏。 */
@@ -266,6 +273,8 @@ _BIG = """
 {p}.rc-hero-panel{grid-area:h}
 {p}.rc-load{grid-area:l}
 {p}.rc-body-panel{grid-area:b}
+/* 横屏隐藏今日营养行：body 面板在固定栅格里，多一行会把行高撑破 */
+{p}.rc-nutline{display:none}
 {p}.rc-week-panel{grid-area:w}
 /* 临近块只在竖屏出现：宽屏是写死的 6 区栅格（1280×800 不许滚动），
    再塞一块会把固定行高挤破；横屏本来也不适合「今天要记得什么」。 */

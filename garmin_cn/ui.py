@@ -1644,6 +1644,13 @@ def home_page() -> str:
     _wsub = []
     if body.get("stale_days") and body["stale_days"] >= 3:
         _wsub.append(f"{body['stale_days']} 天未称重")
+    # 体成分挂在体重这一格的说明行里。四格是固定的 2×2 / 横屏 4 列 grid，
+    # 多开一格会顶破布局；而用户要的就是「体重旁边看得见体脂」。
+    # 只取首选秤（body_fat/muscle），不取 body_fat_any——那是别的来源。
+    if body.get("body_fat"):
+        _wsub.append(f"体脂 {float(body['body_fat']):.1f}%")
+    if body.get("muscle"):
+        _wsub.append(f"肌肉 {float(body['muscle']):.1f} kg")
     if body.get("avg7"):
         _wsub.append(f"7 天平均 {body['avg7']:.1f}")
     _dw = body.get("delta_w")
@@ -1664,10 +1671,29 @@ def home_page() -> str:
                      " · ".join(_wsub) or "还没有体重记录",
                      _spark((body.get("series") or [])[-14:], h=22)),
     )
+    # 今日营养：贴在身体面板底部一行。不放新面板——四格是固定 grid，
+    # 新增 grid 区域会顶破横屏布局（`.rc-screen` 是命名区域）。
+    # 横屏由 CSS 隐藏：那边有负荷图和计划，一行小字反而挤。
+    _nt = res.get("nutrition") or {}
+    _nut_line = ""
+    if _nt.get("ok"):
+        _eat = _nt.get("intake") or {}
+
+        def _nv(label, v, tgt, unit):
+            return (f'<span>{label} {esc(str(round(float(v or 0))))}'
+                    f'<i>/{esc(str(tgt))}{unit}</i></span>')
+
+        _nut_line = ('<div class="rc-nutline">'
+                     + _nv("热量", _eat.get("kcal"), _nt.get("target_kcal"), "")
+                     + _nv("蛋白", _eat.get("protein_g"), _nt.get("protein_g"), "g")
+                     + _nv("碳水", _eat.get("carb_g"), _nt.get("carb_g"), "g")
+                     + '</div>')
+
     body_html = (f'<section class="rc-panel rc-body-panel">'
                  f'<div class="rc-panel-hd"><span class="rc-eyebrow">身体数据</span>'
                  f'<span class="rc-win">近 14 天趋势</span></div>'
-                 f'<div class="rc-body">{"".join(cells)}</div></section>')
+                 f'<div class="rc-body">{"".join(cells)}</div>'
+                 f'{_nut_line}</section>')
 
     # ---- 计划一条：以「真实今天」为准，不再拿最后同步日当今天 -------------
     # 旧版把 st["last"]（最后同步日）当 d0，而课表快照的 next_date 是相对

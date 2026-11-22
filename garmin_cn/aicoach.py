@@ -574,6 +574,20 @@ def weight_review(days: int = 60, date: str | None = None,
     except Exception:
         nt = {}
 
+    # 传进模型前先清掉「同一台秤的重复读数」：body_fat 已经有值时，
+    # body_fat_any 只是同一份数据的另一种取法。两个都传，模型会当成两个来源
+    # （旧提示词还明写着「另一台秤」），于是凭空说出「肌肉来自另一台秤」这种
+    # 用户根本没有的秤。只有一台秤的人每次都会撞上这条错误。
+    _body_ctx = {k: bd.get(k) for k in
+                 ("latest", "latest_date", "stale_days", "delta_w", "delta_4w",
+                  "body_fat", "fat_delta", "muscle", "muscle_delta", "bmr", "water",
+                  "visceral", "verdict", "source", "source_label", "fat_same_scale",
+                  "body_fat_any", "body_fat_any_src", "muscle_any", "water_any")
+                 if bd.get(k) is not None}
+    if _body_ctx.get("fat_same_scale"):
+        for _k in ("body_fat_any", "body_fat_any_src", "muscle_any", "water_any"):
+            _body_ctx.pop(_k, None)
+
     ctx = {
         "today": d,
         "span_days": span_days,
@@ -581,11 +595,7 @@ def weight_review(days: int = 60, date: str | None = None,
         "delta_total": delta,
         "delta_per_week": per_week,
         # 字段名以 metrics.derive 的 body 段为准（body_fat / muscle，不是 fat / muscle_kg）
-        "body": {k: bd.get(k) for k in
-                 ("latest", "delta_w", "delta_4w", "body_fat", "fat_delta", "muscle",
-                  "muscle_delta", "bmr", "water", "visceral", "verdict", "source", "source_label",
-                  "body_fat_any", "body_fat_any_src", "muscle_any", "water_any")
-                 if bd.get(k) is not None},
+        "body": _body_ctx,
         # nutrition 的目标热量叫 target_kcal；没有体重时 ok=False、这些字段全缺
         "nutrition_target": {k: nt.get(k) for k in
                              ("ok", "goal", "goal_label", "target_kcal", "protein_g",
@@ -600,7 +610,9 @@ def weight_review(days: int = 60, date: str | None = None,
             {"date": a.get("date"), "type": a.get("type"), "dist_km":
              round((a.get("distance_m") or 0) / 1000, 1),
              "dur_min": round((a.get("duration_s") or 0) / 60)}
-            for a in (res.get("activities") or [])[-10:]
+            # activities 是**最新在前**（metrics.derive 按日期倒序）。取 [-10:]
+            # 拿到的是最老的那批——模型会拿一个月前的训练量去对当前的体重变化。
+            for a in (res.get("activities") or [])[:10]
         ],
     }
 
@@ -627,9 +639,14 @@ def weight_review(days: int = 60, date: str | None = None,
 }}
 
 纪律：
-- body_fat_any / muscle_any 是另一台秤的读数（body_fat_any_src 写明来源）：
-  可以提，但要说清「与体重不是同一台秤」，别当成同一天的同一口径。
-- 连 body_fat_any 都没有，才不要提体脂/肌肉量，只说体重。
+- body.body_fat_any 存在、且 body.fat_same_scale 不为 true 时，它才是另一台秤的读数
+  （body_fat_any_src 写明来源）。fat_same_scale 为 true 表示体脂与体重就是同一台秤，
+  按同一口径讲，**不要提「另一台秤」「不同秤」**——用户可能只有一台秤，说错就是凭空捏造。
+- body_fat 和 body_fat_any 都没有，才不要提体脂/肌肉量，只说体重。
+- 体成分变化要给噪声留余地：家用 BIA 秤的肌肉量误差约 ±1 kg、体脂率约 ±3~5 pt。
+  肌肉变化不足 1 kg、体脂变化不足 1 pt 时说「在噪声范围内」，不要写成趋势或警讯。
+- 体重是 body.latest 对应的 body.latest_date 那一天的量；stale_days > 0 时先说
+  「已 N 天没称」，别把旧体重说成现在的。
 - 变化速率要和训练量对照：周跑量涨了 20% 还在掉体重，要提醒补碳水和睡眠。
 - 不做医疗诊断。出现连续快速下降（周降幅超过体重 1%）只提醒，不下结论。"""
 
@@ -843,13 +860,85 @@ def chat(messages: list[dict] | None = None, date: str | None = None,
         r = res.get("readiness") or {}
         s = res.get("sleep") or {}
         bd = res.get("body") or {}
-        brief_txt = (
-            f"今天是 {d}。恢复度 {r.get('score')}（{r.get('level')}），"
-            f"昨夜睡眠 {s.get('total_h')} 小时、睡眠分 {s.get('score')}。"
-            f"今日处方：{sess.get('type')}｜{sess.get('duration')}｜{sess.get('intensity')}。"
-            f"体重 {bd.get('latest') or '无记录'} kg。"
-            f"风险：{'；'.join(f['text'] for f in (b.get('flags') or [])[:3]) or '无'}。"
-        )
+        nt = res.get("nutrition") or {}
+        td = res.get("today") or {}
+        ld = res.get("load") or {}
+
+        # 简报原来只有「恢复度 / 睡眠 / 处方 / 体重一个数 / 风险」五项，用户问
+        # 「今天吃多少」「最近练得怎么样」「体脂多少」时模型只能说「数据里没有」。
+        # derive 明明有 15 个段，这里只喂了 6 个字段——不全的是简报，不是数据。
+        parts: list[str] = [f"今天是 {d}"]
+        _dd = str(res.get("data_date") or d)[:10]
+        if _dd != d:
+            parts.append(f"最新数据截至 {_dd}")
+        if r.get("score") is not None:
+            parts.append(f"恢复度 {r['score']}（{r.get('level') or '—'}）")
+        if s.get("total_h"):
+            parts.append(f"昨夜睡眠 {s['total_h']} 小时、睡眠分 {s.get('score')}")
+        if td.get("resting_hr"):
+            parts.append(f"静息心率 {td['resting_hr']}")
+        if td.get("hrv_night"):
+            parts.append(f"夜间 HRV {td['hrv_night']}")
+        if sess.get("type"):
+            parts.append(f"今日处方：{sess.get('type')}｜{sess.get('duration')}"
+                         f"｜{sess.get('intensity')}")
+
+        _load = []
+        for _k, _fmt in (("ctl", "CTL {:.0f}"), ("atl", "ATL {:.0f}"),
+                         ("acwr", "ACWR {:.2f}")):
+            if ld.get(_k) is not None:
+                try:
+                    _load.append(_fmt.format(float(ld[_k])))
+                except (TypeError, ValueError):
+                    pass
+        if ld.get("week_min"):
+            _load.append(f"本周 {float(ld['week_min']):.0f} 分钟")
+        if _load:
+            parts.append("训练负荷 " + "、".join(_load))
+
+        if bd.get("latest"):
+            _w = f"体重 {bd['latest']} kg"
+            if bd.get("latest_date"):
+                _w += f"（{bd['latest_date']}"
+                if bd.get("stale_days"):
+                    _w += f"，{bd['stale_days']} 天前"
+                _w += "）"
+            _comp = []
+            if bd.get("body_fat"):
+                _comp.append(f"体脂 {float(bd['body_fat']):.1f}%")
+            if bd.get("muscle"):
+                _comp.append(f"肌肉 {float(bd['muscle']):.1f} kg")
+            if _comp:
+                # 只有 fat_same_scale 明确为 False 时才是另一台秤。用户只有一台秤
+                # 的时候，这里就不会冒出「另一台秤」。
+                _tail = ("同一台秤" if bd.get("fat_same_scale")
+                         else (f"另一台秤：{bd.get('body_fat_any_src') or '未知来源'}"
+                               if bd.get("fat_same_scale") is False else ""))
+                _w += "，" + "、".join(_comp) + (f"（{_tail}）" if _tail else "")
+            parts.append(_w)
+
+        if nt.get("ok"):
+            parts.append(
+                f"营养目标 {nt.get('target_kcal')} kcal、蛋白 {nt.get('protein_g')} g、"
+                f"碳水 {nt.get('carb_g')} g、脂肪 {nt.get('fat_g')} g")
+            eat = nt.get("intake") or {}
+            if eat.get("ok"):
+                parts.append(
+                    f"今天人工记录了 {eat.get('kcal')} kcal、蛋白 {eat.get('protein_g')} g"
+                    f"（{eat.get('count')} 条，未必记全）")
+            else:
+                parts.append("今天还没有任何饮食记录")
+
+        _acts = (res.get("activities") or [])[:4]     # 最新在前，取前 4 条
+        if _acts:
+            parts.append("最近：" + "；".join(
+                f"{str(a.get('date') or '')[5:]} {a.get('type')} "
+                f"{round((a.get('distance_m') or 0) / 1000, 1)} km"
+                for a in _acts))
+
+        parts.append("风险：" + ("；".join(f["text"] for f in (b.get("flags") or [])[:3])
+                                or "无"))
+        brief_txt = "。".join(parts) + "。"
         _eb = event_brief(d)
         if _eb:
             brief_txt += " 备赛：" + _eb + "。"
@@ -872,7 +961,11 @@ def chat(messages: list[dict] | None = None, date: str | None = None,
     hist = CS.context()
 
     system = SYSTEM + "\n\n【今日简报】\n" + brief_txt + \
-        "\n\n用户问的数据如果简报里没有，就明说「今天的数据里没有这一项」，不要猜。"
+        "\n\n用户问的数据如果简报里没有，就明说「今天的数据里没有这一项」，不要猜。" + \
+        "\n饮食那一栏是用户自己手动记的，可能只记了一部分：说「记录了 X kcal」，" + \
+        "不要说成「只吃了 X kcal」；缺口看起来很大时，先问是不是没记全，不要直接催补吃。" + \
+        "\n体重/体成分带日期，简报里写了「N 天前」就先说这一句，别把旧数字当成今天。" + \
+        "\n只有一台秤时（体脂标注「同一台秤」），不要提「另一台秤」「不同来源」。"
 
     try:
         r = llm.chat([{"role": "system", "content": system}] + hist,
