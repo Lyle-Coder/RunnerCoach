@@ -42,8 +42,17 @@ class SyncJob : JobService() {
                 // 放到这里而不是另起一个 job：两者共用一次网络与同一次登录态，
                 // 拆开就是两倍唤醒和两套失败分支。
                 try {
-                    val news = org.json.JSONObject(msg).optJSONArray("news")
+                    val o = org.json.JSONObject(msg)
+                    val news = o.optJSONArray("news")
                     if (news != null) Notify.emit(applicationContext, news)
+                    // 「刚跑完」：后台这一轮如果拉到了新活动，直接弹一条。
+                    // 只有周期任务才发——nudge 是用户刚回到前台，页面自己会
+                    // 刷新，这时候再弹通知是噪音。
+                    val run = o.optJSONObject("run_new")
+                    if (!force && run != null) {
+                        Notify.emitRun(applicationContext,
+                            run.optDouble("km", 0.0), run.optLong("mins", 0))
+                    }
                 } catch (t: Throwable) {
                     Log.w(TAG, "通知这一段失败（不影响补传）", t)
                 }

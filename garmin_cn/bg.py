@@ -113,6 +113,11 @@ def _run(store, today: str | None, force: bool) -> dict:
             # 否则用户重登后要等 20 分钟才轮到下一轮。
             return {"ok": False, "error": lst.get("error") or "拉不到小组列表"}
 
+        # 先拉一次佳明云再补传：补传读的是本地库，先拉后传，新活动才能进
+        # 这一轮。反过来的话这一轮传上去的仍是旧数据，要再等一个周期。
+        # 会话过期（JWT 几小时）会失败，静默即可，首页加载时还会再试。
+        run_new = _try_sync(store)
+
         gids = [int(x["id"]) for x in (lst.get("groups") or []) if x.get("id")]
         names = {int(x["id"]): str(x.get("name") or "小组")
                  for x in (lst.get("groups") or []) if x.get("id")}
@@ -151,14 +156,82 @@ def _run(store, today: str | None, force: bool) -> dict:
             store.set_meta(KEY_RES, f"{sent}/{len(gids)}")
         except Exception:      # noqa: BLE001 - 记账失败不影响本次已传上去的数据
             pass
-        return {"ok": True, "groups": len(gids), "sent": sent,
-                "failed": failed, "at": stamp, "news": news}
+        out = {"ok": True, "groups": len(gids), "sent": sent,
+               "failed": failed, "at": stamp, "news": news}
+        if run_new:
+            # 原生拿它发「刚跑完」通知。放在 news 之外单列：一个是组里的
+            # 社交消息，一个是自己的运动记录，两者不该混在同一个数组里。
+            out["run_new"] = run_new
+        return out
     finally:
         if own:
             try:
                 store.conn.close()
             except Exception:      # noqa: BLE001
                 pass
+
+
+# 后台拉佳明的最小间隔（秒）。比补传的 20 分钟更长：补传只打自家服务器，
+# 拉佳明要过它的限流，太密会被 429。
+BG_SYNC_GAP = 25 * 60
+
+
+def _try_sync(store) -> dict | None:
+    """后台拉一次佳明云（今天）。有新活动就返回摘要，给系统通知用。
+
+    这是「跑完一段时间后手机自己弹一条」的唯一实现方式：佳明不给我们 Push
+    （那要 Business 档 + 法人实体），只能自己按周期去问。周期越短越接近实时，
+    但受限于 JobScheduler（最小 15 分钟）和佳明限流。
+
+    失败一律返回 None：会话过期是常态，不该每小时往诊断里写一条错误。
+    """
+    from . import appapi as A
+    from . import diag
+
+    now = dt.datetime.now()
+    try:
+        last = dt.datetime.strptime(str(store.get_meta("auto_sync_at") or ""),
+                                    "%Y-%m-%d %H:%M:%S")
+        if (now - last).total_seconds() < BG_SYNC_GAP:
+            return None
+    except ValueError:
+        pass
+
+    def _n() -> int:
+        return int(store.conn.execute(
+            "SELECT COUNT(*) FROM activities").fetchone()[0])
+
+    before = _n()
+    try:
+        A.sync(days=1)
+    except Exception:      # noqa: BLE001 - 离线/会话过期都走这里
+        try:
+            store.set_meta("auto_sync_at", "")
+        except Exception:
+            pass
+        return None
+    try:
+        store.set_meta("auto_sync_at", now.strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        pass
+    if _n() <= before:
+        return None
+    try:
+        r = store.conn.execute(
+            "SELECT type, distance_m, duration_s FROM activities"
+            " ORDER BY date DESC, activity_id DESC LIMIT 1").fetchone()
+        from .explore import is_run
+
+        if not r or not is_run(r["type"]):
+            return None
+        mins = int(float(r["duration_s"] or 0) // 60)
+        km = round(float(r["distance_m"] or 0) / 1000.0, 2)
+        if km <= 0.2:
+            return None      # 太短的别弹通知，那是误触记录
+        return {"km": km, "mins": mins}
+    except Exception as e:      # noqa: BLE001
+        diag.log_exc("bg.try_sync.read", e)
+        return None
 
 
 def _news_of(store, gid: int, gname: str) -> list[dict]:
