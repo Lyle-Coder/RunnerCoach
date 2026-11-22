@@ -186,7 +186,6 @@ def _try_sync(store) -> dict | None:
     失败一律返回 None：会话过期是常态，不该每小时往诊断里写一条错误。
     """
     from . import appapi as A
-    from . import diag
 
     now = dt.datetime.now()
     try:
@@ -197,13 +196,10 @@ def _try_sync(store) -> dict | None:
     except ValueError:
         pass
 
-    def _n() -> int:
-        return int(store.conn.execute(
-            "SELECT COUNT(*) FROM activities").fetchone()[0])
-
-    before = _n()
     try:
-        A.sync(days=1)
+        # sync_all 会按「配了哪个源」依次拉：佳明 / 高驰 / Keep。
+        # 它内部自己开 Store、自己算新增数，这里只管节流和通知摘要。
+        r = A.sync_all(days=1)
     except Exception:      # noqa: BLE001 - 离线/会话过期都走这里
         try:
             store.set_meta("auto_sync_at", "")
@@ -214,24 +210,7 @@ def _try_sync(store) -> dict | None:
         store.set_meta("auto_sync_at", now.strftime("%Y-%m-%d %H:%M:%S"))
     except Exception:
         pass
-    if _n() <= before:
-        return None
-    try:
-        r = store.conn.execute(
-            "SELECT type, distance_m, duration_s FROM activities"
-            " ORDER BY date DESC, activity_id DESC LIMIT 1").fetchone()
-        from .explore import is_run
-
-        if not r or not is_run(r["type"]):
-            return None
-        mins = int(float(r["duration_s"] or 0) // 60)
-        km = round(float(r["distance_m"] or 0) / 1000.0, 2)
-        if km <= 0.2:
-            return None      # 太短的别弹通知，那是误触记录
-        return {"km": km, "mins": mins}
-    except Exception as e:      # noqa: BLE001
-        diag.log_exc("bg.try_sync.read", e)
-        return None
+    return r.get("run") if r.get("new") else None
 
 
 def _news_of(store, gid: int, gname: str) -> list[dict]:
