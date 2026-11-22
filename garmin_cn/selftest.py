@@ -1167,6 +1167,12 @@ def run() -> int:
     assert "function snap(" in _rpg, "批注位置没做吸附"
     # GPX 导出：WebView 不处理 Content-Disposition，必须交给系统浏览器
     assert "rcGpx" in _rpg and "openUrl:" in _rpg, "GPX 导出仍走 <a href>，点了没反应"
+    # 批注界面统一到设计语言：按钮都是 .btn.sm（primary 只给主操作），
+    # 原生 file 框藏起来用 label 冒充按钮，导出和加批注排在同一行。
+    assert 'class="pager rt-bar"' in _rpg, "导出/加批注没有排在同一行"
+    assert 'class="rt-file" type="file"' in _rpg, "原生文件框没藏，会和胶囊按钮打架"
+    assert '<label class="btn sm" for="rt-file"' in _rpg, "选照片没用按钮样式"
+    assert 'class="ghost"' not in _rpg, "批注区还有风格外的 ghost 按钮"
 
     # 路线要能导出 GPX：组内共享的坐标只有这一个出口（以前只能看不能带走）
     assert "_gpx_xml" in _gserv and '"route"' in _gserv and ".gpx" in _gserv, \

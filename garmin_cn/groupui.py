@@ -1120,21 +1120,32 @@ RT_CSS = """
 .rt-card p{margin:0 0 14px;font-size:15px;line-height:1.7}
 .rt-card .rt-hd{display:flex;justify-content:space-between;align-items:center;
   margin-bottom:10px;font-size:13px;color:#8a93a3}
-.rt-form{margin-top:14px;border-top:1px solid rgba(128,128,128,.16);padding-top:12px}
-.rt-form textarea{width:100%;min-height:64px;margin:8px 0;padding:10px;
-  border-radius:10px;border:1px solid rgba(128,128,128,.25);background:#0f151f;
-  color:inherit;font:inherit;resize:vertical}
-.rt-form input[type=file]{font-size:13px;margin:4px 0 10px}
-.rt-tip{font-size:13px;color:#8a93a3;margin:0 0 8px}
+.rt-bar{margin-top:14px;gap:8px}
+.rt-form{margin-top:12px;padding-top:12px;
+  border-top:1px solid var(--line,rgba(255,255,255,.065))}
+.rt-form textarea{width:100%;min-height:56px;margin:0 0 10px;padding:10px 12px;
+  border-radius:12px;border:1px solid var(--line,rgba(255,255,255,.065));
+  background:var(--surface-2,#111B29);color:var(--ink,#E8F0FB);font:inherit;
+  line-height:1.6;resize:vertical}
+/* 原生 file 框在手机上和这套胶囊按钮完全不是一个东西：藏起来，
+   用 label 冒充按钮去触发它。opacity:0 而不是 display:none——
+   后者在部分 WebView 里点 label 不弹选择器。 */
+.rt-file{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
+.rt-pos{display:inline-flex;align-items:center;min-height:44px;font-size:12px;
+  color:var(--muted,#7C8FA8);font-variant-numeric:tabular-nums;margin-left:auto}
+.rt-tip{font-size:12px;color:var(--muted,#7C8FA8);margin:8px 0 0}
 """
 
 
 def _notes_block(gid: int, rid: int, notes: list, author: bool, token: str,
-                 svg: str) -> str:
+                 svg: str, can_gpx: bool = False) -> tuple:
     """路线批注：地图上的小圆钉 + 点开看大图和文字。
 
     视觉参照回放视频里「展示过的照片缩成小图钉在轨迹旁」那套：同一个小圆点
     语言，只是这里是可点的。位置存 0..1 相对坐标，跟着这张图走。
+
+    操作行把「导出 GPX」和「加批注」排在同一行：两者都是对这条路线的动作，
+    分两处会把次要信息的区域撑高。
     """
     import json as _js
 
@@ -1161,26 +1172,40 @@ def _notes_block(gid: int, rid: int, notes: list, author: bool, token: str,
 
     sheet = ('<div class="rt-sheet" id="rt-sheet" hidden><div class="rt-card">'
              '<div class="rt-hd"><span id="rt-no"></span>'
-             '<button class="ghost" type="button" id="rt-close">关闭</button></div>'
+             '<button class="btn sm" type="button" id="rt-close">关闭</button></div>'
              '<img id="rt-img" alt="批注照片" hidden>'
              '<p id="rt-text"></p></div></div>')
 
-    # 作者才有添加入口。表单是隐藏的，点「加批注」展开，
-    # 常驻一整块表单会让「看路线」这件主要的事变重。
-    form = ""
+    # 操作行：导出和加批注并排一行。两者都是对这条路线的动作，
+    # 分两处会把次要区域撑高，也显得零散。
+    form = '<div class="pager rt-bar">'
+    if can_gpx:
+        form += (f'<button class="btn sm" type="button" '
+                 f'onclick="rcGpx(\'/groups/{gid}/route/{rid}.gpx\')">'
+                 f'导出 GPX</button>')
     if author:
-        form = ('<div class="rt-form">'
-                '<button class="btn sm" type="button" id="rt-add">加批注</button>'
-                '<div id="rt-box" hidden>'
-                '<p class="rt-tip">先在图上点一下选位置，再写一句话（照片可选）</p>'
-                '<div class="kvline"><span>位置</span>'
-                '<b id="rt-pos">还没选</b></div>'
-                '<textarea id="rt-txt" maxlength="200" '
-                'placeholder="这段路的情况或提醒"></textarea>'
-                '<input type="file" id="rt-file" accept="image/*">'
-                '<div class="pager"><button class="btn sm" type="button" '
-                'id="rt-save">保存批注</button></div>'
-                '<p class="rt-tip" id="rt-hint"></p></div></div>')
+        form += ('<button class="btn sm primary" type="button" '
+                 'id="rt-add">加批注</button>')
+    form += '</div>'
+
+    if author:
+        # 展开后：一行文字 + 一行按钮（选照片 / 保存 / 取消 / 位置）。
+        # 位置放最右，用 min-height:44 和按钮同一基线。
+        form += ('<div class="rt-form" id="rt-box" hidden>'
+                 '<textarea id="rt-txt" maxlength="200" rows="2" '
+                 'placeholder="这段路的情况或提醒"></textarea>'
+                 '<div class="pager" style="margin-top:0">'
+                 '<label class="btn sm" for="rt-file" id="rt-pick">选照片</label>'
+                 '<input class="rt-file" type="file" id="rt-file" '
+                 'accept="image/*">'
+                 '<button class="btn sm primary" type="button" id="rt-save">'
+                 '保存</button>'
+                 '<button class="btn sm" type="button" id="rt-cancel">取消</button>'
+                 '<span class="rt-pos" id="rt-pos">未选位置</span>'
+                 '</div>'
+                 '<p class="rt-tip" id="rt-hint">'
+                 '在图上点一下，钉子会自动贴到路上</p>'
+                 '</div>')
 
     js = ("<script>(function(){var D=" + _js.dumps(data, ensure_ascii=False) +
           ',TK=' + _js.dumps(token) + ',GID=' + str(int(gid)) +
@@ -1200,6 +1225,8 @@ def _notes_block(gid: int, rid: int, notes: list, author: bool, token: str,
           # ---- 作者：点图选位置 + 压图 + 提交
           'var add=document.getElementById("rt-add");'
           'if(!add)return;'
+          'var bar=add.parentNode;'
+          'var pickLb=document.getElementById("rt-pick");'
           'var box=document.getElementById("rt-box"),pos=document.getElementById("rt-pos");'
           'var wrap=document.querySelector(".rt-wrap"),hint=document.getElementById("rt-hint");'
           'var X=null,Y=null,B64="",pick=false,prev=null;'
@@ -1211,7 +1238,19 @@ def _notes_block(gid: int, rid: int, notes: list, author: bool, token: str,
           'for(var i=0;i<LP.length;i++){var dx=LP[i][0]-x,dy=LP[i][1]-y,d=dx*dx+dy*dy;'
           'if(d<bd){bd=d;bx=LP[i][0];by=LP[i][1];}}return [bx,by];}'
           'add.addEventListener("click",function(){pick=true;box.hidden=false;'
-          'add.hidden=true;hint.textContent="在图上点一下，钉子会自动贴到路上";});'
+          'bar.hidden=true;hint.textContent="在图上点一下，钉子会自动贴到路上";});'
+          # 取消要把所有中间态清干净：位置、预览钉、照片、文字。
+          # 留着位置但看起来像取消了，下次保存会钉到上一次那个点。
+          'var cancel=document.getElementById("rt-cancel");'
+          'if(cancel){cancel.addEventListener("click",function(){'
+          'pick=false;box.hidden=true;bar.hidden=false;X=null;Y=null;B64="";'
+          'var t0=document.getElementById("rt-txt");if(t0)t0.value="";'
+          'var f0=document.getElementById("rt-file");if(f0)f0.value="";'
+          'var lb0=document.getElementById("rt-pick");'
+          'if(lb0)lb0.textContent="选照片";'
+          'pos.textContent="未选位置";'
+          'hint.textContent="在图上点一下，钉子会自动贴到路上";'
+          'if(prev){prev.remove();prev=null;}});}'
           'if(wrap){wrap.addEventListener("click",function(e){'
           'if(!pick)return;var r=wrap.getBoundingClientRect();'
           'var nx=Math.min(100,Math.max(0,(e.clientX-r.left)/r.width*100));'
@@ -1235,8 +1274,10 @@ def _notes_block(gid: int, rid: int, notes: list, author: bool, token: str,
           'c.width=Math.round(im.width*s);c.height=Math.round(im.height*s);'
           'c.getContext("2d").drawImage(im,0,0,c.width,c.height);'
           'B64=c.toDataURL("image/jpeg",0.72);'
-          'hint.textContent="照片已就绪（"+Math.round(B64.length/1400)+" KB）";};'
-          'im.onerror=function(){hint.textContent="这张图读不出来";B64="";};'
+          'if(pickLb)pickLb.textContent="已选 "+Math.round(B64.length/1400)+" KB";'
+          'hint.textContent="";};'
+          'im.onerror=function(){hint.textContent="这张图读不出来";B64="";'
+          'if(pickLb)pickLb.textContent="选照片";};'
           'im.src=fr.result;};fr.readAsDataURL(file);});}'
           'document.getElementById("rt-save").addEventListener("click",function(){'
           'if(X===null){hint.textContent="先在图上点一下选位置";return;}'
@@ -1288,11 +1329,16 @@ def route_page(token: str, gid: int, rid: int, message: str = "") -> str:
     _author = bool(rt.get("me"))
     _js = ""
     if svg:
-        _map, _form, _js = _notes_block(gid, rid, notes, _author, token, svg)
+        _map, _form, _js = _notes_block(gid, rid, notes, _author, token, svg,
+                                        can_gpx=len(pts) >= 2)
         _map_html = f'<div class="card">{_map}</div>'
     else:
         _map_html = '<div class="card"><p class="note">这条路线没有轨迹点。</p></div>'
-        _form = ""
+        # 没有地图（底图取景失败）也可能有足够多的点导出，
+        # 所以导出按钮不能只挂在 _notes_block 里
+        _form = ((f'<div class="pager rt-bar"><button class="btn sm" type="button" '
+                  f'onclick="rcGpx(\'/groups/{gid}/route/{rid}.gpx\')">'
+                  f'导出 GPX</button></div>') if len(pts) >= 2 else "")
     body = (_msg(message)
             + _map_html
             + sec("这条路", f'<div class="kvrows">'
@@ -1301,11 +1347,7 @@ def route_page(token: str, gid: int, rid: int, message: str = "") -> str:
                             f'<span class="v">{esc(str(rt.get("date") or ""))}</span>'
                             f'<span class="k">距离</span>'
                             f'<span class="v">{km:.1f} km</span></div>'
-                            + (_form or "")
-                            + (f'<div class="pager" style="margin-top:12px">'
-                               f'<button class="btn" type="button" '
-                               f'onclick="rcGpx(\'/groups/{gid}/route/{rid}.gpx\')">'
-                               f'导出 GPX</button></div>' if len(pts) >= 2 else '')))
+                            + (_form or "")))
     # WebView 没有 DownloadListener，`<a href>` 指向带 Content-Disposition 的
     # 地址会被**静默忽略**（点了毫无反应）。交给系统浏览器打开本地地址，
     # 由它去下载；桌面浏览器没有 GC，直接跳转即可。
