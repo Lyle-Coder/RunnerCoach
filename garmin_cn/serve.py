@@ -255,15 +255,18 @@ class _Handler(SimpleHTTPRequestHandler):
                 if not st.get_meta("last_sync"):
                     return self._json({"ok": True, "skip": "no-garmin"})
                 st.set_meta("auto_sync_at", time.strftime("%Y-%m-%d %H:%M:%S"))
-                before = int(st.conn.execute(
-                    "SELECT COUNT(*) FROM activities").fetchone()[0])
+                # 只有配过源的才值得试；一个都没配就别白等两秒
+                if not (st.get_meta("last_sync") or st.get_meta("last_sync_coros")
+                        or st.get_meta("last_sync_keep")):
+                    return self._json({"ok": True, "skip": "no-source"})
             finally:
                 st.conn.close()
         except Exception as e:      # noqa: BLE001 - 库打不开就静默失败
             return self._json({"ok": False, "error": f"{type(e).__name__}"})
 
         try:
-            A.sync(days=2)
+            # 佳明 / 高驰 / Keep 一起拉，按配过的源走
+            r = A.sync_all(days=2)
         except Exception as e:      # noqa: BLE001 - 会话过期/离线都走这里
             try:
                 st2 = Store(A.DB)
@@ -274,17 +277,7 @@ class _Handler(SimpleHTTPRequestHandler):
             except Exception:
                 pass
             return self._json({"ok": False, "error": f"{type(e).__name__}"})
-
-        try:
-            st3 = Store(A.DB)
-            try:
-                after = int(st3.conn.execute(
-                    "SELECT COUNT(*) FROM activities").fetchone()[0])
-            finally:
-                st3.conn.close()
-        except Exception:           # noqa: BLE001
-            after = before
-        return self._json({"ok": True, "new": max(0, after - before)})
+        return self._json({"ok": True, "new": int(r.get("new") or 0)})
 
     def _do_GET(self) -> None:
         u = urlparse(self.path)

@@ -1163,6 +1163,13 @@ def run() -> int:
     assert "AUTO_SYNC_GAP" in _gserv, "自动同步没有节流"
     assert "_AUTO_SYNC_JS" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
         "首页没挂自动同步脚本"
+    # 自动同步要覆盖所有配过的源（佳明/高驰/Keep），不能只拉佳明——
+    # 否则高驰和 Keep 用户永远得手动点。
+    assert "def sync_all(" in (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8"), \
+        "缺少统一的 sync_all 入口"
+    assert "A.sync_all" in _gserv, "首页自动同步仍只拉佳明"
+    assert "sync_all" in (ROOT / "garmin_cn/bg.py").read_text(encoding="utf-8"), \
+        "后台同步仍只拉佳明"
     # 自己分享的那条必须能点进详情：批注入口在详情页，清单行若只是 div + 撤回
     # 按钮，作者反而进不去自己的路线（实测踩到：用户以为「没有加批注按钮」）。
     assert '/groups/{gid}/route/{int(x.get("id") or 0)}' in _rpg, \

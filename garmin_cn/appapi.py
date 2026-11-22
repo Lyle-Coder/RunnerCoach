@@ -1111,6 +1111,79 @@ def keep_logout() -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
+def _act_count(store) -> int:
+    try:
+        return int(store.conn.execute(
+            "SELECT COUNT(*) FROM activities").fetchone()[0])
+    except Exception:      # noqa: BLE001
+        return 0
+
+
+def _latest_run(store) -> dict | None:
+    """最新一条跑步活动的摘要，给「刚跑完」通知用。"""
+    try:
+        r = store.conn.execute(
+            "SELECT type, distance_m, duration_s FROM activities"
+            " ORDER BY date DESC, activity_id DESC LIMIT 1").fetchone()
+        from .explore import is_run
+
+        if not r or not is_run(r["type"]):
+            return None
+        km = round(float(r["distance_m"] or 0) / 1000.0, 2)
+        if km <= 0.2:
+            return None       # 误触记录不值得弹通知
+        return {"km": km, "mins": int(float(r["duration_s"] or 0) // 60)}
+    except Exception:      # noqa: BLE001
+        return None
+
+
+def sync_all(days: int = 1) -> dict:
+    """按用户已配置的数据源依次同步，返回新增活动数。
+
+    为什么要有这个
+    --------------
+    首页自动同步和后台定时同步原先都只调 `sync()`（佳明），高驰和 Keep 的
+    用户每次都得手动点「数据源 → 同步」。这里把三个源收成一个入口，两处
+    复用，免得以后再加一个源要改两遍。
+
+    **只同步配过的源**：用 `last_sync*` 这几条 meta 判断。没配的源不试——
+    高驰要 24h 过期的 token、Keep 要登录态，白试一次要多等两秒。
+
+    不传凭据：三者都能用已存的 token。过期就静默失败，等用户下次手动登录。
+    这是后台能做的极限——我们不能在后台存用户的密码。
+    """
+    from .store import Store
+
+    store = Store(DB)
+    try:
+        before = _act_count(store)
+        used: list[str] = []
+        for name, fn, key in (
+            ("garmin", sync, "last_sync"),
+            ("coros", coros_sync, "last_sync_coros"),
+            ("keep", keep_sync, "last_sync_keep"),
+        ):
+            if not store.get_meta(key):
+                continue
+            try:
+                fn(days=days)
+                used.append(name)
+            except Exception:      # noqa: BLE001 - 一个源坏了不该影响别的
+                continue
+        after = _act_count(store)
+        out = {"ok": bool(used), "sources": used, "new": max(0, after - before)}
+        if out["new"] > 0:
+            run = _latest_run(store)
+            if run:
+                out["run"] = run
+        return out
+    finally:
+        try:
+            store.conn.close()
+        except Exception:      # noqa: BLE001
+            pass
+
+
 def keep_sync(days: int = 30, mobile: str = "", password: str = "") -> dict:
     """拉 Keep 运动摘要并写入 activities（source=keep，无轨迹）。"""
     from . import keep as K
