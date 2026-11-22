@@ -31,6 +31,8 @@ import org.json.JSONObject
  */
 object Notify {
     const val CH = "group_news"
+    /** 「刚跑完」单独一个渠道：用户可能想留运动提醒、但关掉小组消息。 */
+    const val CH_RUN = "run_done"
     private const val TAG = "Notify"
 
     /** 建渠道。幂等，重复建会被系统忽略。 */
@@ -146,4 +148,57 @@ object Notify {
             Log.w(TAG, "通知发不出去", t)
         }
     }
+    /**
+     * 「刚跑完」：Health Connect 一出现新的运动会话就发一条。
+     *
+     * 和小组通知分两个渠道（[CH_RUN]）：运动提醒是用户主动要的，小组消息可能是
+     * 被动接收的，混在一个渠道里关掉一个就会连另一个一起关。
+     *
+     * 固定用同一个通知 id：一次跑步只该有一条，反复唤醒不能变成刷屏。
+     */
+    fun emitRun(ctx: Context, km: Double, minutes: Long) {
+        if (!allowed(ctx)) {
+            Log.i(TAG, "没有通知权限，丢掉一条跑完提醒")
+            return
+        }
+        ensureRunChannel(ctx)
+        val head = "刚跑完"
+        val text = buildString {
+            if (km > 0.05) append(String.format(java.util.Locale.CHINA, "%.2f km", km))
+            if (minutes > 0) {
+                if (isNotEmpty()) append(" · ")
+                append(minutes).append(" 分钟")
+            }
+            if (isEmpty()) append("点开查看")
+        }
+        val it = Intent(ctx, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pi = PendingIntent.getActivity(
+            ctx, 9001, it,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val n = Notification.Builder(ctx, CH_RUN)
+            .setSmallIcon(R.drawable.ic_tab_today)
+            .setContentTitle(head)
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text + " · 正在同步"))
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build()
+        val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
+        nm.notify(9001, n)
+    }
+
+    private fun ensureRunChannel(ctx: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
+        if (nm.getNotificationChannel(CH_RUN) != null) return
+        nm.createNotificationChannel(
+            NotificationChannel(CH_RUN, "跑完提醒", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "手表同步到手机后，立刻告诉你这次跑了多少"
+                setShowBadge(false)
+            }
+        )
+    }
+
 }

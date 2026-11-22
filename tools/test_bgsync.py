@@ -52,9 +52,12 @@ class ManifestTest(unittest.TestCase):
 
 
 class KotlinTest(unittest.TestCase):
-    def test_period_is_six_hours(self):
-        self.assertRegex(BGSYNC_KT, r"PERIOD_MS\s*=\s*6\s*\*\s*60\s*\*\s*60\s*\*\s*1000L",
-                         "周期不是 6 小时，改这里要连文档一起改")
+    def test_period_is_half_hour(self):
+        # 原先是 6 小时。改成 30 分钟是为了「跑完不久收到一条」：佳明不给 Push，
+        # 只能自己按周期去问。改这个值要连 BgSync 的类注释一起改，
+        # 并且想清楚耗电——每轮真正打网络的闸门在 bg.py 的 BG_SYNC_GAP。
+        self.assertRegex(BGSYNC_KT, r"PERIOD_MS\s*=\s*30\s*\*\s*60\s*\*\s*1000L",
+                         "周期不是 30 分钟，改这里要连文档一起改")
 
     def test_schedule_is_idempotent(self):
         self.assertIn("getPendingJob(JOB_PERIODIC)", BGSYNC_KT,
@@ -99,7 +102,7 @@ class PythonTest(unittest.TestCase):
 
     def test_no_account_is_quiet(self):
         self.assertIn("no_account", BG_PY,
-                      "没登录要静默跳过，不能每 6 小时往 diag.log 写一条")
+                      "没登录要静默跳过，不能每轮往 diag.log 写一条")
 
     def test_failure_keeps_stamp(self):
         # 失败不写 KEY_AT：否则用户重登后要白等一个节流周期

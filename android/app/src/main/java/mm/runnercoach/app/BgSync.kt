@@ -19,8 +19,9 @@ import android.util.Log
  *
  * 两种触发
  * --------
- * - 周期任务：每 6 小时跑一次，兜底。系统会按 Doze 维护窗口合并唤醒，
- *   所以「6 小时」是下限不是准点，实际可能晚一两个小时。
+ * - 周期任务：每 30 分钟跑一次。系统会按 Doze 维护窗口合并唤醒，
+ *   所以「30 分钟」是下限不是准点；但每轮真正打佳明网络还有一道 25 分钟的闸
+ *   （bg.py 的 BG_SYNC_GAP），不会因为改短了就翻十倍流量。
  * - nudge：App 回到前台 30 秒后跑一次，接住「跑完就切走、没点组页」。
  *   延迟 30 秒是为了不和首屏渲染抢带宽；Python 侧还有 20 分钟节流，
  *   来回切前后台不会反复上报。
@@ -34,8 +35,14 @@ object BgSync {
     const val JOB_PERIODIC = 8801
     const val JOB_NUDGE = 8802
 
-    private const val PERIOD_MS = 6 * 60 * 60 * 1000L
-    private const val FLEX_MS = 30 * 60 * 1000L
+    // 30 分钟，原先是 6 小时。改短是为了「跑完不久就能收到一条」：
+    // 佳明不给我们 Push，只能靠周期去问。JobScheduler 最小 15 分钟，
+    // 30 分钟是耗电与及时性的折中；每轮只在「距上次拉佳明 25 分钟以上」
+    // 时才真的打网络（见 bg.py 的 BG_SYNC_GAP），所以并不会翻十倍流量。
+    private const val PERIOD_MS = 30 * 60 * 1000L
+    // flex 必须小于 period（setPeriodic 会校验），给 10 分钟窗口让系统
+    // 自己挑省电的时机跑——窗口越小越准点，也越耗电。
+    private const val FLEX_MS = 10 * 60 * 1000L
     private const val NUDGE_DELAY_MS = 30 * 1000L
     private const val TAG = "BgSync"
 
