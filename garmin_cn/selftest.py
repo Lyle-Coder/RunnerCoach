@@ -2095,6 +2095,13 @@ def run() -> int:
     # 底图缓存必须比对点集指纹。缓存按 ident 命名，而 ident 由调用方给
     # （`rt1-5`）：同一路线重新分享、同一片格子新增时点集变了但 ident 不变，
     # 只认 ident 就会复用旧画幅，表现成「新路线看起来没更新」（用户报过）。
+    # 格子里程必须按设备距离归一。轨迹折线在 GPS 断一段时会短三成
+    # （实测 4.69 km 的活动轨迹只有 3.11 km），不归一就会出现
+    # 「足迹图 52 km、榜单 61 km」——用户报过这个「数据对不上」。
+    _exs = (ROOT / "garmin_cn/explore.py").read_text(encoding="utf-8")
+    assert "def cells_meters(track, total_m" in _exs, "格子里程没按设备距离归一"
+    assert 'r["distance_m"]' in _exs, "调用方没把设备距离传进 cells_meters"
+
     _bsrc = (ROOT / "garmin_cn/basemap.py").read_text(encoding="utf-8")
     assert "def _fp(" in _bsrc and 'meta.get("fp") == fp' in _bsrc, \
         "底图缓存没比对点集指纹，点集变了会复用旧画幅"
