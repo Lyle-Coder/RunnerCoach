@@ -1791,10 +1791,36 @@ def home_page() -> str:
     _sync_chip = (f"数据截至 {_dd} · 下拉同步" if _stale else
                   f"上次同步 {esc(str(st.get('last_sync') or '—')[5:16])}")
     chips = (chip(f"{st.get('days') or 0} 天数据") + chip(_sync_chip))
-    return page("TODAY · 今日", "今天该怎么练", "", body_html_all, chips,
-                screen=True,
-                foot=("数据在本机计算，离线也能查看，轨迹不会上传。"
-                      "静息心率来自每天同步的记录，可能和设备里设置心率区间时用的数值不同。"))
+    _h = page("TODAY · 今日", "今天该怎么练", "", body_html_all, chips,
+              screen=True,
+              foot=("数据在本机计算，离线也能查看，轨迹不会上传。"
+                    "静息心率来自每天同步的记录，可能和设备里设置心率区间时用的数值不同。"))
+    # 打开首页时自动拉一次佳明云（今天/昨天）。onResume 只补传本地数据，
+    # 后台任务也只补传，两者都不拉佳明——所以跑完回来打开 App 看不到新活动，
+    # 以前必须手动去「数据源」点同步。同步逻辑在 serve 的 /__sync/today。
+    return _h.replace("</body>", _AUTO_SYNC_JS + "</body>")
+
+
+# 首页加载后静默同步一次。自包含（元素自己创建），不依赖页面结构。
+# 只在真有新增时提示并刷新；失败一律静默——佳明会话过期是常态，
+# 每次打开都弹一句「需要重新登录」会变成噪音。
+_AUTO_SYNC_JS = """<script>(function(){
+  setTimeout(function(){
+    fetch('/__sync/today',{credentials:'same-origin'})
+     .then(function(r){return r.json();})
+     .then(function(d){
+       if(!d||!d.ok||!(d.new>0))return;
+       var m=document.getElementById('rc-auto');
+       if(!m){m=document.createElement('div');m.id='rc-auto';
+         m.style.cssText='position:fixed;left:50%;top:14px;transform:translateX(-50%);'
+           +'z-index:99;background:#12202f;color:#dbe3ee;padding:9px 15px;'
+           +'border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.45)';
+         document.body.appendChild(m);}
+       m.textContent='已同步 '+d.new+' 条新活动';
+       setTimeout(function(){location.reload();},1200);
+     }).catch(function(){});
+  },2200);
+})();</script>"""
 
 
 def _verdict(score) -> str:

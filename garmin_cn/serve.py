@@ -27,6 +27,7 @@ import re
 import secrets
 import socket
 import sys
+import time
 from functools import partial
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -37,6 +38,10 @@ from . import history, ui
 
 SERVE_EXT = {".html", ".htm", ".png", ".jpg", ".jpeg", ".mp4", ".json", ".csv"}
 LIST_EXT = {".html", ".htm", ".png", ".mp4"}   # 手机上值得点开的；json/csv 只服务不列
+
+# 首页自动同步的节流（秒）。一次增量同步约 8 个请求、两秒，
+# 但每进一次首页都跑会白耗电，佳明那边也会觉得异常。
+AUTO_SYNC_GAP = 10 * 60
 
 
 def _lan_ip() -> str:
@@ -216,8 +221,75 @@ class _Handler(SimpleHTTPRequestHandler):
         except Exception:             # noqa: BLE001 - 响应已经发出去了就没法补救
             pass
 
+    def _auto_sync(self) -> None:
+        """首页加载时自动拉一次佳明云（今天/昨天）。
+
+        为什么需要：`onResume` 只调 `BgSync.nudge`（把**本地已有**数据补传到
+        服务器），后台任务也只调 `bg_catch_up`，两者都**不拉佳明**。所以
+        「跑完回来打开 App 看不到新活动」的原因不是「拿不到 Push」，而是
+        连轮询都只在手动点「数据源 → 同步」时才发生。
+
+        节流 10 分钟：一次增量约 8 个请求、两秒，但每进一次页面都跑会白耗电。
+        失败（会话过期/离线）把时间戳清掉，下次打开还能再试。
+        """
+        from . import appapi as A
+        from .store import Store
+
+        if not self._is_loopback():
+            return self._json({"ok": False, "error": "只允许本机"}, 403)
+        try:
+            st = Store(A.DB)
+            try:
+                now = time.time()
+                try:
+                    last = dt.datetime.strptime(
+                        str(st.get_meta("auto_sync_at") or ""), "%Y-%m-%d %H:%M:%S")
+                    last_ts = last.timestamp()
+                except ValueError:
+                    last_ts = 0.0
+                if now - last_ts < AUTO_SYNC_GAP:
+                    return self._json({"ok": True, "skip": "throttled"})
+                # 没有佳明同步记录的人别每次开首页都白试一次：sync 走不通要
+                # 白等两秒，还会在诊断里堆一堆会话错误。高驰/Keep 的自动同步
+                # 得各走各的接口，不在这一版里。
+                if not st.get_meta("last_sync"):
+                    return self._json({"ok": True, "skip": "no-garmin"})
+                st.set_meta("auto_sync_at", time.strftime("%Y-%m-%d %H:%M:%S"))
+                before = int(st.conn.execute(
+                    "SELECT COUNT(*) FROM activities").fetchone()[0])
+            finally:
+                st.conn.close()
+        except Exception as e:      # noqa: BLE001 - 库打不开就静默失败
+            return self._json({"ok": False, "error": f"{type(e).__name__}"})
+
+        try:
+            A.sync(days=2)
+        except Exception as e:      # noqa: BLE001 - 会话过期/离线都走这里
+            try:
+                st2 = Store(A.DB)
+                try:
+                    st2.set_meta("auto_sync_at", "")
+                finally:
+                    st2.conn.close()
+            except Exception:
+                pass
+            return self._json({"ok": False, "error": f"{type(e).__name__}"})
+
+        try:
+            st3 = Store(A.DB)
+            try:
+                after = int(st3.conn.execute(
+                    "SELECT COUNT(*) FROM activities").fetchone()[0])
+            finally:
+                st3.conn.close()
+        except Exception:           # noqa: BLE001
+            after = before
+        return self._json({"ok": True, "new": max(0, after - before)})
+
     def _do_GET(self) -> None:
         u = urlparse(self.path)
+        if u.path == "/__sync/today":
+            return self._auto_sync()
         if u.path in self._AI_PAGES:
             if not self._is_loopback():
                 return self._json({"ok": False, "error": "AI 页面只允许本机打开"}, 403)
