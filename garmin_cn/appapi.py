@@ -1158,20 +1158,39 @@ def sync_all(days: int = 1) -> dict:
     try:
         before = _act_count(store)
         used: list[str] = []
-        for name, fn, key in (
-            ("garmin", sync, "last_sync"),
-            ("coros", coros_sync, "last_sync_coros"),
-            ("keep", keep_sync, "last_sync_keep"),
+        failed: list[str] = []
+        need_login: list[str] = []
+        for name, fn, key, alive in (
+            ("garmin", sync, "last_sync", _garmin_session_ok),
+            ("coros", coros_sync, "last_sync_coros", _coros_session_ok),
+            ("keep", keep_sync, "last_sync_keep", None),
         ):
-            if not store.get_meta(key):
+            # 判据是「配过这个源」，不是「同步成功过」：刚装完 App 或刚清空
+            # 数据时 last_sync 还是空的，但会话票据在，这时候更该试一次。
+            # 以前只看 last_sync，等于「从没成功过 → 永远不再试」，死锁。
+            if not (store.get_meta(key) or (alive and alive())):
                 continue
             try:
-                fn(days=days)
-                used.append(name)
+                r = fn(days=days)
             except Exception:      # noqa: BLE001 - 一个源坏了不该影响别的
+                failed.append(name)
                 continue
+            # **关键**：sync()/coros_sync() 失败时是「返回 ok=False」，不抛异常。
+            # 原来这里只看有没有抛，于是会话过期被当成同步成功，前端收到
+            # ok=True + new=0 就静默什么都不做——用户看到的永远是「没自动更新」。
+            if isinstance(r, dict) and r.get("ok") is False:
+                failed.append(name)
+                if r.get("need_login") or r.get("need_mfa"):
+                    need_login.append(name)
+                continue
+            used.append(name)
         after = _act_count(store)
-        out = {"ok": bool(used), "sources": used, "new": max(0, after - before)}
+        out = {"ok": bool(used), "sources": used, "failed": failed,
+               "new": max(0, after - before)}
+        if need_login:
+            # 交给界面提示「去「我的」重新连一下」。这是自动同步唯一救不了
+            # 的情况：后台不能存密码，佳明 JWT 几小时一过期。
+            out["need_login"] = need_login
         if out["new"] > 0:
             run = _latest_run(store)
             if run:

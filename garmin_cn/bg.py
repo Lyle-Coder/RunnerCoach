@@ -174,6 +174,10 @@ def _run(store, today: str | None, force: bool) -> dict:
 # 后台拉佳明的最小间隔（秒）。比补传的 20 分钟更长：补传只打自家服务器，
 # 拉佳明要过它的限流，太密会被 429。
 BG_SYNC_GAP = 25 * 60
+# 后台和首页各有各的节流戳。**不能共用一个**：后台每 30 分钟就跑一次，
+# 每次都会刷新戳，于是用户打开 App 时总落在「10 分钟内刚同步过」的窗口里，
+# 首页那次同步被一直挡掉——表现就是「打开软件不自动更新，还得手拉」。
+BG_SYNC_META = "bg_sync_at"
 
 
 def _try_sync(store) -> dict | None:
@@ -189,7 +193,7 @@ def _try_sync(store) -> dict | None:
 
     now = dt.datetime.now()
     try:
-        last = dt.datetime.strptime(str(store.get_meta("auto_sync_at") or ""),
+        last = dt.datetime.strptime(str(store.get_meta(BG_SYNC_META) or ""),
                                     "%Y-%m-%d %H:%M:%S")
         if (now - last).total_seconds() < BG_SYNC_GAP:
             return None
@@ -202,12 +206,12 @@ def _try_sync(store) -> dict | None:
         r = A.sync_all(days=1)
     except Exception:      # noqa: BLE001 - 离线/会话过期都走这里
         try:
-            store.set_meta("auto_sync_at", "")
+            store.set_meta(BG_SYNC_META, "")
         except Exception:
             pass
         return None
     try:
-        store.set_meta("auto_sync_at", now.strftime("%Y-%m-%d %H:%M:%S"))
+        store.set_meta(BG_SYNC_META, now.strftime("%Y-%m-%d %H:%M:%S"))
     except Exception:
         pass
     return r.get("run") if r.get("new") else None

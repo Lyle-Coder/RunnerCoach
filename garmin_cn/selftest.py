@@ -1170,6 +1170,23 @@ def run() -> int:
     assert "A.sync_all" in _gserv, "首页自动同步仍只拉佳明"
     assert "sync_all" in (ROOT / "garmin_cn/bg.py").read_text(encoding="utf-8"), \
         "后台同步仍只拉佳明"
+
+    # 自动同步这次报障的四条，全部来自「失败被当成成功」和「节流互相打架」：
+    # 1) sync() 失败是**返回** ok=False，不抛异常。sync_all 只看有没有抛，
+    #    于是会话过期被记成「已同步、新增 0」，前端收到就静默什么都不做——
+    #    用户看到的永远是「打开软件不自动更新」。必须显式查返回值。
+    _aps = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    assert 'r.get("ok") is False' in _aps, "sync_all 没检查 sync 的返回值"
+    assert '"need_login"' in _aps and '"failed"' in _aps, "sync_all 没把失败原因带出来"
+    # 2) 后台与首页不能共用一个节流戳：后台每 30 分钟刷新它，首页每次打开都
+    #    落在窗口里被挡掉。
+    _bgs = (ROOT / "garmin_cn/bg.py").read_text(encoding="utf-8")
+    assert "BG_SYNC_META" in _bgs and "bg_sync_at" in _bgs, \
+        "后台和首页共用 auto_sync_at，首页自动同步会被后台一直挡掉"
+    # 3) 会话过期必须让用户看见，否则「没更新」永远没有解释。
+    assert "need_login" in _gserv, "首页自动同步没透传 need_login"
+    assert "登录已过期" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
+        "会话过期时首页不给提示，用户只能看到「没更新」"
     # 自己分享的那条必须能点进详情：批注入口在详情页，清单行若只是 div + 撤回
     # 按钮，作者反而进不去自己的路线（实测踩到：用户以为「没有加批注按钮」）。
     assert '/groups/{gid}/route/{int(x.get("id") or 0)}' in _rpg, \
