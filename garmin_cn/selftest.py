@@ -2123,6 +2123,35 @@ def run() -> int:
     assert _EX.span_km(_xa + _hb) > 500, "跨省跨度算错了"
     assert _EX.span_km(_xa) < 50, "同城跨度算错了"
 
+    # 体重/AI 数据口径：用户只有一台秤，却被告知「另一台秤」。
+    # body.stats 要给出「体脂是否与体重同源」，AI 上下文在同源时不重复传
+    # body_fat_any，提示词也不再无条件说「另一台秤的读数」。
+    _bps = (ROOT / "garmin_cn/body.py").read_text(encoding="utf-8")
+    assert "fat_same_scale" in _bps, "body.stats 没判断体脂是否与体重同源"
+    _aps2 = (ROOT / "garmin_cn/aicoach.py").read_text(encoding="utf-8")
+    assert "fat_same_scale" in _aps2 and "_body_ctx" in _aps2, \
+        "AI 上下文同源时仍重复传体脂，模型会当成两台秤"
+    assert "是另一台秤的读数（body_fat_any_src" not in _aps2, \
+        "提示词仍硬编码「另一台秤」，用户只有一台秤时必错"
+
+    # 活动列表是**最新在前**。取 [-N:] 拿到的是最老的那批，模型会拿一个月前
+    # 的训练量去解释当前的体重变化（实测踩到：简报里「最近」是 10 月的活动）。
+    assert '(res.get("activities") or [])[:10]' in _aps2, \
+        "weight_review 仍取最老的 10 条活动"
+    assert '(res.get("activities") or [])[:4]' in _aps2, \
+        "对话简报仍取最老的活动"
+
+    # 对话简报不能只给「体重一个数」：用户问吃什么/练得怎样时模型只能说没有。
+    for _kw in ("训练负荷", "营养目标", "人工记录了"):
+        assert _kw in _aps2, f"对话简报缺「{_kw}」这一项"
+
+    # 今日页要能看到体成分和摄入。四格 grid 不许新增区域，所以挂在体重格说明
+    # 行 + 面板底部一行（横屏隐藏）。
+    _uis = (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8")
+    assert "rc-nutline" in _uis and "rc-nutline{display:none}" in \
+        (ROOT / "garmin_cn/screen.py").read_text(encoding="utf-8"), \
+        "今日页没有营养行或横屏没隐藏"
+
     # 底图缓存必须比对点集指纹。缓存按 ident 命名，而 ident 由调用方给
     # （`rt1-5`）：同一路线重新分享、同一片格子新增时点集变了但 ident 不变，
     # 只认 ident 就会复用旧画幅，表现成「新路线看起来没更新」（用户报过）。

@@ -476,6 +476,11 @@ def stats(store, end: str | None = None, days: int = 28) -> dict:
         "body_fat_any_src": _src_of_last(all_rs, "body_fat_pct"),
         "muscle_any": _last(all_rs, "muscle_kg"),
         "water_any": _last(all_rs, "water_pct"),
+        # 体脂到底是不是「另一台秤」。用户只有一台秤时，body_fat 和
+        # body_fat_any 会是同一个数——但旧提示词硬写着「另一台秤的读数」，
+        # 模型照着说成两台秤，用户看到的是一句凭空捏造的来源说明。
+        # 用**值**判断最稳：同一个数就是同一份数据，不依赖 source 字符串。
+        "fat_same_scale": None,
         "fat_series": fat_series[-30:],
         "muscle_series": muscle_series[-30:],
         "water_series": water_series[-30:],
@@ -489,6 +494,15 @@ def stats(store, end: str | None = None, days: int = 28) -> dict:
     if series:
         ref = dt.date.fromisoformat(end or dt.date.today().isoformat())
         out["stale_days"] = max(0, (ref - dt.date.fromisoformat(series[-1][0])).days)
+    # 同一份体脂读数的两种取法（主口径 = 首选秤；any = 全表兜底）。
+    # 值一样就说明主口径本来就有体脂，兜底那份是重复数据，不是另一台秤。
+    _b_fat, _a_fat = out.get("body_fat"), out.get("body_fat_any")
+    if _a_fat is not None:
+        try:
+            out["fat_same_scale"] = bool(
+                _b_fat is not None and abs(float(_b_fat) - float(_a_fat)) < 0.05)
+        except (TypeError, ValueError):
+            out["fat_same_scale"] = None
     if len(series) < 2:
         out["verdict"] = "体重只有 1 次记录，先连续称一周再谈趋势" if series else "还没有体重数据"
         return out
