@@ -388,6 +388,45 @@ def probe(k: str | None = None, save: Path | None = None) -> tuple[bool, str]:
     return False, f"{_ERR.get(code, j.get('info') or '未知错误')}（infocode={code}）"
 
 
+def _fp(track: list[list[float]], extra: list | None = None) -> str:
+    """点集指纹：抽稀后取 md5。
+
+    缓存文件按 `ident` 命名，而 ident 由调用方给（`rt1-5` 这种）。
+    同一条路线重新分享、或某一片格子新增时，**点集会变但 ident 不变**——
+    只比对 ident 就会把旧图当新图返回，表现成「新路线的画幅没更新」。
+
+    指纹跟 meta 一起写盘，命中时比对；不同就重取并**覆盖同名文件**，
+    所以不会因为点集变化一路堆出新缓存文件。
+    """
+    import hashlib
+
+    ps = list(track) + list(extra or [])
+    if len(ps) > 60:
+        step = len(ps) / 60
+        ps = [ps[min(int(i * step), len(ps) - 1)] for i in range(60)]
+    raw = ";".join(f"{round(float(p[0]), 5)},{round(float(p[1]), 5)}" for p in ps)
+    return hashlib.md5(raw.encode()).hexdigest()[:12]
+
+
+def _covers(meta: dict, track: list[list[float]],
+            extra: list | None = None, margin: float = 2.0) -> bool:
+    """新点集是否还落在旧底图的画幅里（留一点边）。
+
+    老缓存没有指纹，直接判定「不是同一批点」会把所有图重取一遍——用户的
+    高德 key 是有配额的。先用投影试一下：点还在原来那张图里就说明画幅够用，
+    补上指纹继续复用；跑出去了才重取。
+    """
+    try:
+        for p in list(track) + list(extra or []):
+            x, y = to_px(float(p[0]), float(p[1]), meta)
+            if not (-margin <= x <= float(meta["w"]) + margin
+                    and -margin <= y <= float(meta["h"]) + margin):
+                return False
+        return True
+    except Exception:      # noqa: BLE001 - 算不出来就当覆盖不了，重取更安全
+        return False
+
+
 def ensure(track: list[list[float]], w: int, h: int, ident: str = "act",
            timeout: float = 25, extra: list | None = None) -> dict | None:
     """拿一张底图 + 它的取景参数：先看缓存，再打接口。
@@ -397,6 +436,7 @@ def ensure(track: list[list[float]], w: int, h: int, ident: str = "act",
     """
     if len(track) < 2:
         return None
+    fp = _fp(track, extra)
     cache = CACHE / f"{ident}-{w}x{h}.png"
     meta_f = cache.with_name(cache.stem + ".json")
     if cache.exists() and cache.stat().st_size > 1024 and meta_f.exists():
@@ -404,11 +444,20 @@ def ensure(track: list[list[float]], w: int, h: int, ident: str = "act",
             meta = json.loads(meta_f.read_text("utf-8"))
             # 只认当前取景算法出的图：老版本是「自动取景」或「放大底图」，
             # 几何对不上，直接重取，免得叠出来的轨迹跟路网错开。
-            if meta.get("fit") == "fixed" and meta.get("rev") == REV:
+            # 点集指纹也必须一致，否则「新路线」会复用旧画幅（用户报过）。
+            if (meta.get("fit") == "fixed" and meta.get("rev") == REV
+                    and meta.get("fp") == fp):
                 if "region" not in meta:
                     meta["region"] = regeo(meta["center"][1], meta["center"][0])
                     meta_f.write_text(
                         json.dumps(meta, ensure_ascii=False, indent=1) + "\n", "utf-8")
+                return {"png": cache, "meta": meta}
+            # 老缓存没有指纹：点还在画幅内就补上继续用，跑出去了才重取
+            if (meta.get("fit") == "fixed" and meta.get("rev") == REV
+                    and "fp" not in meta and _covers(meta, track, extra)):
+                meta["fp"] = fp
+                meta_f.write_text(
+                    json.dumps(meta, ensure_ascii=False, indent=1) + "\n", "utf-8")
                 return {"png": cache, "meta": meta}
         except Exception:
             pass
@@ -417,6 +466,7 @@ def ensure(track: list[list[float]], w: int, h: int, ident: str = "act",
         return None
     meta = fit(track, w, h, extra=extra)
     meta["region"] = regeo(meta["center"][1], meta["center"][0])
+    meta["fp"] = fp
     try:
         req = urllib.request.Request(static_url(meta, k), headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
