@@ -1802,21 +1802,37 @@ def home_page() -> str:
 
 
 # 首页加载后静默同步一次。自包含（元素自己创建），不依赖页面结构。
-# 只在真有新增时提示并刷新；失败一律静默——佳明会话过期是常态，
-# 每次打开都弹一句「需要重新登录」会变成噪音。
+# 三种结果分开处理：有新增就提示并刷新；要重新登录就明说；其余静默。
+# 「要重新登录」是唯一必须打扰用户的情况——佳明 JWT 几小时过期，后台不能
+# 存密码，所以它必然会周期性发生。以前这里一律静默，表现就是「打开软件
+# 不自动更新，还得手拉」，而且完全看不出原因。
 _AUTO_SYNC_JS = """<script>(function(){
+  function tip(html,ms){
+    var m=document.getElementById('rc-auto');
+    if(!m){m=document.createElement('div');m.id='rc-auto';
+      m.style.cssText='position:fixed;left:50%;top:14px;transform:translateX(-50%);'
+        +'z-index:99;background:#12202f;color:#dbe3ee;padding:9px 15px;'
+        +'border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.45);'
+        +'max-width:88vw';
+      document.body.appendChild(m);}
+    m.innerHTML=html;
+    if(ms>0)setTimeout(function(){m&&m.parentNode&&m.remove();},ms);
+    return m;
+  }
   setTimeout(function(){
     fetch('/__sync/today',{credentials:'same-origin'})
      .then(function(r){return r.json();})
      .then(function(d){
-       if(!d||!d.ok||!(d.new>0))return;
-       var m=document.getElementById('rc-auto');
-       if(!m){m=document.createElement('div');m.id='rc-auto';
-         m.style.cssText='position:fixed;left:50%;top:14px;transform:translateX(-50%);'
-           +'z-index:99;background:#12202f;color:#dbe3ee;padding:9px 15px;'
-           +'border-radius:999px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.45)';
-         document.body.appendChild(m);}
-       m.textContent='已同步 '+d.new+' 条新活动';
+       if(!d)return;
+       if(d.need_login&&d.need_login.length){
+         var a=document.createElement('a');
+         a.href='/me';a.textContent='登录已过期，点这里重新连接';
+         a.style.cssText='color:#7fd1ff;text-decoration:underline';
+         tip('',0).appendChild(a);
+         return;
+       }
+       if(!d.ok||!(d.new>0))return;
+       tip('已同步 '+d.new+' 条新活动',0);
        setTimeout(function(){location.reload();},1200);
      }).catch(function(){});
   },2200);

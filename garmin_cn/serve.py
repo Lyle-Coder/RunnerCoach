@@ -41,7 +41,10 @@ LIST_EXT = {".html", ".htm", ".png", ".mp4"}   # 手机上值得点开的；json
 
 # 首页自动同步的节流（秒）。一次增量同步约 8 个请求、两秒，
 # 但每进一次首页都跑会白耗电，佳明那边也会觉得异常。
-AUTO_SYNC_GAP = 10 * 60
+# 首页自动同步的节流（秒）。原来 10 分钟太长：用户 10 分钟前开过一次页
+# 但还没跑步，跑完回来正好落在窗口里，那次同步被挡掉，于是又变成「手拉」。
+# 3 分钟足够挡住「来回切页面」的重复请求，又不会挡掉真实的「跑完回来」。
+AUTO_SYNC_GAP = 3 * 60
 
 
 def _lan_ip() -> str:
@@ -249,16 +252,14 @@ class _Handler(SimpleHTTPRequestHandler):
                     last_ts = 0.0
                 if now - last_ts < AUTO_SYNC_GAP:
                     return self._json({"ok": True, "skip": "throttled"})
-                # 没有佳明同步记录的人别每次开首页都白试一次：sync 走不通要
-                # 白等两秒，还会在诊断里堆一堆会话错误。高驰/Keep 的自动同步
-                # 得各走各的接口，不在这一版里。
-                if not st.get_meta("last_sync"):
-                    return self._json({"ok": True, "skip": "no-garmin"})
-                st.set_meta("auto_sync_at", time.strftime("%Y-%m-%d %H:%M:%S"))
-                # 只有配过源的才值得试；一个都没配就别白等两秒
+                # 判据是「配过源」而不是「同步成功过」：刚装完 App 或清过数据
+                # 时 last_sync 还是空的，但会话票据在，这时候更该试一次。
+                # 以前这里只查 last_sync，等于「从没成功过就永远不再试」。
                 if not (st.get_meta("last_sync") or st.get_meta("last_sync_coros")
-                        or st.get_meta("last_sync_keep")):
+                        or st.get_meta("last_sync_keep")
+                        or A._garmin_session_ok() or A._coros_session_ok()):
                     return self._json({"ok": True, "skip": "no-source"})
+                st.set_meta("auto_sync_at", time.strftime("%Y-%m-%d %H:%M:%S"))
             finally:
                 st.conn.close()
         except Exception as e:      # noqa: BLE001 - 库打不开就静默失败
@@ -277,7 +278,25 @@ class _Handler(SimpleHTTPRequestHandler):
             except Exception:
                 pass
             return self._json({"ok": False, "error": f"{type(e).__name__}"})
-        return self._json({"ok": True, "new": int(r.get("new") or 0)})
+
+        # 一个源都没成功（会话过期是常态）→ 把戳清掉，下次打开还能再试。
+        # 不清的话这次失败会被当成「刚同步过」，白等 10 分钟才重试。
+        if not r.get("ok"):
+            try:
+                st2 = Store(A.DB)
+                try:
+                    st2.set_meta("auto_sync_at", "")
+                finally:
+                    st2.conn.close()
+            except Exception:
+                pass
+        out = {"ok": True, "new": int(r.get("new") or 0),
+               "sources": r.get("sources") or [], "failed": r.get("failed") or []}
+        if r.get("need_login"):
+            # 静默过太久是这次报障的根源：会话过期 → 什么都没发生 → 用户以为
+            # 「自动同步失效」。现在把这件事交给界面说清楚，让人知道该去重连。
+            out["need_login"] = r["need_login"]
+        return self._json(out)
 
     def _do_GET(self) -> None:
         u = urlparse(self.path)
