@@ -2092,6 +2092,14 @@ def run() -> int:
     assert _EX.span_km(_xa + _hb) > 500, "跨省跨度算错了"
     assert _EX.span_km(_xa) < 50, "同城跨度算错了"
 
+    # 底图缓存必须比对点集指纹。缓存按 ident 命名，而 ident 由调用方给
+    # （`rt1-5`）：同一路线重新分享、同一片格子新增时点集变了但 ident 不变，
+    # 只认 ident 就会复用旧画幅，表现成「新路线看起来没更新」（用户报过）。
+    _bsrc = (ROOT / "garmin_cn/basemap.py").read_text(encoding="utf-8")
+    assert "def _fp(" in _bsrc and 'meta.get("fp") == fp' in _bsrc, \
+        "底图缓存没比对点集指纹，点集变了会复用旧画幅"
+    assert "def _covers(" in _bsrc, "老缓存没有指纹时缺画幅覆盖判断"
+
     _bme = _BM.ensure
     _gmd = _GP.map_data
     try:
