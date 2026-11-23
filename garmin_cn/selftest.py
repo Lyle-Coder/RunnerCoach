@@ -2167,6 +2167,13 @@ def run() -> int:
         (ROOT / "garmin_cn/screen.py").read_text(encoding="utf-8"), \
         "今日页没有营养行或横屏没隐藏"
 
+    # Bingo 的爬升类卡片全靠 group_daily.elevation_m。取日汇总时漏了这一列，
+    # rows 里就没有这个键，elevation 一律读成 0，于是「本周爬升 / 单日爬升 /
+    # 山地 12km」永远不亮（用户报：20km 爬升 1367m，爬升卡却没激活）。
+    _gsv = (ROOT / "server/groups.py").read_text(encoding="utf-8")
+    assert _gsv.count("duration_s, elevation_m") >= 2, \
+        "bingo 取日汇总时漏了 elevation_m，所有爬升类卡片会判不出来"
+
     # 底图缓存必须比对点集指纹。缓存按 ident 命名，而 ident 由调用方给
     # （`rt1-5`）：同一路线重新分享、同一片格子新增时点集变了但 ident 不变，
     # 只认 ident 就会复用旧画幅，表现成「新路线看起来没更新」（用户报过）。
