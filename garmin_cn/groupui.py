@@ -581,6 +581,22 @@ def settings_page(token: str, gid: int, message: str = "") -> str:
             '缺轨迹的会补抓，可能等几秒</span>'
             '<button class="btn sm" type="submit">立即</button></div></form>')
 
+    # 「帮队友刷新」：队友用 iPhone 时没有 App，登录过期只能靠别人的手机替他
+    # 登一次。开关默认关——这会让这台手机临时拿到队友的佳明密码，必须是本人
+    # 自己点。只对本组生效，换组得重新开。
+    _relay_on = bool((g.get("me") or {}).get("relay_share"))
+    mine += (f'<form action="/__group/{gid}/relay" method="post">{_tok(token)}'
+             '<input type="hidden" name="on" value="'
+             + ("0" if _relay_on else "1") + '">'
+             '<div class="setrow"><span>帮队友</span>'
+             '<span class="note" style="flex:1 1 auto;margin:0">'
+             + ("已开启 · 队友（iPhone）登录过期时，这台手机会替他登一次，"
+                "用完即弃" if _relay_on
+                else "关闭中 · 只影响没有 App 的队友，不影响你自己")
+             + '</span>'
+             f'<button class="btn sm{" primary" if not _relay_on else ""}" '
+             f'type="submit">{"关闭" if _relay_on else "开启"}</button></div></form>')
+
     grp = ""
     if is_admin and g.get("invite_code"):
         _code = esc(g["invite_code"])

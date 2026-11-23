@@ -95,6 +95,12 @@ def init() -> None:
                 finished INTEGER NOT NULL DEFAULT 0
             )""")
         c.execute("CREATE INDEX IF NOT EXISTS relay_jobs_st ON relay_jobs(status)")
+        # 谁领走的。交结果时校验「同一个 task 只能由领它的人推回来」——
+        # 否则任何一台中转机只要猜个 job_id 就能把别人的任务标成完成/失败。
+        rcols = {r["name"] for r in c.execute("PRAGMA table_info(relay_jobs)")}
+        if "worker" not in rcols:
+            c.execute("ALTER TABLE relay_jobs ADD COLUMN worker INTEGER"
+                      " NOT NULL DEFAULT 0")
         # 最近打开网页的时间：预热只服务「最近 24 小时真的在用」的人，
         # 不活跃的账号不去刷新会话，省登录次数也省风控风险。
         c.execute("""CREATE TABLE IF NOT EXISTS web_seen(
@@ -773,6 +779,7 @@ def _connect_page(handler, me, qs: dict) -> None:
         '<input type="checkbox" name="consent" value="1" required '
         'style="width:18px;height:18px;margin-top:2px">'
         '<span>我同意服务器加密保存佳明账号密码，用于自动保持登录、定期更新数据。'
+        '如果你手机上没装 App，队里开了「帮队友」的设备可能会替你登录一次；'
         '密码不会显示在任何页面或日志里，可随时删除。</span></label>'
         '<div class="webrow"><button class="btn primary" type="submit">保存</button>'
         '<a class="btn" href="/app">取消</a></div></form>'
@@ -1049,8 +1056,43 @@ RELAY_COOLDOWN = 600       # 同一用户 10 分钟内不重复排任务
 
 
 def relay_enabled() -> bool:
-    """服务器有没有指定中转机。没指定就根本不排任务，免得永远卡在 pending。"""
-    return bool(str(getattr(_A(), "RC_RELAY_USER", "") or "").strip())
+    """有没有任何设备能当中转机。没有就根本不排任务，免得永远卡在 pending。
+
+    两种来源：`RC_RELAY_USER` 白名单（组长指定的常开设备），或者组里有人
+    自己开了「帮队友刷新」（`group_members.relay_share`）。
+    """
+    if str(getattr(_A(), "RC_RELAY_USER", "") or "").strip():
+        return True
+    return _groups().any_relay_worker()
+
+
+def _groups():
+    """组模块（groups.db）。取不到就返回一个什么都不认的替身。
+
+    网页版和组服务是两个库，这里必须容错：组服务挂了不能让网页版同步一起挂。
+    """
+    try:
+        import groups as G
+        return G
+    except Exception:      # noqa: BLE001
+        class _Nil:
+            def any_relay_worker(self):
+                return False
+
+            def is_relay_worker(self, uid):
+                return False
+
+            def share_relay(self, worker, target):
+                return False
+        return _Nil()
+
+
+def _can_relay(worker: int, target: int) -> bool:
+    """这台设备能不能替这个人登录。白名单之外只认同组 + 对方开了开关。"""
+    try:
+        return bool(_groups().share_relay(int(worker), int(target)))
+    except Exception:      # noqa: BLE001
+        return False
 
 
 def request_relay(uid: int) -> bool:
@@ -1085,37 +1127,48 @@ def request_relay(uid: int) -> bool:
     return True
 
 
-def relay_claim() -> dict | None:
+def relay_claim(worker: int = 0, super_ok: bool = False) -> dict | None:
     """中转机领一个任务。返回含明文密码的 dict，**不写日志、不回显**。
 
-    多台机同时来领时靠 `UPDATE ... AND status='pending'` 的 rowcount 做乐观锁：
-    谁先改成功谁拿，另一台拿到 0 行就空手回去等下一轮。以前是先 SELECT 再
-    UPDATE，两台机会领到同一个任务、各自登录一次，白白多刷一次佳明。
+    两道门：
+
+    1. **能不能领**：`super_ok`（白名单里的设备）随便领；否则只能领「和我在
+       同一个组、且我自己开了帮队友」的那些人的任务。这一层是安全边界——
+       没开开关的设备永远看不到别人的密码。
+    2. **抢不抢得到**：`UPDATE ... AND status='pending'` 的 rowcount 做乐观锁，
+       多台机同时领只有一个成功，不会各自登录同一个账号。
+
+    候选任务最多看 8 条：前面几条可能都不归我，够多了就回去等下一轮，别把
+    一次请求拖成几十次判断。
     """
     now = int(time.time())
     with _A().db() as c:
-        head = c.execute("SELECT id FROM relay_jobs WHERE status='pending' "
-                         "ORDER BY id LIMIT 1").fetchone()
-        if not head:
+        rows = c.execute("SELECT id,user_id FROM relay_jobs"
+                         " WHERE status='pending' ORDER BY id LIMIT 8").fetchall()
+    for head in rows:
+        target = int(head["user_id"])
+        if not super_ok and not _can_relay(worker, target):
+            continue
+        with _A().db() as c:
+            cur = c.execute("UPDATE relay_jobs SET status='running', started=?, "
+                            "worker=? WHERE id=? AND status='pending'",
+                            (now, int(worker), int(head["id"])))
+            if cur.rowcount != 1:      # 被另一台抢走了，看下一个
+                continue
+            job = dict(c.execute("SELECT * FROM relay_jobs WHERE id=?",
+                                 (int(head["id"]),)).fetchone())
+        cr = _creds(int(job["user_id"]))
+        if not cr:
+            relay_finish(int(job["id"]), error="这个账号没有保存佳明账号密码")
             return None
-        cur = c.execute("UPDATE relay_jobs SET status='running', started=? "
-                        "WHERE id=? AND status='pending'",
-                        (now, int(head["id"])))
-        if cur.rowcount != 1:      # 被另一台抢走了
+        try:
+            password = _dec(str(cr["nonce"]), str(cr["ct"]))
+        except Exception as e:      # noqa: BLE001
+            relay_finish(int(job["id"]), error=f"解密失败：{type(e).__name__}")
             return None
-        job = dict(c.execute("SELECT * FROM relay_jobs WHERE id=?",
-                             (int(head["id"]),)).fetchone())
-    cr = _creds(int(job["user_id"]))
-    if not cr:
-        relay_finish(int(job["id"]), error="这个账号没有保存佳明账号密码")
-        return None
-    try:
-        password = _dec(str(cr["nonce"]), str(cr["ct"]))
-    except Exception as e:      # noqa: BLE001
-        relay_finish(int(job["id"]), error=f"解密失败：{type(e).__name__}")
-        return None
-    return {"job_id": int(job["id"]), "user_id": int(job["user_id"]),
-            "email": str(cr["email"]), "password": password}
+        return {"job_id": int(job["id"]), "user_id": int(job["user_id"]),
+                "email": str(cr["email"]), "password": password}
+    return None
 
 
 # 中转失败里，只有这几类需要本人动手（改密码 / 过验证码 / 解异常）；
@@ -1153,13 +1206,20 @@ def _flag_action(uid: int, msg: str) -> None:
         pass
 
 
-def relay_finish(job_id: int, cookies=None, error: str = "") -> None:
-    """中转机交回结果。成功就写会话并排队同步。"""
+def relay_finish(job_id: int, cookies=None, error: str = "",
+                 worker: int | None = None) -> None:
+    """中转机交回结果。成功就写会话并排队同步。
+
+    `worker` 传了就要核对：这条任务是不是它领的。中转机之间互不设防的话，
+    任何一台只要猜个 job_id 就能把别人的任务标记成成功或失败。
+    """
     now = int(time.time())
     with _A().db() as c:
-        row = c.execute("SELECT user_id FROM relay_jobs WHERE id=?",
+        row = c.execute("SELECT user_id,worker FROM relay_jobs WHERE id=?",
                         (int(job_id),)).fetchone()
     if not row:
+        return
+    if worker is not None and int(row["worker"] or 0) != int(worker):
         return
     uid = int(row["user_id"])
     if error or not cookies:

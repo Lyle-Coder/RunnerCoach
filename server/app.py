@@ -707,19 +707,48 @@ def _relay_ok(row: sqlite3.Row) -> bool:
 
 
 def api_relay_pull(row: sqlite3.Row) -> dict:
-    """中转机领一个待登录任务。没有任务就返回 job=None，别让它空转重试。"""
-    if not _relay_ok(row):
-        raise Gate(403, "这台设备不是中转机")
+    """中转机领一个待登录任务。没有任务就返回 job=None，别让它空转重试。
+
+    能不能领有两层：白名单（`RC_RELAY_USER`）里的是常开中转机；其他人必须
+    在某个组里自己开了「帮队友刷新」，而且只能领同组队友的任务。都没开的
+    直接 403，客户端记下来就不再空问了。
+    """
+    uid = int(row["user_id"])
+    sup = _relay_ok(row)
+    if not sup:
+        try:
+            import groups as G
+
+            if not G.is_relay_worker(uid):
+                raise Gate(403, "这台设备不是中转机")
+        except Gate:
+            raise
+        except Exception:      # noqa: BLE001 - 组服务挂了就当没资格
+            raise Gate(403, "这台设备不是中转机")
     import webapp
 
-    job = webapp.relay_claim()
+    job = webapp.relay_claim(uid, super_ok=sup)
     return {"ok": True, "job": job}
 
 
 def api_relay_push(row: sqlite3.Row, body: dict) -> dict:
-    """中转机交回结果：成功带 Cookie，失败带原因。"""
+    """中转机交回结果：成功带 Cookie，失败带原因。
+
+    资格不再只看白名单：组内志愿机也要能交。但交的时候校验「这条任务是不是
+    你领的」（`relay_finish(worker=...)`），否则任何设备猜个 job_id 就能把
+    别人的任务刷成完成。
+    """
+    uid = int(row["user_id"])
     if not _relay_ok(row):
-        raise Gate(403, "这台设备不是中转机")
+        try:
+            import groups as G
+
+            if not G.is_relay_worker(uid):
+                raise Gate(403, "这台设备不是中转机")
+        except Gate:
+            raise
+        except Exception:      # noqa: BLE001
+            raise Gate(403, "这台设备不是中转机")
     import webapp
 
     try:
@@ -729,9 +758,10 @@ def api_relay_push(row: sqlite3.Row, body: dict) -> dict:
     if not job_id:
         raise Gate(400, "缺 job_id")
     if body.get("ok"):
-        webapp.relay_finish(job_id, cookies=body.get("session"))
+        webapp.relay_finish(job_id, cookies=body.get("session"), worker=uid)
     else:
-        webapp.relay_finish(job_id, error=str(body.get("error") or "中转登录失败"))
+        webapp.relay_finish(job_id, error=str(body.get("error") or "中转登录失败"),
+                            worker=uid)
     return {"ok": True}
 
 

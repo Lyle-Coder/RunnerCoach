@@ -6640,6 +6640,33 @@ def run() -> int:
     assert "status=\"wait\"" in _wsapp, "可自愈的失败没静默（还挂在 error 上）"
     assert "def _relay_fatal" in _wsapp and "def _flag_action" in _wsapp, \
         "中转失败没区分「能自愈」和「要人动手」"
+
+    # ---- 组内互助中转（2026-11-23）--------------------------------------
+    # 没有白名单的人也能帮队友，但**必须**是「同组 + 自己开了开关」，
+    # 默认拒绝。这是唯一一条会把别人的佳明密码送到别人设备上的链路。
+    _gsrc = (ROOT / "server/groups.py").read_text(encoding="utf-8")
+    for _need in ("relay_share", "def api_relayshare", "def share_relay",
+                  "def any_relay_worker", "def is_relay_worker"):
+        assert _need in _gsrc, f"组内互助缺 {_need}"
+    assert 'if "relay_share" not in mcols' in _gsrc, \
+        "group_members.relay_share 没有老库迁移"
+    assert "a.relay_share=1" in _gsrc and "a.group_id = b.group_id" in _gsrc, \
+        "share_relay 没按「同组 + 开关」判，可能跨组放权"
+    assert '"relayshare" and method == "POST"' in _gsrc, "relayshare 没接到路由"
+    assert "def relay_claim(worker: int = 0, super_ok: bool = False)" in _wsapp, \
+        "relay_claim 没带设备身份，组外设备也能领任务"
+    assert "_can_relay(worker, target)" in _wsapp, "领取时没按同组筛选"
+    assert "def _groups()" in _wsapp, "组服务挂了会拖死网页版同步"
+    assert "worker is not None and int(row[\"worker\"] or 0) != int(worker)" in _wsapp, \
+        "交结果没校验归属，猜个 job_id 就能改别人的任务"
+    assert "worker: int | None = None" in _wsapp
+    _apsrc2 = (ROOT / "server/app.py").read_text(encoding="utf-8")
+    assert "G.is_relay_worker(uid)" in _apsrc2, "pull/push 没放开给组内志愿机"
+    assert "worker=uid" in _apsrc2, "push 没把设备身份传下去"
+    _gui = (ROOT / "garmin_cn/groupui.py").read_text(encoding="utf-8")
+    assert "帮队友" in _gui and "/relay" in _gui, "小组设置里没有「帮队友」开关"
+    _gpy = (ROOT / "garmin_cn/group.py").read_text(encoding="utf-8")
+    assert "def set_relayshare" in _gpy and "relayshare" in _gpy
     # 登录框要有「显示密码」；续期要验证码时弹验证码框而不是登录框
     _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert _kt5.count("addShowPassword(box") >= 3, "佳明/高驰/小米登录框要都能显示密码"
