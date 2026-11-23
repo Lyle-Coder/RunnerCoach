@@ -19,6 +19,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import os
 import sys
 from pathlib import Path
 
@@ -594,11 +596,52 @@ def _op_of(meters: float) -> float:
     return 0.78
 
 
-def _map_svg(people) -> str:
-    """格子图。没有底图，按经纬度等比铺满画幅。
+def _user_basemap(uid: int, people, w: int, h: int):
+    """用**这个用户自己配的**高德 Key 要一张底图；没有 Key 就返回 None。
 
-    网页版不铺高德底图：底图 Key 是每个用户在本机配的（`data/amap.json`），
-    服务端没有。没底图时形状仍然是对的，所以照画，只在页脚说清这一点。
+    `basemap.key()` 先看环境变量，所以这里临时把用户的 Key 塞进 `AMAP_KEY`，
+    调完立刻还原——服务进程是多用户的，环境变量不能留。
+    缓存落在服务自己的 `data/basemaps`（按取景哈希命名），不用每刷一次打一次
+    高德的量。
+    """
+    if EX is None or not people:
+        return None
+    try:
+        import webapp as WA
+
+        key = WA._amap_key(int(uid))
+        if not key:
+            return None
+        from garmin_cn import basemap as BM
+
+        pts = []
+        cells = []
+        for p in people:
+            for c in p.get("cells") or []:
+                cells.append(c)
+                pts.extend([[la, lo] for la, lo in EX.cell_corners(c)])
+        if not pts:
+            return None
+        ident = "gweb%d-%s" % (int(uid), hashlib.md5(
+            ",".join(sorted(set(cells))).encode()).hexdigest()[:10])
+        old = os.environ.get("AMAP_KEY")
+        os.environ["AMAP_KEY"] = key
+        try:
+            return BM.ensure(pts, w, h, ident=ident)
+        finally:
+            if old is None:
+                os.environ.pop("AMAP_KEY", None)
+            else:
+                os.environ["AMAP_KEY"] = old
+    except Exception:      # noqa: BLE001 - 底图失败就退回纯格子，别让整页打不开
+        return None
+
+
+def _map_svg(people, bm=None) -> str:
+    """格子图。有底图就铺底图，没有就按经纬度等比铺满画幅。
+
+    网页版不保证有底图：Key 是每个用户在本机（我的 → 地图底图）配的，没配
+    或者高德不通时只有格子。形状仍然是对的，页脚会把这件事说清。
     """
     if EX is None:
         return ""
@@ -614,18 +657,41 @@ def _map_svg(people) -> str:
     lons = [p[1] for p in pts]
     la0, la1 = min(lats), max(lats)
     lo0, lo1 = min(lons), max(lons)
-    mid = (la0 + la1) / 2.0
-    import math
 
-    kx = max(0.05, math.cos(math.radians(mid)))
-    span_x = max((lo1 - lo0) * kx, 1e-6)
-    span_y = max(la1 - la0, 1e-6)
-    s = min((MAP_W - 28) / span_x, (MAP_H - 28) / span_y)
-    ox = (MAP_W - span_x * s) / 2.0
-    oy = (MAP_H - span_y * s) / 2.0
+    iw, ih, s, tx, ty = 0, 0, 1.0, 0.0, 0.0
+    meta = (bm or {}).get("meta") or {}
+    if bm and meta:
+        # 和客户端 `_map_svg` 同一套变换：底图和格子共用一个 p*s+t，
+        # 不然会出现「路网在左、脚印在右」。
+        try:
+            from garmin_cn import basemap as BM
 
-    def xy(lat, lon):
-        return (ox + (lon - lo0) * kx * s, oy + (la1 - lat) * s)
+            iw, ih = int(meta.get("w") or MAP_W), int(meta.get("h") or MAP_H)
+            s = float(meta.get("s") or min(MAP_W / max(iw, 1), MAP_H / max(ih, 1)))
+            pxs = [BM.to_px(lat, lon, meta) for lat, lon in pts]
+            cx = (min(x for x, _ in pxs) + max(x for x, _ in pxs)) / 2
+            cy = (min(y for _, y in pxs) + max(y for _, y in pxs)) / 2
+            tx = min(0.0, max(MAP_W - iw * s, MAP_W / 2 - cx * s))
+            ty = min(0.0, max(MAP_H - ih * s, MAP_H / 2 - cy * s))
+
+            def xy(lat, lon):
+                x, y = BM.to_px(lat, lon, meta)
+                return x * s + tx, y * s + ty
+        except Exception:      # noqa: BLE001 - meta 坏了就当没底图
+            bm = None
+    if not bm:
+        import math
+
+        mid = (la0 + la1) / 2.0
+        kx = max(0.05, math.cos(math.radians(mid)))
+        span_x = max((lo1 - lo0) * kx, 1e-6)
+        span_y = max(la1 - la0, 1e-6)
+        s = min((MAP_W - 28) / span_x, (MAP_H - 28) / span_y)
+        ox = (MAP_W - span_x * s) / 2.0
+        oy = (MAP_H - span_y * s) / 2.0
+
+        def xy(lat, lon):
+            return (ox + (lon - lo0) * kx * s, oy + (la1 - lat) * s)
 
     buckets: dict[tuple, list[str]] = {}
     for c, (u, share, tot) in owners.items():
@@ -647,12 +713,27 @@ def _map_svg(people) -> str:
                   f' stroke="{_e(col)}" stroke-opacity=".95" stroke-width=".5"'
                   ' stroke-linejoin="round"/>')
 
+    # 底图必须压暗：高德给的是浅色图，直接铺在暗色卡片上像一张纸糊在屏幕上，
+    # 格子颜色也会被抢掉。和客户端同一个亮度，两端口径一致。
+    if bm:
+        try:
+            bg = (f'<image href="/app/basemap/{_e(bm["png"].name)}" x="0" y="0" '
+                  f'width="{iw}" height="{ih}" preserveAspectRatio="none" '
+                  'style="filter:brightness(.46) saturate(.6) contrast(1.04)" '
+                  f'transform="translate({tx:.2f},{ty:.2f}) scale({s:.4f})"/>')
+        except Exception:      # noqa: BLE001
+            bg = '<rect x="0" y="0" width="100%" height="100%" fill="#0b1420"/>'
+    else:
+        bg = '<rect x="0" y="0" width="100%" height="100%" fill="#0b1420"/>'
+    veil = ('<rect x="0" y="0" width="100%" height="100%" fill="#0A1424" '
+            'fill-opacity="0.32"/>')
+    credit = (f'<text x="{MAP_W - 8}" y="{MAP_H - 7}" text-anchor="end" '
+              'font-size="11" fill="#7C8A99">高德地图</text>' if bm else "")
     return (f'<svg class="gmap" viewBox="0 0 {MAP_W} {MAP_H}" '
             'xmlns="http://www.w3.org/2000/svg" role="img" aria-label="组内足迹格子">'
             f'<defs><clipPath id="gm"><rect x="0" y="0" width="{MAP_W}" '
             f'height="{MAP_H}" rx="12"/></clipPath></defs>'
-            '<rect x="0" y="0" width="100%" height="100%" fill="#0b1420"/>'
-            f'<g clip-path="url(#gm)">{paths}</g></svg>')
+            f'<g clip-path="url(#gm)">{bg}{veil}{paths}{credit}</g></svg>')
 
 
 def map_page(me, gid: int, msg: str = ""):
@@ -682,7 +763,7 @@ def map_page(me, gid: int, msg: str = ""):
     if shared:
         legend += f'<span class="lgi"><i style="background:{SHARED_COLOR}"></i>共同<b>{shared}</b></span>'
 
-    svg = _map_svg(people)
+    svg = _map_svg(people, _user_basemap(int(me["user_id"]), people, MAP_W, MAP_H))
     if svg:
         card = f'<div class="card">{svg}<div class="lgs">{legend}</div></div>'
     else:

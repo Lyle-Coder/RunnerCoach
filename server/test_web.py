@@ -184,6 +184,35 @@ def main() -> int:
         st, _, txt, _ = req("GET", f"/w/g/{gid}/nope", cookie=ck_a)
         check("不存在的二级页 404", st == 404, f"{st}")
 
+        print("\n3c. 教练页 / 模型服务 / 底图")
+        st, _, txt, _ = req("GET", "/app/ai", cookie=ck_a)
+        check("教练页 200", st == 200 and "教练" in txt, f"{st}")
+        check("没配模型时给出去处", "/app/ai/settings" in txt, txt[:300])
+
+        st, _, txt, _ = req("GET", "/app/ai/settings", cookie=ck_a)
+        check("模型设置页 200", st == 200 and "API Key" in txt, f"{st}")
+        check("模型设置不回显 key", "api_key_hint" not in txt, "")
+
+        st, js, txt, _ = req("POST", "/app/ai/say", form={"text": ""}, cookie=ck_a)
+        check("空提问被拒", st == 200 and js.get("ok") is False, f"{st} {js}")
+
+        st, _, _, hdrs = req("POST", "/app/ai/settings", form={"act": "toggle"})
+        check("开关 303", st == 303, f"{st}")
+
+        st, _, txt, _ = req("GET", "/app/amap", cookie=ck_a)
+        check("底图页 200", st == 200 and "高德" in txt, f"{st}")
+        check("底图页说清选哪类 Key", "Web 服务" in txt, txt[:400])
+
+        st, _, _, hdrs = req("POST", "/app/amap", form={"act": "clear"})
+        check("删底图 Key 303", st == 303, f"{st}")
+
+        st, _, txt, _ = req("GET", "/app/static/html2canvas.min.js", cookie="")
+        check("出图脚本可访问", st == 200, f"{st}")
+
+        print("\n3d. 活动图下载按钮")
+        st, _, txt, _ = req("GET", "/app/act?aid=deadbeef", cookie=ck_a)
+        check("活动图缺数据时给说明", st == 200 and "活动" in txt, f"{st}")
+
         print("\n4. 权限")
         st, _, txt, _ = req("GET", f"/w/g/{gid}", cookie="")
         check("未登录访问组页跳登录", st == 303, f"{st}")

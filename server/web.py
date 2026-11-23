@@ -72,8 +72,8 @@ def _e(v) -> str:
     return M._e(v)
 
 
-_WEB_TABS = (("/app", "今日"), ("/app/history", "历史"),
-             ("/w", "小组"), ("/app/me", "我的"))
+_WEB_TABS = (("/app", "今日"), ("/app/ai", "教练"), ("/w", "小组"),
+             ("/app/history", "历史"), ("/app/me", "我的"))
 
 
 def _wnav(active: str = "/w") -> str:

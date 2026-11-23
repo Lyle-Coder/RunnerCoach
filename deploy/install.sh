@@ -33,7 +33,7 @@ mkdir -p "$APP" "$APP/data" "$APP/certs" "$APP/site" "$APP/apk" "$ETC"
 echo "→ 拷贝程序"
 # 新增服务端模块务必加进这个列表：漏了不会报错，而是 ImportError 让整个
 # groups / expedition 模块挂掉，线上表现是「组接口 503」，很难查。
-for f in app.py manage.py web.py webgroup.py webapp.py web_render.py web_sync.py groups.py expedition.py tick.py ranking.py bingo.py; do
+for f in app.py manage.py web.py webgroup.py webapp.py web_render.py web_ai.py web_sync.py groups.py expedition.py tick.py ranking.py bingo.py; do
   [ -f "server/$f" ] && cp -f "server/$f" "$APP/$f"
 done
 # 运维脚本：发版产物清理（每天 04:10 由 runnercoach-cleanup.timer 调）

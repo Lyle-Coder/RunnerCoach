@@ -334,8 +334,8 @@ def _ip(handler) -> str:
 
 # ---------------------------------------------------------------- 页面壳
 _NAV = (
-    ("/app", "今日"), ("/app/history", "历史"),
-    ("/w", "小组"), ("/app/me", "我的"),
+    ("/app", "今日"), ("/app/ai", "教练"),
+    ("/w", "小组"), ("/app/history", "历史"), ("/app/me", "我的"),
 )
 
 _SHELL_CSS = """
@@ -384,6 +384,16 @@ body{padding-bottom:calc(64px + env(safe-area-inset-bottom))!important}
   color:var(--ink-4,#5A6C80);transform:rotate(90deg);transition:transform .15s}
 .webadv[open] summary::after{transform:rotate(-90deg)}
 .webadv[open] summary{color:var(--ink,#E9F0F8);margin-bottom:6px}
+.aibub{margin:10px 0;max-width:92%}
+.aibub .aiwho{font-size:11px;color:var(--ink-3,#7A8DA4);margin-bottom:4px}
+.aibub .aiat{margin-left:6px;opacity:.75}
+.aibub .aitext{padding:10px 12px;border-radius:12px;font-size:14px;line-height:1.68;
+  background:var(--surface-2,#111B29);border:1px solid var(--line,rgba(255,255,255,.08));
+  overflow-wrap:anywhere}
+.aibub.me{margin-left:auto}
+.aibub.me .aitext{background:var(--brand-soft,rgba(59,130,246,.14));
+  border-color:var(--line-brand,rgba(96,165,250,.22))}
+.aibub.me .aiwho{text-align:right}
 .webadv .webform{margin-top:8px}
 """
 
@@ -495,6 +505,21 @@ def _U():
     from garmin_cn import ui as U
 
     return U
+
+
+def _json(handler, obj) -> None:
+    """小 JSON 出口：只给页面里的 fetch 用（AI 对话不整页刷新）。"""
+    raw = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    handler.send_response(200)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Content-Length", str(len(raw)))
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Connection", "close")
+    handler.end_headers()
+    try:
+        handler.wfile.write(raw)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
 
 
 def _error_page(msg: str, code: int = 200) -> str:
@@ -719,9 +744,21 @@ def _me_page(handler, me, qs: dict) -> None:
                     '<span>运动设置</span>'
                     '<span class="note" style="flex:1 1 auto;margin:0">'
                     '心率区间与骑行 FTP，影响负荷和强度计算</span>'
-                    '<span class="chev">›</span></a></div>')
+                    '<span class="chev">›</span></a>'
+                    '<a class="setrow" href="/app/ai/settings" style="text-decoration:none">'
+                    '<span>模型服务</span>'
+                    '<span class="note" style="flex:1 1 auto;margin:0">'
+                    '教练用的模型与 Key，只存在这台服务器上</span>'
+                    '<span class="chev">›</span></a>'
+                    '<a class="setrow" href="/app/amap" style="text-decoration:none">'
+                    '<span>地图底图</span>'
+                    '<span class="note" style="flex:1 1 auto;margin:0">'
+                    f'高德 Web 服务 Key'
+                    + ("（已配置）" if _amap_key(uid) else "（未配置）")
+                    + '</span><span class="chev">›</span></a></div>')
             + U.sec("小组", '<div class="card"><p class="note">'
-                    '网页端的小组是只读页（榜单、赛事、远征）。建赛事、审核仍在 App。'
+                    '网页端的小组是只读页：名次、榜、六件衫、足迹、赛事、动态。'
+                    '建赛事、审核、开关共享仍在 App。'
                     '</p><div class="pager"><a class="btn" href="/w">打开小组页</a></div></div>')
             + U.sec("关于", '<div class="card"><p class="note">'
                     '网页版由服务器代为同步，数据保存在这台服务器上。'
@@ -734,6 +771,386 @@ def _me_page(handler, me, qs: dict) -> None:
                   U.chip("网页版") + U.chip(st["last"] or "未同步"),
                   foot="账号与训练数据保存在你使用的服务器上；可随时删除。")
     _send_html(handler, _shell(html, "/app/me"))
+
+
+# ---------------------------------------------------------------- 教练（AI）
+AI_TIMEOUT = 75
+
+
+def _ai(uid: int, action: str, payload: dict | None = None,
+        timeout: int = AI_TIMEOUT) -> dict:
+    """在一个临时进程里跑 `aiapi.dispatch`。
+
+    配置和历史都由 `GARMIN_HOME` 决定，父进程是多用户的，直接 import 会串号
+    （和 `_render` 同一个原因）。一次调用一次进程，一百多毫秒的启动成本换来
+    「谁的 key、谁的历史」绝对不混。
+    """
+    env = os.environ.copy()
+    env["GARMIN_HOME"] = str(_home(uid))
+    env["PYTHONPATH"] = str(APP_DIR) + os.pathsep + str(APP_DIR.parent)
+    env["PYTHONUNBUFFERED"] = "1"
+    try:
+        p = subprocess.run(
+            [sys.executable, str(APP_DIR / "web_ai.py"), action,
+             json.dumps(payload or {}, ensure_ascii=False)],
+            env=env, cwd=str(APP_DIR), capture_output=True, text=True,
+            timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "模型想了太久没回话，稍后再试一次"}
+    out = (p.stdout or "").strip()
+    if not out:
+        err = (p.stderr or "").strip().splitlines()
+        return {"ok": False, "error": "模型服务没回应" + (
+            "（" + err[-1] + "）" if err else "")}
+    try:
+        return json.loads(out.splitlines()[-1])
+    except ValueError:
+        return {"ok": False, "error": "模型服务返回了看不懂的内容"}
+
+
+def _bubble(m: dict) -> str:
+    role = str(m.get("role") or "")
+    who = "我" if role == "user" else "教练"
+    cls = "me" if role == "user" else "coach"
+    at = str(m.get("at") or "")
+    when = f'<span class="aiat">{H.escape(at[5:16])}</span>' if at else ""
+    text = H.escape(str(m.get("content") or "")).replace("\n", "<br>")
+    return (f'<div class="aibub {cls}"><div class="aiwho">{who}{when}</div>'
+            f'<div class="aitext">{text}</div></div>')
+
+
+def _ai_page(handler, me, qs: dict) -> None:
+    U = _U()
+    uid = int(me["user_id"])
+    msg = (qs.get("msg") or [""])[0]
+    st = _ai(uid, "status")
+    hist = _ai(uid, "chat_history", {"limit": 12})
+    msgs = hist.get("messages") or []
+
+    enabled = bool(st.get("ai_enabled") or st.get("configured"))
+    if st.get("configured"):
+        state = f'已连接 · {H.escape(str(st.get("model") or ""))}'
+        pill = U.chip(str(st.get("model") or "模型已配"))
+    elif st.get("ok"):
+        state = "还没配模型服务"
+        pill = U.chip("未配置")
+    else:
+        state = H.escape(str(st.get("error") or "读不到模型配置"))
+        pill = U.chip("不可用")
+
+    note = f'<div class="webbanner">{H.escape(msg)}</div>' if msg else ""
+    if not st.get("configured"):
+        note += ('<div class="webbanner warn">教练要先连一个模型服务：'
+                 '<a href="/app/ai/settings">去配置</a>。自己的 Key 只存在你这台'
+                 '服务器的账号目录里。</div>')
+
+    if msgs:
+        chat = "".join(_bubble(m) for m in msgs
+                       if str(m.get("role") or "") in ("user", "assistant"))
+    else:
+        chat = ('<p class="note" style="margin:0">还没有聊过。可以问「这周该练什么」'
+                '「今天还能加量吗」「体重这段时间在怎么走」。</p>')
+
+    send = ('<form class="webform" id="aiform" method="post" action="/app/ai/chat">'
+            '<textarea name="text" id="aitext" placeholder="问教练一句…" '
+            'maxlength="500" required></textarea>'
+            '<div class="webrow"><button class="btn primary" type="submit" '
+            'id="aibtn">发送</button></div>'
+            '<div class="webk" id="aihint">回答要十几秒，等的时候别关页面。</div>'
+            '</form>')
+
+    # 有 JS 时走 fetch：不整页刷新，回答直接贴上来；没有 JS 就退回表单提交。
+    script = """<script>
+(function(){
+  var f=document.getElementById('aiform'); if(!f||!window.fetch) return;
+  var t=document.getElementById('aitext'), b=document.getElementById('aibtn');
+  var h=document.getElementById('aihint');
+  f.addEventListener('submit',function(e){
+    e.preventDefault();
+    var q=(t.value||'').trim(); if(!q||b.disabled) return;
+    b.disabled=true; b.textContent='正在想…'; h.textContent='模型正在读你的数据。';
+    var box=document.getElementById('aichat');
+    var mine=document.createElement('div');
+    mine.className='aibub me';
+    mine.innerHTML='<div class="aiwho">我</div><div class="aitext"></div>';
+    mine.querySelector('.aitext').textContent=q;
+    box.appendChild(mine);
+    t.value='';
+    var body=new URLSearchParams(); body.set('text',q);
+    fetch('/app/ai/say',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if(!d.ok){
+          h.textContent=d.error||'没答上来';
+          b.disabled=false; b.textContent='再试一次'; return;
+        }
+        var bub=document.createElement('div');
+        bub.className='aibub coach';
+        bub.innerHTML='<div class="aiwho">教练</div><div class="aitext"></div>';
+        bub.querySelector('.aitext').textContent=d.reply||'';
+        box.appendChild(bub);
+        bub.scrollIntoView({block:'end',behavior:'smooth'});
+        b.disabled=false; b.textContent='发送';
+        h.textContent=d.model?('答案来自 '+d.model):'';
+      })
+      .catch(function(){ h.textContent='网络断了，这句话没发出去'; 
+        b.disabled=false; b.textContent='再试一次'; });
+  });
+})();
+</script>"""
+
+    body = (note
+            + U.sec("模型服务", '<div class="card">'
+                    '<div class="kvline"><span>状态</span>'
+                    f'<b class="kvgrow">{state}</b></div>'
+                    '<div class="pager"><a class="btn" href="/app/ai/settings">'
+                    '模型设置</a></div></div>')
+            + U.sec("对话", '<div class="card" id="aichat">' + chat + '</div>'
+                    + '<div class="card">' + send + script + '</div>')
+            + '<p class="webk">对话存在你这台服务器上，换设备登录也接得上。'
+              '发出去的内容只送到你配的那个模型服务。</p>')
+    html = U.page("APP · 教练", "教练", "基于你自己的训练数据回答", body,
+                  pill or U.chip("网页版"),
+                  foot="健康数据只在你配的模型服务里过一次，不落地到别处。")
+    _send_html(handler, _shell(html, "/app/ai"))
+
+
+def _ai_state_text(cfg: dict) -> str:
+    """开关那一栏的人话。没配 Key 时说「已开启」会让人以为能用。"""
+    if not cfg.get("configured"):
+        return "未启用（还没配模型）"
+    return "已开启" if cfg.get("ai_enabled") else "已关闭"
+
+
+def _ai_settings_page(handler, me, qs: dict) -> None:
+    U = _U()
+    uid = int(me["user_id"])
+    msg = (qs.get("msg") or [""])[0]
+    cfg = _ai(uid, "config.get")
+    if not cfg.get("ok"):
+        return _send_html(handler, _error_page(
+            str(cfg.get("error") or "读不到模型配置")))
+    provs = cfg.get("providers") or []
+    cur = str(cfg.get("provider") or "")
+    opts = "".join(
+        f'<option value="{H.escape(str(p.get("id")))}"'
+        + (" selected" if str(p.get("id")) == cur else "")
+        + f'>{H.escape(str(p.get("label")))}</option>' for p in provs)
+    p0 = next((p for p in provs if str(p.get("id")) == cur), {})
+    note = f'<div class="webbanner">{H.escape(msg)}</div>' if msg else ""
+
+    body = (note
+            + U.sec("模型服务", '<div class="card"><form class="webform" '
+                    'method="post" action="/app/ai/settings">'
+                    f'<label>供应商</label><select name="provider">{opts}</select>'
+                    '<label>接口地址（留空用供应商默认）</label>'
+                    f'<input type="text" name="base_url" value="{H.escape(str(cfg.get("base_url") or ""))}" '
+                    f'placeholder="{H.escape(str(p0.get("base_url") or ""))}" '
+                    'autocapitalize=off autocomplete=off spellcheck=false>'
+                    '<label>模型（留空用默认）</label>'
+                    f'<input type="text" name="model" value="{H.escape(str(cfg.get("model") or ""))}" '
+                    f'placeholder="{H.escape(str(p0.get("model") or ""))}" '
+                    'autocapitalize=off autocomplete=off spellcheck=false>'
+                    '<label>API Key'
+                    + (f'（现在：{H.escape(str(cfg.get("api_key_hint") or ""))}，'
+                       '不填就不改）' if cfg.get("has_key") else "（还没填）")
+                    + '</label>'
+                    '<input type="password" name="api_key" value="" '
+                    'autocomplete=new-password placeholder="sk-...">'
+                    '<div class="webrow">'
+                    '<button class="btn primary" type="submit" name="act" value="save">'
+                    '保存</button>'
+                    '<button class="btn" type="submit" name="act" value="test">'
+                    '保存并测试</button></div>'
+                    '<div class="webk">Key 加密保存在你这台服务器的账号目录里'
+                    '（0600），不回显、不进日志。删掉 Key 就在下面的'
+                    '「断开模型服务」。</div>'
+                    '</form></div>')
+            + U.sec("开关", '<div class="card"><form class="webform" '
+                    'method="post" action="/app/ai/settings">'
+                    '<input type="hidden" name="act" value="toggle">'
+                    '<div class="kvline"><span>AI 教练</span>'
+                    f'<b class="kvgrow">{_ai_state_text(cfg)}</b>'
+                    '<button class="kvdel" type="submit">'
+                    + ("关掉" if cfg.get("ai_enabled") else "开启")
+                    + '</button></div></form>'
+                    '<p class="note">关掉之后不会再调用模型（也就不会花钱），'
+                    '历史对话仍然保留。</p></div>')
+            + U.sec("断开", '<div class="card"><form method="post" '
+                    'action="/app/ai/settings">'
+                    '<input type="hidden" name="act" value="clear">'
+                    '<button class="btn" type="submit">断开模型服务</button>'
+                    '</form><p class="note">只删这一份配置，训练数据不动。</p></div>'))
+    html = U.page("APP · 模型服务", "模型服务", "教练用的模型与 Key", body,
+                  U.chip(str(cfg.get("provider_label") or "")),
+                  foot="Key 只存在服务器上，网页和 App 各自保存自己的一份。")
+    _send_html(handler, _shell(html, "/app/me"))
+
+
+def _ai_settings_post(handler, form: dict, me) -> None:
+    def s(k: str) -> str:
+        v = form.get(k)
+        return str(v[0]).strip() if isinstance(v, list) and v else ""
+
+    uid = int(me["user_id"])
+    act = s("act") or "save"
+    if act == "clear":
+        cfg = _ai(uid, "config.set", {"api_key": "", "ai_enabled": False})
+        return _redirect(handler, "/app/ai/settings?msg=" + urllib.parse.quote(
+            "已断开模型服务" if cfg.get("ok") else str(cfg.get("error") or "没删掉")))
+    if act == "toggle":
+        cur = _ai(uid, "config.get")
+        on = not bool(cur.get("ai_enabled"))
+        r = _ai(uid, "config.set", {"ai_enabled": on})
+        return _redirect(handler, "/app/ai/settings?msg=" + urllib.parse.quote(
+            ("已开启" if on else "已关掉") if r.get("ok") else str(r.get("error") or "没改成")))
+
+    patch = {"provider": s("provider") or "custom",
+             "base_url": s("base_url"), "model": s("model")}
+    key = s("api_key")
+    if key:
+        patch["api_key"] = key
+    r = _ai(uid, "config.set", patch)
+    if not r.get("ok"):
+        return _redirect(handler, "/app/ai/settings?msg=" + urllib.parse.quote(
+            str(r.get("error") or "没保存上")))
+    if act == "test":
+        t = _ai(uid, "test", {}, timeout=40)
+        msg = ("已保存，" + str(t.get("message") or "连接正常")) if t.get("ok") else (
+            "已保存，但测试没通过：" + str(t.get("error") or "未知原因"))
+        return _redirect(handler, "/app/ai/settings?msg=" + urllib.parse.quote(msg))
+    return _redirect(handler, "/app/ai/settings?msg=" + urllib.parse.quote("已保存"))
+
+
+def _ai_chat_post(handler, form: dict, me) -> None:
+    """没 JS 时的退路：POST 完回页面，历史里已经带上这一问一答。"""
+    v = form.get("text")
+    text = str(v[0]).strip() if isinstance(v, list) and v else ""
+    if not text:
+        return _redirect(handler, "/app/ai")
+    r = _ai(uid := int(me["user_id"]), "chat", {"text": text[:500]})
+    if not r.get("ok"):
+        return _redirect(handler, "/app/ai?msg=" + urllib.parse.quote(
+            str(r.get("error") or "没答上来")))
+    return _redirect(handler, "/app/ai")
+
+
+def _ai_say_post(handler, form: dict, me) -> None:
+    """给 fetch 用的 JSON 出口：返回这一句的回答，不整页刷新。"""
+    v = form.get("text")
+    text = str(v[0]).strip() if isinstance(v, list) and v else ""
+    if not text:
+        return _json(handler, {"ok": False, "error": "没有要问的内容"})
+    r = _ai(int(me["user_id"]), "chat", {"text": text[:500]})
+    out = {"ok": bool(r.get("ok")), "reply": str(r.get("reply") or ""),
+           "model": str(r.get("model") or ""),
+           "error": str(r.get("error") or "")}
+    return _json(handler, out)
+
+
+# ---------------------------------------------------------------- 高德底图
+def _amap_conf(uid: int) -> Path:
+    """和 App 同一个文件名：`<home>/data/amap.json`。"""
+    return _home(uid) / "data" / "amap.json"
+
+
+def _amap_key(uid: int) -> str:
+    try:
+        d = json.loads(_amap_conf(uid).read_text("utf-8"))
+        return str(d.get("key") or "").strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def _save_amap_key(uid: int, key: str) -> None:
+    p = _amap_conf(uid)
+    if not key:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+        return
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"key": key}, ensure_ascii=False), encoding="utf-8")
+    try:
+        p.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _amap_probe(key: str) -> tuple[bool, str]:
+    """拿高德真打一次静态地图，确认这个 Key 能用。
+
+    失败原因（Key 错 / 没开 Web 服务 / 配额用完）高德会写在返回里，
+    原样转给用户，比我们自己猜有用。
+    """
+    try:
+        if str(APP_DIR.parent) not in sys.path:
+            sys.path.insert(0, str(APP_DIR.parent))
+        from garmin_cn import basemap as BM
+
+        return BM.probe(key)
+    except Exception as e:      # noqa: BLE001
+        return False, f"{type(e).__name__}: {e}"
+
+
+def _amap_page(handler, me, qs: dict) -> None:
+    U = _U()
+    uid = int(me["user_id"])
+    msg = (qs.get("msg") or [""])[0]
+    key = _amap_key(uid)
+    hint = (f'已配置：{H.escape(key[:4])}…（{len(key)} 位）' if key else "还没配置")
+    note = f'<div class="webbanner">{H.escape(msg)}</div>' if msg else ""
+    if not key:
+        note += ('<div class="webbanner warn">没有 Key 时活动图和足迹只画矢量轨迹，'
+                 '不铺地图底图。</div>')
+    body = (note
+            + U.sec("高德 Web 服务 Key", '<div class="card"><form class="webform" '
+                    'method="post" action="/app/amap">'
+                    '<label>Key</label>'
+                    '<input type="text" name="key" value="" autocomplete=off '
+                    'autocapitalize=off spellcheck=false placeholder="粘贴 Key">'
+                    '<div class="webrow"><button class="btn primary" type="submit" '
+                    'name="act" value="save">保存并测试</button></div>'
+                    '<div class="webk">当前：' + hint + '。Key 存在账号目录，'
+                    '0600，不进日志、不回显全文。</div></form></div>')
+            + U.sec("在哪申请", '<div class="card"><p class="note" style="margin:0">'
+                    '高德开放平台 → 控制台 → 应用管理 → 新建应用，添加 Key 时'
+                    '「服务平台」要选 <b>Web 服务</b>（不是 Web 端 JS API）。'
+                    '个人认证每天 5000 次静态地图，出活动图用不完。</p></div>')
+            + (U.sec("清除", '<div class="card"><form method="post" action="/app/amap">'
+                    '<input type="hidden" name="act" value="clear">'
+                    '<button class="btn" type="submit">删掉这个 Key</button></form>'
+                    '<p class="note">删掉后活动图恢复矢量轨迹，已出的图不影响。</p>'
+                    '</div>') if key else ""))
+    html = U.page("APP · 地图底图", "地图底图", "高德 Web 服务 Key", body,
+                  U.chip("已配置" if key else "未配置"),
+                  foot="底图走持证服务商的在线接口，国界与行政区划不由本项目绘制。")
+    _send_html(handler, _shell(html, "/app/me"))
+
+
+def _amap_post(handler, form: dict, me) -> None:
+    def s(k: str) -> str:
+        v = form.get(k)
+        return str(v[0]).strip() if isinstance(v, list) and v else ""
+
+    uid = int(me["user_id"])
+    act = s("act") or "save"
+    if act == "clear":
+        _save_amap_key(uid, "")
+        return _redirect(handler, "/app/amap?msg=" + urllib.parse.quote("已删除"))
+    key = s("key")
+    if not key:
+        return _redirect(handler, "/app/amap?msg=" + urllib.parse.quote("Key 不能为空"))
+    ok, msg = _amap_probe(key)
+    if not ok:
+        # 没通过就不写：一个错 Key 存进去，用户下次只会看到「图没出来」
+        return _redirect(handler, "/app/amap?msg=" + urllib.parse.quote(
+            "没通过测试：" + str(msg or "未知原因")))
+    _save_amap_key(uid, key)
+    return _redirect(handler, "/app/amap?msg=" + urllib.parse.quote(
+        "已保存，" + str(msg or "测试通过")))
 
 
 def _act_page(handler, me, qs: dict) -> None:
@@ -793,14 +1210,19 @@ html,body{margin:0;background:#0F1319}
 #box{position:relative;overflow:hidden;width:100%}
 #box iframe{position:absolute;left:0;top:0;width:1080px;height:2250px;border:0;
   transform-origin:top left}
-#back{position:fixed;left:12px;bottom:14px;z-index:9;display:inline-flex;
+#back,#save{position:fixed;bottom:14px;z-index:9;display:inline-flex;
   align-items:center;gap:6px;padding:9px 14px;border-radius:999px;
   background:rgba(10,16,26,.86);border:1px solid rgba(255,255,255,.18);
   color:#E9F0F8;font:13px/1 -apple-system,system-ui,sans-serif;
   text-decoration:none;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+#back{left:12px}
+#save{right:12px;background:rgba(78,161,255,.9);border-color:rgba(78,161,255,.9);
+  color:#06121f;font-weight:600;cursor:pointer}
+#save[disabled]{opacity:.6}
 </style></head><body>
 <div id="box"></div>
 <a id="back" href="/app/history">‹ 返回</a>
+<button id="save" type="button">存成图片</button>
 <script>
 (function(){
   var W = 1080, box = document.getElementById('box');
@@ -828,8 +1250,115 @@ html,body{margin:0;background:#0F1319}
     if (h > 100 || w > 100) { fit(); }
   });
   fit();
+
+  // 存成图片：卡片是 HTML，网页版没有原生截屏，所以在浏览器里把这一页
+  // 光栅化。html2canvas 本地托管（/app/static/），不走 CDN——出门在外
+  // 网络不好时那一步最不该失败。
+  var btn = document.getElementById('save');
+  var fixEl = null;
+  function unfix(){
+    try { if (fixEl && fixEl.parentNode) fixEl.parentNode.removeChild(fixEl); }
+    catch (e) {}
+    fixEl = null;
+  }
+  function fail(msg){
+    unfix();
+    btn.disabled = false;
+    btn.textContent = '没出成图，重试';
+    console.log('save png failed: ' + msg);
+  }
+  function shoot(){
+    var doc = f.contentDocument, win = f.contentWindow;
+    if (!doc || !doc.body) return fail('no body');
+    // html2canvas 不支持 `background-clip:text`，大数字（距离/配速）那两格
+    // 会被画成一块渐变糊，字看不清。出图前临时换成实色，出完就摘掉。
+    var fix = doc.createElement('style');
+    fix.id = 'h2c-fix';
+    fix.textContent = '.hval{background:none!important;' +
+      '-webkit-text-fill-color:currentColor!important;color:#F2F7FF!important}';
+    doc.head.appendChild(fix);
+    fixEl = fix;
+    var cw = parseFloat(f.getAttribute('data-w') || '0') || W;
+    var ch = parseFloat(f.getAttribute('data-h') || '0') || 2250;
+    // 长图按比例降采样：1080×2600 两倍图是 2160×5200，iPhone 上会占掉
+    // 一百多 MB 内存，出图反而更容易失败。
+    var scale = Math.min(2, 2400 / Math.max(cw, 1), 5200 / Math.max(ch, 1));
+    win.html2canvas(doc.body, {
+      backgroundColor: '#0F1319', scale: Math.max(1, scale),
+      width: cw, height: ch, windowWidth: cw, useCORS: true, logging: false
+    }).then(function(canvas){
+      canvas.toBlob(function(blob){
+        if (!blob) return fail('blob');
+        var name = 'runnercoach-__AID__.png';
+        var file = null;
+        try { file = new File([blob], name, {type: 'image/png'}); } catch (e) {}
+        // iOS 上 `a[download]` 只会在新标签里打开图片，用户要再长按一次才能
+        // 存进相册；能走系统分享就直接走，「存储图像」一步到位。
+        if (file && navigator.canShare && navigator.canShare({files: [file]})) {
+          navigator.share({files: [file]}).then(function(){
+            btn.disabled = false; btn.textContent = '存成图片';
+          }).catch(function(){ dl(blob, name); });
+          return;
+        }
+        dl(blob, name);
+      }, 'image/png');
+    }).catch(function(e){ fail(e && e.message); });
+  }
+  function dl(blob, name){
+    unfix();
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 4000);
+    btn.disabled = false; btn.textContent = '存成图片';
+  }
+  btn.addEventListener('click', function(){
+    if (btn.disabled) return;
+    btn.disabled = true; btn.textContent = '正在出图…';
+    var doc = f.contentDocument, win = f.contentWindow;
+    if (!win) return fail('no frame');
+    if (win.html2canvas) return shoot();
+    var s = doc.createElement('script');
+    s.src = '/app/static/html2canvas.min.js';
+    s.onload = shoot;
+    s.onerror = function(){ fail('script'); };
+    doc.head.appendChild(s);
+  });
 })();
 </script></body></html>"""
+
+
+_STATIC_TYPES = {".js": "application/javascript; charset=utf-8",
+                 ".css": "text/css; charset=utf-8",
+                 ".png": "image/png", ".svg": "image/svg+xml"}
+
+
+def _static(handler, name: str) -> None:
+    """网页版自己的静态资源（目前只有出图用的 html2canvas）。
+
+    不走 CDN：用户在弱网或墙外 CDN 被拦时，出图这一步最不该失败。
+    文件名白名单，不允许带路径分隔符。
+    """
+    name = urllib.parse.unquote(name or "")
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name):
+        return _send_html(handler, _error_page("没有这个文件", 404), 404)
+    path = WEB_DIR / "static" / name
+    ctype = _STATIC_TYPES.get(path.suffix.lower())
+    if not path.is_file() or not ctype:
+        return _send_html(handler, _error_page("没有这个文件", 404), 404)
+    raw = path.read_bytes()
+    handler.send_response(200)
+    handler.send_header("Content-Type", ctype)
+    handler.send_header("Content-Length", str(len(raw)))
+    # 文件名带版本号才改，这里给一天：出图脚本不是热更新的东西。
+    handler.send_header("Cache-Control", "public, max-age=86400")
+    handler.send_header("Connection", "close")
+    handler.end_headers()
+    try:
+        handler.wfile.write(raw)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
 
 
 def _basemap(handler, me, name: str) -> None:
@@ -839,6 +1368,10 @@ def _basemap(handler, me, name: str) -> None:
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}\.png", name):
         return _send_html(handler, _error_page("没有这张图", 404), 404)
     path = _home(uid) / "data" / "basemaps" / name
+    if not path.is_file():
+        # 足迹页的底图是服务端进程直接向高德要的（用该用户配的 Key），
+        # 缓存落在服务自己的 data/basemaps 里，不在用户目录。
+        path = APP_DIR / "data" / "basemaps" / name
     if not path.is_file():
         return _send_html(handler, _error_page("没有这张图", 404), 404)
     raw = path.read_bytes()
@@ -1710,6 +2243,8 @@ def handle_get(handler) -> None:
         return _sw(handler)
     if path.startswith("/app/icon-") and path.endswith(".png"):
         return _icon(handler, path.rsplit("/", 1)[-1])
+    if path.startswith("/app/static/"):
+        return _static(handler, path[len("/app/static/"):])
     if path == "/app/login":
         if me:
             return _redirect(handler, "/app")
@@ -1742,6 +2277,12 @@ def handle_get(handler) -> None:
                                           "/app/me", _banner(int(me["user_id"]))))
     if path == "/app/act":
         return _act_page(handler, me, qs)
+    if path == "/app/ai":
+        return _ai_page(handler, me, qs)
+    if path == "/app/ai/settings":
+        return _ai_settings_page(handler, me, qs)
+    if path == "/app/amap":
+        return _amap_page(handler, me, qs)
     if path.startswith("/app/basemap/"):
         return _basemap(handler, me, path[len("/app/basemap/"):])
     if path == "/app/connect":
@@ -1773,6 +2314,14 @@ def handle_post(handler) -> None:
         return _connect_post(handler, form, me)
     if path == "/app/plan/push":
         return _plan_push_post(handler, me)
+    if path == "/app/ai/settings":
+        return _ai_settings_post(handler, form, me)
+    if path == "/app/ai/chat":
+        return _ai_chat_post(handler, form, me)
+    if path == "/app/ai/say":
+        return _ai_say_post(handler, form, me)
+    if path == "/app/amap":
+        return _amap_post(handler, form, me)
     if path == "/app/sports":
         return _sports_post(handler, form, me)
     if path == "/app/import":
