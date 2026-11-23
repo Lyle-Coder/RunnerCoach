@@ -2499,7 +2499,10 @@ def api_board(me, gid: int, query: dict) -> dict:
             SELECT user_id,
                    SUM(distance_m) AS dist, SUM(duration_s) AS dur, SUM(acts) AS acts,
                    SUM(ride_m) AS ride,
-                   COUNT(*) AS days,
+                   -- 只数真正有运动的天：1.6.0 起「计划休息且确实没动」的
+                   -- 日子也会上报一行（全 0，只为带 vigor），COUNT(*) 会把
+                   -- 休息日算成出勤，出勤王的次要排序和「N 天」都会偏大。
+                   SUM(CASE WHEN acts > 0 THEN 1 ELSE 0 END) AS days,
                    SUM(CASE WHEN plan_done=1 THEN 1 ELSE 0 END) AS plan_ok,
                    SUM(CASE WHEN plan_done IS NOT NULL THEN 1 ELSE 0 END) AS plan_total,
                    SUM(explorer) AS expl,

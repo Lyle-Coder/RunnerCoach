@@ -881,6 +881,22 @@ def run() -> int:
         assert _days["2026-11-16"]["plan_done"] is None, \
             "没有计划的日子 plan_done 应为 None，不能伪造成 False"
 
+        # 休息日必须出现在上报里，否则休整点永远发不出去：
+        # 那天没有任何活动，既不在 agg 也不在 plan（_plan_flags 给 None），
+        # 只并前两个集合的话，vigor=1 会被整批丢掉。
+        (_gdir / "data").mkdir(parents=True, exist_ok=True)
+        (_gdir / "data" / "plan.json").write_text(json.dumps({"week": [
+            {"date": "2026-11-19", "items": []},
+            {"date": "2026-11-20", "items": [{"name": "轻松跑", "km": 5}]},
+        ]}, ensure_ascii=False), encoding="utf-8")
+        _days2 = {d["date"]: d for d in GG.build_days(_gs, "2026-11-20", 7)}
+        assert _days2["2026-11-19"]["vigor"] == 1, \
+            "安排了休息又确实没动，这一行要上报 vigor=1"
+        assert _days2["2026-11-19"]["acts"] == 0, "休息日不能凭空有次数"
+        assert _days2["2026-11-19"]["plan_done"] is None, \
+            "休息日不进完成率分母，plan_done 要留 None"
+        assert _days2["2026-11-20"]["vigor"] == 0, "有课的日子不给休整点"
+
         # 队列：同组只留最新一批；退避到上限后不再往后推
         _box = GG.Outbox(_gs)
         _box.put(3, {"days": [{"date": "2026-11-16"}]})

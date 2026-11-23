@@ -103,7 +103,10 @@ def build_days(store, today: str | None = None, days: int = 14) -> list[dict]:
         new_cells = EX.daily_new(store, s, e)
     except Exception:      # noqa: BLE001 - 网格算不出来不能拖垮上报
         new_cells = {}
-    dates = sorted(set(agg) | {k for k, v in plan.items() if v is not None})
+    # 休息日要单独并进来：那天没有任何活动，既不在 agg 里，也不在 plan 里
+    # （_plan_flags 对休息日给 None）。不并的话 vigor=1 永远发不出去，
+    # 服务端的团队池就一直是 0——「安排了休息、也确实休息了，休整点却不动」。
+    dates = sorted(set(agg) | {k for k, v in plan.items() if v is not None} | rest)
     out = []
     for d in dates:
         a = agg.get(d) or {}

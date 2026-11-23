@@ -1428,6 +1428,18 @@ def main() -> int:
     st, r = req("GET", f"/v1/group/{gid}/camp", None, a)
     check("休整点每周最多 4 点", r.get("pool") == 4, str(r))
 
+    # 全 0 的休息日只为带 vigor，不能算成「出勤一天」——出勤是「有运动的天」。
+    def _mydays() -> int:
+        b = req("GET", f"/v1/group/{gid}/board?range=month", None, a)[1]
+        row = next((x for x in (b.get("rows") or []) if x.get("is_me")), {})
+        return int(row.get("days") or 0)
+
+    _before = _mydays()
+    req("POST", f"/v1/group/{gid}/report", {"days": [
+        {"date": "2026-11-10", "acts": 0, "vigor": 0}]}, a)
+    check("全 0 的休息日不算出勤天数", _mydays() == _before,
+          f"{_before} → {_mydays()}")
+
     st, r = req("POST", f"/v1/group/{gid}/camp/upgrade", {}, _tok4)
     check("普通成员不能升级营地（403）", st == 403, f"{st} {r}")
     st, r = req("POST", f"/v1/group/{gid}/camp/upgrade", {}, a)
