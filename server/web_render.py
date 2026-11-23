@@ -40,6 +40,22 @@ def main() -> int:
         from garmin_cn import eventui
 
         html = eventui.render_page(qs)
+    elif kind == "act":
+        # 单次活动图：act_card_html 会把成品写进 output/，这里把内容读出来。
+        # 网页版没有原生桥，`data-aid` 的点击由 webapp 注入的 JS 接住，
+        # 转到 /app/act 来渲染这一页。
+        from garmin_cn import appapi
+
+        aid = str((qs.get("aid") or [""])[0] or "")
+        if not aid:
+            raise SystemExit("act: 缺少 aid")
+        res = appapi.act_card_html(
+            aid, privacy=str((qs.get("privacy") or ["none"])[0] or "none"))
+        if not res.get("ok"):
+            raise SystemExit("act: " + str(res.get("error") or "未知错误"))
+        from pathlib import Path
+
+        html = Path(str(res["html"])).read_text(encoding="utf-8")
     else:
         raise SystemExit(f"unknown page: {kind}")
 

@@ -6574,6 +6574,18 @@ def run() -> int:
     assert "def _import_post" in _wapp and '"/app/import"' in _wapp, \
         "网页版没有粘贴导入登录态的入口"
     assert "还没有登录态：用安卓 App 登录佳明后会自动传上来" in _wapp
+
+    # 网页版活动图：App 靠原生桥 GC.activity(aid) 出图，网页端没有桥，
+    # 必须自己接住 data-aid 并渲染 /app/act；1080 宽的整页要用 iframe 缩放，
+    # 否则手机上右侧会被裁掉一条。
+    assert "def _act_page" in _wapp and '"/app/act"' in _wapp, "网页版没有活动图路由"
+    assert "/app/act?aid=" in _wapp, "data-aid 没接到活动图（点了没反应）"
+    assert "_ACT_WRAPPER" in _wapp and "postMessage({h:" in _wapp, \
+        "活动图没做等比缩放/高度回传，手机上会被裁切"
+    assert "def _basemap" in _wapp and "/app/basemap/" in _wapp, \
+        "活动图的底图在网页版会 404"
+    _wrender = (ROOT / "server/web_render.py").read_text(encoding="utf-8")
+    assert 'kind == "act"' in _wrender, "渲染子进程不认识 act"
     # 登录框要有「显示密码」；续期要验证码时弹验证码框而不是登录框
     _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert _kt5.count("addShowPassword(box") >= 3, "佳明/高驰/小米登录框要都能显示密码"

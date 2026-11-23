@@ -20,6 +20,7 @@ import base64
 import html as H
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -317,9 +318,9 @@ def _shell(html: str, active: str, banner: str = "") -> str:
     sw = ("<script>if('serviceWorker' in navigator){"
           "navigator.serviceWorker.register('/app/sw.js').catch(function(){});}"
           "document.addEventListener('click',function(e){var n=e.target;"
-          "while(n&&n!==document){if(n.getAttribute&&n.getAttribute('data-aid')){"
-          "var m=(n.textContent||'').match(/\\d{4}-\\d{2}-\\d{2}/);"
-          "if(m){location.href='/app/view?date='+m[0]+'&from=history';}return;}"
+          "while(n&&n!==document){if(n.getAttribute){"
+          "var aid=n.getAttribute('data-aid');"
+          "if(aid){location.href='/app/act?aid='+encodeURIComponent(aid);return;}}"
           "n=n.parentNode;}},false);</script>")
     html = html.replace("</body>", nav + sw + "</body>", 1)
     return html
@@ -527,6 +528,124 @@ def _me_page(handler, me, qs: dict) -> None:
                   U.chip("网页版") + U.chip(st["last"] or "未同步"),
                   foot="账号与训练数据保存在你使用的服务器上；可随时删除。")
     _send_html(handler, _shell(html, "/app/me"))
+
+
+def _act_page(handler, me, qs: dict) -> None:
+    """单次活动图。actcard 出的是独立整页（1080 宽），不能再套网页外壳。
+
+    App 里靠原生桥 `GC.activity(aid)` 打开这张图；网页版没有桥，所以由
+    `_shell` 注入的点击脚本把带 `data-aid` 的行转到 `/app/act?aid=`。
+
+    手机上不能直接把 1080 宽的整页塞进 390 的视口（会横向溢出、右侧被切）。
+    `raw=1` 出原始卡片，外层用 iframe 按 `1080 → 视口宽` 等比缩放，并把
+    iframe 的滚动高度回传，保证长卡片能滚到底。
+    """
+    uid = int(me["user_id"])
+    aid = (qs.get("aid") or [""])[0].strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{3,40}", aid or ""):
+        return _send_html(handler, _error_page("活动编号不对", 400), 400)
+    raw = (qs.get("raw") or [""])[0] == "1"
+    html = _render(uid, "act", {"aid": [aid],
+                                "privacy": qs.get("privacy") or ["none"]})
+    if "页面渲染失败" in html or "页面渲染超时" in html:
+        # 子进程失败时 _render 已经给了一整页说明，别再包一层 iframe：
+        # 包了之后 390 宽的视口里塞一张 1080 的错误页，字会小到看不见。
+        if "库里没有这条活动" in html or "没拿到活动明细" in html:
+            return _send_html(handler, _error_page(
+                "这条活动的明细还没取到：确认登录态有效（用 App 同步一次），再点「立即同步」。"))
+        return _send_html(handler, html)
+    if "<html" not in html[:200].lower():
+        return _send_html(handler, html)      # 已经是错误页
+    # 底图在 App 里由本机服务 `/basemap/<png>` 提供；网页版换成 /app/basemap/
+    html = html.replace('src="/basemap/', 'src="/app/basemap/')
+    html = html.replace("src='/basemap/", "src='/app/basemap/")
+
+    if raw:
+        # 卡片自身用 meta viewport width=1080 排版，父页用 transform 缩放。
+        # 这里只负责把真实高度报给父页（卡片高度随数据条数变化）。
+        report = ("<script>(function(){function P(){try{var w=Math.max("
+                  "document.documentElement.scrollWidth,document.body.scrollWidth,1080);"
+                  "parent.postMessage({h:document.documentElement.scrollHeight,w:w},'*');}"
+                  "catch(e){}}window.addEventListener('load',P);setTimeout(P,200);"
+                  "setTimeout(P,800);})();</script>")
+        if "</body>" in html:
+            html = html.replace("</body>", report + "</body>", 1)
+        else:
+            html += report
+        return _send_html(handler, html)
+
+    page = _ACT_WRAPPER.replace("__AID__", urllib.parse.quote(aid))
+    _send_html(handler, page)
+
+
+_ACT_WRAPPER = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0F1319">
+<title>活动图 · RunnerCoach</title>
+<style>
+html,body{margin:0;background:#0F1319}
+#box{position:relative;overflow:hidden;width:100%}
+#box iframe{position:absolute;left:0;top:0;width:1080px;height:2250px;border:0;
+  transform-origin:top left}
+#back{position:fixed;left:12px;bottom:14px;z-index:9;display:inline-flex;
+  align-items:center;gap:6px;padding:9px 14px;border-radius:999px;
+  background:rgba(10,16,26,.86);border:1px solid rgba(255,255,255,.18);
+  color:#E9F0F8;font:13px/1 -apple-system,system-ui,sans-serif;
+  text-decoration:none;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+</style></head><body>
+<div id="box"></div>
+<a id="back" href="/app/history">‹ 返回</a>
+<script>
+(function(){
+  var W = 1080, box = document.getElementById('box');
+  var f = document.createElement('iframe');
+  f.setAttribute('scrolling', 'no');
+  f.setAttribute('referrerpolicy', 'same-origin');
+  f.src = '/app/act?aid=__AID__&raw=1';
+  box.appendChild(f);
+  function fit(){
+    // 卡片版心可能比 1080 略宽（.page 的左右留白不在 box-sizing 里），
+    // 用子页上报的真实宽度定画布，否则右侧会被裁掉一条。
+    var cw = parseFloat(f.getAttribute('data-w') || '0') || W;
+    f.style.width = cw + 'px';
+    var s = Math.min(1, (document.documentElement.clientWidth || W) / cw);
+    f.style.transform = 'scale(' + s + ')';
+    var h = parseFloat(f.getAttribute('data-h') || '0') || 2250;
+    box.style.height = Math.ceil(h * s) + 'px';
+  }
+  window.addEventListener('resize', fit);
+  window.addEventListener('message', function(e){
+    var d = (e && e.data) || {};
+    var h = parseFloat(d.h), w = parseFloat(d.w);
+    if (h > 100) { f.setAttribute('data-h', String(h)); }
+    if (w > 100) { f.setAttribute('data-w', String(w)); }
+    if (h > 100 || w > 100) { fit(); }
+  });
+  fit();
+})();
+</script></body></html>"""
+
+
+def _basemap(handler, me, name: str) -> None:
+    """活动图用的底图切片：只从该用户自己的缓存目录取，文件名白名单校验。"""
+    uid = int(me["user_id"])
+    name = urllib.parse.unquote(name or "")
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}\.png", name):
+        return _send_html(handler, _error_page("没有这张图", 404), 404)
+    path = _home(uid) / "data" / "basemaps" / name
+    if not path.is_file():
+        return _send_html(handler, _error_page("没有这张图", 404), 404)
+    raw = path.read_bytes()
+    handler.send_response(200)
+    handler.send_header("Content-Type", "image/png")
+    handler.send_header("Content-Length", str(len(raw)))
+    handler.send_header("Cache-Control", "private, max-age=86400")
+    handler.send_header("Connection", "close")
+    handler.end_headers()
+    try:
+        handler.wfile.write(raw)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
 
 
 def _connect_page(handler, me, qs: dict) -> None:
@@ -902,6 +1021,10 @@ def handle_get(handler) -> None:
     if path == "/app/event":
         return _send_html(handler, _shell(_render(int(me["user_id"]), "event", qs),
                                           "/app", _banner(int(me["user_id"]))))
+    if path == "/app/act":
+        return _act_page(handler, me, qs)
+    if path.startswith("/app/basemap/"):
+        return _basemap(handler, me, path[len("/app/basemap/"):])
     if path == "/app/connect":
         return _connect_page(handler, me, qs)
     _send_html(handler, _error_page("这个页面不存在", 404), 404)
