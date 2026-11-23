@@ -161,7 +161,12 @@ def save_settings(values: dict) -> None:
             raw = values.get(f"{key}_{field}", "")
             v = number(raw)
             if str(raw or "").strip() and (v is None or not low <= v <= high):
-                raise ValueError(f"{key} {field} 要在 {low}–{high} 之间")
+                # 报错要人能看懂：以前是「run max_hr 要在 80–240 之间」，
+                # 英文 key 出现在用户面前，等于让他去猜哪个框填错了。
+                _kind = "跑步" if key == "run" else "骑行"
+                _label = {"max_hr": "最大心率", "lthr": "阈值心率",
+                          "ftp_w": "FTP"}[field]
+                raise ValueError(f"{_kind}{_label}要在 {low}–{high} 之间")
             fields[field] = v
         if fields.get("lthr") and fields.get("max_hr") and fields["lthr"] >= fields["max_hr"]:
             raise ValueError("阈值心率必须小于最大心率")

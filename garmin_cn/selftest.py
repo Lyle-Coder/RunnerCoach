@@ -6623,6 +6623,19 @@ def run() -> int:
     assert "def _fresh_line" in _wsapp and "数据更新于" in _wsapp, \
         "页面没显示数据更新时间"
 
+    # ---- 网页版补齐（2026-11-23）----------------------------------------
+    # 运动设置：App 的 /__sports 只认本机，网页版必须自己接一条。
+    assert "def _sports_post" in _wsapp and '"/app/sports"' in _wsapp, \
+        "网页版没有运动设置"
+    assert 'kind == "sports"' in _wrender, "渲染子进程不认识 sports"
+    assert 'action="/__sports"' in _wsapp, \
+        "运动设置表单还指向只认本机的 /__sports"
+    # /w 是独立页壳：从 /app 点「小组」跳过去后底栏会消失，回不来。
+    _wsrc = (ROOT / "server/web.py").read_text(encoding="utf-8")
+    assert "def _wnav" in _wsrc and "wnav" in _wsrc, \
+        "只读组页没有底部导航，从 /app 跳进去就回不来"
+    assert '("/w", "小组")' in _wsrc
+
     # ---- 多台中转机 + 无感静默（2026-11-23）--------------------------------
     # RC_RELAY_USER 支持多个邮箱：一台手机被系统冻结时另一台能接。
     assert "RELAY_USERS" in _websrc, "RC_RELAY_USER 只认单台，没有冗余"

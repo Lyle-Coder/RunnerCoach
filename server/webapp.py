@@ -304,8 +304,8 @@ body{padding-bottom:calc(64px + env(safe-area-inset-bottom))!important}
 .webbanner a{color:inherit;text-decoration:underline}
 .webform{display:block}
 .webform input[type=text],.webform input[type=password],.webform input[type=email],
-.webform select{width:100%;min-height:44px;margin:6px 0 12px;padding:0 12px;
-  border-radius:12px;border:1px solid var(--line,rgba(255,255,255,.12));
+.webform input[type=number],.webform select{width:100%;min-height:44px;margin:6px 0 12px;
+  padding:0 12px;border-radius:12px;border:1px solid var(--line,rgba(255,255,255,.12));
   background:var(--surface-2,#111B29);color:var(--ink,#E9F0F8);font-size:14px}
 .webform label{font-size:12px;color:var(--ink-3,#7A8DA4)}
 .webform textarea{width:100%;min-height:96px;margin:6px 0 12px;padding:10px 12px;
@@ -339,7 +339,11 @@ def _webify(html: str) -> str:
     只对 Android 成立的话；网页版是服务器同步，照抄会自相矛盾。
     """
     repl = (
-        ("下拉同步", "去「我的」同步"),
+        # 网页版是自动同步，不需要用户点。原来替换成「去「我的」同步」，
+        # 等于在页头教一个多余动作；直接抹掉，只留「数据截至 11/22」。
+        (" · 下拉同步", ""),
+        (" · 去「我的」同步", ""),
+        ("下拉同步", "同步"),
         ("数据在本机计算，离线也能查看，轨迹不会上传。",
          "数据由服务器代为同步，只对你本人可见。"),
         ("数据只保存在本机，不上传任何第三方。",
@@ -361,6 +365,7 @@ def _webify(html: str) -> str:
         ('href="/event"', 'href="/app/event"'),
         ('href="/me"', 'href="/app/me"'),
         ('href="/privacy"', 'href="/app/privacy"'),
+        ('action="/__sports"', 'action="/app/sports"'),
         ('href="/sports"', 'href="/app/me"'),
         ('href="/files"', 'href="/app/me"'),
         ('href="/ai"', 'href="/app/me"'),
@@ -513,7 +518,10 @@ def _stats(uid: int) -> dict:
             out["days"] = int(c.execute("SELECT COUNT(*) FROM daily").fetchone()[0])
             out["acts"] = int(c.execute("SELECT COUNT(*) FROM activities").fetchone()[0])
             r = c.execute("SELECT value FROM meta WHERE key='last_sync'").fetchone()
-            out["last"] = str(r[0] if r else "")
+            raw = str(r[0] if r else "")
+            # 「2026-11-22 10:00:00」在页头和 kv 行里都太长，手机宽度下会把
+            # 右边挤成两行。只留「11-22 10:00」，年份对「上次同步」没有信息量。
+            out["last"] = raw[5:16] if len(raw) >= 16 else raw
         finally:
             c.close()
     except sqlite3.Error:
@@ -617,6 +625,12 @@ def _me_page(handler, me, qs: dict) -> None:
             + U.sec("账号与数据源", '<div class="card">' + src_html
                     + '<div class="pager">' + actions + '</div></div>')
             + U.sec("训练数据", '<div class="card">' + stats + '</div>')
+            + U.sec("设置", '<div class="card">'
+                    '<a class="setrow" href="/app/sports" style="text-decoration:none">'
+                    '<span>运动设置</span>'
+                    '<span class="note" style="flex:1 1 auto;margin:0">'
+                    '心率区间与骑行 FTP，影响负荷和强度计算</span>'
+                    '<span class="chev">›</span></a></div>')
             + U.sec("小组", '<div class="card"><p class="note">'
                     '网页端的小组是只读页（榜单、赛事、远征）。建赛事、审核仍在 App。'
                     '</p><div class="pager"><a class="btn" href="/w">打开小组页</a></div></div>')
@@ -821,6 +835,28 @@ def _connect_page(handler, me, qs: dict) -> None:
                   U.chip("AES-GCM") + U.chip("可删除"),
                   foot="账密只用于同步，不用于其他用途；删除后立即失效。")
     _send_html(handler, _shell(html, "/app/me"))
+
+
+def _sports_post(handler, form: dict, me) -> None:
+    """保存运动设置（心率区间 / FTP）。
+
+    表单由 `ui.sports_page` 生成，字段名和 App 完全一样，所以这里只做
+    「dict[list] → dict[str]」的转换，校验仍然交给 `sports.save_settings`，
+    不在这里复制一套规则。
+    """
+    from garmin_cn import sports as S
+
+    values = {k: (v[0] if isinstance(v, list) and v else v)
+              for k, v in (form or {}).items()}
+    try:
+        S.save_settings(values)
+    except ValueError as e:
+        return _redirect(handler, "/app/sports?msg="
+                         + urllib.parse.quote(str(e)))
+    except Exception as e:      # noqa: BLE001
+        return _redirect(handler, "/app/sports?msg="
+                         + urllib.parse.quote(f"保存失败：{type(e).__name__}"))
+    _redirect(handler, "/app/sports?msg=" + urllib.parse.quote("已保存"))
 
 
 def _import_post(handler, form: dict, me) -> None:
@@ -1560,6 +1596,9 @@ def handle_get(handler) -> None:
     if path == "/app/event":
         return _send_html(handler, _shell(_render(int(me["user_id"]), "event", qs),
                                           "/app", _banner(int(me["user_id"]))))
+    if path == "/app/sports":
+        return _send_html(handler, _shell(_render(int(me["user_id"]), "sports", qs),
+                                          "/app/me", _banner(int(me["user_id"]))))
     if path == "/app/act":
         return _act_page(handler, me, qs)
     if path.startswith("/app/basemap/"):
@@ -1591,6 +1630,8 @@ def handle_post(handler) -> None:
         return _redirect(handler, "/app/login")
     if path == "/app/connect":
         return _connect_post(handler, form, me)
+    if path == "/app/sports":
+        return _sports_post(handler, form, me)
     if path == "/app/import":
         return _import_post(handler, form, me)
     if path == "/app/sync":

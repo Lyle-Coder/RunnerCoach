@@ -40,6 +40,10 @@ def main() -> int:
         from garmin_cn import eventui
 
         html = eventui.render_page(qs)
+    elif kind == "sports":
+        # 运动设置：心率区间 / FTP。表单提交到 /app/sports，由 webapp 转成
+        # sports.save_settings()，不经过 App 的 /__sports（那条只认本机）。
+        html = ui.sports_page("", (qs.get("msg") or [""])[0])
     elif kind == "act":
         # 单次活动图：act_card_html 会把成品写进 output/，这里把内容读出来。
         # 网页版没有原生桥，`data-aid` 的点击由 webapp 注入的 JS 接住，

@@ -34,6 +34,18 @@ except Exception:      # noqa: BLE001 - 远征模块没部署时其余页面照�
 # 在 /manage 的样式上加几行。沿用同一份 CSS 变量和组件，
 # 两个后台看起来是一套东西，而不是两个拼起来的站。
 EXTRA_CSS = """
+/* 底部导航：/w 原来是一张独立的页，从 /app 点「小组」跳进来后底栏就没了，
+   只能靠浏览器后退回去。四个 tab 指向和 /app 完全相同的地址，用户感觉
+   还是同一个应用。 */
+.wnav{position:fixed;left:0;right:0;bottom:0;z-index:60;display:flex;
+  background:rgba(8,13,21,.96);border-top:1px solid rgba(255,255,255,.08);
+  padding:6px 4px calc(6px + env(safe-area-inset-bottom));
+  backdrop-filter:blur(12px)}
+.wnav a{flex:1;min-height:44px;display:flex;align-items:center;
+  justify-content:center;text-decoration:none;color:#7A8DA4;font-size:12px;
+  font-weight:600;border-radius:12px}
+.wnav a.on{color:#9CC6FF;background:rgba(59,130,246,.12)}
+body{padding-bottom:calc(64px + env(safe-area-inset-bottom))!important}
 .glist a{display:block;padding:14px 16px;border-radius:12px;margin-bottom:10px;
   background:var(--card,#151b26);text-decoration:none;color:inherit;
   border:1px solid rgba(128,128,128,.18)}
@@ -60,12 +72,29 @@ def _e(v) -> str:
     return M._e(v)
 
 
+_WEB_TABS = (("/app", "今日"), ("/app/history", "历史"),
+             ("/w", "小组"), ("/app/me", "我的"))
+
+
+def _wnav(active: str = "/w") -> str:
+    """底部四个 tab。地址和 /app 用的是同一套，点过去不会掉出应用。"""
+    out = []
+    for href, label in _WEB_TABS:
+        cls = ' class="on"' if href == active else ""
+        out.append(f'<a href="{href}"{cls}>{label}</a>')
+    return '<nav class="wnav">' + "".join(out) + "</nav>"
+
+
 def _page(title: str, body: str, me=None, msg: str = "") -> bytes:
-    head = (f"<div class=wrap><h1>{_e(title)}</h1>"
-            f"<div class=sub><a href=\"/w\">我的小组</a></div>")
+    # 标题下原来固定挂一条「我的小组」链接，和底部导航的第一个 tab 重复；
+    # 名字为空时还会显示成「登录中： · 退出」，中间空一截。
+    head = f"<div class=wrap><h1>{_e(title)}</h1>"
     if me is not None:
-        who = me["phone"] if isinstance(me, dict) else ""
-        head += ('<div class=sub style="margin-top:6px">登录中：' + _e(who) +
+        who = ""
+        if isinstance(me, dict):
+            who = str(me.get("nickname") or me.get("phone") or "").strip()
+        label = f"登录中：{_e(who)}" if who else "已登录"
+        head += ('<div class=sub style="margin-top:6px">' + label +
                  ' · <form class=inline method=post action="/w/logout">'
                  '<button class=ghost>退出</button></form></div>')
     tip = f'<div class=msg>{_e(msg)}</div>' if msg else ""
@@ -73,7 +102,7 @@ def _page(title: str, body: str, me=None, msg: str = "") -> bytes:
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             f"<title>{_e(title)} · RunnerCoach</title>"
             f"<style>{M.CSS}{EXTRA_CSS}</style></head>"
-            f"<body>{head}{tip}{body}</div></body></html>").encode("utf-8")
+            f"<body>{head}{tip}{body}{_wnav()}</div></body></html>").encode("utf-8")
 
 
 def _km(m) -> str:
