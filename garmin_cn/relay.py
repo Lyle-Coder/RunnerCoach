@@ -20,9 +20,11 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 _DENIED = "relay_denied"     # 服务器说这台设备不是中转机，记下来别反复问
+_DENIED_TTL = 24 * 3600      # 但这个记号会过期：以后被加进白名单还能接上
 
 
 def poll() -> dict:
@@ -38,13 +40,18 @@ def poll() -> dict:
         from . import appapi as A
 
         store = A.Store(A.DB)
-        if store.get_meta(_DENIED):
-            # 服务器已经明确说过「这台设备不是中转机」，别每 30 分钟再问一次
+        try:
+            denied_at = float(store.get_meta(_DENIED) or 0)
+        except (TypeError, ValueError):
+            denied_at = 0.0
+        if denied_at and time.time() - denied_at < _DENIED_TTL:
+            # 服务器说过「这台设备不是中转机」，别每 30 分钟再问一次。
+            # 但要有期限——否则以后把它加进白名单也永远接不上。
             return {"ok": True, "skip": "not_relay"}
         ok, resp = account.request("POST", "/v1/relay/pull", {})
         if not ok or not isinstance(resp, dict):
             if "不是中转机" in str((resp or {}).get("error") or ""):
-                store.set_meta(_DENIED, "1")
+                store.set_meta(_DENIED, str(int(time.time())))
                 return {"ok": True, "skip": "not_relay"}
             return {"ok": False, "skip": "pull_failed"}
         job = resp.get("job")

@@ -313,6 +313,16 @@ body{padding-bottom:calc(64px + env(safe-area-inset-bottom))!important}
 .webfresh{font-size:12px;color:var(--ink-3,#7A8DA4);padding:0 2px 8px;
   display:flex;align-items:center;gap:6px}
 .webfresh b{color:var(--ink,#E9F0F8);font-weight:600}
+.webadv{margin-top:14px;border-top:1px solid var(--line,rgba(255,255,255,.08));
+  padding-top:12px}
+.webadv summary{font-size:13px;color:var(--ink-3,#7A8DA4);cursor:pointer;
+  min-height:36px;display:flex;align-items:center;list-style:none}
+.webadv summary::-webkit-details-marker{display:none}
+.webadv summary::after{content:'›';margin-left:auto;font-size:16px;
+  color:var(--ink-4,#5A6C80);transform:rotate(90deg);transition:transform .15s}
+.webadv[open] summary::after{transform:rotate(-90deg)}
+.webadv[open] summary{color:var(--ink,#E9F0F8);margin-bottom:6px}
+.webadv .webform{margin-top:8px}
 """
 
 
@@ -516,30 +526,40 @@ def _job_latest(uid: int) -> dict:
 
 
 def _banner(uid: int, msg: str = "") -> str:
+    """页面顶部横幅。**默认什么都不显示。**
+
+    同步排队、同步中、同步完成、后台重试——这些都不该占用用户的注意力：
+    顶部那行「数据更新于 12:30」已经把新鲜度说清楚了。只有 `error`（＝需要
+    本人动手）才出横幅；`wait` 是后台正在救，用户看了也做不了什么。
+    """
     if msg:
         return f'<div class="webbanner">{H.escape(msg)}</div>'
     j = _job_latest(uid)
-    if j.get("status") == "pending":
-        return '<div class="webbanner">同步排队中…</div>'
-    if j.get("status") == "running":
-        return '<div class="webbanner">正在同步，页面会在完成后更新。'
-        '</div>'
     if j.get("status") == "error":
-        return ('<div class="webbanner warn">上次同步失败：'
-                + H.escape(str(j.get("message") or "未知原因"))
-                + '</div>')
-    if j.get("status") == "done" and int(j.get("finished") or 0) > time.time() - 180:
-        return ('<div class="webbanner">同步完成：'
-                + H.escape(str(j.get("message") or ""))
-                + '</div>')
+        return ('<div class="webbanner warn">'
+                + H.escape(str(j.get("message") or "数据没更新成功"))
+                + '　<a href="/app/connect">去重新连接</a></div>')
     return ""
 
 
-def _sync_on_load(handler, uid: int) -> str:
-    j = _job_latest(uid)
-    if j.get("status") in ("pending", "running"):
-        return "<script>setTimeout(function(){location.reload()},6000);</script>"
-    return ""
+def _sync_on_load(handler, uid: int, qs: dict) -> str:
+    """任务在跑（或等着中转机）时，页面自己转几次圈。
+
+    等中转机登录最长可能要几分钟，让用户手动刷新体验很差；但也别无限刷：
+    带 `_w` 计数，最多自动刷 4 次（约 2 分钟），之后交给「数据更新于」那行
+    如实说明。
+    """
+    try:
+        tries = int((qs.get("_w") or ["0"])[0])
+    except (TypeError, ValueError):
+        tries = 0
+    st = str(_job_latest(uid).get("status") or "")
+    if st not in ("pending", "running", "wait") or tries >= 4:
+        return ""
+    sep = "&" if "?" in handler.path else "?"
+    path = handler.path.split("?")[0]
+    return ("<script>setTimeout(function(){location.replace('%s%s_w=%d')},"
+            "25000);</script>" % (path, sep, tries + 1))
 
 
 def _me_page(handler, me, qs: dict) -> None:
@@ -570,16 +590,8 @@ def _me_page(handler, me, qs: dict) -> None:
                 _when = ""
             src_html += ('<div class="kvline"><span>登录态</span><b>已导入'
                          + (f"（{_when}）" if _when else "") + '</b></div>')
-        # 中转状态：用户最想知道的是「还要不要我自己动手」
-        _rj = relay_latest(uid)
-        _st = str(_rj.get("status") or "")
-        if _st in ("pending", "running"):
-            src_html += ('<div class="kvline"><span>中转</span>'
-                         '<b>已排队，等中转机登录</b></div>')
-        elif _st == "error" and time.time() - int(_rj.get("finished") or 0) < 3600:
-            src_html += ('<div class="kvline"><span>中转</span><b>失败：'
-                         + H.escape(str(_rj.get("message") or "未知"))[:40]
-                         + '</b></div>')
+        # 中转状态**不显示**：排队、刷新中、失败重试都是后台的事，用户在这里
+        # 看到只会以为哪里坏了。真需要他动手时，页面顶部横幅会说。
         actions = (
             '<form method="post" action="/app/sync" style="display:inline">'
             '<button class="btn primary" type="submit">立即同步</button></form> '
@@ -748,9 +760,7 @@ def _connect_page(handler, me, qs: dict) -> None:
         note + existing
         + '<div class="card"><h3 style="margin:0 0 6px">佳明：账号密码（推荐）</h3>'
         '<p style="margin:0 0 8px;color:var(--muted);font-size:13px;line-height:1.7">'
-        '佳明登录页对机房网络有人机校验，服务器自己登不进去。保存账号密码后，'
-        '登录态过期时会由一台<b>中转设备</b>（组长的手机，走手机流量）替你登录，'
-        '你不用开着任何 App。</p>'
+        '填一次就好：之后数据会自动更新，不用每天来点同步，也不用一直开着 App。</p>'
         '<form class="webform" method="post" action="/app/connect">'
         '<input type="hidden" name="source" value="garmin">'
         '<label>佳明账号（邮箱）</label>'
@@ -762,25 +772,21 @@ def _connect_page(handler, me, qs: dict) -> None:
         '<label style="display:flex;gap:8px;align-items:flex-start;margin:6px 0 4px">'
         '<input type="checkbox" name="consent" value="1" required '
         'style="width:18px;height:18px;margin-top:2px">'
-        '<span>我同意服务器加密保存佳明账号密码；登录态过期时，账号密码会'
-        '临时发给中转设备完成一次登录（不落盘、不留日志）。可随时删除。</span></label>'
-        '<div class="webrow"><button class="btn primary" type="submit">保存并同步</button>'
+        '<span>我同意服务器加密保存佳明账号密码，用于自动保持登录、定期更新数据。'
+        '密码不会显示在任何页面或日志里，可随时删除。</span></label>'
+        '<div class="webrow"><button class="btn primary" type="submit">保存</button>'
         '<a class="btn" href="/app">取消</a></div></form>'
-        '<div class="webk">密码只用于刷新登录态；不存密码也能用，但过期后要'
-        '自己用 App 同步。</div></div>'
-        + '<div class="card"><h3 style="margin:0 0 6px">佳明：或者粘贴登录态</h3>'
+        '</div>'
+        + '<div class="card"><details class="webadv">'
+        '<summary>不存密码？用登录态导入</summary>'
         '<p style="margin:0 0 8px;color:var(--muted);font-size:13px;line-height:1.7">'
-        '佳明登录页对机房网络有人机校验，服务器直接登录会被挡。'
-        '用安卓 App 登录佳明后，App 会把登录态自动传上来；'
-        '桌面浏览器也可以在下面粘贴一份。</p>'
-        '<p style="margin:0 0 8px;color:var(--muted);font-size:13px;line-height:1.7">'
-        '<b>网页和 App 必须用同一个账号登录（邮箱一致）</b>，'
-        'App 才会把登录态传到这个账号下；两个邮箱算两个账号，互相看不到。</p>'
+        '在电脑 Chrome 登录 connect.garmin.cn，从开发者工具复制 JWT_WEB 那条 '
+        'Cookie 粘进来。登录态几小时过期，过期后要再导一次。</p>'
         '<form class="webform" method="post" action="/app/import">'
         '<label>登录态（session.json 内容）</label>'
         '<textarea name="session" rows="4" placeholder="[{\"name\":\"JWT_WEB\",...}]"></textarea>'
         '<div class="webrow"><button class="btn" type="submit">导入登录态</button></div>'
-        '</form></div>'
+        '</form></details></div>'
         + '<div class="card"><h3 style="margin:0 0 6px">高驰：账号密码</h3>'
         '<form class="webform" method="post" action="/app/connect">'
         '<input type="hidden" name="source" value="coros">'
@@ -866,10 +872,11 @@ def _connect_post(handler, form: dict, me) -> None:
         pass
     if source == "garmin" and relay_enabled():
         # 佳明：直接排中转任务。服务器自己登不进去，先跑一次同步只会白等
-        # 一次 401，再回过头去排任务。
+        # 一次 401，再回过头去排任务。文案只说「去首页看看」——用户不关心
+        # 是谁在登录、几分钟、离线怎么办。
         request_relay(uid)
-        return _redirect(handler, "/app/connect?msg=" + urllib.parse.quote(
-            "已保存。正在请中转机登录，几分钟内自动同步；中转机离线时会等它上线。"))
+        return _redirect(handler, "/app?msg=" + urllib.parse.quote(
+            "已保存，数据会在几分钟内自动更新"))
     enqueue(uid)
     _redirect(handler, "/app?msg=" + urllib.parse.quote("已保存，正在同步"))
 
@@ -908,6 +915,11 @@ def _last_update(uid: int) -> str:
 
 
 def _fresh_line(uid: int) -> str:
+    """顶部那行灰字：数据到底有多新。这是本页唯一的「同步状态」出口。
+
+    不写「同步完成」「同步失败」这类过程话，只写结果；`wait`（后台在救）也
+    只显示时间，不显示原因——用户不需要知道中转机在不在线。
+    """
     at = _last_update(uid)
     if not at:
         return ""
@@ -940,7 +952,7 @@ def _today_page(handler, me, qs: dict) -> None:
     _auto_sync(uid)
     html = _render(uid, "today", {})
     html = _shell(html, "/app", _banner(uid, msg), _fresh_line(uid))
-    html = html.replace("</body>", _sync_on_load(handler, uid) + "</body>", 1)
+    html = html.replace("</body>", _sync_on_load(handler, uid, qs) + "</body>", 1)
     _send_html(handler, html)
 
 
@@ -948,8 +960,9 @@ def _history_page(handler, me, qs: dict) -> None:
     uid = int(me["user_id"])
     _auto_sync(uid)
     html = _render(uid, "history", qs)
-    _send_html(handler, _shell(html, "/app/history", _banner(uid),
-                               _fresh_line(uid)))
+    html = _shell(html, "/app/history", _banner(uid), _fresh_line(uid))
+    html = html.replace("</body>", _sync_on_load(handler, uid, qs) + "</body>", 1)
+    _send_html(handler, html)
 
 
 def _view_page(handler, me, qs: dict) -> None:
@@ -1060,8 +1073,11 @@ def request_relay(uid: int) -> bool:
         if last:
             cool = RELAY_COOLDOWN
             if str(last["status"]) == "error":
-                # 失败别每 10 分钟重试一次：验证码要等人，普通失败降频
+                # 需要人动手的失败：验证码要等人，其余（多半是密码错）也别刷
                 cool = 6 * 3600 if "验证码" in str(last["message"] or "") else 1800
+            elif str(last["status"]) == "wait":
+                # 网络类失败：半小时后再试，别把中转机当靶子
+                cool = 1800
             if now - int(last["finished"] or 0) < cool:
                 return False
         c.execute("INSERT INTO relay_jobs(user_id,status,created) VALUES(?,?,?)",
@@ -1070,16 +1086,25 @@ def request_relay(uid: int) -> bool:
 
 
 def relay_claim() -> dict | None:
-    """中转机领一个任务。返回含明文密码的 dict，**不写日志、不回显**。"""
+    """中转机领一个任务。返回含明文密码的 dict，**不写日志、不回显**。
+
+    多台机同时来领时靠 `UPDATE ... AND status='pending'` 的 rowcount 做乐观锁：
+    谁先改成功谁拿，另一台拿到 0 行就空手回去等下一轮。以前是先 SELECT 再
+    UPDATE，两台机会领到同一个任务、各自登录一次，白白多刷一次佳明。
+    """
     now = int(time.time())
     with _A().db() as c:
-        row = c.execute("SELECT * FROM relay_jobs WHERE status='pending' "
-                        "ORDER BY id LIMIT 1").fetchone()
-        if not row:
+        head = c.execute("SELECT id FROM relay_jobs WHERE status='pending' "
+                         "ORDER BY id LIMIT 1").fetchone()
+        if not head:
             return None
-        c.execute("UPDATE relay_jobs SET status='running', started=? WHERE id=?",
-                  (now, int(row["id"])))
-        job = dict(row)
+        cur = c.execute("UPDATE relay_jobs SET status='running', started=? "
+                        "WHERE id=? AND status='pending'",
+                        (now, int(head["id"])))
+        if cur.rowcount != 1:      # 被另一台抢走了
+            return None
+        job = dict(c.execute("SELECT * FROM relay_jobs WHERE id=?",
+                             (int(head["id"]),)).fetchone())
     cr = _creds(int(job["user_id"]))
     if not cr:
         relay_finish(int(job["id"]), error="这个账号没有保存佳明账号密码")
@@ -1093,6 +1118,41 @@ def relay_claim() -> dict | None:
             "email": str(cr["email"]), "password": password}
 
 
+# 中转失败里，只有这几类需要本人动手（改密码 / 过验证码 / 解异常）；
+# 其余都是网络、DNS、佳明 5xx 这种自己会好的，静默重试就行。
+_RELAY_FATAL = ("密码", "验证码", "mfa", "锁", "locked", "disabled",
+                "不存在", "invalid", "用户名")
+
+
+def _relay_fatal(error: str) -> bool:
+    e = (error or "").lower()
+    return any(k.lower() in e for k in _RELAY_FATAL)
+
+
+def _flag_action(uid: int, msg: str) -> None:
+    """把「需要本人动手」的话挂到最近一次同步任务上，让横幅能显示出来。
+
+    只改状态和文案、不动 finished：这一条本来就是那次失败的任务，改它不是
+    伪造时间。用户在页面上看到的仍然是「数据更新于 11:30」，不会被骗。
+    """
+    try:
+        with _A().db() as c:
+            row = c.execute("SELECT id FROM web_jobs WHERE user_id=? "
+                            "ORDER BY id DESC LIMIT 1", (int(uid),)).fetchone()
+            if row:
+                c.execute("UPDATE web_jobs SET status='error', message=? WHERE id=?",
+                          (msg[:300], int(row["id"])))
+            else:
+                # 没有历史任务（例如上线后第一件事就是中转失败）：补一条，
+                # 否则这句话没地方挂，用户永远看不到。
+                c.execute("INSERT INTO web_jobs(user_id,status,message,created,"
+                          "started,finished) VALUES(?,?,?,?,?,?)",
+                          (int(uid), "error", msg[:300], int(time.time()),
+                           0, int(time.time())))
+    except sqlite3.Error:
+        pass
+
+
 def relay_finish(job_id: int, cookies=None, error: str = "") -> None:
     """中转机交回结果。成功就写会话并排队同步。"""
     now = int(time.time())
@@ -1103,10 +1163,14 @@ def relay_finish(job_id: int, cookies=None, error: str = "") -> None:
         return
     uid = int(row["user_id"])
     if error or not cookies:
+        reason = str(error or "没拿到登录态")[:200]
+        fatal = _relay_fatal(reason)
         with _A().db() as c:
-            c.execute("UPDATE relay_jobs SET status='error', message=?, finished=? "
-                      "WHERE id=?", (str(error or "没拿到登录态")[:200], now,
+            c.execute("UPDATE relay_jobs SET status=?, message=?, finished=? "
+                      "WHERE id=?", ("error" if fatal else "wait", reason, now,
                                      int(job_id)))
+        if fatal:
+            _flag_action(uid, "佳明登录没有成功：" + reason)
         return
     if isinstance(cookies, str):
         try:
@@ -1243,11 +1307,17 @@ def _claim():
         return dict(row)
 
 
-def _finish(job_id: int, ok: bool, message: str) -> None:
+def _finish(job_id: int, ok: bool, message: str, status: str = "") -> None:
+    """收尾。status 明确写出来时优先用它。
+
+    `wait` = 后台正在自己抢救（中转会来登、等它上线），**用户不需要做任何事**，
+    所以界面上一声不响。`error` 只留给「必须本人动手」的情况——页面上凡是
+    显示出来的字，都应当对应一个用户能执行的动作，否则就是噪音。
+    """
+    st = status or ("done" if ok else "error")
     with _A().db() as c:
         c.execute("UPDATE web_jobs SET status=?, message=?, finished=? WHERE id=?",
-                  ("done" if ok else "error", message[:300], int(time.time()),
-                   int(job_id)))
+                  (st, message[:300], int(time.time()), int(job_id)))
 
 
 def _run_job(job: dict) -> None:
@@ -1257,13 +1327,14 @@ def _run_job(job: dict) -> None:
     # App 回传或用户在连接页粘贴。没有账密但有登录态时，照样能同步。
     has_session = (_home(uid) / "data" / "session.json").exists()
     if not cr and not has_session:
-        return _finish(int(job["id"]), False,
-                       "还没有登录态：用安卓 App 登录佳明后会自动传上来（App 的账号邮箱要和网页一致）")
+        return _finish(int(job["id"]), False, "还没有连接佳明，需要先连接一次")
     if cr:
         try:
             password = _dec(str(cr["nonce"]), str(cr["ct"]))
         except Exception as e:      # noqa: BLE001
-            return _finish(int(job["id"]), False, f"解密失败：{type(e).__name__}")
+            # 主密钥换了 / 数据被改坏：重试一万次也不会好，只能重新连一次
+            return _finish(int(job["id"]), False,
+                           "保存的账号读不出来了，需要重新连接佳明")
         source, email = str(cr["source"]), str(cr["email"])
     else:
         password, source, email = "", "garmin", ""
@@ -1280,7 +1351,8 @@ def _run_job(job: dict) -> None:
                            input=payload, env=env, cwd=str(APP_DIR),
                            capture_output=True, text=True, timeout=300)
     except subprocess.TimeoutExpired:
-        return _finish(int(job["id"]), False, "同步超时（5 分钟）")
+        # 佳明慢/网络卡：下一轮再来，不用惊动用户
+        return _finish(int(job["id"]), False, "同步超时，稍后重试", status="wait")
     out = {}
     for line in reversed((p.stdout or "").strip().splitlines()):
         try:
@@ -1296,16 +1368,20 @@ def _run_job(job: dict) -> None:
         lines = (p.stderr or "").strip().splitlines()
         msg = lines[-1] if lines else "同步失败"
     if out.get("need_mfa"):
-        # 验证码只能本人在手机上完成，中转也替不了
-        request_relay(uid)
-        msg = "佳明要验证码：用 App 或浏览器登录一次，之后会自动接上"
-    elif out.get("need_login"):
-        # 有账密就让中转机去登一次；没有账密只能提示本人登录
+        # 验证码只能本人完成。这里**故意不排中转**：让中转机去撞一次验证码
+        # 只是多刷一次登录，反而更容易把账号挡在风控里。
+        return _finish(int(job["id"]), False,
+                       "佳明这次要验证码，用手机登录一次就好")
+    if out.get("need_login"):
+        # 有账密：排给中转机，后台自己救，用户什么都不用做
         if request_relay(uid):
-            msg = "登录态过期，已请求中转刷新，几分钟内会自动恢复"
-        else:
-            msg = "登录态过期：这台账号没有存佳明账号密码，用 App 同步一次"
-    return _finish(int(job["id"]), False, msg)
+            return _finish(int(job["id"]), False,
+                           "登录态过期，等中转机刷新", status="wait")
+        # 没账密也没人替它登：只能本人动手
+        return _finish(int(job["id"]), False,
+                       "登录态过期了，需要重新登录一次佳明")
+    # 网络抖动、佳明 5xx、DNS 抽风这类：静默，下一轮自己会好
+    return _finish(int(job["id"]), False, msg, status="wait")
 
 
 def _worker_loop() -> None:

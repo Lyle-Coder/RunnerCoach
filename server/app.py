@@ -106,6 +106,10 @@ AI_PROXY = os.environ.get("AI_PROXY", "off").strip().lower() in ("1", "on", "yes
 # （例如组长那台常开的安卓手机）领任务、在手机流量/家宽上完成登录，再把
 # Cookie 交回来。**默认空 = 关闭**，因为这台设备会临时拿到别人的佳明密码。
 RC_RELAY_USER = os.environ.get("RC_RELAY_USER", "").strip()
+# 可以配多台：`a@x.com,b@y.com`。任务是谁先来领谁拿，多一台就是多一层冗余
+# （某台手机被系统冻结时，另一台能接上）。空集合 = 中转完全关闭。
+RELAY_USERS = {x.strip().lower() for x in re.split(r"[,;\s]+", RC_RELAY_USER)
+               if x.strip()}
 HOST = os.environ.get("BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8300"))
 
@@ -694,13 +698,12 @@ def api_me(row: sqlite3.Row) -> dict:
 def _relay_ok(row: sqlite3.Row) -> bool:
     """这台设备有没有资格当中转。
 
-    必须显式配 `RC_RELAY_USER`（账号邮箱）——中转会拿到**别人**的佳明密码，
-    不能"谁登录谁就能领"。配了之后只认这个账号名下的设备。
+    必须显式配 `RC_RELAY_USER`（可写多个邮箱，逗号分隔）——中转会拿到
+    **别人**的佳明密码，不能"谁登录谁就能领"。配了之后只认这些账号名下的设备。
     """
-    want = (RC_RELAY_USER or "").strip().lower()
-    if not want:
+    if not RELAY_USERS:
         return False
-    return str(row["phone"] or "").strip().lower() == want
+    return str(row["phone"] or "").strip().lower() in RELAY_USERS
 
 
 def api_relay_pull(row: sqlite3.Row) -> dict:

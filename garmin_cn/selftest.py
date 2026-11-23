@@ -6578,7 +6578,7 @@ def run() -> int:
     _wapp = (ROOT / "server/webapp.py").read_text(encoding="utf-8")
     assert "def _import_post" in _wapp and '"/app/import"' in _wapp, \
         "网页版没有粘贴导入登录态的入口"
-    assert "还没有登录态：用安卓 App 登录佳明后会自动传上来" in _wapp
+    assert "还没有连接佳明，需要先连接一次" in _wapp
 
     # 网页版活动图：App 靠原生桥 GC.activity(aid) 出图，网页端没有桥，
     # 必须自己接住 data-aid 并渲染 /app/act；1080 宽的整页要用 iframe 缩放，
@@ -6622,6 +6622,24 @@ def run() -> int:
         "App 推会话时没打点，预热会和它互踢"
     assert "def _fresh_line" in _wsapp and "数据更新于" in _wsapp, \
         "页面没显示数据更新时间"
+
+    # ---- 多台中转机 + 无感静默（2026-11-23）--------------------------------
+    # RC_RELAY_USER 支持多个邮箱：一台手机被系统冻结时另一台能接。
+    assert "RELAY_USERS" in _websrc, "RC_RELAY_USER 只认单台，没有冗余"
+    assert "re.split" in _websrc and "RELAY_USERS = {" in _websrc, \
+        "多台中转机没做邮箱列表解析"
+    assert 'row["phone"] or "").strip().lower() in RELAY_USERS' in _websrc, \
+        "中转鉴权没改成多账号集合"
+    # 多台机同时领任务：必须靠条件 UPDATE 的 rowcount 抢占，否则会重复登录
+    assert "AND status='pending'" in _wsapp and "rowcount != 1" in _wsapp, \
+        "中转任务没做抢占，两台机会领到同一个任务"
+    # 无感静默：过程状态不出横幅，只有「需要本人动手」才说一句
+    assert 'if j.get("status") == "error":' in _wsapp
+    assert "同步排队中" not in _wsapp and "上次同步失败" not in _wsapp, \
+        "同步过程还在弹横幅，用户会被噪音干扰"
+    assert "status=\"wait\"" in _wsapp, "可自愈的失败没静默（还挂在 error 上）"
+    assert "def _relay_fatal" in _wsapp and "def _flag_action" in _wsapp, \
+        "中转失败没区分「能自愈」和「要人动手」"
     # 登录框要有「显示密码」；续期要验证码时弹验证码框而不是登录框
     _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert _kt5.count("addShowPassword(box") >= 3, "佳明/高驰/小米登录框要都能显示密码"
