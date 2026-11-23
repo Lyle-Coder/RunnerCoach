@@ -99,6 +99,12 @@ grep -q '^RC_APK_DIR=' "$ETC/env" || echo "RC_APK_DIR=$APP/apk" >> "$ETC/env"
 grep -q '^RC_WEB_USERS=' "$ETC/env" || echo "RC_WEB_USERS=$APP/users" >> "$ETC/env"
 grep -q '^RC_WEB_KEY=' "$ETC/env" || echo "RC_WEB_KEY=$APP/data/web.key" >> "$ETC/env"
 
+# 佳明登录中转（可选）：机房 IP 过不了佳明登录页的 Cloudflare 挑战，
+# 配了中转就由它代登录，只把 Cookie 交回来。见 deploy/cf-login-relay.js。
+# 取消注释并填地址后 systemctl restart runnercoach。
+#RC_LOGIN_RELAY=https://rc-login.example.workers.dev
+#RC_LOGIN_RELAY_TOKEN=change-me
+
 # 本机 server/.env 里已经配过 SMTP / 上游 Key 了，直接搬过去——
 # 让人在服务器上再抄一遍 16 位授权码，抄错一位的表现是"验证码发不出去"，
 # 而错误信息不会指向"你打错字了"。

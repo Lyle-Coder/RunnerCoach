@@ -6536,6 +6536,44 @@ def run() -> int:
     _asrc = (ROOT / "garmin_cn/auth.py").read_text(encoding="utf-8")
     assert "def verify_state" in _asrc and 'state != "expired"' in _asrc
     assert "return None  # 网络异常" not in _asrc
+
+    # ---- 2026-11：佳明国区把登录从 /sso/login 迁到 SSO Portal ------------
+    # 老接口仍返回 SUCCESSFUL + serviceTicketId，但那张票在 /app?ticket= 换
+    # 不出 JWT_WEB（服务端反而 Set-Cookie 清空），网页版/App 续期都会表现为
+    # 「账号密码明明对，却一直提示登录失效」。这几条守住新通道别再被改回去。
+    assert 'PORTAL_LOGIN_URL = f"{PORTAL}/api/login?{PORTAL_QS}"' in _asrc, \
+        "登录没走新版 /portal/api/login"
+    assert "_portal_warmup" in _asrc and "PORTAL_SIGNIN_URL" in _asrc, \
+        "登录前没预热登录页，会 400 captcha evaluation is mandatory"
+    assert "Chrome/131" in _asrc, \
+        "登录页要用桌面 Chrome UA，否则 Cloudflare 403"
+    assert "self._portal_warmup()" in _asrc.split("def login", 1)[1][:600], \
+        "login() 没先预热 Portal 会话"
+    assert "def _accept_login" in _asrc and "_finish_ticket(ticket, payload.get(\"serviceURL\"))" in _asrc, \
+        "换票没优先用登录响应里的 serviceURL"
+    assert "_login_legacy" in _asrc, "新通道挂了要能退回老接口"
+
+    # 换票顺序：serviceURL → /app → /modern（/modern 只做兼容）
+    assert "_finish_ticket(self, ticket: str, service_url: str | None = None)" in _asrc
+
+    # ---- 2026-11：机房 IP 过不了佳明登录页，登录态改由设备回传 --------------
+    # 服务器（阿里云）访问 sso.garmin.cn/portal/* 被 Cloudflare 挑战，只能让
+    # 手机 App 登录后把 session.json 传上去；境外中转是另一条出路。
+    _netsrc = (ROOT / "garmin_cn/net.py").read_text(encoding="utf-8")
+    assert "def load_cookies" in _netsrc, "没法把外部 Cookie 灌进会话（中转/导入要用）"
+    assert "RC_LOGIN_RELAY" in _asrc and "X-Relay-Token" in _asrc, \
+        "登录中转没接线"
+    _apisrc = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    assert "websession" in _apisrc, "同步成功后没把登录态交给平台"
+    _wssrc = (ROOT / "garmin_cn/websession.py").read_text(encoding="utf-8")
+    assert "JWT_WEB" in _wssrc and "/v1/web/session" in _wssrc
+    _websrc = (ROOT / "server/app.py").read_text(encoding="utf-8")
+    assert "def api_web_session" in _websrc and '"/v1/web/session"' in _websrc, \
+        "服务端没有接登录态回传接口"
+    _wapp = (ROOT / "server/webapp.py").read_text(encoding="utf-8")
+    assert "def _import_post" in _wapp and '"/app/import"' in _wapp, \
+        "网页版没有粘贴导入登录态的入口"
+    assert "还没有登录态：用安卓 App 登录佳明后会自动传上来" in _wapp
     # 登录框要有「显示密码」；续期要验证码时弹验证码框而不是登录框
     _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert _kt5.count("addShowPassword(box") >= 3, "佳明/高驰/小米登录框要都能显示密码"

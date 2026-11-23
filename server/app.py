@@ -686,6 +686,46 @@ def api_me(row: sqlite3.Row) -> dict:
                         for d in devices]}
 
 
+def api_web_session(row: sqlite3.Row, body: dict) -> dict:
+    """接收手机 App 回传的佳明登录态，供网页版复用。
+
+    为什么需要它
+    ------------
+    2026-11 佳明把登录迁到 SSO Portal 后，机房 IP 访问 `sso.garmin.cn/portal/*`
+    会被 Cloudflare 挑战（403 + cf-mitigated: challenge），服务器**没法代登录**。
+    但 `connect.garmin.cn/gc-api` 不受影响——只要手上有一份有效 JWT_WEB，
+    同步照跑。所以让能过 CF 的设备（手机 App）登录一次，把 Cookie 交上来。
+
+    只收 Cookie 列表，不碰密码；写进该用户的独立目录，0600。
+    """
+    import webapp
+
+    raw = body.get("session")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raise Gate(400, "session 不是合法 JSON")
+    if not isinstance(raw, list) or not raw:
+        raise Gate(400, "session 必须是非空数组")
+    names = {str(c.get("name") or "") for c in raw if isinstance(c, dict)}
+    if "JWT_WEB" not in names:
+        raise Gate(400, "这份登录态里没有 JWT_WEB，不是佳明会话")
+    uid = int(row["user_id"])
+    home = webapp._home(uid)
+    (home / "data").mkdir(parents=True, exist_ok=True)
+    path = home / "data" / "session.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+    webapp.enqueue(uid)
+    return {"ok": True, "cookies": len(raw)}
+
+
 def api_set_nickname(row: sqlite3.Row, body: dict) -> dict:
     """改账号昵称。组内昵称是另一件事（group_members.alias），互不影响。"""
     nick = str(body.get("nickname") or "").strip()[:16]
@@ -1564,6 +1604,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(api_device(row, body))
             if self.path == "/v1/me/nickname":
                 return self._json(api_set_nickname(_auth(self.headers), body))
+            if self.path == "/v1/web/session":
+                return self._json(api_web_session(_auth(self.headers), body))
             if self.path == "/v1/account/delete":
                 return self._json(api_delete_account(_auth(self.headers), body))
             if self.path == "/v1/redeem":

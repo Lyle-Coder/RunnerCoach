@@ -187,6 +187,26 @@ class Net:
             )
         self._sig = self._cookie_sig()
 
+    def load_cookies(self, items) -> bool:
+        """把外部给的 Cookie 列表灌进内存（登录中转 / 手动导入用）。
+
+        认 `{name, value, domain, path}`；有 `JWT_WEB` / `SESSIONID` / `session`
+        这种会话 Cookie 才算成功，否则返回 False，让调用方明确报错而不是拿着
+        一堆无关 Cookie 去请求接口。
+        """
+        got = False
+        for item in items or []:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            self.set_cookie(
+                str(item["name"]), str(item.get("value") or ""),
+                str(item.get("domain") or ".garmin.cn"),
+                str(item.get("path") or "/"))
+            got = True
+        self._sig = self._cookie_sig()
+        names = {c.name for c in self.jar}
+        return got and bool(names & {"JWT_WEB", "SESSIONID", "session"})
+
     def _cookie_sig(self) -> tuple:
         return tuple(sorted((c.name, c.value) for c in self.jar))
 

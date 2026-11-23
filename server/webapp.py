@@ -246,6 +246,11 @@ body{padding-bottom:calc(64px + env(safe-area-inset-bottom))!important}
   border-radius:12px;border:1px solid var(--line,rgba(255,255,255,.12));
   background:var(--surface-2,#111B29);color:var(--ink,#E9F0F8);font-size:14px}
 .webform label{font-size:12px;color:var(--ink-3,#7A8DA4)}
+.webform textarea{width:100%;min-height:96px;margin:6px 0 12px;padding:10px 12px;
+  border-radius:12px;border:1px solid var(--line,rgba(255,255,255,.12));
+  background:var(--surface-2,#111B29);color:var(--ink,#E9F0F8);font-size:12px;
+  line-height:1.6;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  resize:vertical}
 .webform .webrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
 .webform .webrow .btn{flex:1}
 .webk{font-size:11px;color:var(--ink-3,#7A8DA4);line-height:1.7;margin-top:10px}
@@ -477,21 +482,29 @@ def _me_page(handler, me, qs: dict) -> None:
     cr = _creds(uid)
     msg = (qs.get("msg") or [""])[0]
     note = f'<div class="webbanner">{H.escape(msg)}</div>' if msg else ""
-    if cr:
-        src = {"garmin": "佳明 Garmin", "coros": "高驰 COROS"}.get(
-            str(cr["source"]), str(cr["source"]))
-        src_html = (f'<div class="kvline"><span>数据源</span><b>{H.escape(src)}</b></div>'
-                    f'<div class="kvline"><span>账号</span><b>{H.escape(str(cr["email"]))}</b></div>')
+    sess_ok = (_home(uid) / "data" / "session.json").exists()
+    if cr or sess_ok:
+        if cr:
+            src = {"garmin": "佳明 Garmin", "coros": "高驰 COROS"}.get(
+                str(cr["source"]), str(cr["source"]))
+            src_html = (f'<div class="kvline"><span>数据源</span><b>{H.escape(src)}</b></div>'
+                        f'<div class="kvline"><span>账号</span><b>{H.escape(str(cr["email"]))}</b></div>')
+        else:
+            src_html = ('<div class="kvline"><span>数据源</span><b>佳明 Garmin</b></div>'
+                        '<div class="kvline"><span>登录态</span><b>已导入（由 App 同步）</b></div>')
+        if cr and sess_ok:
+            src_html += ('<div class="kvline"><span>登录态</span><b>已导入</b></div>')
         actions = (
             '<form method="post" action="/app/sync" style="display:inline">'
             '<button class="btn primary" type="submit">立即同步</button></form> '
-            '<a class="btn" href="/app/connect">更换账号</a> '
+            '<a class="btn" href="/app/connect">更换账号 / 登录态</a> '
             '<form method="post" action="/app/forget" style="display:inline" '
             'onsubmit="return confirm(\'删除数据源后需要重新登录佳明，确定？\')">'
             '<button class="btn danger" type="submit">删除数据源</button></form>'
         )
     else:
-        src_html = ('<div class="kvline"><span>数据源</span><b>未连接</b></div>')
+        src_html = ('<div class="kvline"><span>数据源</span><b>未连接</b></div>'
+                    '<div class="kvline"><span>登录态</span><b>没有</b></div>')
         actions = '<a class="btn primary" href="/app/connect">连接佳明账号</a>'
     stats = (f'<div class="kvline"><span>每日数据</span><b>{st["days"]} 天</b></div>'
              f'<div class="kvline"><span>活动</span><b>{st["acts"]} 条</b></div>'
@@ -529,29 +542,75 @@ def _connect_page(handler, me, qs: dict) -> None:
                     + '，保存新账号会覆盖。</div>')
     body = (
         note + existing
-        + '<div class="card"><form class="webform" method="post" action="/app/connect">'
-        '<label>数据源</label><select name="source">'
-        '<option value="garmin">佳明 Garmin</option>'
-        '<option value="coros">高驰 COROS</option></select>'
+        + '<div class="card"><h3 style="margin:0 0 6px">佳明：用 App 同步登录态</h3>'
+        '<p style="margin:0 0 8px;color:var(--muted);font-size:13px;line-height:1.7">'
+        '佳明登录页对机房网络有人机校验，服务器直接登录会被挡。'
+        '用安卓 App 登录佳明后，App 会把登录态自动传上来；'
+        '桌面浏览器也可以在下面粘贴一份。</p>'
+        '<form class="webform" method="post" action="/app/import">'
+        '<label>登录态（session.json 内容）</label>'
+        '<textarea name="session" rows="4" placeholder="[{\"name\":\"JWT_WEB\",...}]"></textarea>'
+        '<div class="webrow"><button class="btn" type="submit">导入登录态</button></div>'
+        '</form></div>'
+        + '<div class="card"><h3 style="margin:0 0 6px">高驰：账号密码</h3>'
+        '<form class="webform" method="post" action="/app/connect">'
+        '<input type="hidden" name="source" value="coros">'
         '<label>账号（邮箱）</label>'
         '<input type="email" name="email" autocomplete="username" '
-        f'value="{H.escape(str(cr["email"]) if cr else "")}" required>'
+        f'value="{H.escape(str(cr["email"]) if cr and cr["source"] == "coros" else "")}">'
         '<label>密码</label>'
         '<input type="password" name="password" autocomplete="current-password" '
-        'placeholder="AES-GCM 加密后保存" required>'
+        'placeholder="AES-GCM 加密后保存">'
         '<label style="display:flex;gap:8px;align-items:flex-start;margin:6px 0 4px">'
-        '<input type="checkbox" name="consent" value="1" required style="width:18px;height:18px;margin-top:2px">'
+        '<input type="checkbox" name="consent" value="1" style="width:18px;height:18px;margin-top:2px">'
         '<span>我同意服务器保存加密后的账号密码，并每天替我在后台同步训练数据；'
         '可随时在「我的」删除。</span></label>'
         '<div class="webrow"><button class="btn primary" type="submit">保存并同步</button>'
         '<a class="btn" href="/app">取消</a></div></form>'
-        '<div class="webk">佳明 JWT 约 2 小时过期，服务器需要在后台重新登录，'
-        '必须保存密码。密码不会出现在日志、页面或接口返回里。</div></div>'
+        '<div class="webk">只保存加密后的密码，不出现在日志、页面或接口返回里。</div></div>'
     )
     html = U.page("APP · 连接数据源", "连接数据源", "服务器代你同步", body,
                   U.chip("AES-GCM") + U.chip("可删除"),
                   foot="账密只用于同步，不用于其他用途；删除后立即失效。")
     _send_html(handler, _shell(html, "/app/me"))
+
+
+def _import_post(handler, form: dict, me) -> None:
+    """导入佳明登录态（session.json 内容）。
+
+    佳明登录页对机房 IP 有 Cloudflare 挑战，服务器登录不了；手机 App 能过，
+    所以登录态由 App 回传，桌面用户也可以在这里手动粘贴一份。
+    """
+    uid = int(me["user_id"])
+    raw = (form.get("session") or [""])[0].strip()
+    if not raw:
+        return _redirect(handler, "/app/connect?msg="
+                         + urllib.parse.quote("先粘贴登录态内容"))
+    try:
+        cookies = json.loads(raw)
+    except json.JSONDecodeError:
+        return _redirect(handler, "/app/connect?msg="
+                         + urllib.parse.quote("粘贴的内容不是合法 JSON"))
+    if not isinstance(cookies, list) or not cookies:
+        return _redirect(handler, "/app/connect?msg="
+                         + urllib.parse.quote("登录态格式不对（要数组）"))
+    names = {str(c.get("name") or "") for c in cookies if isinstance(c, dict)}
+    if "JWT_WEB" not in names:
+        return _redirect(handler, "/app/connect?msg="
+                         + urllib.parse.quote("里面没有 JWT_WEB，不是佳明登录态"))
+    home = _home(uid)
+    (home / "data").mkdir(parents=True, exist_ok=True)
+    path = home / "data" / "session.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cookies, ensure_ascii=False), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+    enqueue(uid)
+    return _redirect(handler, "/app?msg="
+                     + urllib.parse.quote("登录态已导入，正在同步"))
 
 
 def _connect_post(handler, form: dict, me) -> None:
@@ -730,19 +789,27 @@ def _finish(job_id: int, ok: bool, message: str) -> None:
 def _run_job(job: dict) -> None:
     uid = int(job["user_id"])
     cr = _creds(uid)
-    if not cr:
-        return _finish(int(job["id"]), False, "没有保存数据源账号")
-    try:
-        password = _dec(str(cr["nonce"]), str(cr["ct"]))
-    except Exception as e:      # noqa: BLE001
-        return _finish(int(job["id"]), False, f"解密失败：{type(e).__name__}")
+    # 佳明现在只认「登录态」：服务器登录会被佳明的人机校验挡住，登录态由手机
+    # App 回传或用户在连接页粘贴。没有账密但有登录态时，照样能同步。
+    has_session = (_home(uid) / "data" / "session.json").exists()
+    if not cr and not has_session:
+        return _finish(int(job["id"]), False,
+                       "还没有登录态：用安卓 App 登录佳明后会自动传上来")
+    if cr:
+        try:
+            password = _dec(str(cr["nonce"]), str(cr["ct"]))
+        except Exception as e:      # noqa: BLE001
+            return _finish(int(job["id"]), False, f"解密失败：{type(e).__name__}")
+        source, email = str(cr["source"]), str(cr["email"])
+    else:
+        password, source, email = "", "garmin", ""
     st = _stats(uid)
     days = 30 if st["days"] == 0 else 3
     env = os.environ.copy()
     env["GARMIN_HOME"] = str(_home(uid))
     env["PYTHONPATH"] = str(APP_DIR) + os.pathsep + str(APP_DIR.parent)
     env["PYTHONUNBUFFERED"] = "1"
-    payload = json.dumps({"source": str(cr["source"]), "email": str(cr["email"]),
+    payload = json.dumps({"source": source, "email": email,
                           "password": password, "days": days}, ensure_ascii=False)
     try:
         p = subprocess.run([sys.executable, str(APP_DIR / "web_sync.py")],
@@ -767,7 +834,7 @@ def _run_job(job: dict) -> None:
     if out.get("need_mfa"):
         msg = "佳明要求验证码，请重新登录或稍后再试"
     elif out.get("need_login"):
-        msg = "佳明登录失效，请在「我的」更换账号"
+        msg = "登录态已过期：用安卓 App 同步一次就会自动更新"
     return _finish(int(job["id"]), False, msg)
 
 
@@ -862,11 +929,17 @@ def handle_post(handler) -> None:
         return _redirect(handler, "/app/login")
     if path == "/app/connect":
         return _connect_post(handler, form, me)
+    if path == "/app/import":
+        return _import_post(handler, form, me)
     if path == "/app/sync":
         enqueue(int(me["user_id"]))
         return _redirect(handler, "/app?msg=" + urllib.parse.quote("已加入同步队列"))
     if path == "/app/forget":
         _del_creds(int(me["user_id"]))
+        try:      # 连登录态一起删：只删账密、留着会话等于没删
+            (_home(int(me["user_id"])) / "data" / "session.json").unlink()
+        except OSError:
+            pass
         return _redirect(handler, "/app/me?msg=" + urllib.parse.quote("已删除数据源"))
     if path == "/app/logout":
         return _redirect(handler, "/app/login",
