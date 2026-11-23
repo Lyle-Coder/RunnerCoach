@@ -538,7 +538,7 @@ def _connect_page(handler, me, qs: dict) -> None:
         f'value="{H.escape(str(cr["email"]) if cr else "")}" required>'
         '<label>密码</label>'
         '<input type="password" name="password" autocomplete="current-password" '
-        'placeholder="只在保存时上传，AES-GCM 加密" required>'
+        'placeholder="AES-GCM 加密后保存" required>'
         '<label style="display:flex;gap:8px;align-items:flex-start;margin:6px 0 4px">'
         '<input type="checkbox" name="consent" value="1" required style="width:18px;height:18px;margin-top:2px">'
         '<span>我同意服务器保存加密后的账号密码，并每天替我在后台同步训练数据；'
@@ -546,7 +546,7 @@ def _connect_page(handler, me, qs: dict) -> None:
         '<div class="webrow"><button class="btn primary" type="submit">保存并同步</button>'
         '<a class="btn" href="/app">取消</a></div></form>'
         '<div class="webk">佳明 JWT 约 2 小时过期，服务器需要在后台重新登录，'
-        '所以必须保存密码。密码不会出现在日志、页面或接口返回里。</div></div>'
+        '必须保存密码。密码不会出现在日志、页面或接口返回里。</div></div>'
     )
     html = U.page("APP · 连接数据源", "连接数据源", "服务器代你同步", body,
                   U.chip("AES-GCM") + U.chip("可删除"),
