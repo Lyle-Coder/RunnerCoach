@@ -6667,6 +6667,18 @@ def run() -> int:
     assert "帮队友" in _gui and "/relay" in _gui, "小组设置里没有「帮队友」开关"
     _gpy = (ROOT / "garmin_cn/group.py").read_text(encoding="utf-8")
     assert "def set_relayshare" in _gpy and "relayshare" in _gpy
+
+    # 新用户还没进组：没有任何人能替他登录。这时候**不能**排任务，
+    # 否则任务永远卡在 pending，用户等半天以为坏了。
+    for _need in ("def relay_workers_for", "def has_group"):
+        assert _need in _gsrc, f"组模块缺 {_need}"
+    assert "def relay_available" in _wsapp, \
+        "只有「全网有没有志愿机」，没有「有没有人能帮我」"
+    assert "if not relay_available(uid):" in _wsapp, \
+        "没进组的新用户也会排任务，任务永远没人领"
+    assert "if not has_group(uid):" in _wsapp, \
+        "排不上任务时没说清「先加入小组」，用户不知道下一步"
+    assert "你还没加入小组" in _wsapp
     # 登录框要有「显示密码」；续期要验证码时弹验证码框而不是登录框
     _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert _kt5.count("addShowPassword(box") >= 3, "佳明/高驰/小米登录框要都能显示密码"

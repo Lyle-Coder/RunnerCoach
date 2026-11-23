@@ -1771,6 +1771,40 @@ def share_relay(worker: int, target: int) -> bool:
         return False
 
 
+def relay_workers_for(target: int) -> list[int]:
+    """能替这个人登录的成员（同组 + 开了「帮队友」）。
+
+    新用户最容易踩的坑：他刚注册、还没进组，这里返回空——没有任何人能替他
+    登录。所以调用方**必须**先问一句「有没有人能干」，没有就别排任务，否则
+    任务会永远卡在 pending，用户等半天以为坏了。
+    """
+    try:
+        with db() as c:
+            rows = c.execute("""
+                SELECT DISTINCT a.user_id FROM group_members a
+                JOIN group_members b ON a.group_id = b.group_id
+                JOIN groups g ON g.id = a.group_id
+                WHERE b.user_id=? AND b.status='active'
+                  AND a.status='active' AND a.relay_share=1
+                  AND g.archived=0 AND a.user_id != ?
+                """, (int(target), int(target))).fetchall()
+        return [int(r["user_id"]) for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+def has_group(uid: int) -> bool:
+    """这个人在不在任何未归档的组里。网页版用它决定要不要提示「先加入小组」。"""
+    try:
+        with db() as c:
+            return bool(c.execute(
+                "SELECT 1 FROM group_members m JOIN groups g ON g.id=m.group_id"
+                " WHERE m.user_id=? AND m.status='active' AND g.archived=0"
+                " LIMIT 1", (int(uid),)).fetchone())
+    except sqlite3.Error:
+        return False
+
+
 def any_relay_worker() -> bool:
     """有没有任何一台设备开了「帮队友」。没有就不用排任务，排了也没人领。"""
     try:

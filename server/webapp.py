@@ -762,6 +762,12 @@ def _connect_page(handler, me, qs: dict) -> None:
         existing = ('<div class="webbanner warn">已连接 '
                     + H.escape(str(cr["email"]))
                     + '，保存新账号会覆盖。</div>')
+    # 没进组的人没人能替他刷新（中转按「同组」配对）。这句话必须在这里说，
+    # 否则他填完密码会等一个永远不会被领走的任务。
+    if not has_group(uid) and not relay_available(uid):
+        note += ('<div class="webbanner">你还没加入小组。'
+                 '加入之后，队里开了「帮队友」的手机可以自动帮你刷新登录，'
+                 '不用再手动导。<a href="/groups">去加入小组</a></div>')
     body = (
         note + existing
         + '<div class="card"><h3 style="margin:0 0 6px">佳明：账号密码（推荐）</h3>'
@@ -879,11 +885,18 @@ def _connect_post(handler, form: dict, me) -> None:
         pass
     if source == "garmin" and relay_enabled():
         # 佳明：直接排中转任务。服务器自己登不进去，先跑一次同步只会白等
-        # 一次 401，再回过头去排任务。文案只说「去首页看看」——用户不关心
-        # 是谁在登录、几分钟、离线怎么办。
-        request_relay(uid)
-        return _redirect(handler, "/app?msg=" + urllib.parse.quote(
-            "已保存，数据会在几分钟内自动更新"))
+        # 一次 401，再回过头去排任务。
+        if request_relay(uid):
+            return _redirect(handler, "/app?msg=" + urllib.parse.quote(
+                "已保存，数据会在几分钟内自动更新"))
+        # 排不上（没进组 / 组里没人开「帮队友」）：别再说「几分钟内自动更新」，
+        # 那句话兑现不了，用户会一直等。
+        if not has_group(uid):
+            return _redirect(handler, "/app/connect?msg=" + urllib.parse.quote(
+                "已保存。你还没加入小组，加入后队里开了「帮队友」的手机"
+                "可以自动帮你刷新"))
+        return _redirect(handler, "/app/connect?msg=" + urllib.parse.quote(
+            "已保存。队里暂时没人开「帮队友」，登录过期时重新连接一次就行"))
     enqueue(uid)
     _redirect(handler, "/app?msg=" + urllib.parse.quote("已保存，正在同步"))
 
@@ -1095,9 +1108,39 @@ def _can_relay(worker: int, target: int) -> bool:
         return False
 
 
+def relay_available(uid: int) -> bool:
+    """**这个人**有没有可用的中转机。
+
+    和 `relay_enabled()` 的区别很关键：那个问的是「全网有没有设备能干」，
+    这个问的是「有没有人能替我干」。新用户刚注册、还没进组时，前者可能是
+    True（别人的组里有志愿机），后者是 False——这种任务排进去永远不会有人
+    领，只能把用户晾在那儿。
+
+    白名单（`RC_RELAY_USER`）算全局兜底：那台设备能领任何人的任务，所以
+    没进组的新用户靠它。
+    """
+    if str(getattr(_A(), "RC_RELAY_USER", "") or "").strip():
+        return True
+    try:
+        return bool(_groups().relay_workers_for(int(uid)))
+    except Exception:      # noqa: BLE001
+        return False
+
+
+def has_group(uid: int) -> bool:
+    try:
+        return bool(_groups().has_group(int(uid)))
+    except Exception:      # noqa: BLE001
+        return False
+
+
 def request_relay(uid: int) -> bool:
-    """给某个用户排一个「代登录」任务。没有账密就不排（无从登录）。"""
+    """给某个用户排一个「代登录」任务。没有账密、没人能替他登，都不排。"""
     if not relay_enabled():
+        return False
+    # 「全网有志愿机」不等于「有人能帮我」：没进组的新用户没人能领，
+    # 排进去只会永远 pending，用户看到的是「等了半天没反应」。
+    if not relay_available(uid):
         return False
     cr = _creds(uid)
     if not cr or str(cr["source"]) != "garmin":
@@ -1437,9 +1480,13 @@ def _run_job(job: dict) -> None:
         if request_relay(uid):
             return _finish(int(job["id"]), False,
                            "登录态过期，等中转机刷新", status="wait")
-        # 没账密也没人替它登：只能本人动手
+        # 没人能替他登：把「为什么没人」说清楚，用户才知道下一步点哪
+        if not has_group(uid):
+            return _finish(int(job["id"]), False,
+                           "登录过期了：加入小组后，队里开了「帮队友」的手机"
+                           "可以自动帮你刷新；也可以重新连接一次佳明")
         return _finish(int(job["id"]), False,
-                       "登录态过期了，需要重新登录一次佳明")
+                       "登录过期了：队里暂时没人开「帮队友」，重新连接一次佳明就好")
     # 网络抖动、佳明 5xx、DNS 抽风这类：静默，下一轮自己会好
     return _finish(int(job["id"]), False, msg, status="wait")
 
