@@ -1254,20 +1254,37 @@ def main() -> int:
 
     # ---------------- 组内路线图
     print("\n11c. 组内路线图（只传格子，不传轨迹）")
+    # 2026-11-23 起默认**开**：新成员进来就是开的，hidden 应为 0。
+    # 老版本这里断言「默认没人开」，改成默认开后必须同步改，
+    # 否则测的不是产品现在的行为。
     st, r = req("GET", f"/v1/group/{gid}/map?today=2026-11-18", None, a)
-    check("默认没人开路线共享，地图是空的",
-          st == 200 and r.get("ok") and not (r.get("people") or []), f"{st} {r}")
-    check("地图会告诉你有几个人没开", int(r.get("hidden") or 0) > 0, str(r.get("hidden")))
+    check("默认全开，没有隐藏成员",
+          st == 200 and r.get("ok") and int(r.get("hidden") or 0) == 0, f"{st} {r}")
+    check("还没传格子，地图是空的",
+          not (r.get("people") or []), str(r.get("people"))[:100])
 
     _cells = ["8883:25915", "8884:25915", "8884:25916"]
+    # 显式关掉再传才会被拒——默认开之后，「没开就拒」要自己造前置条件
+    st, r = req("POST", f"/v1/group/{gid}/mapshare", {"on": False}, a)
+    check("先关掉路线共享", st == 200 and r.get("map_share") is False, f"{st} {r}")
     st, r = req("POST", f"/v1/group/{gid}/cells", {"cells": _cells}, a)
-    check("没开共享就传格子被拒（409）", st == 409, f"{st} {r}")
+    check("关掉共享后传格子被拒（409）", st == 409, f"{st} {r}")
+
+    st, r = req("GET", f"/v1/group/{gid}/map?today=2026-11-18", None, b)
+    check("地图会告诉你有几个人没开",
+          int(r.get("hidden") or 0) > 0, str(r.get("hidden")))
 
     st, r = req("POST", f"/v1/group/{gid}/mapshare", {"on": True}, a)
-    check("打开路线共享", st == 200 and r.get("map_share") is True, f"{st} {r}")
+    check("重新打开路线共享", st == 200 and r.get("map_share") is True, f"{st} {r}")
     st, r = req("GET", f"/v1/group/{gid}", None, a)
     _me = next(m for m in r["group"]["members"] if m.get("is_me"))
     check("成员视图里能看到路线开关状态", _me.get("map_share") is True, str(_me))
+    # `me` 里也必须带 map_share：客户端进组页时用它刷新本地「要不要上报格子」
+    # 的缓存。以前这里只有 alias/share，客户端读到 None 当成 False 写回本地，
+    # 于是每次进组都把开关重置成关（用户报「每周要手动重新开启」）。
+    _grp_me = (r.get("group") or {}).get("me") or {}
+    check("组详情的 me 里带 map_share 字段",
+          "map_share" in _grp_me and _grp_me["map_share"] is True, str(_grp_me))
 
     st, r = req("POST", f"/v1/group/{gid}/cells",
                 {"cells": _cells + ["坏数据", "1:2:3", None], "today": "2026-11-18"}, a)

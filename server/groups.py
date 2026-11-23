@@ -364,11 +364,13 @@ def init_db() -> None:
         if "ride_m" not in cols:
             c.execute("ALTER TABLE group_daily ADD COLUMN ride_m INTEGER"
                       " NOT NULL DEFAULT 0")
-        # 路线图开关默认 **关**：位置比里程敏感得多，不能靠「用户没注意」就开。
+        # 路线图开关默认 **开**（2026-11-23 产品决策，原先是关）。
+        # 位置比里程敏感，所以这条默认值必须有配套的「随时可关、关掉即删」：
+        # 关掉时 group_cell 整周数据会被 DELETE，不只是停止上传。
         mcols = {r["name"] for r in c.execute("PRAGMA table_info(group_members)")}
         if "map_share" not in mcols:
             c.execute("ALTER TABLE group_members ADD COLUMN map_share INTEGER"
-                      " NOT NULL DEFAULT 0")
+                      " NOT NULL DEFAULT 1")
         # 1.5.8 起格子带跑量：地图要用它决定「这块主要是谁跑的」和颜色深浅
         ccols = {r["name"] for r in c.execute("PRAGMA table_info(group_cell)")}
         if "meters" not in ccols:
@@ -596,8 +598,11 @@ def api_create(me, body: dict) -> dict:
             "INSERT INTO groups(name,intro,owner_id,invite_code,max_members,created_at)"
             " VALUES(?,?,?,?,?,?)", (name, intro, uid, code, cap, _now()))
         gid = int(cur.lastrowid)
-        c.execute("INSERT INTO group_members(group_id,user_id,role,alias,joined_at)"
-                  " VALUES(?,?,?,?,?)", (gid, uid, "owner", alias, _now()))
+        # map_share 显式写 1：线上库的列定义早就固定成 DEFAULT 0 了，
+        # 改 ALTER 里的默认值只影响「新建列」，不改已有库的行为。
+        c.execute("INSERT INTO group_members(group_id,user_id,role,alias,joined_at,"
+                  "map_share) VALUES(?,?,?,?,?,1)",
+                  (gid, uid, "owner", alias, _now()))
         _audit(c, gid, uid, "create")
         g = c.execute("SELECT * FROM groups WHERE id=?", (gid,)).fetchone()
     out = _group_brief(g, "owner", 1)
@@ -657,8 +662,10 @@ def api_join(me, body: dict, ip: str) -> dict:
             c.execute("UPDATE group_members SET status=?, alias=?, joined_at=?"
                       " WHERE group_id=? AND user_id=?", (status, alias, _now(), gid, uid))
         else:
-            c.execute("INSERT INTO group_members(group_id,user_id,role,alias,joined_at,status)"
-                      " VALUES(?,?,?,?,?,?)", (gid, uid, "member", alias, _now(), status))
+            c.execute("INSERT INTO group_members(group_id,user_id,role,alias,"
+                      "joined_at,status,map_share)"
+                      " VALUES(?,?,?,?,?,?,1)",
+                      (gid, uid, "member", alias, _now(), status))
         _audit(c, gid, uid, "apply" if pending else "join")
         members = active + (0 if pending else 1)
     return {"ok": True, "already": False, "pending": pending,
@@ -931,7 +938,14 @@ def api_get(me, gid: int) -> dict:
         # 待批准的申请只给管理角色：普通成员不该看到谁在申请
         out["pending"] = [{"user_id": int(r["user_id"]), "alias": r["alias"],
                            "at": int(r["joined_at"])} for r in pend]
-    out["me"] = {"alias": my["alias"], "share": my["share_level"]}
+    # map_share 必须带上：客户端进组页时会用它刷新本地的「要不要上报格子」
+    # 缓存。以前这里只给了 alias/share，客户端读到 None 就当成 False 写回本地，
+    # 于是每次进组页都把开关重置成「关」，用户看到的就是「路线共享又没了、
+    # 还得手动重开」。
+    out["me"] = {
+        "alias": my["alias"], "share": my["share_level"],
+        "map_share": bool(my["map_share"]) if "map_share" in my.keys() else False,
+    }
     out["members"] = [_member_view(r, uid) for r in rows]
     return {"ok": True, "group": out}
 
