@@ -876,12 +876,19 @@ def map_page(token: str, gid: int, message: str = "") -> str:
     # 我自己的开关。2026-11-23 起默认开，所以「已开启」这一侧必须写清
     # 共享的到底是什么：默认开意味着用户不会经过「点一下才知道」这一步，
     # 告知责任就落在这一行文案上。
-    if mine:
+    #
+    # 状态从 `me.map_share` 读，**不能**用「我有没有格子」推断：默认开但本周
+    # 还没上传格子时，我不在 people 里，那样会一直显示「开启」按钮，点了也
+    # 没变化（服务端本来就是 1），表现就是「点了没反应」。
+    _mstate = r.get("me") or {}
+    _map_on = bool(_mstate.get("map_share"))
+    _my_cells = int(_mstate.get("cells") or (len(mine["cells"]) if mine else 0))
+    if _map_on:
         _sw = (f'<form action="/__group/{gid}/mapshare" method="post">{_tok(token)}'
                '<input type="hidden" name="on" value="0">'
                '<div class="setrow"><span class="nowrap">路线共享</span>'
                '<span class="note" style="flex:1 1 auto;margin:0">'
-               f'已开启 · 本周 {len(mine["cells"])} 格 · 只传格子编号，不含轨迹'
+               f'已开启 · 本周 {_my_cells} 格 · 只传格子编号，不含轨迹'
                '</span>'
                '<button class="btn sm" type="submit">关掉</button></div></form>')
     else:

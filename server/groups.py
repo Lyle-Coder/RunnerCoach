@@ -1828,10 +1828,19 @@ def api_map(me, gid: int, query: dict) -> dict:
                        # 每格跑量（米），和 cells 一一对应；老客户端不发就是全 0
                        "meters": bym.get(u) or {},
                        "is_me": u == uid})
+    # 我自己的开关状态必须单独给：`people` 里只放「已经有格子的人」，
+    # 默认开但本周还没上传格子时我不在里面，客户端就只能按「人不在列表里」
+    # 推断成没开，于是永远显示「开启」按钮，点了也没变化（服务端本来就是 1）。
+    _mine_m = next((m for m in mem if int(m["user_id"]) == uid), None)
     return {"ok": True, "from": wf.isoformat(), "to": wt.isoformat(),
             "people": people,
             "hidden": sum(1 for m in mem if not m["map_share"]),
-            "cells": sum(len(p["cells"]) for p in people)}
+            "cells": sum(len(p["cells"]) for p in people),
+            "me": {
+                "map_share": bool(_mine_m["map_share"]) if _mine_m else False,
+                "share": str((_mine_m["share_level"] if _mine_m else "") or "summary"),
+                "cells": len(by.get(uid) or []),
+            }}
 
 
 # ---------------------------------------------------------------- 动态
