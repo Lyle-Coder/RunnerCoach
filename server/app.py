@@ -1450,6 +1450,10 @@ class Handler(BaseHTTPRequestHandler):
                                    # 只显示"自配 Key"
                                    "ai_proxy": AI_PROXY,
                                    "pay": PAY_PROVIDER != ""})
+            _p0 = self.path.split("?")[0]
+            if _p0 == "/app" or _p0.startswith("/app/"):
+                import webapp
+                return webapp.handle_get(self)
             if self.path.split("?")[0] == "/v1/app/latest":
                 return self._json(api_app_latest())
             if self.path.split("?")[0] == "/v1/code/latest":
@@ -1539,6 +1543,9 @@ class Handler(BaseHTTPRequestHandler):
             if (_mp == "/manage" or _mp.startswith("/manage/")
                     or _mp == "/w" or _mp.startswith("/w/")):
                 return self._manage("POST")
+            if _mp == "/app" or _mp.startswith("/app/"):
+                import webapp
+                return webapp.handle_post(self)
             body = self._read_body()
             ip = self.headers.get("X-Forwarded-For", "").split(",")[0].strip() \
                 or self.client_address[0]
@@ -1840,6 +1847,12 @@ def main() -> int:
         group_api.init_db()
     if expedition_api is not None:
         expedition_api.init_db()
+    try:
+        import webapp
+        webapp.init()
+        webapp.start_worker()
+    except Exception as e:      # noqa: BLE001 - 网页版坏了不能让整个网关起不来
+        print(f"  ！网页版模块未启用：{type(e).__name__}: {e}")
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     srv.daemon_threads = True
     if TLS_CERT:

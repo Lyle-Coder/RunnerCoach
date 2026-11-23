@@ -33,7 +33,7 @@ mkdir -p "$APP" "$APP/data" "$APP/certs" "$APP/site" "$APP/apk" "$ETC"
 echo "→ 拷贝程序"
 # 新增服务端模块务必加进这个列表：漏了不会报错，而是 ImportError 让整个
 # groups / expedition 模块挂掉，线上表现是「组接口 503」，很难查。
-for f in app.py manage.py web.py groups.py expedition.py tick.py ranking.py bingo.py; do
+for f in app.py manage.py web.py webapp.py web_render.py web_sync.py groups.py expedition.py tick.py ranking.py bingo.py; do
   [ -f "server/$f" ] && cp -f "server/$f" "$APP/$f"
 done
 # 运维脚本：发版产物清理（每天 04:10 由 runnercoach-cleanup.timer 调）
@@ -49,6 +49,19 @@ fi
 if [ -d site ]; then
   cp -rf site/. "$APP/site/" 2>/dev/null || true
 fi
+
+# 网页版内核：与 Android 共用 garmin_cn，但服务端要能 import / 渲染。
+# 漏拷贝的表现不是报错，而是网页版 500（ModuleNotFoundError）。
+if [ -d garmin_cn ]; then
+  cp -rf garmin_cn "$APP/"
+  find "$APP/garmin_cn" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+fi
+if [ -d server/web ]; then
+  mkdir -p "$APP/web"
+  cp -rf server/web/. "$APP/web/"
+fi
+mkdir -p "$APP/users"
+
 
 # 内容池走 .gitignore，不在版本库里。忘了带上来，服务能起但远征一进就 503。
 if [ ! -f "$APP/content/expedition_events.json" ]; then
@@ -82,6 +95,9 @@ fi
 # APK 分发端口：系统下载管理器不认自签证书，所以安装包单独走一个明文只读端口。
 grep -q '^RC_APK_PORT=' "$ETC/env" || echo "RC_APK_PORT=8088" >> "$ETC/env"
 grep -q '^RC_APK_DIR=' "$ETC/env" || echo "RC_APK_DIR=$APP/apk" >> "$ETC/env"
+# 网页版：每用户数据目录 + 加密主密钥（首次启动自动生成 0600）
+grep -q '^RC_WEB_USERS=' "$ETC/env" || echo "RC_WEB_USERS=$APP/users" >> "$ETC/env"
+grep -q '^RC_WEB_KEY=' "$ETC/env" || echo "RC_WEB_KEY=$APP/data/web.key" >> "$ETC/env"
 
 # 本机 server/.env 里已经配过 SMTP / 上游 Key 了，直接搬过去——
 # 让人在服务器上再抄一遍 16 位授权码，抄错一位的表现是"验证码发不出去"，
@@ -114,7 +130,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=$APP/data
+ReadWritePaths=$APP/data $APP/users
 
 [Install]
 WantedBy=multi-user.target
