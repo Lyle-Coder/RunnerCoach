@@ -1899,9 +1899,18 @@ _AUTO_SYNC_JS = """<script>(function(){
          var names={garmin:'佳明',coros:'高驰',keep:'Keep'};
          var who=d.need_login.map(function(n){return names[n]||n;}).join('、');
          var a=document.createElement('a');
-         a.href='/me';a.textContent=who+'登录已失效，点这里重新连接';
+         a.href='/me';a.textContent=who+'连接已过期，点这里重新连接';
          a.style.cssText='color:#7fd1ff;text-decoration:underline';
-         tip('',0).appendChild(a);
+         var t=tip('',0);
+         t.appendChild(a);
+         // 提示本身可以收起；6 小时内不会重复弹（节流在服务端，见 serve._auto_sync）
+         var x=document.createElement('span');
+         x.textContent='×';x.setAttribute('role','button');
+         x.setAttribute('aria-label','关闭提示');
+         x.style.cssText='margin-left:10px;color:#8aa0b8;cursor:pointer;'
+           +'padding:0 2px;font-size:15px;line-height:1';
+         x.onclick=function(){t.remove();};
+         t.appendChild(x);
          return;
        }
        if(!d.ok||!(d.new>0))return;

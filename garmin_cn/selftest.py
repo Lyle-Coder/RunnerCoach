@@ -1178,6 +1178,62 @@ def run() -> int:
     _aps = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
     assert 'r.get("ok") is False' in _aps, "sync_all 没检查 sync 的返回值"
     assert '"need_login"' in _aps and '"failed"' in _aps, "sync_all 没把失败原因带出来"
+    # 自动同步必须能拿到 Keystore 里的账密去静默续期，否则佳明 JWT 一过期
+    # 就只能弹「连接已过期」，而手动下拉却能成功——用户看到的就是自相矛盾。
+    assert "_native_creds" in _aps and "com.chaquo.python.Python" in _aps, \
+        "自动同步没从 Android Keystore 取账密，过期只能反复提示"
+    # Keep 的判据必须是「本地真有登录」，不能靠 last_sync_keep 反推：
+    # 从没登录过 Keep 的人不该被提示「Keep 登录已失效」。
+    assert 'keep_status().get("logged_in")' in _aps, \
+        "Keep 还会被 last_sync_keep 骗去同步，没登录也提示失效"
+    assert "login_nag" in _gserv, \
+        "连接过期提示没有节流，每次打开都会弹"
+    assert "关闭提示" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
+        "连接过期提示不能收起"
+
+    # Keystore 取账密的胶水层：桌面没有 java 模块时必须安静退回 {}，
+    # Android 上必须把三个源的账密都读出来（读不出就退回只靠 token）。
+    # 用假 java 模块跑一遍，守住「导入路径 / 方法名」不被改名改坏。
+    import types as _types
+
+    from garmin_cn import appapi as _crapi
+
+    class _FakeSecrets:
+        email = lambda self: "e@example.com"          # noqa: E731
+        password = lambda self: "pw"                   # noqa: E731
+        corosEmail = lambda self: "c@example.com"      # noqa: E731
+        corosPassword = lambda self: "cp"              # noqa: E731
+        keepMobile = lambda self: None                 # noqa: E731
+        keepPassword = lambda self: None               # noqa: E731
+
+    class _FakePy:
+        @staticmethod
+        def getPlatform():
+            return _FakePy
+
+        @staticmethod
+        def getApplication():
+            return object()
+
+    def _fake_jclass(name):
+        if name == "com.chaquo.python.Python":
+            return _FakePy
+        return lambda ctx: _FakeSecrets()
+
+    _fake_java = _types.ModuleType("java")
+    _fake_java.jclass = _fake_jclass
+    _had_java = sys.modules.get("java")
+    sys.modules["java"] = _fake_java
+    try:
+        _cr = _crapi._native_creds()
+    finally:
+        if _had_java is None:
+            sys.modules.pop("java", None)
+        else:
+            sys.modules["java"] = _had_java
+    assert _cr["garmin"] == ("e@example.com", "pw"), f"佳明账密没读出来：{_cr}"
+    assert _cr["coros"] == ("c@example.com", "cp"), f"高驰账密没读出来：{_cr}"
+    assert _cr["keep"] == (None, None), f"Keep 没登录却读出了账密：{_cr}"
     # 2) 后台与首页不能共用一个节流戳：后台每 30 分钟刷新它，首页每次打开都
     #    落在窗口里被挡掉。
     _bgs = (ROOT / "garmin_cn/bg.py").read_text(encoding="utf-8")
@@ -1185,7 +1241,7 @@ def run() -> int:
         "后台和首页共用 auto_sync_at，首页自动同步会被后台一直挡掉"
     # 3) 会话过期必须让用户看见，否则「没更新」永远没有解释。
     assert "need_login" in _gserv, "首页自动同步没透传 need_login"
-    assert "登录已过期" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
+    assert "连接已过期" in (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8"), \
         "会话过期时首页不给提示，用户只能看到「没更新」"
     # 自己分享的那条必须能点进详情：批注入口在详情页，清单行若只是 div + 撤回
     # 按钮，作者反而进不去自己的路线（实测踩到：用户以为「没有加批注按钮」）。
