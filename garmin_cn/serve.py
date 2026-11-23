@@ -2039,6 +2039,15 @@ class _Handler(SimpleHTTPRequestHandler):
                         r = G.set_share(gid, values.get("share") or "summary")
                         msg = "已保存" if r.get("ok") else (r.get("error") or "保存失败")
                         back = f"/groups/{gid}/settings"
+                    elif act == "relay":
+                        on = (values.get("on") or "").strip() == "1"
+                        r = G.set_relayshare(gid, on)
+                        if r.get("ok"):
+                            msg = ("已开启：队友登录过期时可以用这台手机帮他登一次"
+                                   if on else "已关闭：不再替队友登录")
+                        else:
+                            msg = r.get("error") or "保存失败"
+                        back = f"/groups/{gid}/settings"
                     elif act == "alias":
                         r = G.set_alias(gid, values.get("alias") or "")
                         msg = (f'昵称已改成「{r.get("alias")}」' if r.get("changed")

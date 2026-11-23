@@ -371,6 +371,13 @@ def init_db() -> None:
         if "map_share" not in mcols:
             c.execute("ALTER TABLE group_members ADD COLUMN map_share INTEGER"
                       " NOT NULL DEFAULT 1")
+        # 「帮队友刷新佳明登录态」的志愿开关，**默认关**。
+        # 开了以后，这个组里那些没有安卓设备的人（iPhone 用户）登录态过期时，
+        # 服务器可以把「用他的账号登一次」的任务派给本机。
+        # 默认关是因为这会临时拿到别人的佳明密码——必须是本人明确点开的东西。
+        if "relay_share" not in mcols:
+            c.execute("ALTER TABLE group_members ADD COLUMN relay_share INTEGER"
+                      " NOT NULL DEFAULT 0")
         # 1.5.8 起格子带跑量：地图要用它决定「这块主要是谁跑的」和颜色深浅
         ccols = {r["name"] for r in c.execute("PRAGMA table_info(group_cell)")}
         if "meters" not in ccols:
@@ -945,6 +952,8 @@ def api_get(me, gid: int) -> dict:
     out["me"] = {
         "alias": my["alias"], "share": my["share_level"],
         "map_share": bool(my["map_share"]) if "map_share" in my.keys() else False,
+        "relay_share": (bool(my["relay_share"])
+                        if "relay_share" in my.keys() else False),
     }
     out["members"] = [_member_view(r, uid) for r in rows]
     return {"ok": True, "group": out}
@@ -1716,6 +1725,110 @@ def api_route_get(me, gid: int, rid: int) -> dict:
         # 会让地图先空一下再长点。
         "notes": [_note_view(n) for n in notes],
     }}
+
+
+def api_relayshare(me, gid: int, body: dict) -> dict:
+    """开关「帮队友刷新佳明登录态」（按组，默认关）。
+
+    打开后，**这个组里**没有安卓设备的人（iPhone 用户）登录态过期时，服务器
+    可以把「用他的账号登一次」的任务派给这台设备。代价是这台设备会临时拿到
+    队友的佳明明文密码，所以它必须是自己点的、随时能关、并且只在本组生效。
+
+    为什么不看被帮的人开没开：他填了佳明账密就是要人帮，没有第二个开关。
+    真正需要同意的是**出设备的人**，也就是这里。
+    """
+    uid = int(me["user_id"])
+    on = bool(body.get("on"))
+    with db() as c:
+        _require_member(c, gid, uid)
+        c.execute("UPDATE group_members SET relay_share=?"
+                  " WHERE group_id=? AND user_id=?",
+                  (1 if on else 0, gid, uid))
+        _audit(c, gid, uid, "relay_on" if on else "relay_off", uid)
+    return {"ok": True, "relay_share": on}
+
+
+def share_relay(worker: int, target: int) -> bool:
+    """`worker` 这台设备能不能替 `target` 登录一次佳明。
+
+    三个条件同时成立才行：同一个未归档的组、两人都在组里、worker 自己开了开关。
+    只要有一条不满足就返回 False——**默认拒绝**，宁可任务多等一会儿，也不能
+    让没同意的人拿到别人的密码。
+    """
+    if int(worker) == int(target):
+        return False
+    try:
+        with db() as c:
+            r = c.execute("""
+                SELECT 1 FROM group_members a
+                JOIN group_members b ON a.group_id = b.group_id
+                JOIN groups g ON g.id = a.group_id
+                WHERE a.user_id=? AND a.status='active' AND a.relay_share=1
+                  AND b.user_id=? AND b.status='active' AND g.archived=0
+                LIMIT 1""", (int(worker), int(target))).fetchone()
+        return bool(r)
+    except sqlite3.Error:
+        return False
+
+
+def relay_workers_for(target: int) -> list[int]:
+    """能替这个人登录的成员（同组 + 开了「帮队友」）。
+
+    新用户最容易踩的坑：他刚注册、还没进组，这里返回空——没有任何人能替他
+    登录。所以调用方**必须**先问一句「有没有人能干」，没有就别排任务，否则
+    任务会永远卡在 pending，用户等半天以为坏了。
+    """
+    try:
+        with db() as c:
+            rows = c.execute("""
+                SELECT DISTINCT a.user_id FROM group_members a
+                JOIN group_members b ON a.group_id = b.group_id
+                JOIN groups g ON g.id = a.group_id
+                WHERE b.user_id=? AND b.status='active'
+                  AND a.status='active' AND a.relay_share=1
+                  AND g.archived=0 AND a.user_id != ?
+                """, (int(target), int(target))).fetchall()
+        return [int(r["user_id"]) for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+def has_group(uid: int) -> bool:
+    """这个人在不在任何未归档的组里。网页版用它决定要不要提示「先加入小组」。"""
+    try:
+        with db() as c:
+            return bool(c.execute(
+                "SELECT 1 FROM group_members m JOIN groups g ON g.id=m.group_id"
+                " WHERE m.user_id=? AND m.status='active' AND g.archived=0"
+                " LIMIT 1", (int(uid),)).fetchone())
+    except sqlite3.Error:
+        return False
+
+
+def any_relay_worker() -> bool:
+    """有没有任何一台设备开了「帮队友」。没有就不用排任务，排了也没人领。"""
+    try:
+        with db() as c:
+            return bool(c.execute(
+                "SELECT 1 FROM group_members WHERE relay_share=1"
+                " AND status='active' LIMIT 1").fetchone())
+    except sqlite3.Error:
+        return False
+
+
+def is_relay_worker(uid: int) -> bool:
+    """这个人（任一组的成员身份）开了「帮队友」没有。
+
+    设备来问「有没有活」时先用它挡一道：没开过的设备直接 403，客户端记下来
+    就不再空问了，省电也省服务器。
+    """
+    try:
+        with db() as c:
+            return bool(c.execute(
+                "SELECT 1 FROM group_members WHERE user_id=? AND relay_share=1"
+                " AND status='active' LIMIT 1", (int(uid),)).fetchone())
+    except sqlite3.Error:
+        return False
 
 
 def api_mapshare(me, gid: int, body: dict) -> dict:
@@ -3041,6 +3154,8 @@ def handle(method: str, raw_path: str, headers, body, auth) -> tuple[dict, int]:
             return api_map(me, gid, query), 200
         if action == "mapshare" and method == "POST":
             return api_mapshare(me, gid, body), 200
+        if action == "relayshare" and method == "POST":
+            return api_relayshare(me, gid, body), 200
         if action == "routes" and method == "GET":
             return api_routes(me, gid, query), 200
         if action == "route" and len(tail) == 1 and method == "POST":

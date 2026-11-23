@@ -368,7 +368,11 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .kvline{display:flex;justify-content:space-between;gap:12px;font-size:12px;
   color:var(--ink2);padding:7px 0;border-bottom:1px solid var(--line2)}
 .kvline:last-child{border-bottom:0}
-.kvline b{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+.kvline b{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums;
+  /* 长 URL / 长单词（计划的导入来源就是一条 https 链接）以前会撑破卡片，
+     手机上更明显：右侧直接顶出屏幕。min-width:0 让 flex 子项能收缩，
+     overflow-wrap 让它在任意位置断行，而不是整段挤成一条。 */
+  min-width:0;overflow-wrap:anywhere;text-align:right}
 /* ---- 训练小组：一组一张卡 ----
    原来是一行一条（组名 + 一句「本周第 N/M 名」）。三个组叠在一起是三条
    同构的细线，看完只知道「我有三个组」，不知道每个组里我过得怎么样。

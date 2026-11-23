@@ -431,6 +431,16 @@ def bingo(gid: int, today: str | None = None) -> dict:
     return _call("GET", f"/v1/group/{int(gid)}/bingo{q}")
 
 
+def set_relayshare(gid: int, on: bool) -> dict:
+    """开关「帮队友刷新佳明登录态」（按组）。
+
+    开了以后，这个组里没有安卓设备的人（iPhone）登录过期时，服务器可以把
+    「用他的账号登一次」的任务派给这台手机。**会临时拿到队友的佳明密码**，
+    所以默认关、必须自己点开、并且只在本组生效。
+    """
+    return _call("POST", f"/v1/group/{int(gid)}/relayshare", {"on": bool(on)})
+
+
 def set_mapshare(gid: int, on: bool, store=None, today: str | None = None) -> dict:
     """开关「路线共享」。开着才会上传本周格子，关掉服务端会删干净。"""
     r = _call("POST", f"/v1/group/{int(gid)}/mapshare", {"on": bool(on)})

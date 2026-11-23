@@ -34,6 +34,18 @@ except Exception:      # noqa: BLE001 - 远征模块没部署时其余页面照�
 # 在 /manage 的样式上加几行。沿用同一份 CSS 变量和组件，
 # 两个后台看起来是一套东西，而不是两个拼起来的站。
 EXTRA_CSS = """
+/* 底部导航：/w 原来是一张独立的页，从 /app 点「小组」跳进来后底栏就没了，
+   只能靠浏览器后退回去。四个 tab 指向和 /app 完全相同的地址，用户感觉
+   还是同一个应用。 */
+.wnav{position:fixed;left:0;right:0;bottom:0;z-index:60;display:flex;
+  background:rgba(8,13,21,.96);border-top:1px solid rgba(255,255,255,.08);
+  padding:6px 4px calc(6px + env(safe-area-inset-bottom));
+  backdrop-filter:blur(12px)}
+.wnav a{flex:1;min-height:44px;display:flex;align-items:center;
+  justify-content:center;text-decoration:none;color:#7A8DA4;font-size:12px;
+  font-weight:600;border-radius:12px}
+.wnav a.on{color:#9CC6FF;background:rgba(59,130,246,.12)}
+body{padding-bottom:calc(64px + env(safe-area-inset-bottom))!important}
 .glist a{display:block;padding:14px 16px;border-radius:12px;margin-bottom:10px;
   background:var(--card,#151b26);text-decoration:none;color:inherit;
   border:1px solid rgba(128,128,128,.18)}
@@ -60,20 +72,41 @@ def _e(v) -> str:
     return M._e(v)
 
 
-def _page(title: str, body: str, me=None, msg: str = "") -> bytes:
-    head = (f"<div class=wrap><h1>{_e(title)}</h1>"
-            f"<div class=sub><a href=\"/w\">我的小组</a></div>")
+_WEB_TABS = (("/app", "今日"), ("/app/ai", "教练"), ("/w", "小组"),
+             ("/app/history", "历史"), ("/app/me", "我的"))
+
+
+def _wnav(active: str = "/w") -> str:
+    """底部四个 tab。地址和 /app 用的是同一套，点过去不会掉出应用。"""
+    out = []
+    for href, label in _WEB_TABS:
+        cls = ' class="on"' if href == active else ""
+        out.append(f'<a href="{href}"{cls}>{label}</a>')
+    return '<nav class="wnav">' + "".join(out) + "</nav>"
+
+
+def _page(title: str, body: str, me=None, msg: str = "",
+          css: str = "", back: tuple | None = None) -> bytes:
+    # 标题下原来固定挂一条「我的小组」链接，和底部导航的第一个 tab 重复；
+    # 名字为空时还会显示成「登录中： · 退出」，中间空一截。
+    head = "<div class=wrap>"
+    if back:
+        head += f'<a class=back href="{_e(back[1])}">‹ {_e(back[0])}</a>'
+    head += f"<h1>{_e(title)}</h1>"
     if me is not None:
-        who = me["phone"] if isinstance(me, dict) else ""
-        head += ('<div class=sub style="margin-top:6px">登录中：' + _e(who) +
+        who = ""
+        if isinstance(me, dict):
+            who = str(me.get("nickname") or me.get("phone") or "").strip()
+        label = f"登录中：{_e(who)}" if who else "已登录"
+        head += ('<div class=sub style="margin-top:6px">' + label +
                  ' · <form class=inline method=post action="/w/logout">'
                  '<button class=ghost>退出</button></form></div>')
     tip = f'<div class=msg>{_e(msg)}</div>' if msg else ""
     return ("<!doctype html><html lang=zh-CN><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             f"<title>{_e(title)} · RunnerCoach</title>"
-            f"<style>{M.CSS}{EXTRA_CSS}</style></head>"
-            f"<body>{head}{tip}{body}</div></body></html>").encode("utf-8")
+            f"<style>{M.CSS}{EXTRA_CSS}{css}</style></head>"
+            f"<body>{head}{tip}{body}{_wnav()}</div></body></html>").encode("utf-8")
 
 
 def _km(m) -> str:
@@ -110,13 +143,21 @@ def login_page(msg: str = "", account: str = "", sent: bool = False) -> bytes:
 
 
 # ---------------------------------------------------------------- 我的小组
-def home(me) -> bytes:
+def _my_groups(me) -> tuple[list, str]:
+    """(小组列表, 错误文案)。读失败时给空列表和一句能看懂的说明。"""
     try:
-        lst = (G.api_list(me) or {}).get("groups") or []
+        return ((G.api_list(me) or {}).get("groups") or []), ""
     except Exception as e:      # noqa: BLE001
-        return _page("我的小组",
-                     f'<div class=card><p class=sub>读不到小组：{_e(str(e))}</p></div>',
-                     me)
+        return [], str(e)
+
+
+def home(me, lst=None) -> bytes:
+    if lst is None:
+        lst, err = _my_groups(me)
+        if err:
+            return _page("我的小组",
+                         f'<div class=card><p class=sub>读不到小组：{_e(err)}</p></div>',
+                         me)
     if not lst:
         return _page("我的小组",
                      '<div class=card><p class=sub>还没有加入小组。'
@@ -139,192 +180,34 @@ def home(me) -> bytes:
     return _page("我的小组", body, me)
 
 
-# ---------------------------------------------------------------- 榜单片段
-def _rank_rows(rows, by: str = "dist") -> str:
-    if not rows:
-        return '<p class=sub>这段时间还没有人上报。</p>'
-    out = []
-    for i, x in enumerate(rows, 1):
-        val = x.get("comp_m") if by == "comp" else x.get("distance_m")
-        note = ""
-        if by == "comp":
-            ride = float(x.get("ride_m") or 0) / 1000.0
-            if ride > 0:
-                note = (f'<span class=sub2>跑 {_km(x.get("distance_m"))}'
-                        f' · 骑 {ride:g}</span>')
-        cls = "rk me" if x.get("is_me") else "rk"
-        out.append(f'<div class="{cls}"><span class=no>{i}</span>'
-                   f'<span class=nm>{_e(x.get("alias"))} {note}</span>'
-                   f'<span class=km>{_km(val)} km</span></div>')
-    return "".join(out)
-
-
-# ---------------------------------------------------------------- 组主页
-def group(me, gid: int, msg: str = "") -> bytes:
-    today = _today()
-    try:
-        b = G.api_board(me, gid, {"range": ["week"], "today": [today]})
-    except Exception as e:      # noqa: BLE001
-        return _page("小组",
-                     f'<div class=card><p class=sub>{_e(str(e))}</p></div>', me)
-    if not b.get("ok"):
-        return _page("小组",
-                     f'<div class=card><p class=sub>{_e(b.get("error") or "打不开")}</p></div>',
-                     me)
-
-    rows = b.get("rows") or []
-    mine = next((i for i, x in enumerate(rows, 1) if x.get("is_me")), 0)
-    total = float((b.get("summary") or {}).get("total_distance_m") or 0) / 1000.0
-
-    me_line = ""
-    if mine:
-        me_line = (f'<p class=sub>我本周第 <b>{mine}</b> 名，共 {len(rows)} 人 · '
-                   f'全组 {total:g} km</p>')
-    elif rows:
-        me_line = '<p class=sub>本周还没上报，榜上暂时没有你。</p>'
-
-    # 赛事：只列还在进行的
-    ch_html = ""
-    try:
-        chs = (G.api_challenge_list(me, gid, {"today": [today]}) or {}).get("challenges") or []
-        live = [c for c in chs if not c.get("closed_at") and str(c.get("end_date") or "") >= today]
-        if live:
-            items = ""
-            for c in live[:5]:
-                pct = float(c.get("pct") or 0)
-                cur, tgt, unit = c.get("current"), c.get("target"), c.get("unit") or ""
-                items += (f'<div class=post><div><b>{_e(c.get("title"))}</b>'
-                          f'<div class=sub2>到 {_e(c.get("end_date"))} 结束</div></div>'
-                          f'<div class=sub2>{cur}/{tgt} {_e(unit)}'
-                          f'（{pct:.0f}%）</div></div>')
-            ch_html = ('<div class=card><h2 style="margin-top:0">进行中的赛事</h2>'
-                       + items + '</div>')
-        else:
-            ch_html = ('<div class=card><h2 style="margin-top:0">赛事</h2>'
-                       '<p class=sub style="margin-bottom:0">暂时没有进行中的赛事。</p></div>')
-    except Exception:      # noqa: BLE001 - 赛事拉不到不该让整页打不开
-        pass
-
-    # 远征：只给摘要，完整战况仍在 App 里看
-    run_html = ""
-    if X is not None:
-        try:
-            st = X.api_state(me, gid, {"today": [today]}) or {}
-            if st.get("ok"):
-                season = st.get("season") or {}
-                mt = st.get("mine") or {}
-                act = season.get("act_no") or season.get("act") or ""
-                pos = mt.get("pos")
-                sup = mt.get("supply")
-                bits = []
-                if act:
-                    bits.append(f"第 {act} 幕")
-                if pos is not None:
-                    bits.append(f"位置 {pos}")
-                if sup is not None:
-                    bits.append(f"补给 {sup}")
-                run_html = ('<div class=card><h2 style="margin-top:0">远征</h2>'
-                            f'<p class=sub style="margin-bottom:0">'
-                            f'{_e(" · ".join(str(x) for x in bits) or "进行中")}'
-                            '　完整战况在 App 里</p></div>')
-        except Exception:      # noqa: BLE001
-            pass
-
-    body = (_page_nav(gid)
-            + _msg_box(msg)
-            + me_line
-            + '<div class=card><h2 style="margin-top:0">本周榜</h2>'
-            + _rank_rows(rows[:10])
-            + (f'<p class=sub><a href="/w/g/{gid}/board">看完整榜单 →</a></p>'
-               if len(rows) > 10 or True else "")
-            + '</div>'
-            + ch_html + run_html)
-    return _page("小组", body, me)
-
-
-def _page_nav(gid: int) -> str:
-    return (f'<div class=seg>'
-            f'<a class=ok href="/w/g/{gid}">本周</a>'
-            f'<a href="/w/g/{gid}/board?range=month">本月</a>'
-            f'<a href="/w/g/{gid}/board?range=month&by=comp">综合</a></div>')
-
-
 def _msg_box(msg: str) -> str:
     return f'<p class=sub>{_e(msg)}</p>' if msg else ""
 
 
-# ---------------------------------------------------------------- 完整榜单
-def board(me, gid: int, query: dict) -> bytes:
-    today = _today()
-    rng = "month" if (query.get("range") or [""])[0] == "month" else "week"
-    by = "comp" if (rng == "month" and (query.get("by") or [""])[0] == "comp") else "dist"
-    try:
-        b = G.api_board(me, gid,
-                        {"range": [rng], "by": [by], "today": [today]})
-    except Exception as e:      # noqa: BLE001
-        return _page("完整榜单",
-                     f'<div class=card><p class=sub>{_e(str(e))}</p></div>', me)
-    if not b.get("ok"):
-        return _page("完整榜单",
-                     f'<div class=card><p class=sub>{_e(b.get("error") or "打不开")}</p></div>',
-                     me)
-
-    rows = b.get("rows") or []
-    sm = b.get("summary") or {}
-    tot = float((sm.get("total_comp_m") if by == "comp"
-                 else sm.get("total_distance_m")) or 0) / 1000.0
-    span = ("本周" if rng == "week" else "本月") + " " + \
-           f'{str(b.get("from") or "")[5:]} – {str(b.get("to") or "")[5:]}'
-
-    if by == "comp":
-        note = ('综合距离 = 跑步 + 骑行 ÷ 4。'
-                '这个折算只在综合榜用：衫、徽章、赛季积分仍按跑步算。')
-    elif rng == "month":
-        note = '月榜只排里程。衫和探索徽章按周结算，不在这一页。'
-    else:
-        note = '按里程排；里程一样时，跑的天数多的在前。'
-
-    nav = (f'<div class=seg>'
-           f'<a href="/w/g/{gid}/board"' + (' class=ok' if rng == "week" else "")
-           + '>本周</a>'
-           f'<a href="/w/g/{gid}/board?range=month"'
-           + (' class=ok' if rng == "month" and by == "dist" else "")
-           + '>本月</a>'
-           + (f'<a href="/w/g/{gid}/board?range=month&by=comp"'
-              + (' class=ok' if by == "comp" else "") + '>综合</a>'
-              if rng == "month" else "")
-           + '</div>')
-
-    mine = next((i for i, x in enumerate(rows, 1) if x.get("is_me")), 0)
-    me_line = (f'<p class=sub>我第 <b>{mine}</b> 名 · {len(rows)} 人 · '
-               f'全组 {tot:g} km</p>' if mine else "")
-
-    body = (nav + f'<p class=sub>{_e(span)}</p>' + me_line
-            + '<div class=card>' + _rank_rows(rows, by) + '</div>'
-            + f'<p class=sub>{_e(note)}</p>'
-            + f'<p class=sub><a href="/w/g/{gid}">← 返回小组</a></p>')
-    return _page("完整榜单", body, me)
-
-
 # ---------------------------------------------------------------- 路由
 def handle_get(path: str, query: dict, cookie: str | None) -> tuple:
+    html = "text/html; charset=utf-8"
     me = M.me_of(cookie)
     if path in ("", "/w"):
         if me is None:
-            return (200, login_page(), "text/html; charset=utf-8", {})
-        return (200, home(me), "text/html; charset=utf-8", {})
+            return (200, login_page(), html, {})
+        lst, err = _my_groups(me)
+        # 只有一个组时直达组页，和 App 一样（带 ?list=1 才看列表）。
+        # 列表页对单组用户是纯中转，点一下还是进同一个组。
+        if not err and len(lst) == 1 and not (query.get("list") or [""])[0]:
+            return (303, b"", "text/plain",
+                    {"Location": f"/w/g/{int(lst[0]['id'])}"})
+        return (200, home(me, None if err else lst), html, {})
 
     parts = [p for p in path.strip("/").split("/") if p]
     if len(parts) >= 3 and parts[0] == "w" and parts[1] == "g" and parts[2].isdigit():
         if me is None:
             return (303, b"", "text/plain", {"Location": "/w"})
-        gid = int(parts[2])
-        if len(parts) == 3:
-            return (200, group(me, gid), "text/html; charset=utf-8", {})
-        if len(parts) == 4 and parts[3] == "board":
-            return (200, board(me, gid, query), "text/html; charset=utf-8", {})
+        import webgroup as WG
+
+        return WG.handle(me, int(parts[2]), parts[3:], query)
     return (404, "<h3>404</h3><p><a href='/w'>回到我的小组</a></p>".encode("utf-8"),
-            "text/html; charset=utf-8", {})
+            html, {})
 
 
 def handle_post(path: str, form: dict, cookie: str | None) -> tuple:

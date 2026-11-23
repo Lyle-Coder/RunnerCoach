@@ -1459,6 +1459,18 @@ def sync(days: int = 30, email: str | None = None, password: str | None = None,
         except Exception as e:
             out["body"] = {"count": 0, "error": f"{type(e).__name__}: {e}"}
 
+    # 顺手把登录态交给平台：网页版在服务器上，而服务器（机房 IP）过不了佳明
+    # 登录页的 Cloudflare 挑战，只能靠手机这边登录一次再传上去。节流在
+    # websession 内部，失败不影响同步结果。
+    try:
+        from . import websession
+
+        _push = websession.push()
+        if _push.get("ok") and not _push.get("skipped"):
+            out["web_session"] = "已同步"
+    except Exception:      # noqa: BLE001 - 回传是附赠动作
+        pass
+
     return out
 
 

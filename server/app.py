@@ -101,6 +101,15 @@ FREE_GRANT = int(os.environ.get("FREE_GRANT", "0"))
 # 平台代理总开关。关掉时 /v1/chat/completions 直接 503 并提示"用自己的 Key"，
 # 不留半开状态：不卖额度却还替人转发请求，等于无资质提供生成式 AI 服务。
 AI_PROXY = os.environ.get("AI_PROXY", "off").strip().lower() in ("1", "on", "yes", "true")
+# 佳明登录中转：允许「哪台设备」替别人登录。
+# 佳明的登录页对机房 IP 有人机校验，服务器自己登不进去；只让一台可信设备
+# （例如组长那台常开的安卓手机）领任务、在手机流量/家宽上完成登录，再把
+# Cookie 交回来。**默认空 = 关闭**，因为这台设备会临时拿到别人的佳明密码。
+RC_RELAY_USER = os.environ.get("RC_RELAY_USER", "").strip()
+# 可以配多台：`a@x.com,b@y.com`。任务是谁先来领谁拿，多一台就是多一层冗余
+# （某台手机被系统冻结时，另一台能接上）。空集合 = 中转完全关闭。
+RELAY_USERS = {x.strip().lower() for x in re.split(r"[,;\s]+", RC_RELAY_USER)
+               if x.strip()}
 HOST = os.environ.get("BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8300"))
 
@@ -684,6 +693,118 @@ def api_me(row: sqlite3.Row) -> dict:
             "devices": [{"id": d["id"], "name": d["name"],
                          "last_seen": d["last_seen"], "revoked": bool(d["revoked"])}
                         for d in devices]}
+
+
+def _relay_ok(row: sqlite3.Row) -> bool:
+    """这台设备有没有资格当中转。
+
+    必须显式配 `RC_RELAY_USER`（可写多个邮箱，逗号分隔）——中转会拿到
+    **别人**的佳明密码，不能"谁登录谁就能领"。配了之后只认这些账号名下的设备。
+    """
+    if not RELAY_USERS:
+        return False
+    return str(row["phone"] or "").strip().lower() in RELAY_USERS
+
+
+def api_relay_pull(row: sqlite3.Row) -> dict:
+    """中转机领一个待登录任务。没有任务就返回 job=None，别让它空转重试。
+
+    能不能领有两层：白名单（`RC_RELAY_USER`）里的是常开中转机；其他人必须
+    在某个组里自己开了「帮队友刷新」，而且只能领同组队友的任务。都没开的
+    直接 403，客户端记下来就不再空问了。
+    """
+    uid = int(row["user_id"])
+    sup = _relay_ok(row)
+    if not sup:
+        try:
+            import groups as G
+
+            if not G.is_relay_worker(uid):
+                raise Gate(403, "这台设备不是中转机")
+        except Gate:
+            raise
+        except Exception:      # noqa: BLE001 - 组服务挂了就当没资格
+            raise Gate(403, "这台设备不是中转机")
+    import webapp
+
+    job = webapp.relay_claim(uid, super_ok=sup)
+    return {"ok": True, "job": job}
+
+
+def api_relay_push(row: sqlite3.Row, body: dict) -> dict:
+    """中转机交回结果：成功带 Cookie，失败带原因。
+
+    资格不再只看白名单：组内志愿机也要能交。但交的时候校验「这条任务是不是
+    你领的」（`relay_finish(worker=...)`），否则任何设备猜个 job_id 就能把
+    别人的任务刷成完成。
+    """
+    uid = int(row["user_id"])
+    if not _relay_ok(row):
+        try:
+            import groups as G
+
+            if not G.is_relay_worker(uid):
+                raise Gate(403, "这台设备不是中转机")
+        except Gate:
+            raise
+        except Exception:      # noqa: BLE001
+            raise Gate(403, "这台设备不是中转机")
+    import webapp
+
+    try:
+        job_id = int(body.get("job_id") or 0)
+    except (TypeError, ValueError):
+        raise Gate(400, "job_id 不合法")
+    if not job_id:
+        raise Gate(400, "缺 job_id")
+    if body.get("ok"):
+        webapp.relay_finish(job_id, cookies=body.get("session"), worker=uid)
+    else:
+        webapp.relay_finish(job_id, error=str(body.get("error") or "中转登录失败"),
+                            worker=uid)
+    return {"ok": True}
+
+
+def api_web_session(row: sqlite3.Row, body: dict) -> dict:
+    """接收手机 App 回传的佳明登录态，供网页版复用。
+
+    为什么需要它
+    ------------
+    2026-11 佳明把登录迁到 SSO Portal 后，机房 IP 访问 `sso.garmin.cn/portal/*`
+    会被 Cloudflare 挑战（403 + cf-mitigated: challenge），服务器**没法代登录**。
+    但 `connect.garmin.cn/gc-api` 不受影响——只要手上有一份有效 JWT_WEB，
+    同步照跑。所以让能过 CF 的设备（手机 App）登录一次，把 Cookie 交上来。
+
+    只收 Cookie 列表，不碰密码；写进该用户的独立目录，0600。
+    """
+    import webapp
+
+    raw = body.get("session")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raise Gate(400, "session 不是合法 JSON")
+    if not isinstance(raw, list) or not raw:
+        raise Gate(400, "session 必须是非空数组")
+    names = {str(c.get("name") or "") for c in raw if isinstance(c, dict)}
+    if "JWT_WEB" not in names:
+        raise Gate(400, "这份登录态里没有 JWT_WEB，不是佳明会话")
+    uid = int(row["user_id"])
+    home = webapp._home(uid)
+    (home / "data").mkdir(parents=True, exist_ok=True)
+    path = home / "data" / "session.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+    # 记一笔「手机刚推过」：预热逻辑看到就让路，别和 App 互踢会话
+    webapp.note_device_push(uid)
+    webapp.enqueue(uid)
+    return {"ok": True, "cookies": len(raw)}
 
 
 def api_set_nickname(row: sqlite3.Row, body: dict) -> dict:
@@ -1450,6 +1571,10 @@ class Handler(BaseHTTPRequestHandler):
                                    # 只显示"自配 Key"
                                    "ai_proxy": AI_PROXY,
                                    "pay": PAY_PROVIDER != ""})
+            _p0 = self.path.split("?")[0]
+            if _p0 == "/app" or _p0.startswith("/app/"):
+                import webapp
+                return webapp.handle_get(self)
             if self.path.split("?")[0] == "/v1/app/latest":
                 return self._json(api_app_latest())
             if self.path.split("?")[0] == "/v1/code/latest":
@@ -1539,6 +1664,9 @@ class Handler(BaseHTTPRequestHandler):
             if (_mp == "/manage" or _mp.startswith("/manage/")
                     or _mp == "/w" or _mp.startswith("/w/")):
                 return self._manage("POST")
+            if _mp == "/app" or _mp.startswith("/app/"):
+                import webapp
+                return webapp.handle_post(self)
             body = self._read_body()
             ip = self.headers.get("X-Forwarded-For", "").split(",")[0].strip() \
                 or self.client_address[0]
@@ -1557,6 +1685,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(api_device(row, body))
             if self.path == "/v1/me/nickname":
                 return self._json(api_set_nickname(_auth(self.headers), body))
+            if self.path == "/v1/web/session":
+                return self._json(api_web_session(_auth(self.headers), body))
+            if self.path == "/v1/relay/pull":
+                return self._json(api_relay_pull(_auth(self.headers)))
+            if self.path == "/v1/relay/push":
+                return self._json(api_relay_push(_auth(self.headers), body))
             if self.path == "/v1/account/delete":
                 return self._json(api_delete_account(_auth(self.headers), body))
             if self.path == "/v1/redeem":
@@ -1840,6 +1974,12 @@ def main() -> int:
         group_api.init_db()
     if expedition_api is not None:
         expedition_api.init_db()
+    try:
+        import webapp
+        webapp.init()
+        webapp.start_worker()
+    except Exception as e:      # noqa: BLE001 - 网页版坏了不能让整个网关起不来
+        print(f"  ！网页版模块未启用：{type(e).__name__}: {e}")
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     srv.daemon_threads = True
     if TLS_CERT:

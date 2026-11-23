@@ -1436,8 +1436,14 @@ def run() -> int:
     # 缺任何一张退回纯 SVG（半套底图会在某个结局上亮错灯，比没有更糟）。
     _pd = Path(tempfile.mkdtemp())
     _old_pd = RU.PLATE_DIR
+    _old_ep = RU._ending_plate
     try:
         RU.PLATE_DIR = _pd          # 空目录：什么图都没有
+        # `_ending_scene` 的第一优先级是「每个结局自己的图」
+        # （`content/ending_<key>.*`，打包在 contentpack 里）。这里要测的是
+        # 第二条「两版底图 + 矢量脚印」，所以必须把它屏蔽掉——否则
+        # contentpack 里一有图，这个用例就永远走不到被测分支。
+        RU._ending_plate = lambda key: ""
         assert RU._plates() == ("", ""), "没有底图时不该报出底图"
         assert '<div class="escene">' not in RU._ending_scene("arrive"), \
             "没有底图却走了底图分支"
@@ -1471,12 +1477,19 @@ def run() -> int:
         assert RU._cal() == RU.CAL_DEFAULT, "越界的校准值没被丢掉（会画到画外）"
     finally:
         RU.PLATE_DIR = _old_pd
+        RU._ending_plate = _old_ep
         shutil.rmtree(_pd, ignore_errors=True)
 
     # 每张结局自己的图（现在用的）：脚印和道具都在图里，不能再叠矢量层
     _pd2 = Path(tempfile.mkdtemp())
     _old2 = RU.PLATE_DIR
+    # 素材是按需下发的，`_ending_plate` 先问 contentpack。机器上只要下载过
+    # 一次图，这个用例就会拿真实素材跟临时目录比，永远对不上——所以把
+    # contentpack 一起屏蔽，只测「临时目录里有没有图」这一层。
+    from garmin_cn import contentpack as _CP
+    _old_ce = _CP.exists
     try:
+        _CP.exists = lambda name: False
         RU.PLATE_DIR = _pd2
         assert RU._ending_plate("arrive") == "", "没有图却报出图"
         (_pd2 / "ending_arrive.jpg").write_bytes(b"x")
@@ -1490,6 +1503,7 @@ def run() -> int:
         assert RU._ending_plate("nope") == "", "不认识的结局键不该去拼文件名"
     finally:
         RU.PLATE_DIR = _old2
+        _CP.exists = _old_ce
         shutil.rmtree(_pd2, ignore_errors=True)
 
     # 部署脚本必须是 LF：Windows 上写文件默认 CRLF，`set -eu\r` 在 Linux 上
@@ -6536,6 +6550,188 @@ def run() -> int:
     _asrc = (ROOT / "garmin_cn/auth.py").read_text(encoding="utf-8")
     assert "def verify_state" in _asrc and 'state != "expired"' in _asrc
     assert "return None  # 网络异常" not in _asrc
+
+    # ---- 2026-11：佳明国区把登录从 /sso/login 迁到 SSO Portal ------------
+    # 老接口仍返回 SUCCESSFUL + serviceTicketId，但那张票在 /app?ticket= 换
+    # 不出 JWT_WEB（服务端反而 Set-Cookie 清空），网页版/App 续期都会表现为
+    # 「账号密码明明对，却一直提示登录失效」。这几条守住新通道别再被改回去。
+    assert 'PORTAL_LOGIN_URL = f"{PORTAL}/api/login?{PORTAL_QS}"' in _asrc, \
+        "登录没走新版 /portal/api/login"
+    assert "_portal_warmup" in _asrc and "PORTAL_SIGNIN_URL" in _asrc, \
+        "登录前没预热登录页，会 400 captcha evaluation is mandatory"
+    assert "Chrome/131" in _asrc, \
+        "登录页要用桌面 Chrome UA，否则 Cloudflare 403"
+    assert "self._portal_warmup()" in _asrc.split("def login", 1)[1][:600], \
+        "login() 没先预热 Portal 会话"
+    assert "def _accept_login" in _asrc and "_finish_ticket(ticket, payload.get(\"serviceURL\"))" in _asrc, \
+        "换票没优先用登录响应里的 serviceURL"
+    assert "_login_legacy" in _asrc, "新通道挂了要能退回老接口"
+
+    # 换票顺序：serviceURL → /app → /modern（/modern 只做兼容）
+    assert "_finish_ticket(self, ticket: str, service_url: str | None = None)" in _asrc
+
+    # ---- 2026-11：机房 IP 过不了佳明登录页，登录态改由设备回传 --------------
+    # 服务器（阿里云）访问 sso.garmin.cn/portal/* 被 Cloudflare 挑战，只能让
+    # 手机 App 登录后把 session.json 传上去；境外中转是另一条出路。
+    _netsrc = (ROOT / "garmin_cn/net.py").read_text(encoding="utf-8")
+    assert "def load_cookies" in _netsrc, "没法把外部 Cookie 灌进会话（中转/导入要用）"
+    assert "RC_LOGIN_RELAY" in _asrc and "X-Relay-Token" in _asrc, \
+        "登录中转没接线"
+    _apisrc = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    assert "websession" in _apisrc, "同步成功后没把登录态交给平台"
+    _wssrc = (ROOT / "garmin_cn/websession.py").read_text(encoding="utf-8")
+    assert "JWT_WEB" in _wssrc and "/v1/web/session" in _wssrc
+    # 佳明一个账号同时只认最新会话：App 一重新登录，服务器手上那份立刻 401。
+    # 所以「内容变了」必须马上传，只有同一份会话才做防抖。
+    assert "DEDUPE_GAP" in _wssrc and "prev == digest" in _wssrc, \
+        "登录态变化没立即回传，网页版会一直停在「已过期」"
+    assert "内容变了就必须马上传" in _wssrc
+    _websrc = (ROOT / "server/app.py").read_text(encoding="utf-8")
+    assert "def api_web_session" in _websrc and '"/v1/web/session"' in _websrc, \
+        "服务端没有接登录态回传接口"
+    _wapp = (ROOT / "server/webapp.py").read_text(encoding="utf-8")
+    assert "def _import_post" in _wapp and '"/app/import"' in _wapp, \
+        "网页版没有粘贴导入登录态的入口"
+    assert "还没有连接数据源，需要先连接一次" in _wapp
+
+    # 网页版活动图：App 靠原生桥 GC.activity(aid) 出图，网页端没有桥，
+    # 必须自己接住 data-aid 并渲染 /app/act；1080 宽的整页要用 iframe 缩放，
+    # 否则手机上右侧会被裁掉一条。
+    assert "def _act_page" in _wapp and '"/app/act"' in _wapp, "网页版没有活动图路由"
+    assert "/app/act?aid=" in _wapp, "data-aid 没接到活动图（点了没反应）"
+    assert "_ACT_WRAPPER" in _wapp and "postMessage({h:" in _wapp, \
+        "活动图没做等比缩放/高度回传，手机上会被裁切"
+    assert "def _basemap" in _wapp and "/app/basemap/" in _wapp, \
+        "活动图的底图在网页版会 404"
+    _wrender = (ROOT / "server/web_render.py").read_text(encoding="utf-8")
+    assert 'kind == "act"' in _wrender, "渲染子进程不认识 act"
+    _wsync = (ROOT / "server/web_sync.py").read_text(encoding="utf-8")
+    assert "_prefetch_details" in _wsync, \
+        "同步时不缓存活动明细，登录态一过期活动图就打不开"
+
+    # ---- 登录中转：服务器登不进佳明，靠一台可信设备代登录 -----------------
+    # 只在显式配了 RC_RELAY_USER 时生效；密码只在这条链路上临时传递。
+    _wsapp = (ROOT / "server/webapp.py").read_text(encoding="utf-8")
+    for _need in ("def relay_claim", "def relay_finish", "def request_relay",
+                  "def relay_enabled", "RC_RELAY_USER"):
+        assert _need in _wsapp or _need in _apisrc, f"中转缺 {_need}"
+    assert "def relay_enabled" in _wsapp and "if not relay_enabled():\n        return False" in _wsapp, \
+        "没配中转机时不该排任务（会永远卡 pending）"
+    _rsrc = (ROOT / "garmin_cn/relay.py").read_text(encoding="utf-8")
+    assert "/v1/relay/pull" in _rsrc and "/v1/relay/push" in _rsrc
+    assert "tempfile.mkdtemp" in _rsrc, "中转登录必须用临时目录，别顶掉本机会话"
+    assert "print(" not in _rsrc and "logger" not in _rsrc, \
+        "中转链路不许打印任何东西（会带出别人的密码）"
+    _bgsrc = (ROOT / "garmin_cn/bg.py").read_text(encoding="utf-8")
+    assert "relay" in _bgsrc and "R.poll()" in _bgsrc, "后台唤醒没去领中转任务"
+
+    # 预热：会话快过期前请中转机提前续，网页才能「一打开就是新的」。
+    # 三条约束（只服务活跃用户 / 白天 / App 活着就让路）都要在代码里。
+    for _need in ("def preheat_tick", "PREHEAT_AHEAD", "PREHEAT_SEEN",
+                  "PREHEAT_APP_ALIVE", "web_seen", "web_push", "def _jwt_exp"):
+        assert _need in _wsapp, f"预热缺 {_need}"
+    assert "preheat_tick()" in _wsapp.split("def _worker_loop")[1][:400], \
+        "worker 循环没调预热"
+    assert "note_device_push" in _wsapp and "note_device_push(uid)" in _websrc, \
+        "App 推会话时没打点，预热会和它互踢"
+    assert "def _fresh_line" in _wsapp and "数据更新于" in _wsapp, \
+        "页面没显示数据更新时间"
+
+    # ---- 网页版补齐（2026-11-23）----------------------------------------
+    # 运动设置：App 的 /__sports 只认本机，网页版必须自己接一条。
+    assert "def _sports_post" in _wsapp and '"/app/sports"' in _wsapp, \
+        "网页版没有运动设置"
+    assert 'kind == "sports"' in _wrender, "渲染子进程不认识 sports"
+    assert 'action="/__sports"' in _wsapp, \
+        "运动设置表单还指向只认本机的 /__sports"
+    # /w 是独立页壳：从 /app 点「小组」跳过去后底栏会消失，回不来。
+    _wsrc = (ROOT / "server/web.py").read_text(encoding="utf-8")
+    assert "def _wnav" in _wsrc and "wnav" in _wsrc, \
+        "只读组页没有底部导航，从 /app 跳进去就回不来"
+    assert '("/w", "小组")' in _wsrc
+
+    # 一个用户可以同时连佳明和高驰。表主键只有 user_id 时，后连的会把先连的
+    # 覆盖掉，「我的」页只剩一个源——用户看到的就是「明明连了两个，只显示一个」。
+    assert "PRIMARY KEY(user_id, source)" in _wsapp, \
+        "web_creds 主键还是 user_id，两个数据源会互相覆盖"
+    assert "web_creds_v1" in _wsapp, "老库没有从单源迁移到多源"
+    assert "def _creds_all" in _wsapp and "def _creds(uid: int, source" in _wsapp
+    assert "ON CONFLICT(user_id,source)" in _wsapp, \
+        "保存凭据还在按 user_id 覆盖"
+    assert 'for _key, _label in (("garmin", "佳明 Garmin"), ("coros", "高驰 COROS"))' in _wsapp, \
+        "我的页只显示一个数据源"
+    assert 'name="source" value="{_key}"' in _wsapp, "数据源不能按源单独删除"
+    # 二级页必须有返回：只靠底栏的话用户找不到路（原话「进去之后返回无效」）。
+    assert 'back=("返回我的", "/app/me")' in _wsapp, \
+        "连接数据源页没有返回按钮"
+    assert '"/app/me?msg=' in _wsapp, "保存后跳到今日页，用户在「我的」里找不到自己刚做的事"
+
+    # 「正在同步…」不能无限转：任务排队超过 3 分钟还挂着，多半是 worker 卡住，
+    # 再转下去就是骗人；同时 worker 要清理卡死的 running 记录。
+    assert "began and time.time() - began < 180" in _wsapp, \
+        "同步状态没有超时，任务卡住会一直显示「正在同步」"
+    assert "def _reset_stuck" in _wsapp and "STUCK_AFTER" in _wsapp, \
+        "卡住的 running 任务没人清理"
+    # 计划页的「推到佳明手表」指向 App 本机接口，网页上点了 404。
+    assert 'action="/__plan/push"' in _wsapp, "计划推送表单还指向只认本机的 /__plan/push"
+    assert "def _plan_push_post" in _wsapp and '"/app/plan/push"' in _wsapp
+
+    # ---- 多台中转机 + 无感静默（2026-11-23）--------------------------------
+    # RC_RELAY_USER 支持多个邮箱：一台手机被系统冻结时另一台能接。
+    assert "RELAY_USERS" in _websrc, "RC_RELAY_USER 只认单台，没有冗余"
+    assert "re.split" in _websrc and "RELAY_USERS = {" in _websrc, \
+        "多台中转机没做邮箱列表解析"
+    assert 'row["phone"] or "").strip().lower() in RELAY_USERS' in _websrc, \
+        "中转鉴权没改成多账号集合"
+    # 多台机同时领任务：必须靠条件 UPDATE 的 rowcount 抢占，否则会重复登录
+    assert "AND status='pending'" in _wsapp and "rowcount != 1" in _wsapp, \
+        "中转任务没做抢占，两台机会领到同一个任务"
+    # 无感静默：过程状态不出横幅，只有「需要本人动手」才说一句
+    assert 'if j.get("status") == "error":' in _wsapp
+    assert "同步排队中" not in _wsapp and "上次同步失败" not in _wsapp, \
+        "同步过程还在弹横幅，用户会被噪音干扰"
+    assert "status=\"wait\"" in _wsapp, "可自愈的失败没静默（还挂在 error 上）"
+    assert "def _relay_fatal" in _wsapp and "def _flag_action" in _wsapp, \
+        "中转失败没区分「能自愈」和「要人动手」"
+
+    # ---- 组内互助中转（2026-11-23）--------------------------------------
+    # 没有白名单的人也能帮队友，但**必须**是「同组 + 自己开了开关」，
+    # 默认拒绝。这是唯一一条会把别人的佳明密码送到别人设备上的链路。
+    _gsrc = (ROOT / "server/groups.py").read_text(encoding="utf-8")
+    for _need in ("relay_share", "def api_relayshare", "def share_relay",
+                  "def any_relay_worker", "def is_relay_worker"):
+        assert _need in _gsrc, f"组内互助缺 {_need}"
+    assert 'if "relay_share" not in mcols' in _gsrc, \
+        "group_members.relay_share 没有老库迁移"
+    assert "a.relay_share=1" in _gsrc and "a.group_id = b.group_id" in _gsrc, \
+        "share_relay 没按「同组 + 开关」判，可能跨组放权"
+    assert '"relayshare" and method == "POST"' in _gsrc, "relayshare 没接到路由"
+    assert "def relay_claim(worker: int = 0, super_ok: bool = False)" in _wsapp, \
+        "relay_claim 没带设备身份，组外设备也能领任务"
+    assert "_can_relay(worker, target)" in _wsapp, "领取时没按同组筛选"
+    assert "def _groups()" in _wsapp, "组服务挂了会拖死网页版同步"
+    assert "worker is not None and int(row[\"worker\"] or 0) != int(worker)" in _wsapp, \
+        "交结果没校验归属，猜个 job_id 就能改别人的任务"
+    assert "worker: int | None = None" in _wsapp
+    _apsrc2 = (ROOT / "server/app.py").read_text(encoding="utf-8")
+    assert "G.is_relay_worker(uid)" in _apsrc2, "pull/push 没放开给组内志愿机"
+    assert "worker=uid" in _apsrc2, "push 没把设备身份传下去"
+    _gui = (ROOT / "garmin_cn/groupui.py").read_text(encoding="utf-8")
+    assert "帮队友" in _gui and "/relay" in _gui, "小组设置里没有「帮队友」开关"
+    _gpy = (ROOT / "garmin_cn/group.py").read_text(encoding="utf-8")
+    assert "def set_relayshare" in _gpy and "relayshare" in _gpy
+
+    # 新用户还没进组：没有任何人能替他登录。这时候**不能**排任务，
+    # 否则任务永远卡在 pending，用户等半天以为坏了。
+    for _need in ("def relay_workers_for", "def has_group"):
+        assert _need in _gsrc, f"组模块缺 {_need}"
+    assert "def relay_available" in _wsapp, \
+        "只有「全网有没有志愿机」，没有「有没有人能帮我」"
+    assert "if not relay_available(uid):" in _wsapp, \
+        "没进组的新用户也会排任务，任务永远没人领"
+    assert "if not has_group(uid):" in _wsapp, \
+        "排不上任务时没说清「先加入小组」，用户不知道下一步"
+    assert "你还没加入小组" in _wsapp
     # 登录框要有「显示密码」；续期要验证码时弹验证码框而不是登录框
     _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert _kt5.count("addShowPassword(box") >= 3, "佳明/高驰/小米登录框要都能显示密码"
