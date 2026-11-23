@@ -63,13 +63,34 @@ def init() -> None:
     with _A().db() as c:
         c.execute("""
             CREATE TABLE IF NOT EXISTS web_creds(
-                user_id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL,
                 source TEXT NOT NULL,
                 email TEXT NOT NULL,
                 nonce TEXT NOT NULL,
                 ct TEXT NOT NULL,
-                updated INTEGER NOT NULL
+                updated INTEGER NOT NULL,
+                PRIMARY KEY(user_id, source)
             )""")
+        # 主键从 user_id 改成 (user_id, source)：原来一个用户只能存一个源，
+        # 连接页却给佳明和高驰两个表单，后填的会**覆盖**先填的——用户以为
+        # 两个都连上了，「我的」页却只剩一个。老库在这里原地迁移。
+        _cinfo = list(c.execute("PRAGMA table_info(web_creds)"))
+        if _cinfo and [r["name"] for r in _cinfo if r["pk"]] == ["user_id"]:
+            c.execute("ALTER TABLE web_creds RENAME TO web_creds_v1")
+            c.execute("""CREATE TABLE web_creds(
+                user_id INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                email TEXT NOT NULL,
+                nonce TEXT NOT NULL,
+                ct TEXT NOT NULL,
+                updated INTEGER NOT NULL,
+                PRIMARY KEY(user_id, source)
+            )""")
+            c.execute("INSERT OR REPLACE INTO web_creds"
+                      "(user_id,source,email,nonce,ct,updated)"
+                      " SELECT user_id,source,email,nonce,ct,updated"
+                      " FROM web_creds_v1")
+            c.execute("DROP TABLE web_creds_v1")
         c.execute("""
             CREATE TABLE IF NOT EXISTS web_jobs(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -171,9 +192,33 @@ def _home(uid: int) -> Path:
     return p
 
 
-def _creds(uid: int) -> sqlite3.Row | None:
+# 一个用户可以同时存多个数据源（佳明 + 高驰），所以这里是「一组」不是「一条」。
+# 表主键是 (user_id, source)，2026-11-23 之前只有 user_id，后填的会覆盖先填的。
+_SOURCES = ("garmin", "coros")
+
+
+def _creds_all(uid: int) -> dict[str, sqlite3.Row]:
+    """这个用户已连接的数据源，按 source 索引。"""
     with _A().db() as c:
-        return c.execute("SELECT * FROM web_creds WHERE user_id=?", (int(uid),)).fetchone()
+        rows = c.execute("SELECT * FROM web_creds WHERE user_id=?",
+                         (int(uid),)).fetchall()
+    return {str(r["source"]): r for r in rows}
+
+
+def _creds(uid: int, source: str | None = None) -> sqlite3.Row | None:
+    """取某个源的凭据。不传 source 时按佳明优先返回第一条。
+
+    保留「不带 source」的用法是为了让同步链路只关心「有没有能用的账号」；
+    页面要展示全部时用 `_creds_all`。
+    """
+    with _A().db() as c:
+        if source:
+            return c.execute("SELECT * FROM web_creds WHERE user_id=? AND source=?",
+                             (int(uid), source)).fetchone()
+        return c.execute(
+            "SELECT * FROM web_creds WHERE user_id=? ORDER BY"
+            " CASE source WHEN 'garmin' THEN 0 ELSE 1 END LIMIT 1",
+            (int(uid),)).fetchone()
 
 
 def _save_creds(uid: int, source: str, email: str, password: str) -> None:
@@ -182,17 +227,24 @@ def _save_creds(uid: int, source: str, email: str, password: str) -> None:
         c.execute("""
             INSERT INTO web_creds(user_id,source,email,nonce,ct,updated)
             VALUES(?,?,?,?,?,?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                source=excluded.source, email=excluded.email,
-                nonce=excluded.nonce, ct=excluded.ct, updated=excluded.updated
+            ON CONFLICT(user_id,source) DO UPDATE SET
+                email=excluded.email, nonce=excluded.nonce,
+                ct=excluded.ct, updated=excluded.updated
         """, (int(uid), source, email, nonce, ct, int(time.time())))
 
 
-def _del_creds(uid: int) -> None:
+def _del_creds(uid: int, source: str | None = None) -> None:
+    """删除一个源（不传就全删）。全删时连登录态和排队任务一起清掉。"""
     with _A().db() as c:
-        c.execute("DELETE FROM web_creds WHERE user_id=?", (int(uid),))
-        c.execute("DELETE FROM web_jobs WHERE user_id=? AND status IN ('pending','running')",
-                  (int(uid),))
+        if source:
+            c.execute("DELETE FROM web_creds WHERE user_id=? AND source=?",
+                      (int(uid), source))
+        else:
+            c.execute("DELETE FROM web_creds WHERE user_id=?", (int(uid),))
+            c.execute("DELETE FROM web_jobs WHERE user_id=?"
+                      " AND status IN ('pending','running')", (int(uid),))
+    if source:
+        return
     try:
         (_home(uid) / "data" / "session.json").unlink()
     except OSError:
@@ -316,6 +368,10 @@ body{padding-bottom:calc(64px + env(safe-area-inset-bottom))!important}
 .webform .webrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
 .webform .webrow .btn{flex:1}
 .webk{font-size:11px;color:var(--ink-3,#7A8DA4);line-height:1.7;margin-top:10px}
+/* 数据源行：标签 / 账号 / 删除。账号要能吃掉中间的空间，长邮箱不挤掉按钮。 */
+.kvline .kvgrow{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;text-align:right}
+.kvdel{background:none;border:0;color:var(--warn,#F5A524);font-size:12px;
+  padding:4px 0 4px 10px;cursor:pointer;white-space:nowrap}
 .webfresh{font-size:12px;color:var(--ink-3,#7A8DA4);padding:0 2px 8px;
   display:flex;align-items:center;gap:6px}
 .webfresh b{color:var(--ink,#E9F0F8);font-weight:600}
@@ -580,18 +636,27 @@ def _me_page(handler, me, qs: dict) -> None:
     U = _U()
     uid = int(me["user_id"])
     st = _stats(uid)
-    cr = _creds(uid)
+    creds = _creds_all(uid)
     msg = (qs.get("msg") or [""])[0]
     note = f'<div class="webbanner">{H.escape(msg)}</div>' if msg else ""
     sess_ok = (_home(uid) / "data" / "session.json").exists()
-    if cr or sess_ok:
-        if cr:
-            src = {"garmin": "佳明 Garmin", "coros": "高驰 COROS"}.get(
-                str(cr["source"]), str(cr["source"]))
-            src_html = (f'<div class="kvline"><span>数据源</span><b>{H.escape(src)}</b></div>'
-                        f'<div class="kvline"><span>账号</span><b>{H.escape(str(cr["email"]))}</b></div>')
-        else:
-            src_html = ('<div class="kvline"><span>数据源</span><b>佳明 Garmin</b></div>')
+    if creds or sess_ok:
+        # 一个用户可以同时连佳明和高驰，所以这里**逐个源列出来**，不是只写一个。
+        # 以前表主键只有 user_id，后连的会把先连的覆盖掉，页面上永远只剩一个。
+        src_html = ""
+        for _key, _label in (("garmin", "佳明 Garmin"), ("coros", "高驰 COROS")):
+            _r = creds.get(_key)
+            if _r:
+                src_html += (
+                    f'<div class="kvline"><span>{_label}</span>'
+                    f'<b class="kvgrow">{H.escape(str(_r["email"]))}</b>'
+                    f'<form method="post" action="/app/forget" style="margin:0">'
+                    f'<input type="hidden" name="source" value="{_key}">'
+                    '<button class="kvdel" type="submit" '
+                    f'aria-label="删除{_label}">删除</button></form></div>')
+        if not creds and sess_ok:
+            src_html = ('<div class="kvline"><span>佳明 Garmin</span>'
+                        '<b>登录态已导入</b></div>')
         if sess_ok:
             # 带时间：佳明 JWT 几小时就过期，用户看到「12:55 导入」才知道要不要
             # 去 App 里再同步一次，比只写「已导入」有用。
@@ -609,10 +674,7 @@ def _me_page(handler, me, qs: dict) -> None:
         actions = (
             '<form method="post" action="/app/sync" style="display:inline">'
             '<button class="btn primary" type="submit">立即同步</button></form> '
-            '<a class="btn" href="/app/connect">更换账号 / 登录态</a> '
-            '<form method="post" action="/app/forget" style="display:inline" '
-            'onsubmit="return confirm(\'删除数据源后需要重新登录佳明，确定？\')">'
-            '<button class="btn danger" type="submit">删除数据源</button></form>'
+            '<a class="btn" href="/app/connect">更换账号 / 登录态</a>'
         )
     else:
         src_html = ('<div class="kvline"><span>数据源</span><b>未连接</b></div>'
@@ -768,14 +830,18 @@ def _basemap(handler, me, name: str) -> None:
 def _connect_page(handler, me, qs: dict) -> None:
     U = _U()
     uid = int(me["user_id"])
-    cr = _creds(uid)
+    creds = _creds_all(uid)
+    g_creds = creds.get("garmin")
+    c_creds = creds.get("coros")
     msg = (qs.get("msg") or [""])[0]
     note = f'<div class="webbanner">{H.escape(msg)}</div>' if msg else ""
+    # 每个源各自说清楚状态：两个源互不影响，不再有「保存会覆盖」这种话
     existing = ""
-    if cr:
-        existing = ('<div class="webbanner warn">已连接 '
-                    + H.escape(str(cr["email"]))
-                    + '，保存新账号会覆盖。</div>')
+    for _r, _label in ((g_creds, "佳明"), (c_creds, "高驰")):
+        if _r:
+            existing += ('<div class="webbanner">已连接 ' + _label + ' '
+                         + H.escape(str(_r["email"]))
+                         + '，重新填写会替换这一个源。</div>')
     # 没进组的人没人能替他刷新（中转按「同组」配对）。这句话必须在这里说，
     # 否则他填完密码会等一个永远不会被领走的任务。
     if not has_group(uid) and not relay_available(uid):
@@ -791,7 +857,7 @@ def _connect_page(handler, me, qs: dict) -> None:
         '<input type="hidden" name="source" value="garmin">'
         '<label>佳明账号（邮箱）</label>'
         '<input type="email" name="email" autocomplete="username" '
-        f'value="{H.escape(str(cr["email"]) if cr and cr["source"] == "garmin" else "")}" required>'
+        f'value="{H.escape(str(g_creds["email"]) if g_creds else "")}" required>'
         '<label>密码</label>'
         '<input type="password" name="password" autocomplete="current-password" '
         'placeholder="AES-GCM 加密后保存" required>'
@@ -819,7 +885,7 @@ def _connect_page(handler, me, qs: dict) -> None:
         '<input type="hidden" name="source" value="coros">'
         '<label>账号（邮箱）</label>'
         '<input type="email" name="email" autocomplete="username" '
-        f'value="{H.escape(str(cr["email"]) if cr and cr["source"] == "coros" else "")}">'
+        f'value="{H.escape(str(c_creds["email"]) if c_creds else "")}">'
         '<label>密码</label>'
         '<input type="password" name="password" autocomplete="current-password" '
         'placeholder="AES-GCM 加密后保存">'
@@ -831,8 +897,10 @@ def _connect_page(handler, me, qs: dict) -> None:
         '<a class="btn" href="/app">取消</a></div></form>'
         '<div class="webk">只保存加密后的密码，不出现在日志、页面或接口返回里。</div></div>'
     )
+    # 二级页必须有返回：这页从「我的」进来，只靠底栏的话用户找不到路。
     html = U.page("APP · 连接数据源", "连接数据源", "服务器代你同步", body,
                   U.chip("AES-GCM") + U.chip("可删除"),
+                  back=("返回我的", "/app/me"),
                   foot="账密只用于同步，不用于其他用途；删除后立即失效。")
     _send_html(handler, _shell(html, "/app/me"))
 
@@ -923,7 +991,7 @@ def _connect_post(handler, form: dict, me) -> None:
         # 佳明：直接排中转任务。服务器自己登不进去，先跑一次同步只会白等
         # 一次 401，再回过头去排任务。
         if request_relay(uid):
-            return _redirect(handler, "/app?msg=" + urllib.parse.quote(
+            return _redirect(handler, "/app/me?msg=" + urllib.parse.quote(
                 "已保存，数据会在几分钟内自动更新"))
         # 排不上（没进组 / 组里没人开「帮队友」）：别再说「几分钟内自动更新」，
         # 那句话兑现不了，用户会一直等。
@@ -934,7 +1002,7 @@ def _connect_post(handler, form: dict, me) -> None:
         return _redirect(handler, "/app/connect?msg=" + urllib.parse.quote(
             "已保存。队里暂时没人开「帮队友」，登录过期时重新连接一次就行"))
     enqueue(uid)
-    _redirect(handler, "/app?msg=" + urllib.parse.quote("已保存，正在同步"))
+    _redirect(handler, "/app/me?msg=" + urllib.parse.quote("已保存，正在同步"))
 
 
 # ---------------------------------------------------------------- 渲染
@@ -1178,8 +1246,8 @@ def request_relay(uid: int) -> bool:
     # 排进去只会永远 pending，用户看到的是「等了半天没反应」。
     if not relay_available(uid):
         return False
-    cr = _creds(uid)
-    if not cr or str(cr["source"]) != "garmin":
+    # 中转只处理佳明：服务器登录不了佳明才需要人代登，高驰是普通账密直连。
+    if not _creds(uid, "garmin"):
         return False
     now = int(time.time())
     with _A().db() as c:
@@ -1236,7 +1304,7 @@ def relay_claim(worker: int = 0, super_ok: bool = False) -> dict | None:
                 continue
             job = dict(c.execute("SELECT * FROM relay_jobs WHERE id=?",
                                  (int(head["id"]),)).fetchone())
-        cr = _creds(int(job["user_id"]))
+        cr = _creds(int(job["user_id"]), "garmin")
         if not cr:
             relay_finish(int(job["id"]), error="这个账号没有保存佳明账号密码")
             return None
@@ -1641,12 +1709,20 @@ def handle_post(handler) -> None:
         enqueue(int(me["user_id"]))
         return _redirect(handler, "/app")
     if path == "/app/forget":
-        _del_creds(int(me["user_id"]))
-        try:      # 连登录态一起删：只删账密、留着会话等于没删
-            (_home(int(me["user_id"])) / "data" / "session.json").unlink()
-        except OSError:
-            pass
-        return _redirect(handler, "/app/me?msg=" + urllib.parse.quote("已删除数据源"))
+        # 带 source 就只删那一个源（用户可以同时连佳明和高驰），
+        # 不带才是全部删除（兼容旧页面）。
+        _src = (form.get("source") or [""])[0].strip()
+        if _src and _src not in _SOURCES:
+            return _redirect(handler, "/app/me?msg=" + urllib.parse.quote("数据源不对"))
+        _del_creds(int(me["user_id"]), _src or None)
+        if not _src:
+            try:      # 全删时连登录态一起删：只删账密、留着会话等于没删
+                (_home(int(me["user_id"])) / "data" / "session.json").unlink()
+            except OSError:
+                pass
+        _label = {"garmin": "佳明", "coros": "高驰"}.get(_src, "数据源")
+        return _redirect(handler, "/app/me?msg=" + urllib.parse.quote(
+            f"已删除{_label}"))
     if path == "/app/logout":
         return _redirect(handler, "/app/login",
                          headers=[("Set-Cookie", f"{COOKIE}=; Path=/; HttpOnly; "

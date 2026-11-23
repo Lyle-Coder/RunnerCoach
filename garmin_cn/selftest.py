@@ -6636,6 +6636,22 @@ def run() -> int:
         "只读组页没有底部导航，从 /app 跳进去就回不来"
     assert '("/w", "小组")' in _wsrc
 
+    # 一个用户可以同时连佳明和高驰。表主键只有 user_id 时，后连的会把先连的
+    # 覆盖掉，「我的」页只剩一个源——用户看到的就是「明明连了两个，只显示一个」。
+    assert "PRIMARY KEY(user_id, source)" in _wsapp, \
+        "web_creds 主键还是 user_id，两个数据源会互相覆盖"
+    assert "web_creds_v1" in _wsapp, "老库没有从单源迁移到多源"
+    assert "def _creds_all" in _wsapp and "def _creds(uid: int, source" in _wsapp
+    assert "ON CONFLICT(user_id,source)" in _wsapp, \
+        "保存凭据还在按 user_id 覆盖"
+    assert 'for _key, _label in (("garmin", "佳明 Garmin"), ("coros", "高驰 COROS"))' in _wsapp, \
+        "我的页只显示一个数据源"
+    assert 'name="source" value="{_key}"' in _wsapp, "数据源不能按源单独删除"
+    # 二级页必须有返回：只靠底栏的话用户找不到路（原话「进去之后返回无效」）。
+    assert 'back=("返回我的", "/app/me")' in _wsapp, \
+        "连接数据源页没有返回按钮"
+    assert '"/app/me?msg=' in _wsapp, "保存后跳到今日页，用户在「我的」里找不到自己刚做的事"
+
     # ---- 多台中转机 + 无感静默（2026-11-23）--------------------------------
     # RC_RELAY_USER 支持多个邮箱：一台手机被系统冻结时另一台能接。
     assert "RELAY_USERS" in _websrc, "RC_RELAY_USER 只认单台，没有冗余"
