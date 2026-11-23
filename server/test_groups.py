@@ -1260,6 +1260,11 @@ def main() -> int:
     st, r = req("GET", f"/v1/group/{gid}/map?today=2026-11-18", None, a)
     check("默认全开，没有隐藏成员",
           st == 200 and r.get("ok") and int(r.get("hidden") or 0) == 0, f"{st} {r}")
+    # 地图接口必须单独给出「我的开关」：people 里只放有格子的人，
+    # 默认开但还没上传格子时我不在里面，客户端就没法判断按钮该显示「开启」
+    # 还是「关掉」（用户报「点开启没反应」，就是一直显示开启、点了也不变）。
+    _mme = r.get("me") or {}
+    check("地图接口返回我的开关状态", _mme.get("map_share") is True, str(_mme))
     check("还没传格子，地图是空的",
           not (r.get("people") or []), str(r.get("people"))[:100])
 
