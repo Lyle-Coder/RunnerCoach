@@ -130,7 +130,13 @@ def main() -> int:
         code = (req("GET", f"/v1/group/{gid}", token=a)[1].get("group") or {}).get("invite_code")
         req("POST", "/v1/group/join", {"code": code}, b)
 
-        st, _, txt, _ = req("GET", "/w", cookie=ck_a)
+        # 只有一个组时 /w 直达组页（和 App 一样），列表要带 ?list=1 才看得到
+        st, _, _, hdrs = req("GET", "/w", cookie=ck_a)
+        check("单组时 /w 直达组页", st == 303 and
+              f"/w/g/{gid}" in (hdrs.get("Location") or ""),
+              f"{st} {hdrs.get('Location')}")
+
+        st, _, txt, _ = req("GET", "/w?list=1", cookie=ck_a)
         check("组列表显示组名", st == 200 and "网页测试队" in txt, f"{st}")
         check("组列表有成员数", "2 人" in txt, txt[:200])
 
@@ -144,6 +150,10 @@ def main() -> int:
         check("组页能打开", st == 200 and "本周榜" in txt, f"{st}")
         check("组页显示自己的名字", "跑者甲" in txt, txt[:200])
         check("组页有完整榜单入口", f"/w/g/{gid}/board" in txt, "")
+        check("组页有荣誉入口", f"/w/g/{gid}/shirts" in txt, "")
+        check("组页有三个探索格", f"/w/g/{gid}/bingo" in txt
+              and f"/w/g/{gid}/map" in txt, "")
+        check("组页有二级页返回", 'class=back' in txt, "")
 
         st, _, txt, _ = req("GET", f"/w/g/{gid}/board", cookie=ck_a)
         check("榜单页 200", st == 200 and "完整榜单" in txt, f"{st}")
@@ -153,6 +163,26 @@ def main() -> int:
         check("综合榜 200", st == 200, f"{st}")
         check("综合榜有折算说明", "骑行 ÷ 4" in txt, txt[:200])
         check("综合榜显示分项", "骑 20" in txt, txt[:300])
+
+        print("\n3b. 二级页")
+        st, _, txt, _ = req("GET", f"/w/g/{gid}/shirts", cookie=ck_a)
+        check("六件衫 200", st == 200 and "六件衫" in txt, f"{st}")
+        check("六件衫写了在比什么", "本周跑步的总里程" in txt, txt[:300])
+        check("六件衫有返回", f"/w/g/{gid}" in txt, "")
+
+        st, _, txt, _ = req("GET", f"/w/g/{gid}/bingo", cookie=ck_a)
+        check("Bingo 200", st == 200 and "已点亮" in txt, f"{st}")
+
+        st, _, txt, _ = req("GET", f"/w/g/{gid}/map", cookie=ck_a)
+        check("足迹 200", st == 200 and "我的共享" in txt, f"{st}")
+        check("足迹写了只传格子", "500 米" in txt, txt[:300])
+
+        st, _, txt, _ = req("GET", f"/w/g/{gid}/feed", cookie=ck_a)
+        check("动态 200", st == 200 and ("最近 20 条" in txt or "还没有动态" in txt),
+              f"{st} {txt[:120]}")
+
+        st, _, txt, _ = req("GET", f"/w/g/{gid}/nope", cookie=ck_a)
+        check("不存在的二级页 404", st == 404, f"{st}")
 
         print("\n4. 权限")
         st, _, txt, _ = req("GET", f"/w/g/{gid}", cookie="")

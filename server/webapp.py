@@ -427,12 +427,36 @@ def _webify(html: str) -> str:
         ('href="/sports"', 'href="/app/me"'),
         ('href="/files"', 'href="/app/me"'),
         ('href="/ai"', 'href="/app/me"'),
-        ('href="/groups', 'href="/w'),
         ('href="/"', 'href="/app"'),
     )
     for a, b in links:
         html = html.replace(a, b)
-    return html
+    return _group_links(html)
+
+
+# 网页版有哪种组内页面，白名单之外的一律回组页。`/groups/12/settings` 是
+# 组长工具，只在 App 里有；直接改写路径会点出一个 404，不如回组页。
+_WEB_GROUP_SUB = ("", "/board", "/shirts", "/bingo", "/map", "/feed")
+
+
+def _group_links(html: str) -> str:
+    """`/groups/{id}` → `/w/g/{id}`。
+
+    不能只做 `href="/groups` → `href="/w` 的字符串替换：那样
+    `/groups/12/map` 会变成 `/w/12/map`，和真实路由差一个 `g`，
+    点进去是 404。这里按三段分别映射。
+    """
+    def sub(m) -> str:
+        gid, tail = m.group(1), m.group(2) or ""
+        if tail in _WEB_GROUP_SUB or tail.startswith("/challenge/"):
+            return f'href="/w/g/{gid}{tail}'
+        return f'href="/w/g/{gid}'
+
+    html = re.sub(r'href="/groups/(\d+)((?:/[a-z0-9]+)*)', sub, html)
+    # 远征在 App 里是 /run?gid=N，网页上并进组页的探索格
+    html = re.sub(r'href="/run\?gid=(\d+)"', r'href="/w/g/\1/exp"', html)
+    return html.replace('href="/groups"', 'href="/w"').replace(
+        'href="/groups?', 'href="/w?')
 
 
 def _shell(html: str, active: str, banner: str = "", fresh: str = "") -> str:
