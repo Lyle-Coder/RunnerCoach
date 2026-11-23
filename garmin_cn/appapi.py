@@ -194,7 +194,7 @@ _API = {
     "hw_status", "hw_import", "hw_login", "hw_probe", "hw_sync", "hw_logout",
     "hw_login_start", "hw_login_finish", "hw_login_cancel",
     "body_sources", "body_set_source", "check_update",
-    "account_info", "garmin_logout", "data_source",
+    "account_info", "garmin_logout", "garmin_adopt", "data_source",
     "coros_status", "coros_login", "coros_logout", "coros_sync",
     "coros_mcp_status", "coros_mcp_login_url", "coros_mcp_finish",
     "coros_mcp_sleep", "coros_mcp_logout",
@@ -381,6 +381,38 @@ def login(email: str, password: str) -> dict:
     p = result.get("profile") or {}
     name = " ".join(x for x in (p.get("displayName"), p.get("fullName")) if x) or email
     return {"ok": True, "need_mfa": False, "name": name}
+
+
+def garmin_adopt(cookies_json: str) -> dict:
+    """接住应用内浏览器登录拿回来的 Cookie。
+
+    佳明登录页上了 reCAPTCHA 复选框之后，密码登录在程序里过不去，只能由人在
+    WebView 里点一次。Kotlin 那边把 `.garmin.cn` 的 Cookie 收成
+    `[{name,value,domain}]` 交过来，这里交给 `auth.adopt_cookies()`：补 CSRF、
+    落盘、用数据接口验一遍，验证不过就不算登录成功。
+    """
+    try:
+        items = json.loads(cookies_json or "[]")
+    except ValueError:
+        return {"ok": False, "error": "登录态格式不对，重开一次浏览器登录"}
+    if not isinstance(items, list) or not items:
+        return {"ok": False, "error": "浏览器里没拿到任何 Cookie，登录可能没做完"}
+    names = {str(x.get("name") or "") for x in items if isinstance(x, dict)}
+    if "JWT_WEB" not in names:
+        return {"ok": False,
+                "error": "登录态里没有 JWT_WEB，佳明那边可能还没登录成功"}
+
+    auth = GarminCNAuth(HOME)
+    try:
+        result = auth.adopt_cookies(items)
+    except AuthError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:      # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    p = result.get("profile") or {}
+    name = " ".join(x for x in (p.get("displayName"), p.get("fullName")) if x)
+    return {"ok": True, "name": name, "fresh": bool(result.get("fresh"))}
 
 
 def submit_mfa(code: str) -> dict:

@@ -1373,7 +1373,33 @@ class MainActivity : Activity() {
                 }
             }
             .setNegativeButton("取消", null)
+            // 佳明登录页有人机验证（reCAPTCHA 复选框），密码登录只能由人在
+            // 真页面里点一次。这条入口把登录交给 WebView，我们只收 Cookie。
+            .setNeutralButton("用浏览器登录") { _, _ -> openGarminWebLogin() }
             .show()
+    }
+
+    private fun openGarminWebLogin() {
+        startActivityForResult(
+            Intent(this, GarminLoginActivity::class.java), 7303
+        )
+    }
+
+    private fun finishGarminWebLogin(cookies: String) {
+        val card = showLoginCard("正在校验佳明登录", "来自应用内浏览器")
+        thread {
+            val r = apiCall("garmin_adopt", cookies)
+            ui {
+                card.dismiss()
+                if (r.optBoolean("ok")) {
+                    toast("登录成功")
+                    doSync()
+                } else {
+                    askGarminLogin(err = r.optString("error")
+                        .ifBlank { "登录态没通过校验" })
+                }
+            }
+        }
     }
 
     private fun doLogin(email: String, pwd: String) {
@@ -2664,6 +2690,15 @@ class MainActivity : Activity() {
             } else {
                 thread { apiCall("hw_login_cancel") }
                 toast("已取消华为登录")
+            }
+            return
+        }
+        if (requestCode == 7303) {
+            val cookies = data?.getStringExtra("cookies")
+            if (resultCode == RESULT_OK && !cookies.isNullOrBlank()) {
+                finishGarminWebLogin(cookies)
+            } else {
+                toast("已取消佳明登录")
             }
             return
         }
