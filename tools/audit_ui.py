@@ -180,7 +180,7 @@ def _group_pages(tmp: Path) -> dict[str, Path]:
             "ok": True, "detail": detail, "board": P.BOARD,
             "challenges": P.CHALLENGES, "season": season, "week": P.WEEK}
         G.detail = lambda gid: detail
-        G.board = lambda gid, rng="week", today=None: P.BOARD
+        G.board = lambda gid, rng="week", today=None, by="dist": P.BOARD
         G.season = lambda gid, today=None: season
         G.week = lambda gid, today=None: P.WEEK
         G.challenge_list = lambda gid, today=None: P.CHALLENGES

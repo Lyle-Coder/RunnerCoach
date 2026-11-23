@@ -316,7 +316,7 @@ class _Handler(SimpleHTTPRequestHandler):
         token = getattr(self.server, "token", "")
         if token and not self._gate(u, token):
             return
-        # 四个 tab 的页面：同源、只读本地库，App 的 JS 桥照常挂在上面。
+        # 五个 tab 的页面：同源、只读本地库，App 的 JS 桥照常挂在上面。
         # 放在 gate 之后，局域网带访问码的访问也受同一套保护。
         root = Path(self.directory)
         if u.path == "/__progress":
@@ -344,7 +344,8 @@ class _Handler(SimpleHTTPRequestHandler):
             from . import groupui
             if u.path.startswith("/account"):
                 return self._html(groupui.account_page(
-                    tok, msg, (q.get("account") or [""])[0], (q.get("code") or [""])[0]))
+                    tok, msg, (q.get("account") or [""])[0],
+                    (q.get("code") or [""])[0], (q.get("from") or [""])[0]))
             if u.path.rstrip("/") in ("/groups", "/groups.html"):
                 # ?list=1 强制显示列表：只有一个组时默认会直达组详情，
                 # 那样「再加入一个 / 建组」的入口就永远看不到。
@@ -1924,6 +1925,10 @@ class _Handler(SimpleHTTPRequestHandler):
                     r = AC.send_code(acct)
                     if r.get("ok"):
                         q = {"account": acct, "sent": "1"}
+                        # 从小组进来登录的，回跳后页内「返回」还要指回小组；
+                        # 丢了 from 会变成「原生返回回小组、页内返回回我的」。
+                        if (values.get("from") or "") == "groups":
+                            q["from"] = "groups"
                         if r.get("dev_code"):
                             q["code"] = r["dev_code"]
                         return self._see_other("/account?" + urlencode(q))
@@ -1935,7 +1940,10 @@ class _Handler(SimpleHTTPRequestHandler):
                     if r.get("ok"):
                         return self._see_other("/groups")
                     msg = r.get("error") or "登录失败"
-                    back = "/account?" + urlencode({"account": acct})
+                    _q = {"account": acct}
+                    if (values.get("from") or "") == "groups":
+                        _q["from"] = "groups"
+                    back = "/account?" + urlencode(_q)
                 elif act == "nickname":
                     r = AC.set_nickname(values.get("nickname") or "")
                     if r.get("ok"):

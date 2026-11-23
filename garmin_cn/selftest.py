@@ -466,7 +466,7 @@ def run() -> int:
     q = _json.loads(AP.call("activities", _json.dumps([None, None, None, 5, 0])))
     assert q["ok"] and all(k in q for k in ("items", "total", "has_more", "offset"))
 
-    # 网页外壳与交互树：四个 tab 共用一套 ui.page，卡片动作走 data-act，
+    # 网页外壳与交互树：五个 tab 共用一套 ui.page，卡片动作走 data-act，
     # 活动行走 data-aid。约束见 docs/交互树.md：一个动作只有一个入口。
     from garmin_cn import history as HW
     from garmin_cn import ui as U
@@ -5762,7 +5762,9 @@ def run() -> int:
     _me = U.me_page()
     # 6 → 7：多出来的是「简洁模式」开关。两个开关（AI 服务 / 简洁模式）都
     # 必须常驻可见，再往上加行得先想清楚是不是该并进别的地方。
-    assert _me.count('class="row') <= 7, f"我的页还是长列表：{_me.count('class=\"row')} 行"
+    # 7 → 8：「账号」从网格挪进来——它和数据源一样在回答「这台机器连着谁」，
+    # 放网格里反而像个工具；同时删掉了网格里重复的「训练小组」入口。
+    assert _me.count('class="row') <= 8, f"我的页还是长列表：{_me.count('class=\"row')} 行"
     assert _me.count('class="acts"') == 2, "常用/数据两组没有排成网格"
     assert "体重数据" in _me and ">小米体重<" not in _me, "体重三行没有合并"
     # AI 模型服务从「只读卡片」升级成可点的行（行尾带开关），所以网格里不该
@@ -5796,9 +5798,10 @@ def run() -> int:
         "三张数值卡没固定高度"
     _ads = re.findall(r'<span class="ad">([^<]*)</span>', _me)
     # 运动设置、高驰训练导入、日历提醒分别有独立入口；副标题仍保持单行。
-    # 10 → 12：多了「训练小组」「账号」两个入口。2 列网格保持偶数，
-    # 加单数会让最后一行只挂一张卡，看着像漏了一个。
-    assert len(_ads) == 12 and all(len(a) <= 14 for a in _ads), \
+    # 12 → 10：「训练小组」挪到底部 tab（页内不再重复入口），「账号」挪到
+    # 「账号与数据」那一组列表行——它回答的是「这台机器连着谁」，不是工具。
+    # 2 列网格保持偶数，加单数会让最后一行只挂一张卡，看着像漏了一个。
+    assert len(_ads) == 10 and all(len(a) <= 14 for a in _ads), \
         f"网格卡数量或说明长度不对：{_ads}"
     assert any("系统日历" in a for a in _ads), "「我的」页没有日历提醒入口"
 

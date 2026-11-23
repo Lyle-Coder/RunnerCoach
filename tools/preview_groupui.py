@@ -225,7 +225,7 @@ def main() -> int:
     AC.state = lambda: {"logged_in": True, "label": "laoli@example.com"}  # type: ignore
     AC.me = lambda: {"ok": True, "nickname": "老李"}                      # type: ignore
     G.detail = lambda gid: DETAIL                     # type: ignore[assignment]
-    G.board = lambda gid, rng="week", today=None: BOARD   # type: ignore[assignment]
+    G.board = lambda gid, rng="week", today=None, by="dist": BOARD   # type: ignore[assignment]
     G.challenge_list = lambda gid, today=None: CHALLENGES  # type: ignore[assignment]
     G.groups = lambda: {"ok": True, "groups": [  # type: ignore[assignment]
         {"id": 1, "name": "周末拉练队", "role": "owner", "member_count": 4,

@@ -179,6 +179,9 @@ _BASE = """
 .rc-up-t{flex:1;min-width:0}
 .rc-up-t .tt{font-size:var(--fs-body,14px);font-weight:600;color:var(--ink,#E9F0F8);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 标题本身就是进赛事详情的入口：一屏「赛事提醒」里最该能点的是那场比赛。 */
+a.rc-up-t{text-decoration:none;color:inherit}
+a.rc-up-t .tt::after{content:" ›";color:var(--ink-3,#7A8DA4);font-weight:400}
 .rc-up-t .ss{margin-top:2px;font-size:var(--fs-micro,11px);color:var(--ink-3,#7A8DA4);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rc-up-r{flex:none;display:flex;align-items:center;gap:2px}
@@ -188,6 +191,8 @@ _BASE = """
   display:flex;align-items:center;justify-content:center;
   margin:-9px -6px -9px 0;font-size:15px;cursor:pointer;opacity:.5;line-height:1}
 .rc-bell.on{opacity:1}
+/* 图标从 emoji 换成线性 SVG 后，行盒不再由字体撑高，显式 block 免得基线偏移 */
+.rc-bell svg{display:block}
 /* 首页「延伸阅读」：内容一行、换行破折号接数据源，多条轮播 */
 .rc-rd{margin-top:2px}
 .rc-rd .rdi{display:none}
