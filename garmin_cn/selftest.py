@@ -6594,6 +6594,22 @@ def run() -> int:
     _wsync = (ROOT / "server/web_sync.py").read_text(encoding="utf-8")
     assert "_prefetch_details" in _wsync, \
         "同步时不缓存活动明细，登录态一过期活动图就打不开"
+
+    # ---- 登录中转：服务器登不进佳明，靠一台可信设备代登录 -----------------
+    # 只在显式配了 RC_RELAY_USER 时生效；密码只在这条链路上临时传递。
+    _wsapp = (ROOT / "server/webapp.py").read_text(encoding="utf-8")
+    for _need in ("def relay_claim", "def relay_finish", "def request_relay",
+                  "def relay_enabled", "RC_RELAY_USER"):
+        assert _need in _wsapp or _need in _apisrc, f"中转缺 {_need}"
+    assert "def relay_enabled" in _wsapp and "if not relay_enabled():\n        return False" in _wsapp, \
+        "没配中转机时不该排任务（会永远卡 pending）"
+    _rsrc = (ROOT / "garmin_cn/relay.py").read_text(encoding="utf-8")
+    assert "/v1/relay/pull" in _rsrc and "/v1/relay/push" in _rsrc
+    assert "tempfile.mkdtemp" in _rsrc, "中转登录必须用临时目录，别顶掉本机会话"
+    assert "print(" not in _rsrc and "logger" not in _rsrc, \
+        "中转链路不许打印任何东西（会带出别人的密码）"
+    _bgsrc = (ROOT / "garmin_cn/bg.py").read_text(encoding="utf-8")
+    assert "relay" in _bgsrc and "R.poll()" in _bgsrc, "后台唤醒没去领中转任务"
     # 登录框要有「显示密码」；续期要验证码时弹验证码框而不是登录框
     _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert _kt5.count("addShowPassword(box") >= 3, "佳明/高驰/小米登录框要都能显示密码"

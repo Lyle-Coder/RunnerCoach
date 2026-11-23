@@ -101,6 +101,11 @@ FREE_GRANT = int(os.environ.get("FREE_GRANT", "0"))
 # 平台代理总开关。关掉时 /v1/chat/completions 直接 503 并提示"用自己的 Key"，
 # 不留半开状态：不卖额度却还替人转发请求，等于无资质提供生成式 AI 服务。
 AI_PROXY = os.environ.get("AI_PROXY", "off").strip().lower() in ("1", "on", "yes", "true")
+# 佳明登录中转：允许「哪台设备」替别人登录。
+# 佳明的登录页对机房 IP 有人机校验，服务器自己登不进去；只让一台可信设备
+# （例如组长那台常开的安卓手机）领任务、在手机流量/家宽上完成登录，再把
+# Cookie 交回来。**默认空 = 关闭**，因为这台设备会临时拿到别人的佳明密码。
+RC_RELAY_USER = os.environ.get("RC_RELAY_USER", "").strip()
 HOST = os.environ.get("BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8300"))
 
@@ -684,6 +689,47 @@ def api_me(row: sqlite3.Row) -> dict:
             "devices": [{"id": d["id"], "name": d["name"],
                          "last_seen": d["last_seen"], "revoked": bool(d["revoked"])}
                         for d in devices]}
+
+
+def _relay_ok(row: sqlite3.Row) -> bool:
+    """这台设备有没有资格当中转。
+
+    必须显式配 `RC_RELAY_USER`（账号邮箱）——中转会拿到**别人**的佳明密码，
+    不能"谁登录谁就能领"。配了之后只认这个账号名下的设备。
+    """
+    want = (RC_RELAY_USER or "").strip().lower()
+    if not want:
+        return False
+    return str(row["phone"] or "").strip().lower() == want
+
+
+def api_relay_pull(row: sqlite3.Row) -> dict:
+    """中转机领一个待登录任务。没有任务就返回 job=None，别让它空转重试。"""
+    if not _relay_ok(row):
+        raise Gate(403, "这台设备不是中转机")
+    import webapp
+
+    job = webapp.relay_claim()
+    return {"ok": True, "job": job}
+
+
+def api_relay_push(row: sqlite3.Row, body: dict) -> dict:
+    """中转机交回结果：成功带 Cookie，失败带原因。"""
+    if not _relay_ok(row):
+        raise Gate(403, "这台设备不是中转机")
+    import webapp
+
+    try:
+        job_id = int(body.get("job_id") or 0)
+    except (TypeError, ValueError):
+        raise Gate(400, "job_id 不合法")
+    if not job_id:
+        raise Gate(400, "缺 job_id")
+    if body.get("ok"):
+        webapp.relay_finish(job_id, cookies=body.get("session"))
+    else:
+        webapp.relay_finish(job_id, error=str(body.get("error") or "中转登录失败"))
+    return {"ok": True}
 
 
 def api_web_session(row: sqlite3.Row, body: dict) -> dict:
@@ -1606,6 +1652,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(api_set_nickname(_auth(self.headers), body))
             if self.path == "/v1/web/session":
                 return self._json(api_web_session(_auth(self.headers), body))
+            if self.path == "/v1/relay/pull":
+                return self._json(api_relay_pull(_auth(self.headers)))
+            if self.path == "/v1/relay/push":
+                return self._json(api_relay_push(_auth(self.headers), body))
             if self.path == "/v1/account/delete":
                 return self._json(api_delete_account(_auth(self.headers), body))
             if self.path == "/v1/redeem":

@@ -102,9 +102,19 @@ def _run(store, today: str | None, force: bool) -> dict:
 
         store = Store(A.DB)
     try:
+        # 先看一眼有没有「替别人登录」的任务：这个不受 _due 节流影响，
+        # 只在服务器显式把这台设备设成中转机时才有任务（否则 403，静默跳过）。
+        relay_info = {}
+        try:
+            from . import relay as R
+
+            relay_info = R.poll()
+        except Exception:      # noqa: BLE001 - 中转失败不能挡住正常补传
+            relay_info = {}
+
         at = store.get_meta(KEY_AT) or ""
         if not force and not _due(at):
-            return {"ok": True, "skip": "recent", "at": at}
+            return {"ok": True, "skip": "recent", "at": at, "relay": relay_info}
 
         day = today or dt.date.today().isoformat()
         lst = G.groups()

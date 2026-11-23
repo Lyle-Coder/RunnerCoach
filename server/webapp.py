@@ -82,6 +82,23 @@ def init() -> None:
             )""")
         c.execute("CREATE INDEX IF NOT EXISTS web_jobs_uid ON web_jobs(user_id,status)")
         c.execute("UPDATE web_jobs SET status='pending', started=0 WHERE status='running'")
+        # 中转任务：服务器登录不了佳明，得由一台可信设备（组长的手机）领任务、
+        # 在手机流量上登录、再把 Cookie 交回来。见 app.py 的 RC_RELAY_USER。
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS relay_jobs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT NOT NULL DEFAULT '',
+                created INTEGER NOT NULL,
+                started INTEGER NOT NULL DEFAULT 0,
+                finished INTEGER NOT NULL DEFAULT 0
+            )""")
+        c.execute("CREATE INDEX IF NOT EXISTS relay_jobs_st ON relay_jobs(status)")
+        # 进程崩在登录中途时，任务会永远卡在 running，放回 pending 重试
+        c.execute("UPDATE relay_jobs SET status='pending', started=0 "
+                  "WHERE status='running' AND started < ?",
+                  (int(time.time()) - 600,))
 
 
 def _key() -> bytes:
@@ -508,6 +525,16 @@ def _me_page(handler, me, qs: dict) -> None:
                 _when = ""
             src_html += ('<div class="kvline"><span>登录态</span><b>已导入'
                          + (f"（{_when}）" if _when else "") + '</b></div>')
+        # 中转状态：用户最想知道的是「还要不要我自己动手」
+        _rj = relay_latest(uid)
+        _st = str(_rj.get("status") or "")
+        if _st in ("pending", "running"):
+            src_html += ('<div class="kvline"><span>中转</span>'
+                         '<b>已排队，等中转机登录</b></div>')
+        elif _st == "error" and time.time() - int(_rj.get("finished") or 0) < 3600:
+            src_html += ('<div class="kvline"><span>中转</span><b>失败：'
+                         + H.escape(str(_rj.get("message") or "未知"))[:40]
+                         + '</b></div>')
         actions = (
             '<form method="post" action="/app/sync" style="display:inline">'
             '<button class="btn primary" type="submit">立即同步</button></form> '
@@ -674,7 +701,29 @@ def _connect_page(handler, me, qs: dict) -> None:
                     + '，保存新账号会覆盖。</div>')
     body = (
         note + existing
-        + '<div class="card"><h3 style="margin:0 0 6px">佳明：用 App 同步登录态</h3>'
+        + '<div class="card"><h3 style="margin:0 0 6px">佳明：账号密码（推荐）</h3>'
+        '<p style="margin:0 0 8px;color:var(--muted);font-size:13px;line-height:1.7">'
+        '佳明登录页对机房网络有人机校验，服务器自己登不进去。保存账号密码后，'
+        '登录态过期时会由一台<b>中转设备</b>（组长的手机，走手机流量）替你登录，'
+        '你不用开着任何 App。</p>'
+        '<form class="webform" method="post" action="/app/connect">'
+        '<input type="hidden" name="source" value="garmin">'
+        '<label>佳明账号（邮箱）</label>'
+        '<input type="email" name="email" autocomplete="username" '
+        f'value="{H.escape(str(cr["email"]) if cr and cr["source"] == "garmin" else "")}" required>'
+        '<label>密码</label>'
+        '<input type="password" name="password" autocomplete="current-password" '
+        'placeholder="AES-GCM 加密后保存" required>'
+        '<label style="display:flex;gap:8px;align-items:flex-start;margin:6px 0 4px">'
+        '<input type="checkbox" name="consent" value="1" required '
+        'style="width:18px;height:18px;margin-top:2px">'
+        '<span>我同意服务器加密保存佳明账号密码；登录态过期时，账号密码会'
+        '临时发给中转设备完成一次登录（不落盘、不留日志）。可随时删除。</span></label>'
+        '<div class="webrow"><button class="btn primary" type="submit">保存并同步</button>'
+        '<a class="btn" href="/app">取消</a></div></form>'
+        '<div class="webk">密码只用于刷新登录态；不存密码也能用，但过期后要'
+        '自己用 App 同步。</div></div>'
+        + '<div class="card"><h3 style="margin:0 0 6px">佳明：或者粘贴登录态</h3>'
         '<p style="margin:0 0 8px;color:var(--muted);font-size:13px;line-height:1.7">'
         '佳明登录页对机房网络有人机校验，服务器直接登录会被挡。'
         '用安卓 App 登录佳明后，App 会把登录态自动传上来；'
@@ -770,6 +819,12 @@ def _connect_post(handler, form: dict, me) -> None:
         (_home(uid) / "data" / "session.json").unlink()
     except OSError:
         pass
+    if source == "garmin" and relay_enabled():
+        # 佳明：直接排中转任务。服务器自己登不进去，先跑一次同步只会白等
+        # 一次 401，再回过头去排任务。
+        request_relay(uid)
+        return _redirect(handler, "/app/connect?msg=" + urllib.parse.quote(
+            "已保存。正在请中转机登录，几分钟内自动同步；中转机离线时会等它上线。"))
     enqueue(uid)
     _redirect(handler, "/app?msg=" + urllib.parse.quote("已保存，正在同步"))
 
@@ -887,6 +942,122 @@ def _icon(handler, name: str) -> None:
     handler.close_connection = True
 
 
+# ---------------------------------------------------------------- 登录中转
+# 服务器（机房 IP）登不进佳明，只能请一台可信设备代登录。任务进 relay_jobs，
+# 设备（组长的手机）来 /v1/relay/pull 领，登录完 /v1/relay/push 交回 Cookie。
+RELAY_COOLDOWN = 600       # 同一用户 10 分钟内不重复排任务
+
+
+def relay_enabled() -> bool:
+    """服务器有没有指定中转机。没指定就根本不排任务，免得永远卡在 pending。"""
+    return bool(str(getattr(_A(), "RC_RELAY_USER", "") or "").strip())
+
+
+def request_relay(uid: int) -> bool:
+    """给某个用户排一个「代登录」任务。没有账密就不排（无从登录）。"""
+    if not relay_enabled():
+        return False
+    cr = _creds(uid)
+    if not cr or str(cr["source"]) != "garmin":
+        return False
+    now = int(time.time())
+    with _A().db() as c:
+        row = c.execute(
+            "SELECT id FROM relay_jobs WHERE user_id=? AND status IN "
+            "('pending','running') LIMIT 1", (int(uid),)).fetchone()
+        if row:
+            return False
+        last = c.execute(
+            "SELECT status,message,finished FROM relay_jobs WHERE user_id=? "
+            "ORDER BY id DESC LIMIT 1", (int(uid),)).fetchone()
+        if last:
+            cool = RELAY_COOLDOWN
+            if str(last["status"]) == "error":
+                # 失败别每 10 分钟重试一次：验证码要等人，普通失败降频
+                cool = 6 * 3600 if "验证码" in str(last["message"] or "") else 1800
+            if now - int(last["finished"] or 0) < cool:
+                return False
+        c.execute("INSERT INTO relay_jobs(user_id,status,created) VALUES(?,?,?)",
+                  (int(uid), "pending", now))
+    return True
+
+
+def relay_claim() -> dict | None:
+    """中转机领一个任务。返回含明文密码的 dict，**不写日志、不回显**。"""
+    now = int(time.time())
+    with _A().db() as c:
+        row = c.execute("SELECT * FROM relay_jobs WHERE status='pending' "
+                        "ORDER BY id LIMIT 1").fetchone()
+        if not row:
+            return None
+        c.execute("UPDATE relay_jobs SET status='running', started=? WHERE id=?",
+                  (now, int(row["id"])))
+        job = dict(row)
+    cr = _creds(int(job["user_id"]))
+    if not cr:
+        relay_finish(int(job["id"]), error="这个账号没有保存佳明账号密码")
+        return None
+    try:
+        password = _dec(str(cr["nonce"]), str(cr["ct"]))
+    except Exception as e:      # noqa: BLE001
+        relay_finish(int(job["id"]), error=f"解密失败：{type(e).__name__}")
+        return None
+    return {"job_id": int(job["id"]), "user_id": int(job["user_id"]),
+            "email": str(cr["email"]), "password": password}
+
+
+def relay_finish(job_id: int, cookies=None, error: str = "") -> None:
+    """中转机交回结果。成功就写会话并排队同步。"""
+    now = int(time.time())
+    with _A().db() as c:
+        row = c.execute("SELECT user_id FROM relay_jobs WHERE id=?",
+                        (int(job_id),)).fetchone()
+    if not row:
+        return
+    uid = int(row["user_id"])
+    if error or not cookies:
+        with _A().db() as c:
+            c.execute("UPDATE relay_jobs SET status='error', message=?, finished=? "
+                      "WHERE id=?", (str(error or "没拿到登录态")[:200], now,
+                                     int(job_id)))
+        return
+    if isinstance(cookies, str):
+        try:
+            cookies = json.loads(cookies)
+        except json.JSONDecodeError:
+            return relay_finish(job_id, error="登录态不是合法 JSON")
+    if not isinstance(cookies, list) or not cookies:
+        return relay_finish(job_id, error="登录态是空的")
+    names = {str(x.get("name") or "") for x in cookies if isinstance(x, dict)}
+    if "JWT_WEB" not in names:
+        return relay_finish(job_id, error="登录态里没有 JWT_WEB")
+    home = _home(uid)
+    (home / "data").mkdir(parents=True, exist_ok=True)
+    path = home / "data" / "session.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cookies, ensure_ascii=False), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+    with _A().db() as c:
+        c.execute("UPDATE relay_jobs SET status='done', message=?, finished=? "
+                  "WHERE id=?", ("已刷新登录态", now, int(job_id)))
+    enqueue(uid)
+
+
+def relay_latest(uid: int) -> dict:
+    """给界面看的中转状态：等多久、上次成功/失败。"""
+    try:
+        with _A().db() as c:
+            r = c.execute("SELECT * FROM relay_jobs WHERE user_id=? "
+                          "ORDER BY id DESC LIMIT 1", (int(uid),)).fetchone()
+            return dict(r) if r else {}
+    except sqlite3.Error:
+        return {}
+
+
 # ---------------------------------------------------------------- 同步队列
 def enqueue(uid: int) -> None:
     with _A().db() as c:
@@ -967,9 +1138,15 @@ def _run_job(job: dict) -> None:
         lines = (p.stderr or "").strip().splitlines()
         msg = lines[-1] if lines else "同步失败"
     if out.get("need_mfa"):
-        msg = "佳明要求验证码，请重新登录或稍后再试"
+        # 验证码只能本人在手机上完成，中转也替不了
+        request_relay(uid)
+        msg = "佳明要验证码：用 App 或浏览器登录一次，之后会自动接上"
     elif out.get("need_login"):
-        msg = "登录态已过期：用安卓 App 同步一次就会自动更新"
+        # 有账密就让中转机去登一次；没有账密只能提示本人登录
+        if request_relay(uid):
+            msg = "登录态过期，已请求中转刷新，几分钟内会自动恢复"
+        else:
+            msg = "登录态过期：这台账号没有存佳明账号密码，用 App 同步一次"
     return _finish(int(job["id"]), False, msg)
 
 
