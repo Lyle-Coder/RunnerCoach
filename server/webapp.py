@@ -491,10 +491,19 @@ def _me_page(handler, me, qs: dict) -> None:
             src_html = (f'<div class="kvline"><span>数据源</span><b>{H.escape(src)}</b></div>'
                         f'<div class="kvline"><span>账号</span><b>{H.escape(str(cr["email"]))}</b></div>')
         else:
-            src_html = ('<div class="kvline"><span>数据源</span><b>佳明 Garmin</b></div>'
-                        '<div class="kvline"><span>登录态</span><b>已导入（由 App 同步）</b></div>')
-        if cr and sess_ok:
-            src_html += ('<div class="kvline"><span>登录态</span><b>已导入</b></div>')
+            src_html = ('<div class="kvline"><span>数据源</span><b>佳明 Garmin</b></div>')
+        if sess_ok:
+            # 带时间：佳明 JWT 几小时就过期，用户看到「12:55 导入」才知道要不要
+            # 去 App 里再同步一次，比只写「已导入」有用。
+            try:
+                import datetime as _dt
+
+                _mt = (_home(uid) / "data" / "session.json").stat().st_mtime
+                _when = _dt.datetime.fromtimestamp(_mt).strftime("%m-%d %H:%M")
+            except OSError:
+                _when = ""
+            src_html += ('<div class="kvline"><span>登录态</span><b>已导入'
+                         + (f"（{_when}）" if _when else "") + '</b></div>')
         actions = (
             '<form method="post" action="/app/sync" style="display:inline">'
             '<button class="btn primary" type="submit">立即同步</button></form> '
@@ -666,6 +675,9 @@ def _connect_page(handler, me, qs: dict) -> None:
         '佳明登录页对机房网络有人机校验，服务器直接登录会被挡。'
         '用安卓 App 登录佳明后，App 会把登录态自动传上来；'
         '桌面浏览器也可以在下面粘贴一份。</p>'
+        '<p style="margin:0 0 8px;color:var(--muted);font-size:13px;line-height:1.7">'
+        '<b>网页和 App 必须用同一个账号登录（邮箱一致）</b>，'
+        'App 才会把登录态传到这个账号下；两个邮箱算两个账号，互相看不到。</p>'
         '<form class="webform" method="post" action="/app/import">'
         '<label>登录态（session.json 内容）</label>'
         '<textarea name="session" rows="4" placeholder="[{\"name\":\"JWT_WEB\",...}]"></textarea>'
@@ -913,7 +925,7 @@ def _run_job(job: dict) -> None:
     has_session = (_home(uid) / "data" / "session.json").exists()
     if not cr and not has_session:
         return _finish(int(job["id"]), False,
-                       "还没有登录态：用安卓 App 登录佳明后会自动传上来")
+                       "还没有登录态：用安卓 App 登录佳明后会自动传上来（App 的账号邮箱要和网页一致）")
     if cr:
         try:
             password = _dec(str(cr["nonce"]), str(cr["ct"]))
