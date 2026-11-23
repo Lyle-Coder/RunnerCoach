@@ -6578,7 +6578,7 @@ def run() -> int:
     _wapp = (ROOT / "server/webapp.py").read_text(encoding="utf-8")
     assert "def _import_post" in _wapp and '"/app/import"' in _wapp, \
         "网页版没有粘贴导入登录态的入口"
-    assert "还没有连接佳明，需要先连接一次" in _wapp
+    assert "还没有连接数据源，需要先连接一次" in _wapp
 
     # 网页版活动图：App 靠原生桥 GC.activity(aid) 出图，网页端没有桥，
     # 必须自己接住 data-aid 并渲染 /app/act；1080 宽的整页要用 iframe 缩放，

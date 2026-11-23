@@ -501,7 +501,7 @@ def _login_page(handler, qs: dict) -> None:
         'formnovalidate>发送验证码</button>'
         '<button class="btn primary" type="submit" name="action" value="login">登录</button>'
         '</div></form>'
-        '<div class="webk">首次登录自动注册。登录后可在「我的」里连接佳明账号，'
+        '<div class="webk">首次登录自动注册。登录后可在「我的」里连接数据源，'
         '服务器会为你在后台同步。账密用 AES-GCM 加密，可随时删除。</div></div>'
     )
     html = U.page("APP · 登录", "登录", "用邮箱验证码登录网页版", body,
@@ -674,12 +674,13 @@ def _me_page(handler, me, qs: dict) -> None:
         actions = (
             '<form method="post" action="/app/sync" style="display:inline">'
             '<button class="btn primary" type="submit">立即同步</button></form> '
-            '<a class="btn" href="/app/connect">更换账号 / 登录态</a>'
+            '<a class="btn" href="/app/connect">管理数据源</a>'
         )
     else:
-        src_html = ('<div class="kvline"><span>数据源</span><b>未连接</b></div>'
-                    '<div class="kvline"><span>登录态</span><b>没有</b></div>')
-        actions = '<a class="btn primary" href="/app/connect">连接佳明账号</a>'
+        # 现在支持佳明和高驰两个源，这里不能写死「佳明」——用户看到
+        # 「连接佳明账号」会以为高驰连不了。
+        src_html = '<div class="kvline"><span>数据源</span><b>未连接</b></div>'
+        actions = '<a class="btn primary" href="/app/connect">连接数据源</a>'
     stats = (f'<div class="kvline"><span>每日数据</span><b>{st["days"]} 天</b></div>'
              f'<div class="kvline"><span>活动</span><b>{st["acts"]} 条</b></div>'
              f'<div class="kvline"><span>上次同步</span><b>{H.escape(st["last"] or "—")}</b></div>')
@@ -850,7 +851,7 @@ def _connect_page(handler, me, qs: dict) -> None:
                  '不用再手动导。<a href="/groups">去加入小组</a></div>')
     body = (
         note + existing
-        + '<div class="card"><h3 style="margin:0 0 6px">佳明：账号密码（推荐）</h3>'
+        + '<div class="card"><h3 style="margin:0 0 6px">佳明：账号密码</h3>'
         '<p style="margin:0 0 8px;color:var(--muted);font-size:13px;line-height:1.7">'
         '填一次就好：之后数据会自动更新，不用每天来点同步，也不用一直开着 App。</p>'
         '<form class="webform" method="post" action="/app/connect">'
@@ -1534,14 +1535,14 @@ def _run_job(job: dict) -> None:
     # App 回传或用户在连接页粘贴。没有账密但有登录态时，照样能同步。
     has_session = (_home(uid) / "data" / "session.json").exists()
     if not cr and not has_session:
-        return _finish(int(job["id"]), False, "还没有连接佳明，需要先连接一次")
+        return _finish(int(job["id"]), False, "还没有连接数据源，需要先连接一次")
     if cr:
         try:
             password = _dec(str(cr["nonce"]), str(cr["ct"]))
         except Exception as e:      # noqa: BLE001
             # 主密钥换了 / 数据被改坏：重试一万次也不会好，只能重新连一次
             return _finish(int(job["id"]), False,
-                           "保存的账号读不出来了，需要重新连接佳明")
+                           "保存的账号读不出来了，需要重新连接")
         source, email = str(cr["source"]), str(cr["email"])
     else:
         password, source, email = "", "garmin", ""
