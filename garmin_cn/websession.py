@@ -20,7 +20,7 @@ import json
 import time
 from pathlib import Path
 
-MIN_GAP = 3 * 3600          # 同一份会话的最短重传间隔
+DEDUPE_GAP = 60             # 同一份会话的防抖间隔（秒）
 _META = "web_session_sent"
 
 
@@ -55,8 +55,12 @@ def push() -> dict:
         try:
             gap = time.time() - float(store.get_meta(_META + "_at") or 0)
         except (TypeError, ValueError):
-            gap = MIN_GAP
-        if gap < MIN_GAP:
+            gap = DEDUPE_GAP
+        # **内容变了就必须马上传**：佳明一个账号同一时间只认最新那份会话，
+        # App 一重新登录，服务器手上这份立刻 401。以前这里不管内容变没变都按
+        # 3 小时节流，于是新会话传不上去，网页版一直停在「登录态已过期」。
+        # 现在只对「同一份会话」做 1 分钟防抖。
+        if gap < DEDUPE_GAP:
             return {"ok": True, "skipped": "刚传过"}
 
         from . import account

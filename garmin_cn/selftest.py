@@ -6567,6 +6567,11 @@ def run() -> int:
     assert "websession" in _apisrc, "同步成功后没把登录态交给平台"
     _wssrc = (ROOT / "garmin_cn/websession.py").read_text(encoding="utf-8")
     assert "JWT_WEB" in _wssrc and "/v1/web/session" in _wssrc
+    # 佳明一个账号同时只认最新会话：App 一重新登录，服务器手上那份立刻 401。
+    # 所以「内容变了」必须马上传，只有同一份会话才做防抖。
+    assert "DEDUPE_GAP" in _wssrc and "prev == digest" in _wssrc, \
+        "登录态变化没立即回传，网页版会一直停在「已过期」"
+    assert "内容变了就必须马上传" in _wssrc
     _websrc = (ROOT / "server/app.py").read_text(encoding="utf-8")
     assert "def api_web_session" in _websrc and '"/v1/web/session"' in _websrc, \
         "服务端没有接登录态回传接口"
@@ -6586,6 +6591,9 @@ def run() -> int:
         "活动图的底图在网页版会 404"
     _wrender = (ROOT / "server/web_render.py").read_text(encoding="utf-8")
     assert 'kind == "act"' in _wrender, "渲染子进程不认识 act"
+    _wsync = (ROOT / "server/web_sync.py").read_text(encoding="utf-8")
+    assert "_prefetch_details" in _wsync, \
+        "同步时不缓存活动明细，登录态一过期活动图就打不开"
     # 登录框要有「显示密码」；续期要验证码时弹验证码框而不是登录框
     _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert _kt5.count("addShowPassword(box") >= 3, "佳明/高驰/小米登录框要都能显示密码"
