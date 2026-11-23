@@ -237,6 +237,15 @@ class GarminCNAuth:
         # 没有 responseStatus，直接把它抛出来，别吞成「登录失败：」。
         err = str(payload.get("errorText") or payload.get("error") or "").strip()
         if err:
+            if "captcha" in err.lower():
+                # 2026-11-24 起登录页上了 reCAPTCHA Enterprise（可见复选框），
+                # 人在页面上点一下才算「评估过」。程序拿不到那个 token，
+                # 密码登录这条路在 App 里彻底走不通，跟账号密码无关。
+                raise AuthError(
+                    "佳明现在要求人机验证（reCAPTCHA），密码只能由人在浏览器里"
+                    "点一次。账号和密码没有问题，旧会话到期前仍能同步。"
+                    "要在电脑上登录 connect.garmin.cn，把 Cookie 导出成 JSON，"
+                    "粘到网页版「连接数据源 → 导入登录态」。")
             raise AuthError(f"登录被拒绝：{err}")
 
         raise AuthError(
