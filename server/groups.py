@@ -1389,11 +1389,19 @@ def api_bingo(me, gid: int, query: dict) -> dict:
         if m["share_level"] == "off":
             raise GroupError(409, "你关闭了共享，Bingo 也不参与了")
         rows = c.execute(
-            "SELECT user_id, date, distance_m, duration_s, acts, plan_done, explorer"
+            # elevation_m 必须取：bingo 的「本周爬升 / 单日爬升 / 山地 12km」全靠它。
+            # 漏了这一列时 rows 里没有这个键，_extras 和 ranking.metrics 都读到 0，
+            # 于是所有爬升类卡片永远不亮（用户报：20km 爬升 1367m，爬升卡却没激活）。
+            "SELECT user_id, date, distance_m, duration_s, elevation_m,"
+            " acts, plan_done, explorer"
             " FROM group_daily WHERE group_id=? AND user_id=? AND date BETWEEN ? AND ?"
             " ORDER BY date", (gid, uid, wf.isoformat(), wt.isoformat())).fetchall()
         prev = c.execute(
-            "SELECT user_id, date, distance_m, duration_s, acts, plan_done, explorer"
+            # elevation_m 必须取：bingo 的「本周爬升 / 单日爬升 / 山地 12km」全靠它。
+            # 漏了这一列时 rows 里没有这个键，_extras 和 ranking.metrics 都读到 0，
+            # 于是所有爬升类卡片永远不亮（用户报：20km 爬升 1367m，爬升卡却没激活）。
+            "SELECT user_id, date, distance_m, duration_s, elevation_m,"
+            " acts, plan_done, explorer"
             " FROM group_daily WHERE group_id=? AND user_id=? AND date BETWEEN ? AND ?"
             " ORDER BY date", (gid, uid, pf.isoformat(), pt.isoformat())).fetchall()
 

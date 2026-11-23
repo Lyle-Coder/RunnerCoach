@@ -1082,6 +1082,11 @@ def main() -> int:
         _db.execute("INSERT INTO group_daily(group_id,user_id,date,distance_m,"
                     "duration_s,acts,updated_at) VALUES(?,?,?,0,0,0,0)",
                     (gid, 999001, _old_day))
+        # 再造一条「今天」的：这条断言要证明清理不会误伤近期数据，而旧写法
+        # 只造了 400 天前的行，却去查今天的行数——必然查不到，永远失败。
+        _db.execute("INSERT INTO group_daily(group_id,user_id,date,distance_m,"
+                    "duration_s,acts,updated_at) VALUES(?,?,?,0,0,0,0)",
+                    (gid, 999002, dt.date.today().isoformat()))
         _db.execute("INSERT INTO group_act(group_id,user_id,sid,date,kind,"
                     "distance_m,duration_s,created_at) VALUES(?,?,?,?,?,?,?,?)",
                     (gid, 999001, "oldact", _old200, "run", 6000, 1800,
@@ -1108,18 +1113,20 @@ def main() -> int:
 
     _real = groups.cleanup(dry_run=False)
     check("真删执行了", _real["ok"] and _real["dry_run"] is False, str(_real))
+    # rows 统计的是「待删的超期行」，今天那条不超期、不计入，所以归零是对的
     _after = groups.cleanup(dry_run=True)
     check("删完再统计归零",
           _after["rows"]["daily"] == 0 and _after["rows"]["act"] == 0
           and _after["rows"]["comment"] == 0, str(_after))
-    # 近期数据不能被误伤：上面几段造的今天/本周数据都还在
+    # 近期数据不能被误伤：上面造的「今天」那条必须还在
     _db = sqlite3.connect(str(_dbp))
     try:
-        _today = _db.execute("SELECT COUNT(*) FROM group_daily WHERE date=?",
-                             (dt.date.today().isoformat(),)).fetchone()[0]
+        _today = _db.execute(
+            "SELECT COUNT(*) FROM group_daily WHERE user_id=999002 AND date=?",
+            (dt.date.today().isoformat(),)).fetchone()[0]
     finally:
         _db.close()
-    check("近期数据没被删", _today >= 1, f"今天的行数 {_today}")
+    check("近期数据没被删", _today == 1, f"今天的行数 {_today}")
 
     # ---------------- 彻底删除已解散的组
     print("\n11. 彻底删除已解散的组")

@@ -1687,6 +1687,7 @@ def home_page() -> str:
                      + _nv("热量", _eat.get("kcal"), _nt.get("target_kcal"), "")
                      + _nv("蛋白", _eat.get("protein_g"), _nt.get("protein_g"), "g")
                      + _nv("碳水", _eat.get("carb_g"), _nt.get("carb_g"), "g")
+                     + _nv("脂肪", _eat.get("fat_g"), _nt.get("fat_g"), "g")
                      + '</div>')
 
     body_html = (f'<section class="rc-panel rc-body-panel">'
