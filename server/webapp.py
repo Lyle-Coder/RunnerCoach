@@ -466,6 +466,10 @@ def _banner(uid: int, msg: str = "") -> str:
         return ('<div class="webbanner warn">上次同步失败：'
                 + H.escape(str(j.get("message") or "未知原因"))
                 + '</div>')
+    if j.get("status") == "done" and int(j.get("finished") or 0) > time.time() - 180:
+        return ('<div class="webbanner">同步完成：'
+                + H.escape(str(j.get("message") or ""))
+                + '</div>')
     return ""
 
 
@@ -1067,8 +1071,11 @@ def handle_post(handler) -> None:
     if path == "/app/import":
         return _import_post(handler, form, me)
     if path == "/app/sync":
+        # 不写 msg：让顶部横幅去说真实状态。以前这里发一条固定的
+        # 「已加入同步队列」，任务 1 秒后失败也还是这句话，用户看到的永远是
+        # 「没反应」；现在排队/进行中/失败/完成都由 _banner 按 job 状态显示。
         enqueue(int(me["user_id"]))
-        return _redirect(handler, "/app?msg=" + urllib.parse.quote("已加入同步队列"))
+        return _redirect(handler, "/app")
     if path == "/app/forget":
         _del_creds(int(me["user_id"]))
         try:      # 连登录态一起删：只删账密、留着会话等于没删
