@@ -254,9 +254,10 @@ class _Handler(SimpleHTTPRequestHandler):
                     return self._json({"ok": True, "skip": "throttled"})
                 # 判据是「配过源」而不是「同步成功过」：刚装完 App 或清过数据
                 # 时 last_sync 还是空的，但会话票据在，这时候更该试一次。
-                # 以前这里只查 last_sync，等于「从没成功过就永远不再试」。
+                # Keep 只看本地登录态：last_sync_keep 可能是旧版本留下的残值，
+                # 用户从没登录过时不该因为它触发一次同步（更不该提示失效）。
                 if not (st.get_meta("last_sync") or st.get_meta("last_sync_coros")
-                        or st.get_meta("last_sync_keep")
+                        or A.keep_status().get("logged_in")
                         or A._garmin_session_ok() or A._coros_session_ok()):
                     return self._json({"ok": True, "skip": "no-source"})
                 st.set_meta("auto_sync_at", time.strftime("%Y-%m-%d %H:%M:%S"))
@@ -292,10 +293,47 @@ class _Handler(SimpleHTTPRequestHandler):
                 pass
         out = {"ok": True, "new": int(r.get("new") or 0),
                "sources": r.get("sources") or [], "failed": r.get("failed") or []}
-        if r.get("need_login"):
+        _nl = [str(x) for x in (r.get("need_login") or []) if x]
+        if _nl:
             # 静默过太久是这次报障的根源：会话过期 → 什么都没发生 → 用户以为
             # 「自动同步失效」。现在把这件事交给界面说清楚，让人知道该去重连。
-            out["need_login"] = r["need_login"]
+            #
+            # 但**同一条提示 6 小时内只给一次**：佳明 JWT 两小时就过期，
+            # 每次打开都弹会把首页变成告警栏。戳存 meta（不是 localStorage）——
+            # 本地服务每次启动换端口，localStorage 的 origin 跟着变，存不住。
+            # 手动下拉走原生 doSync，不经过这里，所以手动同步永远即时反馈。
+            _who = ",".join(sorted(_nl))
+            _now = time.time()
+            try:
+                st3 = Store(A.DB)
+                try:
+                    _raw = str(st3.get_meta("login_nag") or "")
+                    _ts, _, _prev = _raw.partition("|")
+                    try:
+                        _recent = (_prev == _who
+                                   and _now - float(_ts or 0) < 6 * 3600)
+                    except ValueError:
+                        _recent = False
+                    if _recent:
+                        _nl = []
+                    else:
+                        st3.set_meta("login_nag", f"{int(_now)}|{_who}")
+                finally:
+                    st3.conn.close()
+            except Exception:      # noqa: BLE001 - 写不进就照常提示
+                pass
+            if _nl:
+                out["need_login"] = _nl
+        else:
+            # 这次没有要重连的源：清戳，下次真过期时立刻提示。
+            try:
+                st4 = Store(A.DB)
+                try:
+                    st4.set_meta("login_nag", "")
+                finally:
+                    st4.conn.close()
+            except Exception:
+                pass
         return self._json(out)
 
     def _do_GET(self) -> None:

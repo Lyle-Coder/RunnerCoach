@@ -1140,6 +1140,102 @@ def _latest_run(store) -> dict | None:
         return None
 
 
+_CREDS_WARNED = False
+
+
+def _native_creds() -> dict:
+    """Android Keystore 里已保存的账密，只用于**静默续期**。
+
+    自动同步是纯 Python 触发的，拿不到 `MainActivity` 手里的 `secrets`；
+    但 Chaquopy 允许 Python 调 Android/Java 类，所以这里分两条路读：
+
+    1. 先试 `mm.runnercoach.app.Secrets`（debug 包 / 已加 keep 规则时最省事）。
+    2. **release 包会被 R8 改名**（实测 `Secrets` → `K4`），类名查不到；
+       于是直接按同一套约定读 `gc_secrets` 的 SharedPreferences，
+       用 AndroidKeyStore 的 `garmin_coach_master` 密钥解密。只用标准类，
+       R8 不会动，和 `Secrets.kt` 的格式一一对应（AES/GCM/NoPadding）。
+
+    桌面没有 `java` 模块 → 返回空 dict，调用方退回「只用 token」的旧行为。
+    **不落盘、不写 meta、不打日志**：只在本次同步的内存里用一次。
+    这也是手动下拉刷新早就在做的事（`doSync` 把账密传进 `sync()`），
+    自动同步以前没传，才会出现「账号明明是好的，每次打开都提示过期」。
+    """
+    try:
+        from java import jclass
+
+        ctx = jclass("com.chaquo.python.Python").getPlatform().getApplication()
+    except Exception:      # noqa: BLE001 - 桌面 / 非 Chaquopy 环境
+        return {}
+
+    def _s(fn):
+        try:
+            return fn() or None
+        except Exception:      # noqa: BLE001 - 解密失败就当没存
+            return None
+
+    # 路线 1：直接调 App 的 Secrets（类名未被混淆时）
+    try:
+        s = jclass("mm.runnercoach.app.Secrets")(ctx)
+        out = {
+            "garmin": (_s(s.email), _s(s.password)),
+            "coros": (_s(s.corosEmail), _s(s.corosPassword)),
+            "keep": (_s(s.keepMobile), _s(s.keepPassword)),
+        }
+        if any(v[0] or v[1] for v in out.values()):
+            return out
+    except Exception:      # noqa: BLE001 - release 改名后走路线 2
+        pass
+
+    # 路线 2：按 Secrets.kt 的存储约定直接解密
+    try:
+        prefs = ctx.getSharedPreferences("gc_secrets", 0)
+        Base64 = jclass("android.util.Base64")
+        Cipher = jclass("javax.crypto.Cipher")
+        GCMSpec = jclass("javax.crypto.spec.GCMParameterSpec")
+        ks = jclass("java.security.KeyStore").getInstance("AndroidKeyStore")
+        ks.load(None)
+        entry = ks.getEntry("garmin_coach_master", None)
+        if entry is None:
+            return {}
+        key = entry.getSecretKey()
+
+        def dec(iv_key: str, ct_key: str):
+            iv = prefs.getString(iv_key, None)
+            ct = prefs.getString(ct_key, None)
+            if not iv or not ct:
+                return None
+            c = Cipher.getInstance("AES/GCM/NoPadding")
+            c.init(2, key, GCMSpec(128, Base64.decode(iv, Base64.NO_WRAP)))
+            raw = c.doFinal(Base64.decode(ct, Base64.NO_WRAP))
+            return bytes(raw).decode("utf-8", "replace") or None
+
+        def plain(key_name: str):
+            try:
+                return prefs.getString(key_name, None) or None
+            except Exception:      # noqa: BLE001
+                return None
+
+        return {
+            "garmin": (plain("email"), _s(lambda: dec("iv", "pwd"))),
+            "coros": (plain("coros_email"),
+                      _s(lambda: dec("coros_iv", "coros_pwd"))),
+            "keep": (plain("keep_mobile"),
+                     _s(lambda: dec("keep_iv", "keep_pwd"))),
+        }
+    except Exception as e:      # noqa: BLE001 - Keystore 被清 / 格式变了
+        # 只记一次：这条链路坏了不会让同步崩，但会退回「过期只能提示」，
+        # 排查时要能在诊断日志里看到原因。不记凭据本身。
+        global _CREDS_WARNED
+        if not _CREDS_WARNED:
+            _CREDS_WARNED = True
+            try:
+                from . import diag
+                diag.log_exc("sync.creds", e)
+            except Exception:      # noqa: BLE001
+                pass
+        return {}
+
+
 def sync_all(days: int = 1) -> dict:
     """按用户已配置的数据源依次同步，返回新增活动数。
 
@@ -1149,13 +1245,17 @@ def sync_all(days: int = 1) -> dict:
     用户每次都得手动点「数据源 → 同步」。这里把三个源收成一个入口，两处
     复用，免得以后再加一个源要改两遍。
 
-    **只同步配过的源**：用 `last_sync*` 这几条 meta 判断。没配的源不试——
-    高驰要 24h 过期的 token、Keep 要登录态，白试一次要多等两秒。
+    **只同步有凭据的源**：看本地会话/登录态，不再靠 `last_sync*` 反推。
+    没配过的源不试——高驰要 24h 过期的 token、Keep 要登录态，白试一次
+    要多等两秒；更糟的是失败会被当成「登录已失效」去打扰用户。
 
-    不传凭据：三者都能用已存的 token。过期就静默失败，等用户下次手动登录。
-    这是后台能做的极限——我们不能在后台存用户的密码。
+    **能续期就续期**：Android 上从 Keystore 取已存账密传给各源，佳明 JWT
+    过期、Keep token 过期都能在后台静默重登一次。只有确实需要验证码/密码
+    错误时才把源放进 `need_login`。
     """
     from .store import Store
+
+    creds = _native_creds()
 
     store = Store(DB)
     try:
@@ -1166,15 +1266,35 @@ def sync_all(days: int = 1) -> dict:
         for name, fn, key, alive in (
             ("garmin", sync, "last_sync", _garmin_session_ok),
             ("coros", coros_sync, "last_sync_coros", _coros_session_ok),
-            ("keep", keep_sync, "last_sync_keep", None),
+            # Keep 的 alive 以前是 None：只认「同步成功过」的 last_sync_keep。
+            # 这有两个坑：①刚登录、还没同步过 → 永远不试；②从没登录过但
+            # 库里留着一个空的 last_sync_keep → 也不该试，却会在某些旧库里
+            # 被当成「配过」。现在判据改成**本地真有登录凭据**，没登录就不碰。
+            ("keep", keep_sync, "last_sync_keep",
+             lambda: bool(keep_status().get("logged_in"))),
         ):
-            # 判据是「配过这个源」，不是「同步成功过」：刚装完 App 或刚清空
-            # 数据时 last_sync 还是空的，但会话票据在，这时候更该试一次。
-            # 以前只看 last_sync，等于「从没成功过 → 永远不再试」，死锁。
-            if not (store.get_meta(key) or (alive and alive())):
+            # 判据：**有会话或有账密**。以前是 `last_sync* or 有票据`，于是
+            # 「从没登录过、但库里留着一个空/旧 last_sync_keep」也会被当成
+            # 配过源去试一次，失败后把 Keep 塞进 need_login——用户明明没登录
+            # Keep，每次打开 App 都被提示「Keep 登录已失效」。
+            # 现在：有 alive 判据的源（三个都有）只看**本地会话或已存账密**；
+            # 两者都没有就是用户自己退出/没配过，不该再当成「过期」反复提示。
+            _e, _p = creds.get(name) or (None, None)
+            if alive is not None:
+                if not (alive() or (_e and _p)):
+                    continue
+            elif not store.get_meta(key):
                 continue
             try:
-                r = fn(days=days)
+                if name == "garmin":
+                    _e, _p = creds.get("garmin") or (None, None)
+                    r = fn(days=days, email=_e, password=_p)
+                elif name == "coros":
+                    _e, _p = creds.get("coros") or (None, None)
+                    r = fn(days=days, email=_e or "", password=_p or "")
+                else:
+                    _m, _p = creds.get("keep") or (None, None)
+                    r = fn(days=days, mobile=_m or "", password=_p or "")
             except Exception:      # noqa: BLE001 - 一个源坏了不该影响别的
                 failed.append(name)
                 continue
