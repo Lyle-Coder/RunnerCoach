@@ -1436,8 +1436,14 @@ def run() -> int:
     # 缺任何一张退回纯 SVG（半套底图会在某个结局上亮错灯，比没有更糟）。
     _pd = Path(tempfile.mkdtemp())
     _old_pd = RU.PLATE_DIR
+    _old_ep = RU._ending_plate
     try:
         RU.PLATE_DIR = _pd          # 空目录：什么图都没有
+        # `_ending_scene` 的第一优先级是「每个结局自己的图」
+        # （`content/ending_<key>.*`，打包在 contentpack 里）。这里要测的是
+        # 第二条「两版底图 + 矢量脚印」，所以必须把它屏蔽掉——否则
+        # contentpack 里一有图，这个用例就永远走不到被测分支。
+        RU._ending_plate = lambda key: ""
         assert RU._plates() == ("", ""), "没有底图时不该报出底图"
         assert '<div class="escene">' not in RU._ending_scene("arrive"), \
             "没有底图却走了底图分支"
@@ -1471,12 +1477,19 @@ def run() -> int:
         assert RU._cal() == RU.CAL_DEFAULT, "越界的校准值没被丢掉（会画到画外）"
     finally:
         RU.PLATE_DIR = _old_pd
+        RU._ending_plate = _old_ep
         shutil.rmtree(_pd, ignore_errors=True)
 
     # 每张结局自己的图（现在用的）：脚印和道具都在图里，不能再叠矢量层
     _pd2 = Path(tempfile.mkdtemp())
     _old2 = RU.PLATE_DIR
+    # 素材是按需下发的，`_ending_plate` 先问 contentpack。机器上只要下载过
+    # 一次图，这个用例就会拿真实素材跟临时目录比，永远对不上——所以把
+    # contentpack 一起屏蔽，只测「临时目录里有没有图」这一层。
+    from garmin_cn import contentpack as _CP
+    _old_ce = _CP.exists
     try:
+        _CP.exists = lambda name: False
         RU.PLATE_DIR = _pd2
         assert RU._ending_plate("arrive") == "", "没有图却报出图"
         (_pd2 / "ending_arrive.jpg").write_bytes(b"x")
@@ -1490,6 +1503,7 @@ def run() -> int:
         assert RU._ending_plate("nope") == "", "不认识的结局键不该去拼文件名"
     finally:
         RU.PLATE_DIR = _old2
+        _CP.exists = _old_ce
         shutil.rmtree(_pd2, ignore_errors=True)
 
     # 部署脚本必须是 LF：Windows 上写文件默认 CRLF，`set -eu\r` 在 Linux 上
@@ -6651,6 +6665,16 @@ def run() -> int:
     assert 'back=("返回我的", "/app/me")' in _wsapp, \
         "连接数据源页没有返回按钮"
     assert '"/app/me?msg=' in _wsapp, "保存后跳到今日页，用户在「我的」里找不到自己刚做的事"
+
+    # 「正在同步…」不能无限转：任务排队超过 3 分钟还挂着，多半是 worker 卡住，
+    # 再转下去就是骗人；同时 worker 要清理卡死的 running 记录。
+    assert "began and time.time() - began < 180" in _wsapp, \
+        "同步状态没有超时，任务卡住会一直显示「正在同步」"
+    assert "def _reset_stuck" in _wsapp and "STUCK_AFTER" in _wsapp, \
+        "卡住的 running 任务没人清理"
+    # 计划页的「推到佳明手表」指向 App 本机接口，网页上点了 404。
+    assert 'action="/__plan/push"' in _wsapp, "计划推送表单还指向只认本机的 /__plan/push"
+    assert "def _plan_push_post" in _wsapp and '"/app/plan/push"' in _wsapp
 
     # ---- 多台中转机 + 无感静默（2026-11-23）--------------------------------
     # RC_RELAY_USER 支持多个邮箱：一台手机被系统冻结时另一台能接。

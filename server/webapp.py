@@ -422,6 +422,8 @@ def _webify(html: str) -> str:
         ('href="/me"', 'href="/app/me"'),
         ('href="/privacy"', 'href="/app/privacy"'),
         ('action="/__sports"', 'action="/app/sports"'),
+        # 计划页的「推到佳明手表」原来指向 App 的本机接口，网页上点了 404。
+        ('action="/__plan/push"', 'action="/app/plan/push"'),
         ('href="/sports"', 'href="/app/me"'),
         ('href="/files"', 'href="/app/me"'),
         ('href="/ai"', 'href="/app/me"'),
@@ -906,6 +908,27 @@ def _connect_page(handler, me, qs: dict) -> None:
     _send_html(handler, _shell(html, "/app/me"))
 
 
+def _plan_push_post(handler, me) -> None:
+    """把本周训练推到佳明日历。
+
+    App 走本机的 `/__plan/push`（还带 token 校验），网页版已经有会话鉴权，
+    这里直接调 `appapi.plan_push`，不复制业务逻辑。
+    """
+    from garmin_cn import appapi as A
+
+    try:
+        r = A.plan_push(False)
+    except Exception as e:      # noqa: BLE001
+        return _redirect(handler, "/app/plan?msg="
+                         + urllib.parse.quote(f"推送失败：{type(e).__name__}"))
+    if r.get("ok"):
+        msg = (f'已发送 {r.get("created")} 节训练到佳明日历'
+               if r.get("created") else "没有需要推送的课")
+    else:
+        msg = r.get("error") or "推送失败"
+    _redirect(handler, "/app/plan?msg=" + urllib.parse.quote(str(msg)[:120]))
+
+
 def _sports_post(handler, form: dict, me) -> None:
     """保存运动设置（心率区间 / FTP）。
 
@@ -1046,11 +1069,16 @@ def _fresh_line(uid: int) -> str:
     只显示时间，不显示原因——用户不需要知道中转机在不在线。
     """
     at = _last_update(uid)
+    j = _job_latest(uid)
+    # 「正在同步…」只在**真的刚开始**时显示。任务排队超过 3 分钟还挂着，
+    # 多半是 worker 卡住或没人领，再转下去就是骗人——那时如实给时间，
+    # 让人知道看到的是什么时候的数据。
+    if j.get("status") in ("pending", "running"):
+        began = int(j.get("started") or j.get("created") or 0)
+        if began and time.time() - began < 180:
+            return '正在同步…'
     if not at:
         return ""
-    j = _job_latest(uid)
-    if j.get("status") in ("pending", "running"):
-        return '正在同步…'
     return f'数据更新于 <b>{at}</b>'
 
 
@@ -1596,6 +1624,25 @@ def _run_job(job: dict) -> None:
     return _finish(int(job["id"]), False, msg, status="wait")
 
 
+STUCK_AFTER = 600        # 一条任务跑超过 10 分钟就算卡住
+
+
+def _reset_stuck() -> None:
+    """把卡住的 running 任务放回 pending。
+
+    subprocess 有 300 秒超时，正常不会到 10 分钟；真到了就是进程异常退出
+    （重启、被 OOM 杀掉）留下的僵尸记录。不清理的话，`_claim` 永远拿不到它，
+    但页面上 `_fresh_line` 看到最新的 running 就会一直显示「正在同步」。
+    """
+    try:
+        with _A().db() as c:
+            c.execute("UPDATE web_jobs SET status='pending', started=0"
+                      " WHERE status='running' AND started < ?",
+                      (int(time.time()) - STUCK_AFTER,))
+    except sqlite3.Error:
+        pass
+
+
 def _worker_loop() -> None:
     while True:
         # 预热：会话快过期就请中转机提前续（未配中转机 / 不在时段时直接返回）
@@ -1605,6 +1652,7 @@ def _worker_loop() -> None:
             pass
         job = _claim()
         if not job:
+            _reset_stuck()
             time.sleep(5)
             continue
         try:
@@ -1699,6 +1747,8 @@ def handle_post(handler) -> None:
         return _redirect(handler, "/app/login")
     if path == "/app/connect":
         return _connect_post(handler, form, me)
+    if path == "/app/plan/push":
+        return _plan_push_post(handler, me)
     if path == "/app/sports":
         return _sports_post(handler, form, me)
     if path == "/app/import":
