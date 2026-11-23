@@ -1851,8 +1851,11 @@ _AUTO_SYNC_JS = """<script>(function(){
      .then(function(d){
        if(!d)return;
        if(d.need_login&&d.need_login.length){
+         // 必须点名数据源：只说「登录已过期」会被理解成 App 账号出问题。
+         var names={garmin:'佳明',coros:'高驰',keep:'Keep'};
+         var who=d.need_login.map(function(n){return names[n]||n;}).join('、');
          var a=document.createElement('a');
-         a.href='/me';a.textContent='登录已过期，点这里重新连接';
+         a.href='/me';a.textContent=who+'登录已失效，点这里重新连接';
          a.style.cssText='color:#7fd1ff;text-decoration:underline';
          tip('',0).appendChild(a);
          return;
@@ -2575,8 +2578,10 @@ def me_page() -> str:
     except Exception:
         VER = "—"
 
-    g = "已登录" if st.get("logged_in") else "未登录"
-    c_ok = "已登录" if c.get("logged_in") else "未连接"
+    # 「已保存登录」而不是「已登录」：这里只看本地凭据文件在不在，不联网。
+    # 写「已登录」会被读成「现在还有效」，同步一旦报 401 就像 App 在乱说。
+    g = "已保存登录" if st.get("logged_in") else "未登录"
+    c_ok = "已保存登录" if c.get("logged_in") else "未连接"
     try:
         _sleep_ok = bool(A.coros_mcp_status().get("authorized"))
     except Exception:
@@ -2584,18 +2589,19 @@ def me_page() -> str:
     # 睡眠授权并进高驰这一行：登录成功时会直接问一次意向，没同意也能从
     # 账号卡片里补，不必再单独占一行「高驰睡眠」。
     c_sub = (f"{c_ok} · {'睡眠已授权' if _sleep_ok else '睡眠未授权'}"
-             + (" · 可查看或更换账号" if c_ok == "已登录" else " · 登录后可同步活动"))
+             + (" · 可查看或更换账号" if c_ok == "已保存登录"
+                else " · 登录后可同步活动"))
     # 小米/华为只检查本地凭据文件在不在，刻意不联网验证。写「已登录」会被
     # 读成「凭据现在还有效」，于是同步报 401 时看着像 App 自相矛盾。
     m_ok = "已保存登录信息" if m.get("logged_in") else "未连接"
     h_ok = "已保存登录信息" if h.get("logged_in") else "未连接"
     try:
-        k_ok = "已登录" if A.keep_status().get("logged_in") else "未连接"
+        k_ok = "已保存登录" if A.keep_status().get("logged_in") else "未连接"
     except Exception:
         k_ok = "未连接"
     # Keep 只有运动摘要（没有轨迹/分圈），文案里先说清楚，免得用户以为漏了图
     k_sub = (f"{k_ok} · 仅同步运动摘要（无轨迹）"
-             + (" · 可查看或更换账号" if k_ok == "已登录" else ""))
+             + (" · 可查看或更换账号" if k_ok == "已保存登录" else ""))
     bs = A.body_sources()
     pref = bs.get("preferred", "mi")
     pref_label = bs.get("labels", {}).get(pref, pref)
@@ -2644,7 +2650,7 @@ def me_page() -> str:
 
     sources = (row("G", "佳明 Garmin",
                    f"{g} · {esc(_mask_email(st.get('email')) or '未设置账号')}"
-                   + (" · 可查看或更换账号" if g == "已登录" else ""),
+                   + (" · 可查看或更换账号" if g == "已保存登录" else ""),
                    act="login:garmin") +
                row("C", "高驰 COROS", c_sub,
                    act="login:coros", tone="b") +
