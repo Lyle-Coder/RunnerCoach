@@ -6610,6 +6610,18 @@ def run() -> int:
         "中转链路不许打印任何东西（会带出别人的密码）"
     _bgsrc = (ROOT / "garmin_cn/bg.py").read_text(encoding="utf-8")
     assert "relay" in _bgsrc and "R.poll()" in _bgsrc, "后台唤醒没去领中转任务"
+
+    # 预热：会话快过期前请中转机提前续，网页才能「一打开就是新的」。
+    # 三条约束（只服务活跃用户 / 白天 / App 活着就让路）都要在代码里。
+    for _need in ("def preheat_tick", "PREHEAT_AHEAD", "PREHEAT_SEEN",
+                  "PREHEAT_APP_ALIVE", "web_seen", "web_push", "def _jwt_exp"):
+        assert _need in _wsapp, f"预热缺 {_need}"
+    assert "preheat_tick()" in _wsapp.split("def _worker_loop")[1][:400], \
+        "worker 循环没调预热"
+    assert "note_device_push" in _wsapp and "note_device_push(uid)" in _websrc, \
+        "App 推会话时没打点，预热会和它互踢"
+    assert "def _fresh_line" in _wsapp and "数据更新于" in _wsapp, \
+        "页面没显示数据更新时间"
     # 登录框要有「显示密码」；续期要验证码时弹验证码框而不是登录框
     _kt5 = (KT / "MainActivity.kt").read_text(encoding="utf-8")
     assert _kt5.count("addShowPassword(box") >= 3, "佳明/高驰/小米登录框要都能显示密码"

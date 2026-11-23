@@ -95,6 +95,14 @@ def init() -> None:
                 finished INTEGER NOT NULL DEFAULT 0
             )""")
         c.execute("CREATE INDEX IF NOT EXISTS relay_jobs_st ON relay_jobs(status)")
+        # 最近打开网页的时间：预热只服务「最近 24 小时真的在用」的人，
+        # 不活跃的账号不去刷新会话，省登录次数也省风控风险。
+        c.execute("""CREATE TABLE IF NOT EXISTS web_seen(
+            user_id INTEGER PRIMARY KEY, at INTEGER NOT NULL)""")
+        # 设备（手机 App）最近一次推会话的时间：App 还活着就让它自己续，
+        # 预热让路，避免两边互相顶掉会话。
+        c.execute("""CREATE TABLE IF NOT EXISTS web_push(
+            user_id INTEGER PRIMARY KEY, at INTEGER NOT NULL)""")
         # 进程崩在登录中途时，任务会永远卡在 running，放回 pending 重试
         c.execute("UPDATE relay_jobs SET status='pending', started=0 "
                   "WHERE status='running' AND started < ?",
@@ -185,11 +193,41 @@ def _del_creds(uid: int) -> None:
         pass
 
 
+def _touch_seen(uid: int) -> None:
+    """记一次「这个人刚打开过网页」。5 分钟内不重复写，避免每屏一次 UPDATE。"""
+    try:
+        now = int(time.time())
+        with _A().db() as c:
+            r = c.execute("SELECT at FROM web_seen WHERE user_id=?",
+                          (int(uid),)).fetchone()
+            if r and now - int(r["at"]) < 300:
+                return
+            c.execute("INSERT INTO web_seen(user_id,at) VALUES(?,?) "
+                      "ON CONFLICT(user_id) DO UPDATE SET at=excluded.at",
+                      (int(uid), now))
+    except sqlite3.Error:
+        pass
+
+
+def note_device_push(uid: int) -> None:
+    """记一笔「手机 App 刚推过会话」。预热看到这个就让路。"""
+    try:
+        with _A().db() as c:
+            c.execute("INSERT INTO web_push(user_id,at) VALUES(?,?) "
+                      "ON CONFLICT(user_id) DO UPDATE SET at=excluded.at",
+                      (int(uid), int(time.time())))
+    except sqlite3.Error:
+        pass
+
+
 def _me(handler):
     try:
-        return _M().me_of(handler.headers.get("Cookie"))
+        me = _M().me_of(handler.headers.get("Cookie"))
     except Exception:      # noqa: BLE001
         return None
+    if me:
+        _touch_seen(int(me["user_id"]))
+    return me
 
 
 def _set_cookie(token: str) -> str:
@@ -272,6 +310,9 @@ body{padding-bottom:calc(64px + env(safe-area-inset-bottom))!important}
 .webform .webrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
 .webform .webrow .btn{flex:1}
 .webk{font-size:11px;color:var(--ink-3,#7A8DA4);line-height:1.7;margin-top:10px}
+.webfresh{font-size:12px;color:var(--ink-3,#7A8DA4);padding:0 2px 8px;
+  display:flex;align-items:center;gap:6px}
+.webfresh b{color:var(--ink,#E9F0F8);font-weight:600}
 """
 
 
@@ -315,8 +356,12 @@ def _webify(html: str) -> str:
     return html
 
 
-def _shell(html: str, active: str, banner: str = "") -> str:
+def _shell(html: str, active: str, banner: str = "", fresh: str = "") -> str:
     html = _webify(html)
+    if fresh:
+        # 一行灰字挂在正文最上面：「旧」这件事要明确可见，别让人以为页面坏了
+        line = f'<div class="webfresh">{fresh}</div>'
+        banner = line + banner
     if banner and "<main>" in html:
         html = html.replace("<main>", "<main>" + banner, 1)
     elif banner:
@@ -848,21 +893,63 @@ def _render(uid: int, kind: str, qs: dict) -> str:
     return p.stdout
 
 
+def _last_update(uid: int) -> str:
+    """最近一次成功同步的时间（HH:MM），没有就返回空串。"""
+    try:
+        with _A().db() as c:
+            r = c.execute("SELECT finished FROM web_jobs WHERE user_id=? AND "
+                          "status='done' ORDER BY id DESC LIMIT 1",
+                          (int(uid),)).fetchone()
+        if r and r["finished"]:
+            return time.strftime("%H:%M", time.localtime(int(r["finished"])))
+    except sqlite3.Error:
+        pass
+    return ""
+
+
+def _fresh_line(uid: int) -> str:
+    at = _last_update(uid)
+    if not at:
+        return ""
+    j = _job_latest(uid)
+    if j.get("status") in ("pending", "running"):
+        return '正在同步…'
+    return f'数据更新于 <b>{at}</b>'
+
+
+def _auto_sync(uid: int) -> None:
+    """打开页面就顺手排一次同步（15 分钟内不重复）。
+
+    网页版没有后台定时器，用户不点「立即同步」就一直是旧数据。打开就排队，
+    配合「任务完成自动刷新」，观感上就是「一进来就是新的」。
+    代价只有一次 job 记录，不值得为它加更多状态。
+    """
+    j = _job_latest(uid)
+    if j.get("status") in ("pending", "running"):
+        return
+    if time.time() - int(j.get("finished") or 0) < 900:
+        return
+    enqueue(uid)
+
+
 def _today_page(handler, me, qs: dict) -> None:
     uid = int(me["user_id"])
     msg = (qs.get("msg") or [""])[0]
     if not _creds(uid) and not (_home(uid) / "data" / "session.json").is_file():
         return _redirect(handler, "/app/connect")
+    _auto_sync(uid)
     html = _render(uid, "today", {})
-    html = _shell(html, "/app", _banner(uid, msg))
+    html = _shell(html, "/app", _banner(uid, msg), _fresh_line(uid))
     html = html.replace("</body>", _sync_on_load(handler, uid) + "</body>", 1)
     _send_html(handler, html)
 
 
 def _history_page(handler, me, qs: dict) -> None:
     uid = int(me["user_id"])
+    _auto_sync(uid)
     html = _render(uid, "history", qs)
-    _send_html(handler, _shell(html, "/app/history", _banner(uid)))
+    _send_html(handler, _shell(html, "/app/history", _banner(uid),
+                               _fresh_line(uid)))
 
 
 def _view_page(handler, me, qs: dict) -> None:
@@ -1047,6 +1134,77 @@ def relay_finish(job_id: int, cookies=None, error: str = "") -> None:
     enqueue(uid)
 
 
+PREHEAT_AHEAD = 40 * 60        # 剩余有效期不足 40 分钟就提前续
+PREHEAT_HOURS = (7, 23)        # 只在白天预热，夜里没人看，不刷
+PREHEAT_SEEN = 24 * 3600       # 只服务最近 24 小时打开过网页的人
+PREHEAT_APP_ALIVE = 6 * 3600   # 手机 App 6 小时内推过会话，预热让路
+_PREHEAT_AT = 0.0
+
+
+def _jwt_exp(path) -> int:
+    """读会话里 JWT_WEB 的 exp。拿不到就当「已过期」，让调用方去刷新。"""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    for c in data:
+        if not isinstance(c, dict) or c.get("name") != "JWT_WEB":
+            continue
+        parts = str(c.get("value") or "").split(".")
+        if len(parts) < 2:
+            continue
+        raw = parts[1] + "=" * (-len(parts[1]) % 4)
+        try:
+            payload = json.loads(base64.urlsafe_b64decode(raw))
+            return int(payload.get("exp") or 0)
+        except Exception:      # noqa: BLE001
+            return 0
+    return 0
+
+
+def preheat_tick(force: bool = False) -> int:
+    """会话快过期时，请中转机提前续一次，让网页「一打开就能同步」。
+
+    三条约束，都是为了别把佳明账号刷出风控：
+      1. 只服务最近 24 小时打开过网页的人；
+      2. 只在 07:00–23:00；
+      3. 手机 App 6 小时内推过会话就让路（它自己会续，两边别互踢）。
+    """
+    global _PREHEAT_AT
+    if not relay_enabled():
+        return 0
+    now = time.time()
+    if not force and now - _PREHEAT_AT < 300:
+        return 0
+    _PREHEAT_AT = now
+    if not force and not (PREHEAT_HOURS[0] <= time.localtime(now).tm_hour
+                          < PREHEAT_HOURS[1]):
+        return 0
+    try:
+        with _A().db() as c:
+            rows = c.execute("SELECT user_id FROM web_creds WHERE source='garmin'"
+                             ).fetchall()
+            seen = {int(r["user_id"]): int(r["at"])
+                    for r in c.execute("SELECT user_id,at FROM web_seen")}
+            push = {int(r["user_id"]): int(r["at"])
+                    for r in c.execute("SELECT user_id,at FROM web_push")}
+    except sqlite3.Error:
+        return 0
+    queued = 0
+    for row in rows:
+        uid = int(row["user_id"])
+        if now - seen.get(uid, 0) > PREHEAT_SEEN:
+            continue
+        if now - push.get(uid, 0) < PREHEAT_APP_ALIVE:
+            continue
+        exp = _jwt_exp(_home(uid) / "data" / "session.json")
+        if exp and exp - now > PREHEAT_AHEAD:
+            continue
+        if request_relay(uid):
+            queued += 1
+    return queued
+
+
 def relay_latest(uid: int) -> dict:
     """给界面看的中转状态：等多久、上次成功/失败。"""
     try:
@@ -1152,6 +1310,11 @@ def _run_job(job: dict) -> None:
 
 def _worker_loop() -> None:
     while True:
+        # 预热：会话快过期就请中转机提前续（未配中转机 / 不在时段时直接返回）
+        try:
+            preheat_tick()
+        except Exception:      # noqa: BLE001 - 预热坏了不能拖死同步队列
+            pass
         job = _claim()
         if not job:
             time.sleep(5)

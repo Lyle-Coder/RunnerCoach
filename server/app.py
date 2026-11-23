@@ -768,6 +768,8 @@ def api_web_session(row: sqlite3.Row, body: dict) -> dict:
     except OSError:
         pass
     os.replace(tmp, path)
+    # 记一笔「手机刚推过」：预热逻辑看到就让路，别和 App 互踢会话
+    webapp.note_device_push(uid)
     webapp.enqueue(uid)
     return {"ok": True, "cookies": len(raw)}
 
