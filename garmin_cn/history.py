@@ -537,8 +537,23 @@ def history_page(qs: dict) -> str:
                    aid=str(i.get("id") or ""), tone="b")
             for i in items)
         if not rows:
-            rows = ('<div class="empty">这段时间没有活动记录。可以试试扩大日期范围，'
-                    '或回到「今日」下拉同步。</div>')
+            # 空态即入口（引导设计 §5）：筛选筛空了和一条记录都没有是两件事，
+            # 前者给「清除筛选」，后者给「去连接数据源」，别都写「暂无数据」。
+            _any = int(total.get("count") or 0) > 0
+            _filtered = _any and (bool(start or end) or stats_kind != "run")
+            if not _any:
+                rows = ('<div class="empty">还没有活动记录。</div>'
+                        '<a class="gaprow" href="/me">还没有连接数据源'
+                        '<b>去连接 →</b></a>')
+            elif _filtered:
+                rows = (f'<div class="empty">这段时间没有{sport_name}记录。'
+                        '可以扩大日期范围，或换个运动类型。</div>'
+                        '<a class="gaprow" href="/history?mode=list">清除筛选'
+                        '<b>看全部活动 →</b></a>')
+            else:
+                rows = ('<div class="empty">这段时间没有更多活动了。</div>'
+                        '<a class="gaprow" href="/history?mode=list">回到最新'
+                        '<b>看最近的活动 →</b></a>')
 
         pager = '<div class="pager">'
         if offset:

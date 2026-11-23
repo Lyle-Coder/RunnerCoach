@@ -4,7 +4,7 @@
 以前每个页面各写一份 CSS：文件列表首页 max-width 560、历史 680、AI 720、
 看板 1120，字号/圆角/间距都不一样；功能又全挤在右上角 ⋮ 里。现在统一成：
 
-  原生底部 4 个 tab（今日 / 历史 / 教练 / 我的）
+  原生底部 5 个 tab（今日 / 教练 / 小组 / 历史 / 我的）
     └ 每个 tab 对应一个同源网页，都用本模块的 page() 外壳
        ├ 统一的 page-head（分区名 + 标题 + 状态 chip）
        ├ 分区 sec + 卡片/网格，信息分块而不是一长条堆在中间
@@ -24,6 +24,7 @@ from pathlib import Path
 from . import brand as BR
 from . import design as D
 from . import screen as SC
+from .icons import ico
 
 # 与 android values/colors.xml、aiui.CSS、report.CSS 保持同一组色值。
 # 这套 token 是双向的唯一来源：改这里要同步 aiui.py 的 :root 与 MainActivity 的
@@ -281,6 +282,15 @@ a.chip{min-height:44px;padding:0 14px;justify-content:center}
 .btn.danger:active{background:var(--bad-soft)}
 .btn:active{opacity:.85}
 .empty{padding:20px 4px;font-size:14px;color:var(--muted);line-height:1.8}
+/* 行内空态（引导设计 §5 / 设计语言 §4.15）：44px 虚线行，左「为什么空」、
+   右「点这里能做什么」。空态必须带动作，只写一句「暂无数据」等于把用户
+   留在原地。整行可点，命中区就是 44，不靠文字撑。 */
+.gaprow{display:flex;align-items:center;gap:12px;min-height:44px;
+  margin-top:12px;padding:0 12px;border:1px dashed var(--line-strong);
+  border-radius:var(--r-2);font-size:var(--fs-body,14px);color:var(--ink-3);
+  text-decoration:none}
+.gaprow b{margin-left:auto;font-weight:600;color:var(--brand-ink);white-space:nowrap}
+.gaprow:active{background:var(--surface-2)}
 .link-act{display:inline-flex;align-items:center;min-height:44px;
   color:var(--brand-ink);text-decoration:none}
 .foot{margin-top:30px;padding-top:14px;border-top:1px solid var(--line2);
@@ -740,6 +750,19 @@ input:focus,select:focus{outline:none;border-color:var(--brand);
 .goalrow .gbody{padding:2px 14px 12px;background:var(--surface-2);
   border:1px solid var(--line);border-top:0;
   border-radius:0 0 var(--r-2) var(--r-2)}
+/* 还没定目标时的一键入口气：和 goalrow 同高同底，只是右边多一个按钮。
+   左列两行（标题 + 建议），按钮跨两行居中；360 宽下按钮 ≤92px，
+   副文用省略号兜底，不把按钮挤出去。 */
+.goalcta{display:grid;grid-template-columns:minmax(0,1fr) auto;
+  grid-template-rows:auto auto;column-gap:12px;align-items:center;
+  min-height:56px;margin-bottom:12px;padding:8px 12px 8px 14px;
+  background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-2)}
+.goalcta .gk{font-size:var(--fs-lead,15px);font-weight:600;color:var(--ink);
+  white-space:nowrap}
+.goalcta .gs{grid-column:1;font-size:var(--fs-cap,12px);color:var(--ink-3);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.goalcta .btn.primary{grid-column:2;grid-row:1 / 3;white-space:nowrap}
 
 /* 小组页的「衫 / 目标 / 结对 / 预言」四行。
    类名特意用 .kvrows 而不是 .wk——.wk 已经是计划页周课表的容器，
@@ -1427,8 +1450,9 @@ def _upcoming_html(days: int = 30, limit: int = 3) -> str:
 
         out.append(
             '<div class="rc-up">'
-            f'<div class="rc-up-t"><div class="tt">{esc(title)}</div>'
-            f'<div class="ss">{esc(sub)}</div></div>'
+            f'<a class="rc-up-t" href="/event?slug={esc(slug)}">'
+            f'<div class="tt">{esc(title)}</div>'
+            f'<div class="ss">{esc(sub)}</div></a>'
             f'<div class="rc-up-r"><span class="pill {tone}">{esc(pill)}</span>'
             '<form method="post" action="/__event/remind" style="margin:0">'
             f'<input type="hidden" name="slug" value="{esc(slug)}">'
@@ -1437,7 +1461,7 @@ def _upcoming_html(days: int = 30, limit: int = 3) -> str:
             f'<input type="hidden" name="on" value="{"0" if on else "1"}">'
             f'<button class="rc-bell{" on" if on else ""}" type="submit" '
             f'aria-label="{"取消提醒" if on else "设为提醒"}">'
-            f'{"🔔" if on else "🔕"}</button></form></div></div>')
+            f'{ico("bell" if on else "bell-off", 16)}</button></form></div></div>')
     return ('<section class="rc-panel rc-up-panel">'
             '<div class="rc-panel-hd"><span class="rc-eyebrow lvl3">赛事提醒</span></div>'
             + "".join(out) + "</section>")
@@ -1579,6 +1603,19 @@ def home_page() -> str:
               '<div class="rc-advice-list">' + "".join(
         f'<span class="pill ghost">{esc(x)}</span>' for x in _pills[:3])
               + '</div></div>')
+    # L3 口径：默认收起。分数是相对值，用户最容易问「75 是高还是低」——
+    # 依据写在卡片里（para 那句对比），定义收进折叠，不占首屏。
+    if _sc0 is not None:
+        how = ('<details class="fold"><summary>恢复度怎么算的'
+               '<span class="fx">›</span></summary><div class="foldbody">'
+               '<p class="note">睡眠、HRV、静息心率、近期负荷四项各按权重算分，'
+               '再和你自己近 28 天的基线比，满分 100。分数只在同一个人不同周之间'
+               '可比：今天 75 比上周 81 低，说明该收着练，不代表别人比你强。</p>'
+               '</div></details>')
+    else:
+        # 首次无数据：空态就是入口，不留一块什么都点不了的空白。
+        how = ('<a class="gaprow" href="/me">还没有今日数据'
+               '<b>去连接数据源 →</b></a>')
     hero = (f'<section class="rc-panel rc-hero-panel">'
             f'<div class="rc-hero"><div class="rc-hero-main">'
             f'<div class="rc-hero-t"><i class="rc-dot {_tone}"></i>'
@@ -1586,7 +1623,7 @@ def home_page() -> str:
             f'<p class="rc-hero-p">{esc(para)}</p></div>'
             f'{SC.ring_svg(score, alert=alert)}</div>'
             f'<div class="rc-parts">{SC.part_rows(rd.get("parts") or [], 3)}</div>'
-            f'{advice}</section>')
+            f'{advice}{how}</section>')
 
     # ---- 负荷带 60：三个数并列，不是三张卡；每个数都带窗口 ----------------
     acute, ctl, tsb = load.get("acute_7d"), load.get("ctl"), load.get("tsb")
@@ -1795,8 +1832,14 @@ def home_page() -> str:
                     f'<div class="d">{esc(_act_metric(a, want_load=False))}</div></div>'
                     f'<div class="r">{esc(load_txt)}</div></div>')
     if not samples:
-        samples = ('<div class="rc-sample"><span class="t">最近 7 天还没有活动记录。'
-                   '如果设备上有记录，可以下拉同步。</span></div>')
+        # 空态即入口（引导设计 §5）：先说为什么空，再给一个能点的去处。
+        # 「最近 7 天没有」和「一条记录都没有」是两件事，不能都写「暂无」。
+        if acts:
+            samples = ('<a class="gaprow" href="/history">最近 7 天没有训练'
+                       '<b>看全部历史 →</b></a>')
+        else:
+            samples = ('<a class="gaprow" href="/me">还没有跑步记录'
+                       '<b>去连接数据源 →</b></a>')
     week_html = (f'<section class="rc-panel rc-week-panel">'
                  f'<div class="rc-panel-hd"><span class="rc-eyebrow lvl3">最近活动</span>'
                  f'<span class="rc-win">最近 7 天</span></div>'
@@ -2644,8 +2687,6 @@ def me_page() -> str:
         _acc = ACC.state()
     except Exception:  # noqa: BLE001 - 配置坏了不该让整页打不开
         _acc = {}
-    _grp_desc = ("建组 / 加入 / 本周榜" if _acc.get("logged_in")
-                 else "未登录 · 先登录")
     _acc_desc = ((_acc.get("label") or "已登录") if _acc.get("logged_in")
                  else "未登录 · 去登录")
 
@@ -2670,7 +2711,11 @@ def me_page() -> str:
                    ("已开启 · 教练页仅显示今日建议和体重" if _simple
                     else "已关闭 · 教练页显示全部功能"),
                    act="simpleToggle", tone="a", go=False,
-                   switch=("on" if _simple else "off"), sw_act="simpleToggle"))
+                   switch=("on" if _simple else "off"), sw_act="simpleToggle") +
+               # 账号是「这台机器连着谁」的一部分，和数据源同组；原来和小组
+               # 一起塞在「常用」网格里，语义上像两个工具。小组那项已删——
+               # 底部导航有独立的「小组」tab，页内再来一个等于两个入口。
+               row("◎", "账号", _acc_desc, href="/account", tone="a"))
 
     # 「补全历史」已经完全没有按钮了：它由 App 在每次刷新后**后台**由近到远
     # 自动往前挪，进度写在标题栏小字。这里只做只读展示，不提供点击 ——
@@ -2683,13 +2728,9 @@ def me_page() -> str:
         act("⌖", "地图底图",
             "已设置 · 显示地图" if _map_on() else "未设置 · 仅显示轨迹",
             action="amap"),
-        # 文案按 jack 那版的精简（一行内 ≤14 字），但保留他基线上不存在的
-        # 「训练小组」「账号」两项——那是后来加的功能，不能因为合分支丢掉。
         act("⚙", "运动设置", "心率区间与骑行 FTP", href="/sports"),
         act("⇧", "导入到高驰", "预览训练课表", href="/training"),
         act("▦", "日历提醒", "同步到系统日历", action="calendarSync"),
-        act("◈", "训练小组", _grp_desc, href="/groups"),
-        act("◉", "账号", _acc_desc, href="/account"),
     ])
     # 数据与备份：导出/导入是「换手机保命」的两个动作，放同一排最显眼
     data_tiles = acts_grid([

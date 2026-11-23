@@ -230,9 +230,16 @@ def _km(m: int | float | None) -> str:
 
 # ---------------------------------------------------------------- 账号
 def account_page(token: str, message: str = "", account: str = "",
-                 dev_code: str = "") -> str:
+                 dev_code: str = "", from_: str = "") -> str:
+    """账号页。`from_="groups"` 时返回小组，其余返回「我的」。
+
+    同一个页面两个入口（我的 tab / 小组未登录），页内返回必须跟来源一致，
+    否则原生按 activeTab 回小组、页内按钮却回我的，两条返回链打架。
+    """
     from . import account as AC
 
+    _back = (("返回小组", "/groups") if from_ == "groups"
+             else ("返回我的", "/me"))
     st = AC.state()
     msg = _msg(message)
     if st["logged_in"]:
@@ -268,13 +275,15 @@ def account_page(token: str, message: str = "", account: str = "",
                   '</div></form></div></details>')
         return page("ACCOUNT", "账号", "已登录", body,
                     foot="登录令牌只存在这台手机里，不会上传到别处。",
-                    back=("返回我的", "/me"))
+                    back=_back)
 
     tip = ""
     if dev_code:
         tip = (f'<p class="note">开发模式验证码：<b>{esc(dev_code)}</b>'
                '（正式环境会发到邮箱/短信，不会显示在这里）</p>')
-    form_send = (f'<form action="/__account/send" method="post">{_tok(token)}'
+    _from_in = ('<input type="hidden" name="from" value="groups">'
+                if from_ == "groups" else "")
+    form_send = (f'<form action="/__account/send" method="post">{_tok(token)}{_from_in}'
                  '<div class="card">'
                  '<div class="kvline"><span>手机号或邮箱</span><b>'
                  f'<input type="text" name="account" value="{esc(account)}" '
@@ -284,7 +293,7 @@ def account_page(token: str, message: str = "", account: str = "",
                  '不绑定跑步数据。</p>'
                  '<div class="pager"><button class="btn primary" type="submit">发送验证码</button>'
                  '</div></form>')
-    form_login = (f'<form action="/__account/login" method="post">{_tok(token)}'
+    form_login = (f'<form action="/__account/login" method="post">{_tok(token)}{_from_in}'
                   f'<input type="hidden" name="account" value="{esc(account)}">'
                   '<div class="card">'
                   '<div class="kvline"><span>验证码</span><b>'
@@ -305,7 +314,7 @@ def account_page(token: str, message: str = "", account: str = "",
             + (sec("验证码", '<div class="card">' + form_login + '</div>') if account else ""))
     return page("ACCOUNT", "账号", "登录后可以建组、加入朋友的组", body,
                 foot="登录令牌只存在这台手机里，不会上传到别处。",
-                back=("返回我的", "/me"))
+                back=_back)
 
 
 # ---------------------------------------------------------------- 组列表
@@ -324,25 +333,23 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
     if not st["logged_in"]:
         body = (msg + '<div class="card"><p class="note">小组需要登录：'
                 '建组、入组、看榜。只上传每日里程合计，不上传位置。</p>'
-                '<div class="pager"><a class="btn primary" href="/account">去登录</a></div>'
+                '<div class="pager"><a class="btn primary" href="/account?from=groups">去登录</a></div>'
                 '</div>')
         return page("GROUP", "训练小组", "还没登录", body,
-                    foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
-                    back=("返回我的", "/me"))
+                    foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。")
 
     r = G.groups()
     if not r.get("ok"):
         err = r.get("error") or "拉不到小组列表"
         if r.get("need_login"):
             body = (msg + '<div class="card"><p class="note">登录已过期，重新登录一下。</p>'
-                    '<div class="pager"><a class="btn primary" href="/account">去登录</a></div>'
+                    '<div class="pager"><a class="btn primary" href="/account?from=groups">去登录</a></div>'
                     '</div>')
         else:
             body = (msg + f'<div class="card"><p class="note">{esc(err)}</p>'
                     '<div class="pager"><a class="btn" href="/groups">重试</a></div></div>')
         return page("GROUP", "训练小组", "连接有问题", body,
-                    foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
-                    back=("返回我的", "/me"))
+                    foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。")
 
     items = r.get("groups") or []
     # 只有一个组就直接进详情：点「小组」最想看的是排名，而不是一行组名。
@@ -527,8 +534,7 @@ def groups_page(token: str, message: str = "", force_list: bool = False) -> str:
                 + sec("创建小组", '<div class="card">' + create_form + '</div>'))
     body = body + arch_sec
     return page("GROUP", "训练小组", "本周榜只在组内可见", body, chips,
-                foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。",
-                back=("返回我的", "/me"))
+                foot="只上传里程合计和脱敏轨迹剪影，不含坐标和位置。")
 
 
 # ---------------------------------------------------------------- 设置
@@ -2577,24 +2583,36 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
             f'{_suggest:g}' if _suggest else "")
         _no_tgt = ('<p class="note">还没有队友报目标。等他们报了，这里就能选人猜了'
                    '（只能猜报了 5 km 以上目标的人）。</p>' if not _tg else "")
-        # 入口行：左「目标 30 km」+ 右副文「已跑 12.3 / 30 km」，点开才是表单。
-        # 48px 高、整行可点，和下面榜单条目同一节奏。
-        week_form = ('<details class="goalrow" data-k="goal"><summary>'
-                     f'<span class="gk">{esc(_gtxt)}</span>'
-                     f'<span class="gs">{esc(_gsub)}</span>'
-                     '<span class="chev">›</span></summary>'
-                     '<div class="gbody">'
-                     f'<form action="/__group/{gid}/goal" method="post">{_tok(token)}'
-                     '<div class="setrow"><span>目标 km</span>'
-                     f'<input type="number" name="km" min="1" max="1000" step="0.5" '
-                     f'value="{esc(_val)}" placeholder="这周打算跑多少" aria-label="本周目标"></div>'
-                     '<div class="setrow"><span>预言</span>'
-                     f'<select name="predict" aria-label="猜谁完不成">{_opts}</select></div>'
-                     '<div class="pager"><button class="btn sm primary" type="submit">保存'
-                     '</button></div></form>'
-                     + _no_tgt +
-                     '<p class="note">只猜人、不改目标：目标框留空直接保存。</p>'
-                     '</div></details>')
+        # 入口行：左「定本周目标」+ 右副文（建议值/进度），点开才是表单。
+        # 还没定目标、且服务端给了建议值 → **收起态直接一个「设为目标」按钮**：
+        # 引导设计 G2 要求建议一键落地，先展开再保存等于两次点击。定了目标
+        # 之后才回到折叠行（改数字/改预言是低频动作，折起来不占榜单的位置）。
+        if not _goal_km and _suggest:
+            week_form = (
+                f'<form class="goalcta" action="/__group/{gid}/goal" method="post">'
+                f'{_tok(token)}'
+                f'<input type="hidden" name="km" value="{_suggest:g}">'
+                '<span class="gk">定本周目标</span>'
+                f'<span class="gs">建议 {_suggest:g} km · 近 4 周周均 × 0.8</span>'
+                '<button class="btn sm primary" type="submit">设为目标</button>'
+                '</form>')
+        else:
+            week_form = ('<details class="goalrow" data-k="goal"><summary>'
+                         f'<span class="gk">{esc(_gtxt)}</span>'
+                         f'<span class="gs">{esc(_gsub)}</span>'
+                         '<span class="chev">›</span></summary>'
+                         '<div class="gbody">'
+                         f'<form action="/__group/{gid}/goal" method="post">{_tok(token)}'
+                         '<div class="setrow"><span>目标 km</span>'
+                         f'<input type="number" name="km" min="1" max="1000" step="0.5" '
+                         f'value="{esc(_val)}" placeholder="这周打算跑多少" aria-label="本周目标"></div>'
+                         '<div class="setrow"><span>预言</span>'
+                         f'<select name="predict" aria-label="猜谁完不成">{_opts}</select></div>'
+                         '<div class="pager"><button class="btn sm primary" type="submit">保存'
+                         '</button></div></form>'
+                         + _no_tgt +
+                         '<p class="note">只猜人、不改目标：目标框留空直接保存。</p>'
+                         '</div></details>')
 
     # 「衫」那行内容是流式的（六件全有得主会折两行），要允许换行；
     # 其它行是单行结论，用省略号截断。
