@@ -1186,9 +1186,13 @@ def _act_page(handler, me, qs: dict) -> None:
     if raw:
         # 卡片自身用 meta viewport width=1080 排版，父页用 transform 缩放。
         # 这里只负责把真实高度报给父页（卡片高度随数据条数变化）。
-        report = ("<script>(function(){function P(){try{var w=Math.max("
-                  "document.documentElement.scrollWidth,document.body.scrollWidth,1080);"
-                  "parent.postMessage({h:document.documentElement.scrollHeight,w:w},'*');}"
+        # 高度量 body，不量 documentElement：后者会被 iframe 的 2250 垫底，
+        # 报上去的是视口高度而不是卡片高度，父页就会给卡片留一大片空白。
+        report = ("<script>(function(){function P(){try{var b=document.body;"
+                  "var w=Math.max(document.documentElement.scrollWidth,"
+                  "b.scrollWidth,1080);"
+                  "var h=Math.max(b.getBoundingClientRect().height,b.scrollHeight);"
+                  "parent.postMessage({h:Math.ceil(h),w:w},'*');}"
                   "catch(e){}}window.addEventListener('load',P);setTimeout(P,200);"
                   "setTimeout(P,800);})();</script>")
         if "</body>" in html:
@@ -1275,17 +1279,30 @@ html,body{margin:0;background:#0F1319}
     var fix = doc.createElement('style');
     fix.id = 'h2c-fix';
     fix.textContent = '.hval{background:none!important;' +
-      '-webkit-text-fill-color:currentColor!important;color:#F2F7FF!important}';
+      '-webkit-text-fill-color:currentColor!important;color:#F2F7FF!important}' +
+      'html,body{overflow:hidden!important;' +
+      // iOS 的字体自动放大（font boosting）会作用在 html2canvas 的克隆
+      // 文档上（它没有 viewport meta），文字被放大后标题就换行。
+      '-webkit-text-size-adjust:100%!important;text-size-adjust:100%!important}';
     doc.head.appendChild(fix);
     fixEl = fix;
-    var cw = parseFloat(f.getAttribute('data-w') || '0') || W;
-    var ch = parseFloat(f.getAttribute('data-h') || '0') || 2250;
+    // 尺寸必须在**点下去这一刻**量 body，不能用 data-h：
+    //   1. 卡片页报的是 documentElement.scrollHeight，它被 iframe 高度
+    //      （2250）垫底，长得比内容大 → 图底部拖一大片黑；
+    //   2. 同一张卡在不同字体下高度不一样，缓存一个数字必然对不上。
+    var rect = doc.body.getBoundingClientRect();
+    var cw = Math.max(1080, Math.round(rect.width));
+    var ch = Math.max(600, Math.ceil(rect.height) + 2);
     // 长图按比例降采样：1080×2600 两倍图是 2160×5200，iPhone 上会占掉
     // 一百多 MB 内存，出图反而更容易失败。
-    var scale = Math.min(2, 2400 / Math.max(cw, 1), 5200 / Math.max(ch, 1));
+    var scale = Math.min(2, 2400 / cw, 5200 / ch);
     win.html2canvas(doc.body, {
       backgroundColor: '#0F1319', scale: Math.max(1, scale),
-      width: cw, height: ch, windowWidth: cw, useCORS: true, logging: false
+      width: cw, height: ch,
+      // 克隆视口比画布大一圈：小了会出现滚动条，那 15px 是从正文里挤出来的，
+      // 标题会被挤到换行——图看着和页面上不一样就是这么来的。
+      windowWidth: cw + 24, windowHeight: ch + 24,
+      scrollX: 0, scrollY: 0, useCORS: true, logging: false
     }).then(function(canvas){
       canvas.toBlob(function(blob){
         if (!blob) return fail('blob');
