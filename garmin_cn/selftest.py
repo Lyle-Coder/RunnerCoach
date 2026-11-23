@@ -2123,6 +2123,21 @@ def run() -> int:
     assert _EX.span_km(_xa + _hb) > 500, "跨省跨度算错了"
     assert _EX.span_km(_xa) < 50, "同城跨度算错了"
 
+    # 会话判据必须全项目一致。`ensure_session` 以前只认 JWT_WEB，而
+    # `_garmin_session_ok` / `_client` 认 `JWT_WEB or SESSIONID`。手机号登录
+    # 拿的是 SESSIONID，于是「我的」页显示已登录、同步却报「会话已过期」，
+    # 用户看到的就是「明明在线为什么说过期」。
+    _aus = (ROOT / "garmin_cn/auth.py").read_text(encoding="utf-8")
+    assert 'self.net.get_cookie("JWT_WEB") or self.net.get_cookie("SESSIONID")' in _aus, \
+        "ensure_session 又只认 JWT_WEB 了，会和 _garmin_session_ok 打架"
+    # 同名函数定义两遍，后一个覆盖前一个，改错一处不报错但行为变了。
+    _apsv = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    assert _apsv.count("def _garmin_session_ok(") == 1, \
+        "_garmin_session_ok 有重复定义"
+    # 失败原因要带出来，否则用户只看到「已过期」，没法判断是 401 还是网络。
+    assert 'getattr(auth, "last_verify"' in _apsv, \
+        "AuthError 没带上会话校验的具体原因"
+
     # 体重/AI 数据口径：用户只有一台秤，却被告知「另一台秤」。
     # body.stats 要给出「体脂是否与体重同源」，AI 上下文在同源时不重复传
     # body_fat_any，提示词也不再无条件说「另一台秤的读数」。

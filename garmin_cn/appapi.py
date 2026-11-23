@@ -142,7 +142,10 @@ def _client(email: str | None = None, password: str | None = None,
         ok = bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
 
     if not ok:
-        raise AuthError("还没有登录，或会话已过期")
+        # 带上具体原因：只说「会话已过期」时，用户看到「我的」页明明写着已登录
+        # 就会以为 App 在乱报。last_verify 里有 HTTP 码或异常类型。
+        _why = str(getattr(auth, "last_verify", "") or "").strip()
+        raise AuthError("还没有登录，或会话已过期" + (f"（{_why}）" if _why else ""))
     return GarminCNClient(net)
 
 
@@ -1857,20 +1860,6 @@ def _segment_has_data(store, start: str, end: str) -> bool:
         return bool(a and a[0])
     except Exception:
         return True          # 查不出来就当有数据，宁可多补一段也不要漏
-
-
-def _garmin_session_ok() -> bool:
-    """本地有没有佳明会话票据（不看是否过期，过期由 sync 自己报）。"""
-    try:
-        from .net import Net
-
-        path = GarminCNAuth(HOME).session_path
-        if not path.exists():
-            return False
-        net = Net(path)
-        return bool(net.get_cookie("JWT_WEB") or net.get_cookie("SESSIONID"))
-    except Exception:
-        return False
 
 
 def _coros_session_ok() -> bool:

@@ -291,10 +291,15 @@ class GarminCNAuth:
 
         **只有明确被服务端拒绝（401/403）才算过期**；网络异常一律放行，
         免得一次请求抖动就把人踢回登录框。
+
+        票据判据必须和 `_garmin_session_ok()` / `_client()` 一致：
+        那里认 `JWT_WEB or SESSIONID`，这里以前只认 `JWT_WEB`。手机号登录
+        走的是 SESSIONID，于是「我的」页显示已登录、同步却一律报「会话已
+        过期」——用户看到的自相矛盾就是这个。
         """
         if not self.session_path.exists():
             return False
-        if not self.net.get_cookie("JWT_WEB"):
+        if not (self.net.get_cookie("JWT_WEB") or self.net.get_cookie("SESSIONID")):
             return False
         state, _ = self.verify_state()
         return state != "expired"
