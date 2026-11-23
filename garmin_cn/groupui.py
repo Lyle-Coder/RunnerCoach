@@ -873,13 +873,16 @@ def map_page(token: str, gid: int, message: str = "") -> str:
     if _shared_n:
         legend += (f'<span class="lgi"><i class="sh"></i>共同<b>{_shared_n}</b></span>')
 
-    # 我自己的开关。默认关，打开前把「上传什么」讲明白。
+    # 我自己的开关。2026-11-23 起默认开，所以「已开启」这一侧必须写清
+    # 共享的到底是什么：默认开意味着用户不会经过「点一下才知道」这一步，
+    # 告知责任就落在这一行文案上。
     if mine:
         _sw = (f'<form action="/__group/{gid}/mapshare" method="post">{_tok(token)}'
                '<input type="hidden" name="on" value="0">'
                '<div class="setrow"><span class="nowrap">路线共享</span>'
                '<span class="note" style="flex:1 1 auto;margin:0">'
-               f'已开启 · 本周 {len(mine["cells"])} 格</span>'
+               f'已开启 · 本周 {len(mine["cells"])} 格 · 只传格子编号，不含轨迹'
+               '</span>'
                '<button class="btn sm" type="submit">关掉</button></div></form>')
     else:
         _sw = (f'<form action="/__group/{gid}/mapshare" method="post">{_tok(token)}'
@@ -2135,15 +2138,20 @@ def group_page(token: str, gid: int, message: str = "", feed_n: int = 0,
 
     # 把「路线共享开着吗」记到本地：上报时靠这个决定要不要多发一次格子，
     # 不记的话每次上报都得先拉一遍 detail。
+    # **只在字段真的存在时才写**：老服务端或降级返回里没有 map_share 时，
+    # `bool(None)` 会把本地缓存写成「关」，然后停止上报——用户看到的就是
+    # 「共享自己关了」。宁可不动本地值，也不要凭缺失字段做决定。
     try:
         from . import appapi as _A
         from .store import Store as _Store
 
-        _st = _Store(_A.DB)
-        try:
-            G.note_map(_st, gid, bool((g.get("me") or {}).get("map_share")))
-        finally:
-            _st.conn.close()
+        _me = g.get("me") or {}
+        if "map_share" in _me:
+            _st = _Store(_A.DB)
+            try:
+                G.note_map(_st, gid, bool(_me.get("map_share")))
+            finally:
+                _st.conn.close()
     except Exception:      # noqa: BLE001 - 缓存写不进去不影响页面
         pass
 
