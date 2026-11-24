@@ -3,6 +3,8 @@ config.json
 .github_token
 mi_cookie.txt
 mi_login.json
+# 本机私有脚本：coros-local.bat 是模板，真实账号写在这里
+coros-local.private.bat
 session.json
 mi_auth.json
 server/.env
