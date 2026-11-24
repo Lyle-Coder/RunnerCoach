@@ -6164,11 +6164,14 @@ def run() -> int:
         "横屏没把样本/双线图收起，或身体面板仍是 2×2"
     assert _css.count('"h h h h l l l l b b b b"') == 1, \
         "宽屏栅格被复制成两份"
-    # 赛事提醒 / 延伸阅读没进命名区域：横屏栅格会把它们塞进隐式列，
-    # 挤成十几像素一条（真机截图里的「挤一块」），必须和宽屏一样收起。
-    assert ".rc-up-panel{display:none}" in _land_css and \
-        ".rc-rd-panel{display:none}" in _land_css, \
-        "横屏没收起赛事提醒/延伸阅读，会被网格挤成一条"
+    # 赛事提醒 / 延伸阅读没进命名区域：横屏与宽屏栅格都会把它们塞进隐式列，
+    # 挤成十几像素一条。这里是全文件唯一的权威规则，必须带 !important
+    # （短横屏断点里还有一条 .rc-panel{display:flex}，会把它们捞回来）。
+    assert _css.count(".rc-up-panel,.rc-rd-panel{display:none!important}") == 2, \
+        "临近块可见性规则丢了或被拆回多份"
+    assert _css.rfind(".rc-up-panel,.rc-rd-panel{display:none!important}") > \
+        _css.rfind(".rc-panel{display:flex;flex-direction:column}"), \
+        "权威规则排在了短横屏断点之前，会被 .rc-panel{display:flex} 捞回来"
     _u_src = (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8")
     assert 'BR.badge_html(26' not in _u_src and 'BR.badge_html(18' in _u_src, \
         "页头角标没删干净，或页脚字标被一起删了"

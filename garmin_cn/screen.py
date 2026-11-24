@@ -281,10 +281,6 @@ _BIG = """
 /* 横屏隐藏今日营养行：body 面板在固定栅格里，多一行会把行高撑破 */
 {p}.rc-nutline{display:none}
 {p}.rc-week-panel{grid-area:w}
-/* 临近块只在竖屏出现：宽屏是写死的 6 区栅格（1280×800 不许滚动），
-   再塞一块会把固定行高挤破；横屏本来也不适合「今天要记得什么」。 */
-{p}.rc-up-panel{display:none}
-{p}.rc-rd-panel{display:none}
 {p}.rc-plan-panel{grid-area:p}
 /* 面板内部可滚，页面本身不滚；1280×800 无页面滚动、无面板截断 */
 {p}.rc-panel{overflow:auto}
@@ -376,12 +372,6 @@ _LAND = """
 .rc-plan .t{font-size:14px}
 .rc-plan .go{min-height:40px}
 .rc-foot-line{display:none}
-/* 临近块（赛事提醒 / 延伸阅读）只在竖屏出现。这里的 .rc-screen 是**命名
-   区域**栅格，没被命名的子节点会被自动塞进隐式列，那一列按 min-content
-   定宽，于是两块被挤成十几像素一条、字一格一行——横屏「挤一块」就是这
-   来的。宽屏那份栅格早就这么处理了，横屏这份漏了。 */
-.rc-up-panel{display:none}
-.rc-rd-panel{display:none}
 }
 /* 老小屏横过来只有 264~320px 高：页头页脚收掉，栅格吃 calc(100dvh - 30px)。
    0.6.12 曾为了「五块全塞一屏」把面板标题、日期、指标名全砍掉，结果真机
@@ -434,10 +424,26 @@ _LAND = """
 }
 """
 
+# 临近块（赛事提醒 / 延伸阅读）只在竖屏出现。
+# 横屏与宽屏的 `.rc-screen` 都是**命名区域**栅格，这两块没有 grid-area，
+# 会被自动排进隐式列；那一列按 min-content 定宽，于是挤成十几像素一条、
+# 字一格一行。`!important` 不是偷懒：短横屏那份断点（max-height:340）末尾
+# 还有一条 `.rc-panel{display:flex}`，不加重要级就会被它按顺序捞回来，
+# 640×300 实测就是这样。
+_VIS = """
+@media (orientation:landscape){
+  .rc-up-panel,.rc-rd-panel{display:none!important}
+}
+@media (min-width:900px){
+  .rc-up-panel,.rc-rd-panel{display:none!important}
+}
+"""
+
 SCREEN_CSS = (
     _BASE
     + "@media(min-width:900px){" + _BIG.replace("{p}", "") + "}\n"
     + _LAND
+    + _VIS
 )
 
 RING_R = 45
