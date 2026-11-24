@@ -790,6 +790,14 @@ class MiCloud:
             raise MiAuthError("还没登录过小米账号 → run.bat mi login")
 
         info, hd = self._ask_login(cookie)
+        # serviceLogin 会把轮换后的 passToken 放进 Set-Cookie（body 里常常没有）。
+        # 不接住的话，下一次还拿旧票，而小米那边已经把它作废了——表现就是
+        # 「隔一阵就要重新登录」。登录那条路接了，续期这条路以前漏了。
+        _jar = _cookie_dict(hd)
+        if _jar.get("passToken"):
+            self.pass_token = str(_jar["passToken"])
+        if _jar.get("userId"):
+            self.user_id = str(_jar["userId"])
         sec = info.get("ssecurity") or _pragma_ssecurity(hd)
         if sec:
             self._ssecurity = base64.b64decode(sec)

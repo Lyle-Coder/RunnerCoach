@@ -6590,6 +6590,21 @@ def run() -> int:
     assert "def verify_state" in _asrc and 'state != "expired"' in _asrc
     assert "return None  # 网络异常" not in _asrc
 
+    # JWT 几小时就过期。以前过期就静默用存的密码重登；登录页上了人机验证之后
+    # 那条路走不通，于是每次到期都弹登录框（用户：「过一会就要重新登录」）。
+    # 所以过期后必须**先试一次不碰密码的续期**，别直接去找用户。
+    assert "def renew(self) -> bool:" in _asrc, "会话过期没有免密码续期"
+    _client_src = (ROOT / "garmin_cn/appapi.py").read_text(encoding="utf-8")
+    assert "ok = auth.renew()" in _client_src, \
+        "_client 过期后没先试 renew，会直接落到密码/人机验证"
+    assert _client_src.index("ok = auth.renew()") < \
+        _client_src.index("auth.login(email, password)"), \
+        "renew 排在了密码登录之后，等于白写"
+    # 没有任何会话 Cookie 时不该去访问登录页（白请求，还容易换来一个死票）
+    _fresh = _AUTH.GarminCNAuth.__new__(_AUTH.GarminCNAuth)
+    _fresh.net = _types.SimpleNamespace(get_cookie=lambda n: "")
+    assert _fresh.renew() is False, "没有会话 Cookie 时 renew 应该直接返回 False"
+
     # ---- 2026-11：佳明国区把登录从 /sso/login 迁到 SSO Portal ------------
     # 老接口仍返回 SUCCESSFUL + serviceTicketId，但那张票在 /app?ticket= 换
     # 不出 JWT_WEB（服务端反而 Set-Cookie 清空），网页版/App 续期都会表现为

@@ -480,6 +480,44 @@ class GarminCNAuth:
         return {"cookies": count, "csrf": csrf, "profile": profile}
 
     # ---------------- 复用 ----------------
+    def renew(self) -> bool:
+        """不碰密码，看看能不能把过期的票续回来。
+
+        为什么会「过一会就要重新登录」：`JWT_WEB` 只有几小时，而 SSO 那边的
+        会话（`CASTGC` / `session`）活得更久。以前 JWT 一过期就静默用存的密码
+        重登，用户完全无感；现在登录页强制人机验证，那条路走不通了，于是每次
+        JWT 到期都会弹一次登录框。
+
+        这里走的是浏览器里最普通的那条路：带着 SSO 会话去访问一次登录页，
+        CAS 会自己 302 到 `service?ticket=...`，跟下来就换到一枚新的 JWT_WEB。
+        换到了就落盘，换不到就返回 False（调用方再去要密码或让用户点一次）。
+
+        只在**已有会话 Cookie** 时尝试：没有任何 Cookie 时去访问登录页，只会
+        拿到一个未登录的登录页，白白多一次请求。
+        """
+        if not (self.net.get_cookie("JWT_WEB") or self.net.get_cookie("SESSIONID")
+                or self.net.get_cookie("CASTGC") or self.net.get_cookie("session")):
+            return False
+        before = self._session_sig()
+        try:
+            self.net.request("GET", PORTAL_SIGNIN_URL, headers=PORTAL_PAGE_HEADERS)
+        except Exception:      # noqa: BLE001 - 网络问题不该被当成「需要重登」
+            return False
+        changed = self._session_sig() != before
+        state, _ = self.verify_state()
+        # 只认两种结论：验过是好的，或者票确实被换过只是这次没验成（网络）。
+        # 「服务端明说 401」时一律不写盘——那张死票盖下去，下一次连原始 Cookie
+        # 都没了，只能重新登录，比不续还糟。
+        if state == "expired":
+            return False
+        if state == "unknown" and not changed:
+            return False
+        csrf = self._csrf_from_cookies() or self.refresh_csrf()
+        if csrf:
+            self.net.set_cookie("connect-csrf-token", csrf)
+        self.net.save_session()
+        return True
+
     def ensure_session(self) -> bool:
         """已有会话是否仍然可用。
 

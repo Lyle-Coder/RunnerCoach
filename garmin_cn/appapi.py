@@ -131,9 +131,12 @@ def _client(email: str | None = None, password: str | None = None,
     # 本地存了凭据就当场续期，不用再让用户手输密码。
     if ok and revalidate:
         if not auth.ensure_session():
-            ok = False
-        else:
-            # 校验过程中服务端可能轮换过 Cookie，重新从磁盘读一次最新值
+            # JWT 几小时就过期，但 SSO 会话还在的话能自己续回来（不碰密码）。
+            # 以前这里直接落到「用密码重登」，现在密码要人机验证，所以必须先
+            # 试这条免密码的路，否则每次 JWT 到期都会弹一次登录框。
+            ok = auth.renew()
+        if ok:
+            # 校验/续期过程中服务端可能轮换过 Cookie，重新从磁盘读一次最新值
             net = Net(auth.session_path, min_interval=min_interval)
 
     if not ok and email and password:
