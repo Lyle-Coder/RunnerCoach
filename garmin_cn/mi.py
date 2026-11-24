@@ -1133,6 +1133,81 @@ def to_records(items: list[dict]) -> list[dict]:
     return out
 
 
+KA_AT = "mi_ka_at"          # 上次续期的尝试时间（不管成功失败都记）
+KA_FAIL = "mi_ka_fail"      # 连续失败几次，用来把间隔往后推
+
+
+def keepalive(home: Path, store=None, min_hours: int = 12) -> dict:
+    """有空就把小米会话续一下，别等它凉透了再让人重新登录。
+
+    小米这套凭据分两层：短会话（ssecurity / serviceToken，几小时到几天）
+    和长期凭据（passToken）。短会话本来每次同步都会用 `open_session()` 现换；
+    真正会「过期」的是 passToken。`serviceLogin` 的响应里会带新的 passToken，
+    也就是说**只要隔一段时间回去换一次票，它就会一直续下去**——前提是有人
+    记得去换。App 不是每天开，所以这里挂在后台补传里顺手做。
+
+    三条自律：
+    - **绝不打扰**：失败只记账，不出通知、不弹框（真失效了首页的「重新授权」会说话）；
+    - **失败退避**：连续失败时把间隔翻倍，最多一周一次，别拿一个死凭据反复
+      去撞小米的风控；
+    - **没登录就完全不动**：不建文件、不发请求。
+
+    返回里 `skip` 说明这次为什么没做，方便诊断日志对账。
+    """
+    mi = MiCloud(home)
+    if not mi.auth_path.exists():
+        return {"ok": False, "skip": "no_auth"}
+
+    def _meta(k: str) -> str:
+        try:
+            return str(store.get_meta(k) or "") if store is not None else ""
+        except Exception:      # noqa: BLE001 - 记账失败不该挡住续期
+            return ""
+
+    def _put(k: str, v: str) -> None:
+        try:
+            if store is not None:
+                store.set_meta(k, str(v))
+        except Exception:      # noqa: BLE001
+            pass
+
+    fail = 0
+    try:
+        fail = max(0, int(_meta(KA_FAIL) or 0))
+    except ValueError:
+        fail = 0
+    gap_h = min_hours * (2 ** min(fail, 3)) if fail else min_hours
+    gap_h = min(gap_h, 24 * 7)
+    last = _meta(KA_AT)
+    if last:
+        try:
+            at = dt.datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            at = None
+        if at and (dt.datetime.now() - at).total_seconds() < gap_h * 3600:
+            return {"ok": True, "skip": "recent", "next_in_h": round(
+                gap_h - (dt.datetime.now() - at).total_seconds() / 3600, 1)}
+
+    _put(KA_AT, dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    if not mi.load():
+        return {"ok": False, "skip": "unreadable"}
+    try:
+        fresh = mi.open_session()
+    except MiAuthError as e:
+        # 凭据真的死了：记一次失败、退避，等用户重新授权。
+        _put(KA_FAIL, str(fail + 1))
+        return {"ok": False, "skip": "need_login", "reason": str(e)[:120],
+                "fail": fail + 1}
+    except Exception as e:      # noqa: BLE001 - 网络抖动不算凭据失效
+        _put(KA_FAIL, str(fail + 1))
+        return {"ok": False, "skip": "error", "reason": f"{type(e).__name__}: {e}"}
+
+    # 换到的新 passToken / serviceToken 立刻落盘，下次就不用从头再来
+    mi.save(note="keepalive")
+    _put(KA_FAIL, "0")
+    return {"ok": True, "fresh": bool(fresh)}
+
+
 def sync(store, home: Path, days: int = 120) -> tuple[int, list[dict]]:
     """登录 → 拉 weight → 入库。返回 (条数, 记录)。"""
     from . import body as B

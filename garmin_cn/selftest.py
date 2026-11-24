@@ -909,6 +909,21 @@ def run() -> int:
         _box.drop(3)
         assert not _box.pending(now=0), "清空后队列还有残留"
 
+        # 小米会话续期：没登录就一个请求都不发；刚续过就跳过（两条都不联网）。
+        # 真去换票的那条路要打小米，selftest 里不碰网络。
+        from garmin_cn import mi as _MI
+
+        _ka0 = _MI.keepalive(_gdir, store=_gs)
+        assert _ka0.get("skip") == "no_auth", f"没登录时不该去换票：{_ka0}"
+        (_gdir / "data").mkdir(parents=True, exist_ok=True)
+        (_gdir / "data" / "mi_auth.json").write_text(
+            '{"userId":"1","passToken":"x"}', encoding="utf-8")
+        _gs.set_meta(_MI.KA_AT, dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        _ka1 = _MI.keepalive(_gdir, store=_gs)
+        assert _ka1.get("skip") == "recent", f"刚续过不该再打小米：{_ka1}"
+        assert "keepalive" in (ROOT / "garmin_cn/bg.py").read_text(
+            encoding="utf-8"), "后台补传没挂小米续期，等于没做"
+
         # ---------------- 后台补传 ----------------
         # 三个出口全部替换掉（拉组列表 / 上报 / 拉详情），只看调度与记账：
         # 什么时候跑、跑几次、失败了记不记时间。这一步不碰网络。

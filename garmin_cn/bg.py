@@ -128,6 +128,17 @@ def _run(store, today: str | None, force: bool) -> dict:
         # 会话过期（JWT 几小时）会失败，静默即可，首页加载时还会再试。
         run_new = _try_sync(store)
 
+        # 小米体重：趁这一轮顺手把会话续一下。App 不是每天开，`passToken`
+        # 靠「隔段时间回 serviceLogin 换一次票」活着；这里 12 小时最多一次，
+        # 失败只记账不打扰（有退避，见 mi.keepalive）。
+        try:
+            from . import appapi as A
+            from . import mi as MI
+
+            MI.keepalive(A.HOME, store=store)
+        except Exception as e:      # noqa: BLE001 - 续期失败不能挡住补传
+            diag.log_exc("bg.mi_keepalive", e)
+
         gids = [int(x["id"]) for x in (lst.get("groups") or []) if x.get("id")]
         names = {int(x["id"]): str(x.get("name") or "小组")
                  for x in (lst.get("groups") or []) if x.get("id")}
