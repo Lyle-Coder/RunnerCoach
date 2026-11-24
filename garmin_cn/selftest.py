@@ -6149,6 +6149,11 @@ def run() -> int:
         "横屏没把样本/双线图收起，或身体面板仍是 2×2"
     assert _css.count('"h h h h l l l l b b b b"') == 1, \
         "宽屏栅格被复制成两份"
+    # 赛事提醒 / 延伸阅读没进命名区域：横屏栅格会把它们塞进隐式列，
+    # 挤成十几像素一条（真机截图里的「挤一块」），必须和宽屏一样收起。
+    assert ".rc-up-panel{display:none}" in _land_css and \
+        ".rc-rd-panel{display:none}" in _land_css, \
+        "横屏没收起赛事提醒/延伸阅读，会被网格挤成一条"
     _u_src = (ROOT / "garmin_cn/ui.py").read_text(encoding="utf-8")
     assert 'BR.badge_html(26' not in _u_src and 'BR.badge_html(18' in _u_src, \
         "页头角标没删干净，或页脚字标被一起删了"

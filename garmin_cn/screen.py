@@ -376,6 +376,12 @@ _LAND = """
 .rc-plan .t{font-size:14px}
 .rc-plan .go{min-height:40px}
 .rc-foot-line{display:none}
+/* 临近块（赛事提醒 / 延伸阅读）只在竖屏出现。这里的 .rc-screen 是**命名
+   区域**栅格，没被命名的子节点会被自动塞进隐式列，那一列按 min-content
+   定宽，于是两块被挤成十几像素一条、字一格一行——横屏「挤一块」就是这
+   来的。宽屏那份栅格早就这么处理了，横屏这份漏了。 */
+.rc-up-panel{display:none}
+.rc-rd-panel{display:none}
 }
 /* 老小屏横过来只有 264~320px 高：页头页脚收掉，栅格吃 calc(100dvh - 30px)。
    0.6.12 曾为了「五块全塞一屏」把面板标题、日期、指标名全砍掉，结果真机
